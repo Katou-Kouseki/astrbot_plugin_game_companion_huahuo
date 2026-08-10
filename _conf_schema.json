@@ -161,11 +161,27 @@
       }
     }
   },
+  "gomoku": {
+    "description": "五子棋",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用五子棋",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
   "xiangqi": {
     "description": "中国象棋引擎",
     "type": "object",
     "hint": "象棋使用独立 Pikafish 进程。引擎不可用时只禁用象棋，不影响五子棋。",
     "items": {
+      "enabled": {
+        "description": "启用中国象棋",
+        "type": "bool",
+        "default": true
+      },
       "engine_path": {
         "description": "Pikafish 可执行文件路径",
         "type": "string",
@@ -191,11 +207,27 @@
       }
     }
   },
+  "tictactoe": {
+    "description": "井字棋",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用井字棋",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
   "turtle_soup": {
     "description": "海龟汤",
     "type": "object",
     "hint": "题目默认由当前会话的 Bot 生成并进行隐藏校验；模型不可用时使用内置兜底题。",
     "items": {
+      "enabled": {
+        "description": "启用海龟汤",
+        "type": "bool",
+        "default": true
+      },
       "max_hints": {
         "description": "每题最多提示次数",
         "type": "int",
@@ -218,11 +250,33 @@
       }
     }
   },
+  "pig_dice": {
+    "description": "贪心骰子",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用贪心骰子",
+        "type": "bool",
+        "default": true
+      },
+      "target_score": {
+        "description": "获胜目标分数",
+        "type": "int",
+        "default": 50,
+        "hint": "范围 20-200；新一局中先达到目标分数的一方获胜。"
+      }
+    }
+  },
   "draw_guess": {
     "description": "你画我猜",
     "type": "object",
     "hint": "用户在 WebUI 画画，Bot 只在点击猜测时调用一次视觉模型；答案由服务端隐藏保存。",
     "items": {
+      "enabled": {
+        "description": "启用你画我猜",
+        "type": "bool",
+        "default": true
+      },
       "vision_provider_id": {
         "description": "视觉模型 Provider",
         "type": "string",

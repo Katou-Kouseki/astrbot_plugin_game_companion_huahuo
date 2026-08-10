@@ -6,9 +6,19 @@
   const assignDialog = document.getElementById("assignDialog");
   const confirmDialog = document.getElementById("confirmDialog");
   const toast = document.getElementById("toast");
+  const gameOptions = [
+    ["gomoku", "五子棋"],
+    ["xiangqi", "中国象棋"],
+    ["tictactoe", "井字棋"],
+    ["turtle_soup", "海龟汤"],
+    ["pig_dice", "贪心骰子"],
+    ["draw_guess", "你画我猜"],
+  ];
   let rooms = [];
   let tunnel = {};
   let xiangqiEngine = {};
+  let enabledGames = {};
+  let gameSettings = [];
   let toastTimer = 0;
   let refreshTimer = 0;
   let confirmResolver = null;
@@ -106,17 +116,11 @@
       const gameSelect = document.createElement("select");
       gameSelect.className = "game-select";
       gameSelect.title = "切换游戏";
-      [
-        ["gomoku", "五子棋"],
-        ["xiangqi", "中国象棋"],
-        ["tictactoe", "井字棋"],
-        ["turtle_soup", "海龟汤"],
-        ["pig_dice", "贪心骰子"],
-        ["draw_guess", "你画我猜"],
-      ].forEach(([value, label]) => {
+      gameOptions.forEach(([value, label]) => {
+        if (enabledGames[value] === false && room.game_type !== value) return;
         const option = document.createElement("option");
         option.value = value;
-        option.textContent = label;
+        option.textContent = enabledGames[value] === false ? `${label}（已关闭）` : label;
         option.selected = room.game_type === value;
         gameSelect.appendChild(option);
       });
@@ -334,6 +338,7 @@
     try {
       const data = await endpoint("GET", "rooms");
       rooms = Array.isArray(data.rooms) ? data.rooms : [];
+      enabledGames = data.enabled_games || {};
       renderMetrics(data);
       renderService(data);
       renderEngine(data);
@@ -438,9 +443,184 @@
     }
   }
 
+  function settingInput(game, field) {
+    const wrapper = document.createElement("label");
+    wrapper.className = `setting-field setting-${field.type}`;
+    const heading = document.createElement("span");
+    heading.className = "setting-label";
+    heading.textContent = field.label;
+    wrapper.appendChild(heading);
+
+    let input;
+    if (field.type === "bool") {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = Boolean(field.value);
+      const track = document.createElement("span");
+      track.className = "switch-track";
+      wrapper.classList.add("inline-switch");
+      wrapper.append(input, track);
+    } else if (field.type === "select") {
+      input = document.createElement("select");
+      (field.options || []).forEach((option) => {
+        const node = document.createElement("option");
+        node.value = option.value;
+        node.textContent = option.label;
+        node.selected = String(option.value) === String(field.value);
+        input.appendChild(node);
+      });
+      wrapper.appendChild(input);
+    } else {
+      const control = document.createElement("div");
+      control.className = "setting-control";
+      input = document.createElement("input");
+      input.type = field.type === "int" ? "number" : "text";
+      input.value = field.value ?? "";
+      if (field.type === "int") {
+        input.step = "1";
+        input.required = true;
+        input.min = String(field.minimum);
+        input.max = String(field.maximum);
+      }
+      if (field.maximum_length) input.maxLength = Number(field.maximum_length);
+      control.appendChild(input);
+      if (field.unit) control.appendChild(createText("span", field.unit, "setting-unit"));
+      wrapper.appendChild(control);
+    }
+    input.dataset.game = game.game_type;
+    input.dataset.setting = field.key;
+    input.dataset.type = field.type;
+    input.dataset.default = JSON.stringify(field.default);
+    if (field.hint) wrapper.appendChild(createText("small", field.hint, "setting-hint"));
+    return wrapper;
+  }
+
+  function renderSettings(data) {
+    gameSettings = Array.isArray(data.games) ? data.games : [];
+    const grid = document.getElementById("gameSettingsGrid");
+    grid.replaceChildren();
+    gameSettings.forEach((game) => {
+      const card = document.createElement("article");
+      card.className = `game-setting-card ${game.enabled ? "enabled" : "disabled"}`;
+      card.dataset.game = game.game_type;
+
+      const header = document.createElement("header");
+      const identity = document.createElement("div");
+      identity.append(createText("h3", game.label));
+      identity.append(createText("p", game.description));
+      const toggle = document.createElement("label");
+      toggle.className = "game-toggle";
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
+      enabled.checked = Boolean(game.enabled);
+      enabled.dataset.game = game.game_type;
+      enabled.dataset.setting = "enabled";
+      enabled.dataset.type = "bool";
+      enabled.addEventListener("change", () => {
+        card.classList.toggle("enabled", enabled.checked);
+        card.classList.toggle("disabled", !enabled.checked);
+        toggle.querySelector("strong").textContent = enabled.checked ? "已开启" : "已关闭";
+      });
+      toggle.append(enabled, createText("span", "", "switch-track"), createText("strong", enabled.checked ? "已开启" : "已关闭"));
+      header.append(identity, toggle);
+      card.appendChild(header);
+
+      const fields = document.createElement("div");
+      fields.className = "setting-fields";
+      (game.fields || []).forEach((field) => fields.appendChild(settingInput(game, field)));
+      if (!(game.fields || []).length) {
+        fields.appendChild(createText("p", "此游戏当前没有额外数值设置。", "no-settings"));
+      }
+      card.appendChild(fields);
+
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "text-button";
+      reset.textContent = "恢复本游戏默认值";
+      reset.addEventListener("click", () => resetGameSettings(game.game_type));
+      card.appendChild(reset);
+      grid.appendChild(card);
+    });
+    document.getElementById("settingsNotice").textContent = data.notice || "";
+    icons();
+  }
+
+  function resetGameSettings(gameType) {
+    const card = document.querySelector(`.game-setting-card[data-game="${gameType}"]`);
+    if (!card) return;
+    const enabled = card.querySelector('[data-setting="enabled"]');
+    enabled.checked = true;
+    enabled.dispatchEvent(new Event("change"));
+    card.querySelectorAll("[data-default]").forEach((input) => {
+      const value = JSON.parse(input.dataset.default || "null");
+      if (input.type === "checkbox") input.checked = Boolean(value);
+      else input.value = value ?? "";
+    });
+    showToast("已恢复默认值，点击保存后生效");
+  }
+
+  function collectSettings() {
+    const games = {};
+    document.querySelectorAll("#gameSettingsGrid [data-game][data-setting]").forEach((input) => {
+      const gameType = input.dataset.game;
+      games[gameType] ||= {};
+      let value = input.value;
+      if (input.dataset.type === "bool") value = input.checked;
+      if (input.dataset.type === "int") {
+        if (!input.reportValidity()) throw new Error("请修正超出范围的数值");
+        value = Number(input.value);
+      }
+      games[gameType][input.dataset.setting] = value;
+    });
+    return { games };
+  }
+
+  async function loadSettings() {
+    const action = document.getElementById("reloadSettingsAction");
+    action.disabled = true;
+    try {
+      renderSettings(await endpoint("GET", "settings"));
+    } catch (error) {
+      showToast(error?.message || "无法读取游戏配置");
+    } finally {
+      action.disabled = false;
+    }
+  }
+
+  async function saveSettings() {
+    const action = document.getElementById("saveSettingsAction");
+    action.disabled = true;
+    try {
+      const data = await endpoint("POST", "settings/update", collectSettings());
+      renderSettings(data);
+      showToast("游戏配置已保存");
+      await loadRooms();
+    } catch (error) {
+      showToast(error?.message || "游戏配置保存失败");
+    } finally {
+      action.disabled = false;
+    }
+  }
+
+  function showPanel(panel) {
+    const settings = panel === "settings";
+    document.getElementById("roomsPanel").hidden = settings;
+    document.getElementById("settingsPanel").hidden = !settings;
+    document.querySelectorAll(".manager-tab").forEach((tab) => {
+      tab.classList.toggle("active", tab.dataset.panel === panel);
+      tab.setAttribute("aria-selected", String(tab.dataset.panel === panel));
+    });
+    if (settings) loadSettings();
+  }
+
   document.getElementById("refreshAction").addEventListener("click", loadRooms);
   document.getElementById("tunnelAction").addEventListener("click", toggleTunnel);
   document.getElementById("engineAction").addEventListener("click", installEngine);
+  document.getElementById("saveSettingsAction").addEventListener("click", saveSettings);
+  document.getElementById("reloadSettingsAction").addEventListener("click", loadSettings);
+  document.querySelectorAll(".manager-tab").forEach((tab) => {
+    tab.addEventListener("click", () => showPanel(tab.dataset.panel));
+  });
   document.getElementById("confirmAssign").addEventListener("click", confirmAssign);
   document.getElementById("confirmProceed").addEventListener("click", () => resolveConfirmation(true));
   confirmDialog.addEventListener("cancel", (event) => {

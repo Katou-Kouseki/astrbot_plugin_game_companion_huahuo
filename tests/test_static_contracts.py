@@ -44,6 +44,16 @@ def test_config_defaults_match_product_contract() -> None:
     assert draw_guess["duration_seconds"]["default"] == 120
     assert draw_guess["max_guesses"]["default"] == 5
     assert draw_guess["vision_provider_id"]["_special"] == "select_provider"
+    for game_type in (
+        "gomoku",
+        "xiangqi",
+        "tictactoe",
+        "turtle_soup",
+        "pig_dice",
+        "draw_guess",
+    ):
+        assert schema[game_type]["items"]["enabled"]["default"] is True
+    assert schema["pig_dice"]["items"]["target_score"]["default"] == 50
 
 
 def test_metadata_registers_default_management_page() -> None:
@@ -54,7 +64,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.2.2"
+    assert metadata["version"] == "0.2.3"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -135,6 +145,10 @@ def test_management_page_can_switch_games_and_install_engine() -> None:
     assert "window.confirm" not in script
     assert 'id="confirmDialog"' in page
     assert "confirmAction" in script
+    assert 'endpoint("GET", "settings")' in script
+    assert 'endpoint("POST", "settings/update"' in script
+    assert 'id="gameSettingsGrid"' in page
+    assert 'data-panel="settings"' in page
 
 
 def test_webui_uses_one_room_chat_composer_for_turtle_soup_and_controls() -> None:

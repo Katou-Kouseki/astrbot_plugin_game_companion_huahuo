@@ -28,6 +28,16 @@
       </div>
     </header>
 
+    <nav class="manager-tabs" role="tablist" aria-label="管理台页面">
+      <button class="manager-tab active" data-panel="rooms" type="button" role="tab" aria-selected="true">
+        <i data-lucide="layout-dashboard"></i><span>房间管理</span>
+      </button>
+      <button class="manager-tab" data-panel="settings" type="button" role="tab" aria-selected="false">
+        <i data-lucide="sliders-horizontal"></i><span>游戏配置</span>
+      </button>
+    </nav>
+
+    <div id="roomsPanel">
     <section class="metrics" aria-label="房间概况">
       <div><span>活动房间</span><strong id="roomCount">0</strong></div>
       <div><span>群聊房间</span><strong id="groupCount">0</strong><small id="groupLimit">上限 1</small></div>
@@ -79,6 +89,26 @@
           <strong>当前没有活动房间</strong>
         </div>
       </div>
+    </section>
+    </div>
+
+    <section id="settingsPanel" class="settings-panel" hidden>
+      <header class="settings-header">
+        <div>
+          <span class="eyebrow">新房间与新一局</span>
+          <h2>游戏配置</h2>
+          <p id="settingsNotice">正在读取配置</p>
+        </div>
+        <div class="settings-actions">
+          <button id="reloadSettingsAction" class="secondary-button" type="button">
+            <i data-lucide="rotate-ccw"></i><span>重新读取</span>
+          </button>
+          <button id="saveSettingsAction" class="primary-button" type="button">
+            <i data-lucide="save"></i><span>保存配置</span>
+          </button>
+        </div>
+      </header>
+      <div id="gameSettingsGrid" class="game-settings-grid"></div>
     </section>
   </main>
 

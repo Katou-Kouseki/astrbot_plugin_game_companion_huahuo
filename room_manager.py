@@ -5,7 +5,7 @@ import math
 import re
 import secrets
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
 
 from .draw_guess import DrawGuessGame
@@ -39,6 +39,15 @@ from .xiangqi import XiangqiGame
 
 RoomCallback = Callable[[str, GameRoom, dict[str, Any]], Awaitable[None]]
 
+SUPPORTED_GAMES: tuple[GameType, ...] = (
+    "gomoku",
+    "xiangqi",
+    "tictactoe",
+    "turtle_soup",
+    "pig_dice",
+    "draw_guess",
+)
+
 
 class RoomManager:
     """Own room quotas, seats, game transitions, and expiry rules."""
@@ -65,6 +74,8 @@ class RoomManager:
         swap_request_expiry: int = 20,
         draw_guess_max_guesses: int = 5,
         draw_guess_duration_seconds: int = 120,
+        pig_dice_target_score: int = 50,
+        enabled_games: Mapping[GameType, bool] | None = None,
         xiangqi_engine: PikafishService | None = None,
         event_callback: RoomCallback | None = None,
     ) -> None:
@@ -82,6 +93,12 @@ class RoomManager:
         self.draw_guess_duration_seconds = max(
             10, min(int(draw_guess_duration_seconds), 600)
         )
+        self.pig_dice_target_score = max(20, min(int(pig_dice_target_score), 200))
+        configured_games = enabled_games or {}
+        self.enabled_games: dict[GameType, bool] = {
+            game_type: bool(configured_games.get(game_type, True))
+            for game_type in SUPPORTED_GAMES
+        }
         self.xiangqi_engine = xiangqi_engine
         self.event_callback = event_callback
         self.rooms: dict[str, GameRoom] = {}
@@ -104,6 +121,7 @@ class RoomManager:
         turtle_soup_mode: TurtleSoupMode = "bot_host",
     ) -> GameRoom:
         """Create a room atomically under the source-wide quota."""
+        self.require_game_enabled(game_type)
         async with self._lock:
             limit = (
                 self.max_group_rooms if source == "group" else self.max_private_rooms
@@ -330,6 +348,7 @@ class RoomManager:
         self, room: GameRoom, visitor_token: str, side: str
     ) -> None:
         """Claim a normal room's empty player seat and start the first game."""
+        self.require_game_enabled(room.game_type)
         start_required = False
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
@@ -567,6 +586,7 @@ class RoomManager:
 
     async def start_game(self, room: GameRoom, visitor_token: str, side: str) -> None:
         """Start a game after a seat has been assigned."""
+        self.require_game_enabled(room.game_type)
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             if room.multiplayer.enabled:
@@ -618,7 +638,10 @@ class RoomManager:
                 )
                 side_label = "X" if human_mark == TICTACTOE_X else "O"
             elif room.game_type == "pig_dice":
-                room.game = PigDiceGame(difficulty=room.difficulty)
+                room.game = PigDiceGame(
+                    difficulty=room.difficulty,
+                    target_score=self.pig_dice_target_score,
+                )
                 side_label = ""
             elif room.game_type == "draw_guess":
                 room.game = DrawGuessGame(
@@ -837,6 +860,7 @@ class RoomManager:
         request_text: str = "",
     ) -> None:
         """Put a finished room into a Bot-decided rematch request state."""
+        self.require_game_enabled(room.game_type)
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             expected = (
@@ -892,6 +916,7 @@ class RoomManager:
         self, room: GameRoom, *, difficulty: Difficulty
     ) -> None:
         """Start another game in the same room, preserving its player and score."""
+        self.require_game_enabled(room.game_type)
         async with room.lock:
             if not room.player_token or room.player is None:
                 raise ValueError("当前房间没有可以继续对局的玩家")
@@ -927,7 +952,10 @@ class RoomManager:
                 room.game = TicTacToeGame(human_mark=human_mark, difficulty=difficulty)
                 side_label = "X" if human_mark == TICTACTOE_X else "O"
             elif isinstance(room.game, PigDiceGame):
-                room.game = PigDiceGame(difficulty=difficulty)
+                room.game = PigDiceGame(
+                    difficulty=difficulty,
+                    target_score=self.pig_dice_target_score,
+                )
                 side_label = ""
             elif isinstance(room.game, DrawGuessGame):
                 room.game = DrawGuessGame(
@@ -1104,15 +1132,9 @@ class RoomManager:
         force: bool = False,
     ) -> bool:
         """Switch one room's game while preserving access, seats, and scores."""
-        if game_type not in {
-            "gomoku",
-            "xiangqi",
-            "tictactoe",
-            "turtle_soup",
-            "pig_dice",
-            "draw_guess",
-        }:
+        if game_type not in SUPPORTED_GAMES:
             raise ValueError("不支持的游戏类型")
+        self.require_game_enabled(game_type)
         if game_type == "xiangqi":
             await self._require_xiangqi_engine().ensure_ready()
         async with room.lock:
@@ -1135,6 +1157,15 @@ class RoomManager:
             "game_switched", room, {"from": previous, "to": game_type, "forced": force}
         )
         return True
+
+    def game_enabled(self, game_type: GameType) -> bool:
+        """Return whether new rounds of one supported game may start."""
+        return bool(self.enabled_games.get(game_type, False))
+
+    def require_game_enabled(self, game_type: GameType) -> None:
+        """Reject new rooms, switches and rematches for an administratively closed game."""
+        if not self.game_enabled(game_type):
+            raise PermissionError(f"管理员暂未开放{self._game_label(game_type)}")
 
     async def switch_turtle_soup_mode(
         self,
@@ -2005,7 +2036,7 @@ class RoomManager:
     def _game_label(game_type: GameType) -> str:
         return {
             "gomoku": "五子棋",
-            "xiangqi": "象棋",
+            "xiangqi": "中国象棋",
             "tictactoe": "井字棋",
             "turtle_soup": "海龟汤",
             "pig_dice": "贪心骰子",

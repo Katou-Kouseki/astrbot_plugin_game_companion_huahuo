@@ -26,7 +26,7 @@ from .gomoku import Difficulty, GomokuGame
 from .models import GameRoom, GameType, TurtleSoupMode, Visitor
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
-from .room_manager import RoomManager
+from .room_manager import SUPPORTED_GAMES, RoomManager
 from .server import GameRoomServer
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
@@ -59,8 +59,177 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.2.2"
+PLUGIN_VERSION = "0.2.3"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
+
+GAME_CATALOG: tuple[dict[str, Any], ...] = (
+    {
+        "game_type": "gomoku",
+        "label": "五子棋",
+        "description": "15×15 棋盘，由 Bot 人格决定三档棋力。",
+        "fields": (),
+    },
+    {
+        "game_type": "xiangqi",
+        "label": "中国象棋",
+        "description": "使用独立 Pikafish 引擎进行对局。",
+        "fields": (
+            {
+                "key": "allow_engine_download",
+                "config_key": "xiangqi.allow_engine_download",
+                "label": "允许管理台下载引擎",
+                "type": "bool",
+                "default": True,
+                "hint": "关闭后管理台不能安装或更新 Pikafish。",
+            },
+            {
+                "key": "auto_download_engine",
+                "config_key": "xiangqi.auto_download_engine",
+                "label": "首次使用时自动下载",
+                "type": "bool",
+                "default": False,
+                "hint": "推荐保持关闭，由管理员先在管理台确认安装。",
+            },
+        ),
+    },
+    {
+        "game_type": "tictactoe",
+        "label": "井字棋",
+        "description": "3×3 棋盘，由 Bot 人格决定三档棋力。",
+        "fields": (),
+    },
+    {
+        "game_type": "turtle_soup",
+        "label": "海龟汤",
+        "description": "支持 Bot 出题、玩家出题和多人轮流参与。",
+        "fields": (
+            {
+                "key": "max_hints",
+                "config_key": "turtle_soup.max_hints",
+                "label": "每题最多提示",
+                "type": "int",
+                "default": 3,
+                "minimum": 0,
+                "maximum": 8,
+                "unit": "次",
+                "hint": "0 表示允许依次查看全部预生成提示。",
+            },
+            {
+                "key": "content_level",
+                "config_key": "turtle_soup.content_level",
+                "label": "题目内容等级",
+                "type": "select",
+                "default": "normal",
+                "options": (
+                    {"value": "all_ages", "label": "全年龄"},
+                    {"value": "normal", "label": "普通"},
+                    {"value": "unrestricted", "label": "不限制"},
+                ),
+                "hint": "仍会遵守模型和平台安全限制。",
+            },
+            {
+                "key": "max_players",
+                "config_key": "turtle_soup.max_players",
+                "label": "最大玩家席",
+                "type": "int",
+                "default": 6,
+                "minimum": 0,
+                "maximum": 100,
+                "unit": "人",
+                "hint": "0 表示不限制人数。",
+            },
+            {
+                "key": "turn_timeout_seconds",
+                "config_key": "multiplayer.turn_timeout_seconds",
+                "label": "单人回合时间",
+                "type": "int",
+                "default": 60,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "0 表示关闭回合倒计时。",
+            },
+            {
+                "key": "swap_request_cooldown_seconds",
+                "config_key": "multiplayer.swap_request_cooldown_seconds",
+                "label": "交换申请冷却",
+                "type": "int",
+                "default": 30,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "0 表示不限制申请频率。",
+            },
+            {
+                "key": "swap_request_expiry_seconds",
+                "config_key": "multiplayer.swap_request_expiry_seconds",
+                "label": "交换申请有效期",
+                "type": "int",
+                "default": 20,
+                "minimum": 1,
+                "maximum": 600,
+                "unit": "秒",
+                "hint": "过期申请会自动清理。",
+            },
+        ),
+    },
+    {
+        "game_type": "pig_dice",
+        "label": "贪心骰子",
+        "description": "继续冒险或及时收手，由 Bot 人格决定风险倾向。",
+        "fields": (
+            {
+                "key": "target_score",
+                "config_key": "pig_dice.target_score",
+                "label": "获胜目标分数",
+                "type": "int",
+                "default": 50,
+                "minimum": 20,
+                "maximum": 200,
+                "unit": "分",
+                "hint": "新一局中先达到目标分数的一方获胜。",
+            },
+        ),
+    },
+    {
+        "game_type": "draw_guess",
+        "label": "你画我猜",
+        "description": "用户作画，Bot 使用视觉模型猜图。",
+        "fields": (
+            {
+                "key": "vision_provider_id",
+                "config_key": "draw_guess.vision_provider_id",
+                "label": "视觉模型 Provider ID",
+                "type": "string",
+                "default": "",
+                "maximum_length": 200,
+                "hint": "留空时使用当前会话模型。",
+            },
+            {
+                "key": "duration_seconds",
+                "config_key": "draw_guess.duration_seconds",
+                "label": "作画倒计时",
+                "type": "int",
+                "default": 120,
+                "minimum": 10,
+                "maximum": 600,
+                "unit": "秒",
+                "hint": "倒计时结束后本轮自动结算。",
+            },
+            {
+                "key": "max_guesses",
+                "config_key": "draw_guess.max_guesses",
+                "label": "Bot 最大猜测次数",
+                "type": "int",
+                "default": 5,
+                "minimum": 1,
+                "maximum": 10,
+                "unit": "次",
+                "hint": "每次点击让 Bot 猜都会消耗一次。",
+            },
+        ),
+    },
+)
 
 
 @dataclass(slots=True)
@@ -156,6 +325,10 @@ class GameCompanionPlugin(Star):
         self.commentary_cooldown = self._cfg_int(
             "game.commentary_cooldown_seconds", 45, minimum=10, maximum=600
         )
+        self.enabled_games: dict[GameType, bool] = {
+            game_type: self._cfg_bool(f"{game_type}.enabled", True)
+            for game_type in SUPPORTED_GAMES
+        }
         self.turtle_soup_max_hints = self._cfg_int(
             "turtle_soup.max_hints", 3, minimum=0, maximum=8
         )
@@ -173,6 +346,9 @@ class GameCompanionPlugin(Star):
         )
         self.draw_guess_duration_seconds = self._cfg_int(
             "draw_guess.duration_seconds", 120, minimum=10, maximum=600
+        )
+        self.pig_dice_target_score = self._cfg_int(
+            "pig_dice.target_score", 50, minimum=20, maximum=200
         )
         self.multiplayer_turn_timeout = self._cfg_non_negative(
             "multiplayer.turn_timeout_seconds", 60
@@ -207,6 +383,8 @@ class GameCompanionPlugin(Star):
             swap_request_expiry=self.swap_request_expiry,
             draw_guess_max_guesses=self.draw_guess_max_guesses,
             draw_guess_duration_seconds=self.draw_guess_duration_seconds,
+            pig_dice_target_score=self.pig_dice_target_score,
+            enabled_games=self.enabled_games,
             xiangqi_engine=self.xiangqi_engine,
             event_callback=self._on_room_event,
         )
@@ -232,6 +410,7 @@ class GameCompanionPlugin(Star):
         self._recent_private_game_results: dict[str, _RecentPrivateGameResult] = {}
         self._companion_invite_api: Any | None = None
         self._next_companion_registration_at = 0.0
+        self._settings_lock = asyncio.Lock()
         self._register_page_api()
 
     async def initialize(self) -> None:
@@ -359,8 +538,18 @@ class GameCompanionPlugin(Star):
         """Return a small fallback status without taking over ordinary chat."""
         rooms = self.manager.for_session(event.unified_msg_origin)
         if not rooms:
+            available = "、".join(
+                self._game_label(game_type)
+                for game_type in SUPPORTED_GAMES
+                if self.manager.game_enabled(game_type)
+            )
             yield event.plain_result(
-                "当前会话没有活动游戏房间。直接告诉我想玩五子棋、象棋、井字棋、海龟汤、贪心骰子或你画我猜即可。"
+                "当前会话没有活动游戏房间。"
+                + (
+                    f"直接告诉我想玩{available}即可。"
+                    if available
+                    else "管理员暂未开放任何游戏。"
+                )
             )
             return
         labels = [
@@ -389,21 +578,43 @@ class GameCompanionPlugin(Star):
             state = "允许创建" if enabled else "已关闭创建"
             return f"{current}/{maximum}（{state}）"
 
+        descriptions = {
+            "gomoku": "15×15 连成五子",
+            "xiangqi": "使用 Pikafish 引擎",
+            "tictactoe": "三连即可获胜",
+            "turtle_soup": "通过是非提问还原汤底",
+            "pig_dice": f"继续掷或收手，先到 {self.manager.pig_dice_target_score} 分获胜",
+            "draw_guess": "用户在网页作画，Bot 通过视觉模型猜词",
+        }
+        enabled = [
+            game_type
+            for game_type in SUPPORTED_GAMES
+            if self.manager.game_enabled(game_type)
+        ]
+        disabled = [
+            game_type
+            for game_type in SUPPORTED_GAMES
+            if not self.manager.game_enabled(game_type)
+        ]
+        game_lines = [
+            f"{index}. {self._game_label(game_type)}：{descriptions[game_type]}"
+            for index, game_type in enumerate(enabled, start=1)
+        ] or ["当前没有已开放的游戏。"]
         lines = [
             "游戏伴侣 · 游戏菜单",
             "",
-            "1. 五子棋：15×15 连成五子",
-            "2. 中国象棋：使用 Pikafish 引擎",
-            "3. 井字棋：三连即可获胜",
-            "4. 海龟汤：通过是非提问还原汤底",
-            "5. 贪心骰子：继续掷或收手，先到 50 分获胜",
-            "6. 你画我猜：用户在网页作画，Bot 通过视觉模型猜词",
+            *game_lines,
+            *(
+                ["", "管理员已关闭：" + "、".join(map(self._game_label, disabled))]
+                if disabled
+                else []
+            ),
             "",
             "房间容量",
             f"群聊：{capacity(group_count, self.manager.max_group_rooms, self.group_rooms_enabled)}",
             f"私聊：{capacity(private_count, self.manager.max_private_rooms, self.private_rooms_enabled)}",
             "",
-            "直接用自然语言告诉 Bot 想玩哪个游戏即可。",
+            "直接用自然语言告诉 Bot 想玩哪个已开放游戏即可。",
         ]
         yield event.plain_result("\n".join(lines))
 
@@ -2528,6 +2739,7 @@ class GameCompanionPlugin(Star):
             self.companion_invites_enabled
             and self.server_enabled
             and self.private_rooms_enabled
+            and any(self.manager.enabled_games.values())
         ):
             return False
         user = context.get("user") if isinstance(context, dict) else {}
@@ -2561,7 +2773,11 @@ class GameCompanionPlugin(Star):
         active_afterglow = self._safe_float(afterglow.get("expires_at")) > time.time()
         last_game = str(afterglow.get("game_label") or "").strip()
         tone = str(afterglow.get("tone") or "").strip()[:160]
-        games = "五子棋、中国象棋、井字棋、海龟汤、贪心骰子或你画我猜"
+        games = "、".join(
+            self._game_label(game_type)
+            for game_type in SUPPORTED_GAMES
+            if self.manager.game_enabled(game_type)
+        )
         details = (
             f"最近和该用户玩的游戏是{last_game}，当前余味是：{tone}。"
             if active_afterglow and last_game and tone
@@ -2735,6 +2951,18 @@ class GameCompanionPlugin(Star):
             ["POST"],
             "Install Pikafish",
         )
+        register_api(
+            f"{PAGE_API_PREFIX}/settings",
+            self.page_game_settings,
+            ["GET"],
+            "Read game settings",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/settings/update",
+            self.page_game_settings_update,
+            ["POST"],
+            "Update game settings",
+        )
 
     async def page_rooms(self) -> dict[str, Any]:
         return {
@@ -2754,6 +2982,7 @@ class GameCompanionPlugin(Star):
                     "group": self.manager.max_group_rooms,
                     "private": self.manager.max_private_rooms,
                 },
+                "enabled_games": dict(self.manager.enabled_games),
             },
         }
 
@@ -2802,6 +3031,217 @@ class GameCompanionPlugin(Star):
         except (ValueError, RuntimeError, PermissionError, OSError) as exc:
             return {"status": "error", "message": str(exc), "data": {}}
         return {"status": "ok", "data": {"xiangqi_engine": status}}
+
+    async def page_game_settings(self) -> dict[str, Any]:
+        return {"status": "ok", "data": self._game_settings_snapshot()}
+
+    async def page_game_settings_update(self) -> dict[str, Any]:
+        payload = await request.json(default={}) or {}
+        try:
+            changes = self._validated_game_settings(payload)
+            async with self._settings_lock:
+                patch = self._game_settings_config_patch(changes)
+                await self._persist_game_settings(patch)
+                self._apply_game_settings_runtime()
+        except (TypeError, ValueError, RuntimeError) as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
+        return {
+            "status": "ok",
+            "message": "游戏配置已保存；新房间和新一局将使用最新设置",
+            "data": self._game_settings_snapshot(),
+        }
+
+    def _game_settings_snapshot(self) -> dict[str, Any]:
+        games: list[dict[str, Any]] = []
+        for definition in GAME_CATALOG:
+            game_type = str(definition["game_type"])
+            fields: list[dict[str, Any]] = []
+            for field in definition["fields"]:
+                item = {
+                    key: value
+                    for key, value in field.items()
+                    if key != "config_key"
+                }
+                item["value"] = self._cfg(
+                    str(field["config_key"]), field.get("default")
+                )
+                fields.append(item)
+            games.append(
+                {
+                    "game_type": game_type,
+                    "label": definition["label"],
+                    "description": definition["description"],
+                    "enabled": self._cfg_bool(f"{game_type}.enabled", True),
+                    "fields": fields,
+                }
+            )
+        return {
+            "version": PLUGIN_VERSION,
+            "games": games,
+            "notice": "设置立即用于新房间和新一局；正在进行的对局保持原参数。",
+        }
+
+    @staticmethod
+    def _setting_field_map() -> dict[str, dict[str, dict[str, Any]]]:
+        return {
+            str(definition["game_type"]): {
+                str(field["key"]): field for field in definition["fields"]
+            }
+            for definition in GAME_CATALOG
+        }
+
+    def _validated_game_settings(self, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("games"), dict):
+            raise TypeError("游戏配置格式无效")
+        submitted_games = payload["games"]
+        field_map = self._setting_field_map()
+        unknown_games = set(submitted_games) - set(field_map)
+        if unknown_games:
+            raise ValueError("包含不支持的游戏配置")
+        changes: dict[str, Any] = {}
+        for game_type, submitted in submitted_games.items():
+            if not isinstance(submitted, dict):
+                raise TypeError(f"{self._game_label(game_type)}配置格式无效")
+            allowed = {"enabled", *field_map[game_type]}
+            if set(submitted) - allowed:
+                raise ValueError(f"{self._game_label(game_type)}包含未知配置项")
+            if "enabled" in submitted:
+                if not isinstance(submitted["enabled"], bool):
+                    raise ValueError(f"{self._game_label(game_type)}开关必须是布尔值")
+                changes[f"{game_type}.enabled"] = submitted["enabled"]
+            for key, value in submitted.items():
+                if key == "enabled":
+                    continue
+                field = field_map[game_type][key]
+                changes[str(field["config_key"])] = self._validated_setting_value(
+                    field, value
+                )
+        if not changes:
+            raise ValueError("没有需要保存的游戏配置")
+        return changes
+
+    @staticmethod
+    def _validated_setting_value(field: dict[str, Any], value: Any) -> Any:
+        field_type = str(field.get("type") or "")
+        label = str(field.get("label") or field.get("key") or "配置")
+        if field_type == "bool":
+            if not isinstance(value, bool):
+                raise ValueError(f"{label}必须是布尔值")
+            return value
+        if field_type == "int":
+            if isinstance(value, bool):
+                raise ValueError(f"{label}必须是整数")
+            try:
+                normalized = int(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"{label}必须是整数") from None
+            if str(value).strip() != str(normalized):
+                raise ValueError(f"{label}必须是整数")
+            minimum = int(field.get("minimum", normalized))
+            maximum = int(field.get("maximum", normalized))
+            if not minimum <= normalized <= maximum:
+                raise ValueError(f"{label}必须在 {minimum}-{maximum} 之间")
+            return normalized
+        normalized = str(value or "").strip()
+        if field_type == "select":
+            allowed = {str(item["value"]) for item in field.get("options", ())}
+            if normalized not in allowed:
+                raise ValueError(f"{label}选项无效")
+            return normalized
+        if field_type == "string":
+            maximum_length = int(field.get("maximum_length", 500))
+            if len(normalized) > maximum_length:
+                raise ValueError(f"{label}不能超过 {maximum_length} 个字符")
+            return normalized
+        raise ValueError(f"{label}类型不受支持")
+
+    def _game_settings_config_patch(
+        self, changes: dict[str, Any]
+    ) -> dict[str, Any]:
+        patch: dict[str, Any] = {}
+        for dotted_key, value in changes.items():
+            if dotted_key in self.config:
+                patch[dotted_key] = value
+                continue
+            section, key = dotted_key.split(".", 1)
+            if section not in patch:
+                current = self.config.get(section, {})
+                patch[section] = dict(current) if isinstance(current, dict) else {}
+            patch[section][key] = value
+        return patch
+
+    async def _persist_game_settings(
+        self, patch: dict[str, Any]
+    ) -> None:
+        save_async = getattr(self.config, "save_config_async", None)
+        if callable(save_async):
+            committed = await save_async(patch)
+            if committed is False:
+                raise RuntimeError("配置同时被其他操作更新，请刷新后重试")
+            return
+        save = getattr(self.config, "save_config", None)
+        if callable(save):
+            await asyncio.to_thread(save, patch)
+            return
+        self.config.update(patch)
+
+    def _apply_game_settings_runtime(self) -> None:
+        self.enabled_games = {
+            game_type: self._cfg_bool(f"{game_type}.enabled", True)
+            for game_type in SUPPORTED_GAMES
+        }
+        self.manager.enabled_games.update(self.enabled_games)
+        self.turtle_soup_max_hints = self._cfg_int(
+            "turtle_soup.max_hints", 3, minimum=0, maximum=8
+        )
+        self.turtle_soup_content_level = normalize_content_level(
+            self._cfg("turtle_soup.content_level", "normal")
+        )
+        self.turtle_soup_max_players = self._cfg_int(
+            "turtle_soup.max_players", 6, minimum=0, maximum=100
+        )
+        self.multiplayer_turn_timeout = self._cfg_int(
+            "multiplayer.turn_timeout_seconds", 60, minimum=0, maximum=3600
+        )
+        self.swap_request_cooldown = self._cfg_int(
+            "multiplayer.swap_request_cooldown_seconds",
+            30,
+            minimum=0,
+            maximum=3600,
+        )
+        self.swap_request_expiry = self._cfg_int(
+            "multiplayer.swap_request_expiry_seconds",
+            20,
+            minimum=1,
+            maximum=600,
+        )
+        self.draw_guess_vision_provider_id = self._cfg_str(
+            "draw_guess.vision_provider_id", ""
+        )
+        self.draw_guess_duration_seconds = self._cfg_int(
+            "draw_guess.duration_seconds", 120, minimum=10, maximum=600
+        )
+        self.draw_guess_max_guesses = self._cfg_int(
+            "draw_guess.max_guesses", 5, minimum=1, maximum=10
+        )
+        self.pig_dice_target_score = self._cfg_int(
+            "pig_dice.target_score", 50, minimum=20, maximum=200
+        )
+        self.manager.turtle_soup_max_hints = self.turtle_soup_max_hints
+        self.manager.turtle_soup_content_level = self.turtle_soup_content_level
+        self.manager.turtle_soup_max_players = self.turtle_soup_max_players
+        self.manager.multiplayer_turn_timeout = self.multiplayer_turn_timeout
+        self.manager.swap_request_cooldown = self.swap_request_cooldown
+        self.manager.swap_request_expiry = self.swap_request_expiry
+        self.manager.draw_guess_duration_seconds = self.draw_guess_duration_seconds
+        self.manager.draw_guess_max_guesses = self.draw_guess_max_guesses
+        self.manager.pig_dice_target_score = self.pig_dice_target_score
+        self.xiangqi_engine.allow_download = self._cfg_bool(
+            "xiangqi.allow_engine_download", True
+        )
+        self.xiangqi_engine.auto_download = self._cfg_bool(
+            "xiangqi.auto_download_engine", False
+        )
 
     async def page_tunnel_start(self) -> dict[str, Any]:
         if self.public_base_url:

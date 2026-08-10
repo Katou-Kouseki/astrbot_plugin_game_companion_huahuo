@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from astrbot_plugin_game_companion.room_manager import RoomManager
 
 
@@ -44,6 +43,86 @@ async def test_zero_quota_means_unlimited() -> None:
         await create_room(manager, creator=str(10000 + index))
 
     assert len(manager.rooms) == 6
+
+
+@pytest.mark.asyncio
+async def test_disabled_games_reject_new_rooms_switches_and_rematches() -> None:
+    manager = RoomManager(enabled_games={"xiangqi": False})
+
+    with pytest.raises(PermissionError, match="暂未开放中国象棋"):
+        await manager.create_room(
+            source="private",
+            session_id="aiocqhttp:private:10001",
+            platform="aiocqhttp",
+            group_id="",
+            creator_qq="10001",
+            creator_name="创建者",
+            admin_room=False,
+            game_type="xiangqi",
+            difficulty="normal",
+        )
+
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    with pytest.raises(PermissionError, match="暂未开放中国象棋"):
+        await manager.switch_game(room, "xiangqi", force=True)
+
+    room.status = "finished"
+    manager.enabled_games["gomoku"] = False
+    with pytest.raises(PermissionError, match="暂未开放五子棋"):
+        await manager.request_rematch(room, visitor.token)
+
+
+@pytest.mark.asyncio
+async def test_disabling_game_does_not_interrupt_an_active_round() -> None:
+    manager = RoomManager()
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+
+    manager.enabled_games["gomoku"] = False
+    await manager.pause(room)
+    await manager.resume(room)
+
+    assert room.status == "active"
+    assert room.game is not None
+
+
+@pytest.mark.asyncio
+async def test_disabling_game_prevents_a_waiting_room_from_starting() -> None:
+    manager = RoomManager()
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+
+    manager.enabled_games["gomoku"] = False
+    with pytest.raises(PermissionError, match="暂未开放五子棋"):
+        await manager.claim_and_start(room, visitor.token, "human_black")
+
+    assert room.player_token == ""
+    assert room.game is None
+    assert room.status == "waiting"
+
+
+@pytest.mark.asyncio
+async def test_pig_dice_uses_configured_target_score_for_new_rounds() -> None:
+    manager = RoomManager(pig_dice_target_score=80)
+    room = await manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="pig_dice",
+        difficulty="normal",
+    )
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "")
+
+    assert room.game is not None
+    assert room.game.target_score == 80
 
 
 @pytest.mark.asyncio
