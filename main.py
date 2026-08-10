@@ -59,7 +59,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.2.3"
+PLUGIN_VERSION = "0.2.4"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -455,6 +455,7 @@ class GameCompanionPlugin(Star):
             game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、turtle_soup、pig_dice 或 draw_guess。
             difficulty(string): 你决定使用的难度，只能是 easy、normal、hard；贪心骰子中分别表示稳健、均衡和大胆。
             turtle_soup_mode(string): 海龟汤玩法；bot_host 表示 Bot 出题玩家猜，player_host 表示玩家给线索 Bot 猜。非海龟汤时忽略。
+            admin_room(boolean): 仅当群聊中的游戏管理员明确要求创建管理员房间时传 true。普通群聊房间必须传 false；非游戏管理员不能创建管理员房间。
             confirm_abandon(boolean): 切换游戏且当前局未结束时，用户是否已明确同意放弃本局。
         """
         try:
@@ -469,6 +470,10 @@ class GameCompanionPlugin(Star):
                 difficulty,
                 game_type,
                 turtle_soup_mode=turtle_soup_mode,
+                requested_admin_room=self._admin_room_requested(
+                    str(getattr(event, "message_str", "") or ""),
+                    self._value_bool(kwargs.get("admin_room")),
+                ),
                 confirm_abandon=self._value_bool(kwargs.get("confirm_abandon")),
             )
             url = self._room_url(room)
@@ -975,22 +980,34 @@ class GameCompanionPlugin(Star):
         difficulty: Difficulty,
         game_type: GameType,
         turtle_soup_mode: TurtleSoupMode = "bot_host",
+        *,
+        requested_admin_room: bool = False,
     ) -> GameRoom:
         if not self.server_enabled:
             raise RuntimeError("游戏房间服务已在插件配置中关闭")
         group_id = str(event.get_group_id() or "").strip()
         source = "group" if group_id else "private"
         creator_qq = str(event.get_sender_id() or "").strip()
+        is_game_admin = creator_qq in self.game_admin_ids
+        admin_room = False
         if source == "group":
             if not self.group_rooms_enabled:
                 raise PermissionError("群聊创建游戏房间已关闭")
             if (
                 not self.allow_non_admin_group_creation
-                and creator_qq not in self.game_admin_ids
+                and not is_game_admin
             ):
                 raise PermissionError("当前只允许插件配置中的游戏管理员创建群聊房间")
+            if not self.allow_non_admin_group_creation:
+                admin_room = True
+            elif requested_admin_room:
+                if not is_game_admin:
+                    raise PermissionError("只有游戏管理员可以创建管理员房间")
+                admin_room = True
         elif not self.private_rooms_enabled:
             raise PermissionError("私聊创建游戏房间已关闭")
+        elif requested_admin_room:
+            raise ValueError("管理员房间仅支持群聊创建")
         await self._ensure_public_access()
         room = await self.manager.create_room(
             source=source,
@@ -999,7 +1016,7 @@ class GameCompanionPlugin(Star):
             group_id=group_id,
             creator_qq=creator_qq,
             creator_name=str(event.get_sender_name() or "").strip(),
-            admin_room=source == "group" and creator_qq in self.game_admin_ids,
+            admin_room=admin_room,
             game_type=game_type,
             difficulty=difficulty,
             turtle_soup_mode=turtle_soup_mode,
@@ -1013,6 +1030,7 @@ class GameCompanionPlugin(Star):
         game_type: GameType,
         *,
         turtle_soup_mode: TurtleSoupMode = "bot_host",
+        requested_admin_room: bool = False,
         confirm_abandon: bool,
     ) -> tuple[GameRoom, bool, bool]:
         rooms = self.manager.for_session(event.unified_msg_origin)
@@ -1022,11 +1040,21 @@ class GameCompanionPlugin(Star):
             if game_type == "xiangqi":
                 await self.xiangqi_engine.ensure_ready()
             room = await self._create_room_from_event(
-                event, difficulty, game_type, turtle_soup_mode
+                event,
+                difficulty,
+                game_type,
+                turtle_soup_mode,
+                requested_admin_room=requested_admin_room,
             )
             return room, False, False
         room = rooms[0]
-        _ = difficulty, game_type, turtle_soup_mode, confirm_abandon
+        _ = (
+            difficulty,
+            game_type,
+            turtle_soup_mode,
+            requested_admin_room,
+            confirm_abandon,
+        )
         await self._ensure_public_access()
         return room, True, False
 
@@ -3406,6 +3434,34 @@ class GameCompanionPlugin(Star):
         if isinstance(value, str):
             return value.strip().lower() in {"true", "1", "yes", "on", "是", "确认"}
         return value is True
+
+    @staticmethod
+    def _admin_room_requested(message: str, tool_value: bool = False) -> bool:
+        """Keep explicit room mode reliable even if the model omits the tool flag."""
+        if tool_value:
+            return True
+        normalized = re.sub(r"[\s，。！!？?、]", "", str(message or "").lower())
+        if any(
+            phrase in normalized
+            for phrase in (
+                "普通房间",
+                "普通模式",
+                "不要管理员房间",
+                "不是管理员房间",
+                "非管理员房间",
+            )
+        ):
+            return False
+        return any(
+            phrase in normalized
+            for phrase in (
+                "管理员房间",
+                "管理员模式",
+                "管理房",
+                "审核房间",
+                "需要我审核玩家",
+            )
+        )
 
     @staticmethod
     def _validated_public_url(value: str) -> str:

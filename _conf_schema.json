@@ -90,7 +90,8 @@
       "allow_non_admin_group_creation": {
         "description": "允许非游戏管理员在群聊创建房间",
         "type": "bool",
-        "default": false
+        "default": false,
+        "hint": "关闭时仅管理员可创建，且固定为管理员房间；开启后所有人默认创建普通房间，管理员明确提出时才创建管理员房间。"
       },
       "game_admin_qq_ids": {
         "description": "游戏管理员 QQ 号",
