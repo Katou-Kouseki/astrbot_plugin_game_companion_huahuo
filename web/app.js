@@ -30,6 +30,8 @@
   let drawStrokes = [];
   let activeDrawStroke = null;
   let drawSyncBusy = false;
+  let drawSyncPromise = null;
+  let drawDirty = false;
   let drawRevision = -1;
 
   function icons() {
@@ -132,6 +134,7 @@
       selectedPiece = null;
       pendingMove = null;
       drawStrokes = [];
+      drawDirty = false;
       drawRevision = -1;
       syncGameUi();
     }
@@ -652,7 +655,12 @@
   function syncDrawState() {
     if (room?.game_type !== "draw_guess") return;
     const serverGame = room.game || {};
-    if (!activeDrawStroke && !drawSyncBusy && Number(serverGame.revision ?? -1) >= drawRevision) {
+    if (
+      !activeDrawStroke
+      && !drawSyncBusy
+      && !drawDirty
+      && Number(serverGame.revision ?? -1) >= drawRevision
+    ) {
       drawStrokes = Array.isArray(serverGame.strokes) ? serverGame.strokes : [];
       drawRevision = Number(serverGame.revision ?? 0);
     }
@@ -751,6 +759,7 @@
       points: [drawPoint(event)],
     };
     drawStrokes.push(activeDrawStroke);
+    drawDirty = true;
     renderDrawGuess();
   }
 
@@ -765,40 +774,59 @@
     if (!activeDrawStroke) return;
     event.preventDefault();
     activeDrawStroke = null;
+    drawDirty = true;
     await syncDrawing();
   }
 
-  async function syncDrawing() {
-    if (!room?.is_player || drawSyncBusy) return false;
+  function syncDrawing() {
+    if (!room?.is_player) return Promise.resolve(false);
+    if (drawSyncPromise) return drawSyncPromise;
+    if (!drawDirty) return Promise.resolve(true);
     drawSyncBusy = true;
     renderDrawGuess();
-    try {
-      const data = await request("POST", "draw/strokes", { visitor_token: visitorToken, strokes: drawStrokes });
-      setRoom(data.room);
-      drawRevision = Number(room.game?.revision ?? drawRevision);
-      return true;
-    } catch (error) {
-      showToast(error?.message || "画布同步失败");
-      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
-      return false;
-    } finally {
-      drawSyncBusy = false;
-      render();
-    }
+    drawSyncPromise = (async () => {
+      try {
+        while (drawDirty) {
+          drawDirty = false;
+          const strokes = drawStrokes.map((stroke) => ({
+            color: stroke.color,
+            width: stroke.width,
+            points: stroke.points.map((point) => [...point]),
+          }));
+          const data = await request("POST", "draw/strokes", { visitor_token: visitorToken, strokes });
+          setRoom(data.room);
+          drawRevision = Number(room.game?.revision ?? drawRevision);
+        }
+        return true;
+      } catch (error) {
+        drawDirty = true;
+        showToast(error?.message || "画布同步失败");
+        return false;
+      } finally {
+        drawSyncBusy = false;
+        drawSyncPromise = null;
+        render();
+      }
+    })();
+    return drawSyncPromise;
   }
 
   async function changeDrawing(nextStrokes) {
     if (busy || !room?.is_player || room.status !== "active" || room.game?.processing || room.game?.finished) return;
     drawStrokes = nextStrokes;
+    drawDirty = true;
     await syncDrawing();
   }
 
   async function guessDrawing() {
-    if (busy || drawSyncBusy || !room?.is_player || room.status !== "active" || !drawStrokes.length) return;
+    if (busy || !room?.is_player || room.status !== "active" || !drawStrokes.length) return;
     busy = true;
     renderDrawGuess();
     try {
-      if (activeDrawStroke) activeDrawStroke = null;
+      if (activeDrawStroke) {
+        activeDrawStroke = null;
+        drawDirty = true;
+      }
       if (!(await syncDrawing())) return;
       const format = drawCanvas.toDataURL("image/webp", 0.78);
       const data = await request("POST", "draw/guess", { visitor_token: visitorToken, image_data_url: format });

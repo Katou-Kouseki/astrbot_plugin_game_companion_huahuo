@@ -54,7 +54,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.2.1"
+    assert metadata["version"] == "0.2.2"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -199,6 +199,18 @@ def test_draw_guess_webui_and_visual_endpoint_are_registered() -> None:
     assert 'request("POST", "draw/guess"' in script
     assert '"/api/room/{access_token}/draw/guess"' in server
     assert '["draw_guess", "你画我猜"]' in manager
+
+
+def test_draw_guess_queues_local_changes_without_accepting_stale_polling_state() -> None:
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "let drawSyncPromise = null;" in script
+    assert "let drawDirty = false;" in script
+    assert "&& !drawDirty" in script
+    assert "if (drawSyncPromise) return drawSyncPromise;" in script
+    assert "while (drawDirty)" in script
+    assert "drawDirty = true;" in script
+    assert "if (!(await syncDrawing())) return;" in script
 
 
 def test_fast_game_replies_do_not_pollute_normal_conversation_history() -> None:

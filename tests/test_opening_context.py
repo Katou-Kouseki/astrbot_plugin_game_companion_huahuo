@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
+from astrbot_plugin_game_companion.draw_guess import DrawGuessGame, DrawWord
 from astrbot_plugin_game_companion.gomoku import WHITE, GomokuGame
 from astrbot_plugin_game_companion.main import GameCompanionPlugin
 from astrbot_plugin_game_companion.models import GameRoom
@@ -56,3 +60,41 @@ def test_opening_commentary_uses_authoritative_side_and_first_turn(
     for fact in expected:
         assert fact in prompt
     assert "不得说反双方身份、颜色、标记或先后手" in prompt
+
+
+def test_draw_guess_prompts_keep_drawer_and_guesser_roles_explicit() -> None:
+    game = DrawGuessGame(target=DrawWord("苹果"))
+    room = make_room("draw_guess", game)
+
+    opening = GameCompanionPlugin._opening_commentary_prompt(room)
+    unsolved = GameCompanionPlugin._round_result_text(
+        room, {"result": "cooperative_unsolved"}, reveal_answer=True
+    )
+    game.record_guess("苹果", correct=True)
+    solved = GameCompanionPlugin._round_result_text(
+        room, {"result": "cooperative_success"}, reveal_answer=True
+    )
+
+    assert "用户始终作画，Bot 始终猜图，Bot 不参与绘画" in opening
+    assert unsolved == "用户负责作画，Bot 本轮未能猜中，答案是“苹果”"
+    assert solved == "用户负责作画，Bot 在第 1 次猜中了“苹果”"
+
+
+@pytest.mark.asyncio
+async def test_draw_guess_persona_prompt_forbids_bot_from_claiming_the_drawing() -> None:
+    room = make_room("draw_guess", DrawGuessGame(target=DrawWord("苹果")))
+    provider = SimpleNamespace(
+        text_chat=AsyncMock(return_value=SimpleNamespace(completion_text="下次我会猜中。"))
+    )
+    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin.context = SimpleNamespace(get_using_provider=lambda _session_id: provider)
+    plugin._persona_prompt = AsyncMock(return_value="")
+    plugin._memory_context = AsyncMock(return_value="")
+    plugin._companion_scene_prompt = lambda _room: ""
+
+    await plugin._generate_persona_text(room, "本轮结束")
+
+    system_prompt = provider.text_chat.await_args.kwargs["system_prompt"]
+    assert "用户始终负责作画" in system_prompt
+    assert "你（Bot）始终负责看图猜答案" in system_prompt
+    assert "不得声称自己画得好或不好" in system_prompt

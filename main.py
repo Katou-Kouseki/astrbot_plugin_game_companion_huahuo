@@ -59,7 +59,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.2.1"
+PLUGIN_VERSION = "0.2.2"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
@@ -1039,7 +1039,7 @@ class GameCompanionPlugin(Star):
             facts = f"本局随机先手结果已经确定，由{first}先掷，目标是先得到 {game.target_score} 分。"
         elif isinstance(game, DrawGuessGame):
             facts = (
-                f"这是合作玩法：玩家作画，Bot 猜图；限时 {game.duration_seconds} 秒，"
+                f"这是合作玩法：用户始终作画，Bot 始终猜图，Bot 不参与绘画；限时 {game.duration_seconds} 秒，"
                 f"Bot 最多猜 {game.max_guesses} 次。"
             )
         elif isinstance(game, TurtleSoupGame):
@@ -1068,14 +1068,14 @@ class GameCompanionPlugin(Star):
         if isinstance(game, DrawGuessGame):
             if game.solved:
                 return (
-                    f"Bot 在第 {len(game.guesses)} 次猜中了“{game.answer}”"
+                    f"用户负责作画，Bot 在第 {len(game.guesses)} 次猜中了“{game.answer}”"
                     if reveal_answer
-                    else f"Bot 在第 {len(game.guesses)} 次成功猜中"
+                    else f"用户负责作画，Bot 在第 {len(game.guesses)} 次成功猜中"
                 )
             return (
-                f"这一轮没能猜中，答案是“{game.answer}”"
+                f"用户负责作画，Bot 本轮未能猜中，答案是“{game.answer}”"
                 if reveal_answer
-                else "这一轮 Bot 未能猜中"
+                else "用户负责作画，Bot 本轮未能猜中"
             )
         return {
             "human_win": "玩家获胜",
@@ -1932,10 +1932,17 @@ class GameCompanionPlugin(Star):
         persona = await self._persona_prompt(room)
         memory = await self._memory_context(room, prompt)
         companion_scene = self._companion_scene_prompt(room)
+        role_constraint = ""
+        if isinstance(room.game, DrawGuessGame):
+            role_constraint = (
+                "你画我猜中的角色固定为：用户始终负责作画，你（Bot）始终负责看图猜答案。"
+                "你没有参与绘画，任何时候都不得声称自己画得好或不好。"
+            )
         system_prompt = (
             f"{persona}\n\n{companion_scene}\n\n{memory}\n\n"
             f"你正在与用户通过游戏伴侣 WebUI 玩{self._game_label(room.game_type)}。保持原有人格和关系语气，"
-            "只回应当前游戏事件，不输出规则说明或格式标签。海龟汤中绝不能猜测或泄露尚未公开的汤底。"
+            "只回应当前游戏事件，不输出规则说明或格式标签。"
+            f"{role_constraint}海龟汤中绝不能猜测或泄露尚未公开的汤底。"
         ).strip()
         try:
             response = await asyncio.wait_for(
