@@ -102,6 +102,34 @@
         </footer>
       </section>
 
+      <section id="blackjackStage" class="blackjack-stage" hidden aria-label="二十一点">
+        <header class="blackjack-header">
+          <div>
+            <span class="label">二十一点</span>
+            <h2>和 Bot 庄家比点数</h2>
+          </div>
+          <span class="difficulty">Bot 是庄家 · <strong id="blackjackDifficulty">普通</strong></span>
+        </header>
+        <div class="blackjack-dealer">
+          <div class="dealer-readout">
+            <span class="label">庄家（Bot）</span>
+            <strong id="blackjackDealerTotal">?</strong>
+          </div>
+          <div id="blackjackDealerCards" class="playing-cards" aria-label="庄家手牌"></div>
+        </div>
+        <div id="blackjackHands" class="blackjack-hands" aria-label="闲家手牌"></div>
+        <p id="blackjackTurn" class="blackjack-turn" aria-live="polite"></p>
+        <div id="blackjackHistory" class="blackjack-history" aria-live="polite"></div>
+        <footer class="blackjack-actions">
+          <button id="blackjackHitAction" class="primary-action" type="button">
+            <i data-lucide="plus"></i><span>要牌</span>
+          </button>
+          <button id="blackjackStandAction" class="secondary-action" type="button">
+            <i data-lucide="hand"></i><span>停牌</span>
+          </button>
+        </footer>
+      </section>
+
       <section id="drawStage" class="draw-stage" hidden aria-label="你画我猜">
         <header class="draw-header">
           <div>

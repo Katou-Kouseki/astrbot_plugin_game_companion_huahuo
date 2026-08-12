@@ -20,6 +20,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.api.web import request
 
+from .blackjack import BlackjackGame
 from .draw_guess import DrawGuessGame
 from .gomoku import BLACK as GOMOKU_BLACK
 from .gomoku import Difficulty, GomokuGame
@@ -59,7 +60,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.2.4"
+PLUGIN_VERSION = "0.2.5"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -229,6 +230,24 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
         ),
     },
+    {
+        "game_type": "blackjack",
+        "label": "二十一点",
+        "description": "用户当闲家、Bot 当庄家比点数；支持 1-6 位玩家各自对庄。",
+        "fields": (
+            {
+                "key": "max_players",
+                "config_key": "blackjack.max_players",
+                "label": "最大玩家席",
+                "type": "int",
+                "default": 1,
+                "minimum": 1,
+                "maximum": 6,
+                "unit": "人",
+                "hint": "默认 1 人，即用户单独和 Bot 庄家对局。",
+            },
+        ),
+    },
 )
 
 
@@ -350,6 +369,9 @@ class GameCompanionPlugin(Star):
         self.pig_dice_target_score = self._cfg_int(
             "pig_dice.target_score", 50, minimum=20, maximum=200
         )
+        self.blackjack_max_players = self._cfg_int(
+            "blackjack.max_players", 1, minimum=1, maximum=6
+        )
         self.multiplayer_turn_timeout = self._cfg_non_negative(
             "multiplayer.turn_timeout_seconds", 60
         )
@@ -384,6 +406,7 @@ class GameCompanionPlugin(Star):
             draw_guess_max_guesses=self.draw_guess_max_guesses,
             draw_guess_duration_seconds=self.draw_guess_duration_seconds,
             pig_dice_target_score=self.pig_dice_target_score,
+            blackjack_max_players=self.blackjack_max_players,
             enabled_games=self.enabled_games,
             xiangqi_engine=self.xiangqi_engine,
             event_callback=self._on_room_event,
@@ -446,14 +469,15 @@ class GameCompanionPlugin(Star):
 
         难度必须由你结合当前人格、关系和用户请求自行决定，不能把难度选择交给网页用户。
         支持 gomoku（五子棋）、xiangqi（中国象棋）、tictactoe（井字棋）、
-        turtle_soup（海龟汤）、pig_dice（贪心骰子）和 draw_guess（你画我猜）。
+        turtle_soup（海龟汤）、pig_dice（贪心骰子）、draw_guess（你画我猜）
+        和 blackjack（二十一点，Bot 当庄家）。
         不要因为普通聊天中偶然提到游戏名称就调用本工具。
         当前 QQ 会话已有房间时只返回原房间入口；切换游戏、再来一局和其他局内操作
         全部由用户进入 WebUI 后完成，不能在 QQ 中代替用户执行。
 
         Args:
             game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、turtle_soup、pig_dice 或 draw_guess。
-            difficulty(string): 你决定使用的难度，只能是 easy、normal、hard；贪心骰子中分别表示稳健、均衡和大胆。
+            difficulty(string): 你决定使用的难度，只能是 easy、normal、hard；贪心骰子中分别表示稳健、均衡和大胆，二十一点中影响庄家软 17 规则。
             turtle_soup_mode(string): 海龟汤玩法；bot_host 表示 Bot 出题玩家猜，player_host 表示玩家给线索 Bot 猜。非海龟汤时忽略。
             admin_room(boolean): 仅当群聊中的游戏管理员明确要求创建管理员房间时传 true。普通群聊房间必须传 false；非游戏管理员不能创建管理员房间。
             confirm_abandon(boolean): 切换游戏且当前局未结束时，用户是否已明确同意放弃本局。
@@ -590,6 +614,7 @@ class GameCompanionPlugin(Star):
             "turtle_soup": "通过是非提问还原汤底",
             "pig_dice": f"继续掷或收手，先到 {self.manager.pig_dice_target_score} 分获胜",
             "draw_guess": "用户在网页作画，Bot 通过视觉模型猜词",
+            "blackjack": "玩家对 Bot 庄家比点数，可 1-6 人各自对庄",
         }
         enabled = [
             game_type
@@ -856,6 +881,27 @@ class GameCompanionPlugin(Star):
             lines.append(
                 f"实时进度：{state}，Bot 已猜 {len(game.guesses)}/{game.max_guesses} 次，"
                 f"最近猜测：{recent}。这是合作玩法，不按双方对抗优劣描述。"
+            )
+            return lines
+
+        if isinstance(game, BlackjackGame):
+            upcard = game.dealer_upcard
+            state_text = (
+                "本局已经结束"
+                if game.finished
+                else "庄家正在补牌"
+                if game.phase == "dealer_turn"
+                else "玩家轮流要牌或停牌"
+            )
+            hands = "、".join(
+                f"{number}号{hand.value}点"
+                + ("（21点）" if hand.blackjack else "")
+                for number, hand in sorted(game.hands.items())
+            ) or "暂无"
+            lines.append(
+                f"实时局面：Bot 是庄家，明牌{upcard.rank + upcard.suit if upcard else '未发'}，"
+                f"暗牌未公开；{state_text}。各家点数：{hands}。"
+                "庄家只按固定规则补牌，不能主观作弊。"
             )
             return lines
 
@@ -1281,6 +1327,11 @@ class GameCompanionPlugin(Star):
                 f"这是合作玩法：用户始终作画，Bot 始终猜图，Bot 不参与绘画；限时 {game.duration_seconds} 秒，"
                 f"Bot 最多猜 {game.max_guesses} 次。"
             )
+        elif isinstance(game, BlackjackGame):
+            facts = (
+                f"本局 Bot 是庄家，{len(game.hands)} 位闲家各持一手牌；"
+                "闲家先决定要牌或停牌，全部完成后庄家才翻开暗牌并按规则补牌。"
+            )
         elif isinstance(game, TurtleSoupGame):
             facts = (
                 "新题已经准备完成，由 Bot 出题、玩家提问。"
@@ -1320,6 +1371,7 @@ class GameCompanionPlugin(Star):
             "human_win": "玩家获胜",
             "bot_win": "Bot 获胜",
             "draw": "平局",
+            "mixed": "本局多名玩家各有胜负",
             "cooperative_success": "合作成功",
             "cooperative_unsolved": "合作未完成",
         }.get(str(payload.get("result")), "对局结束")
@@ -1342,6 +1394,8 @@ class GameCompanionPlugin(Star):
             human = "X" if game.human_mark == TICTACTOE_X else "O"
             bot = "X" if game.bot_mark == TICTACTOE_X else "O"
             side = f"本局玩家执 {human}、Bot 执 {bot}；"
+        elif isinstance(game, BlackjackGame):
+            side = f"本局 Bot 担任庄家、{len(game.hands)} 位闲家各自对庄；"
         return (
             f"最近一局结果：{cls._game_label(room.game_type)}，"
             f"{cls._round_result_text(room, payload, reveal_answer=False)}；{side}"
@@ -1439,10 +1493,12 @@ class GameCompanionPlugin(Star):
                     await self.manager.resume(room)
                     reply = "继续吧，当前进度没有变化。"
                 elif action == "resign":
-                    await self.manager.resign(room)
+                    await self.manager.resign(room, visitor_token=visitor.token)
                     reply = (
                         "好，这一题就先揭晓到这里。"
                         if room.game_type == "turtle_soup"
+                        else "收到，这一手记为输。"
+                        if room.game_type == "blackjack"
                         else "收到，本局按你认输结束。"
                     )
                 elif action == "soup_hint":
@@ -1606,6 +1662,7 @@ class GameCompanionPlugin(Star):
             ("gomoku", ("五子棋",)),
             ("pig_dice", ("贪心骰子", "小猪骰子", "骰子")),
             ("draw_guess", ("你画我猜", "画画猜词", "画图猜词")),
+            ("blackjack", ("二十一点", "21点", "黑杰克")),
         )
         switch_words = (
             "切换",
@@ -1868,7 +1925,8 @@ class GameCompanionPlugin(Star):
             "玩家在网页申请再来一局。请结合当前人格决定是否接受，只输出 JSON："
             '{"accept":true或false,"difficulty":"easy/normal/hard","reply":"一句自然回复"}。'
             "如果接受，可以根据人格和此前胜负重新选择本局棋力；贪心骰子中 difficulty "
-            "分别代表稳健、均衡和大胆的风险倾向。",
+            "分别代表稳健、均衡和大胆的风险倾向；二十一点中 easy/normal 庄家软 17 停牌，"
+            "hard 庄家软 17 继续补牌。",
         )
         accept = True
         reply = "那就再来一局。"
@@ -1894,13 +1952,8 @@ class GameCompanionPlugin(Star):
             return
         if visitor is not None:
             room.record_chat_memory(visitor, "bot", reply)
-        if (
-            accept
-            and room.game_type == "turtle_soup"
-            and room.status == "setup"
-            and room.player_token
-        ):
-            await self.manager.start_game(room, room.player_token, "")
+        if accept and room.status == "rematch_pending" and room.player_token:
+            await self.manager.restart_finished_game(room, difficulty=difficulty)
 
     async def _prepare_turtle_soup(self, room: GameRoom, game: TurtleSoupGame) -> None:
         if game.mode != "bot_host":
@@ -3255,6 +3308,9 @@ class GameCompanionPlugin(Star):
         self.pig_dice_target_score = self._cfg_int(
             "pig_dice.target_score", 50, minimum=20, maximum=200
         )
+        self.blackjack_max_players = self._cfg_int(
+            "blackjack.max_players", 1, minimum=1, maximum=6
+        )
         self.manager.turtle_soup_max_hints = self.turtle_soup_max_hints
         self.manager.turtle_soup_content_level = self.turtle_soup_content_level
         self.manager.turtle_soup_max_players = self.turtle_soup_max_players
@@ -3264,6 +3320,7 @@ class GameCompanionPlugin(Star):
         self.manager.draw_guess_duration_seconds = self.draw_guess_duration_seconds
         self.manager.draw_guess_max_guesses = self.draw_guess_max_guesses
         self.manager.pig_dice_target_score = self.pig_dice_target_score
+        self.manager.blackjack_max_players = self.blackjack_max_players
         self.xiangqi_engine.allow_download = self._cfg_bool(
             "xiangqi.allow_engine_download", True
         )
@@ -3413,9 +3470,15 @@ class GameCompanionPlugin(Star):
             "你画我猜": "draw_guess",
             "画画猜词": "draw_guess",
             "画图猜词": "draw_guess",
+            "blackjack": "blackjack",
+            "black-jack": "blackjack",
+            "21点": "blackjack",
+            "21點": "blackjack",
+            "二十一点": "blackjack",
+            "黑杰克": "blackjack",
         }
         if normalized not in aliases:
-            raise ValueError("目前只支持五子棋、中国象棋、井字棋、海龟汤、贪心骰子和你画我猜")
+            raise ValueError("目前只支持五子棋、中国象棋、井字棋、海龟汤、贪心骰子、你画我猜和二十一点")
         return aliases[normalized]  # type: ignore[return-value]
 
     @staticmethod
@@ -3427,6 +3490,7 @@ class GameCompanionPlugin(Star):
             "turtle_soup": "海龟汤",
             "pig_dice": "贪心骰子",
             "draw_guess": "你画我猜",
+            "blackjack": "二十一点",
         }[game_type]
 
     @staticmethod

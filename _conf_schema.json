@@ -299,6 +299,24 @@
       }
     }
   },
+  "blackjack": {
+    "description": "二十一点",
+    "type": "object",
+    "hint": "Bot 担任庄家。默认只允许一名用户单独对局，开放多人后每位玩家各持一手牌依次操作。",
+    "items": {
+      "enabled": {
+        "description": "启用二十一点",
+        "type": "bool",
+        "default": true
+      },
+      "max_players": {
+        "description": "最大玩家席",
+        "type": "int",
+        "default": 1,
+        "hint": "范围 1-6；1 表示用户只能单独和 Bot 对局，大于 1 时允许多人各自对庄。"
+      }
+    }
+  },
   "memory": {
     "description": "陪伴记忆",
     "type": "object",

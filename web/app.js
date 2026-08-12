@@ -9,6 +9,7 @@
   const boardStage = document.querySelector(".board-stage");
   const soupStage = document.getElementById("soupStage");
   const diceStage = document.getElementById("diceStage");
+  const blackjackStage = document.getElementById("blackjackStage");
   const drawStage = document.getElementById("drawStage");
   const drawCanvas = document.getElementById("drawCanvas");
   const drawContext = drawCanvas.getContext("2d");
@@ -106,7 +107,12 @@
     try {
       await loadState();
       setConnection("online", "已连接");
-      const interval = room?.game_type === "pig_dice" && room.game?.turn === "bot" ? 300 : 1000;
+      const fastPolling = (
+        room?.game_type === "pig_dice" && room.game?.turn === "bot"
+      ) || (
+        room?.game_type === "blackjack" && room.game?.phase === "dealer_turn"
+      );
+      const interval = fastPolling ? 300 : 1000;
       pollTimer = window.setTimeout(poll, interval);
     } catch (error) {
       setConnection("error", "连接中断");
@@ -206,6 +212,7 @@
       turtle_soup: "海龟汤",
       pig_dice: "贪心骰子",
       draw_guess: "你画我猜",
+      blackjack: "二十一点",
     }[room?.game_type] || "棋类游戏";
   }
 
@@ -216,15 +223,17 @@
     const turtleSoup = room.game_type === "turtle_soup";
     const pigDice = room.game_type === "pig_dice";
     const drawGuess = room.game_type === "draw_guess";
+    const blackjack = room.game_type === "blackjack";
     document.title = `游戏伴侣 · ${gameLabel()}`;
     document.getElementById("gameTitle").textContent = gameLabel();
     document.getElementById("brandIcon").setAttribute(
       "data-lucide",
-      turtleSoup ? "shell" : (pigDice ? "dice-5" : (drawGuess ? "paintbrush" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")))),
+      turtleSoup ? "shell" : (pigDice ? "dice-5" : (blackjack ? "spade" : (drawGuess ? "paintbrush" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3"))))),
     );
-    boardStage.hidden = turtleSoup || pigDice || drawGuess;
+    boardStage.hidden = turtleSoup || pigDice || blackjack || drawGuess;
     soupStage.hidden = !turtleSoup;
     diceStage.hidden = !pigDice;
+    blackjackStage.hidden = !blackjack;
     drawStage.hidden = !drawGuess;
     boardStage.classList.toggle("xiangqi", xiangqi);
     boardStage.classList.toggle("tictactoe", tictactoe);
@@ -236,6 +245,8 @@
         ? "海龟汤问答区"
         : pigDice
         ? "贪心骰子操作区"
+        : blackjack
+        ? "二十一点牌桌"
         : xiangqi
         ? "九乘十中国象棋棋盘"
         : drawGuess
@@ -300,6 +311,7 @@
     renderMessages();
     renderTurtleSoup();
     renderPigDice();
+    renderBlackjack();
     renderDrawGuess();
     drawBoard();
     renderTurn();
@@ -321,7 +333,7 @@
     const sideChoice = document.getElementById("sideChoice");
     badge.textContent = room.is_player ? "玩家席" : "观众席";
     badge.className = `seat-badge ${room.is_player ? "player" : ""}`;
-    sideChoice.hidden = ["turtle_soup", "pig_dice", "draw_guess"].includes(room.game_type) || !(["waiting", "setup", "finished"].includes(room.status));
+    sideChoice.hidden = ["turtle_soup", "pig_dice", "draw_guess", "blackjack"].includes(room.game_type) || !(["waiting", "setup", "finished"].includes(room.status));
     action.hidden = false;
     action.disabled = busy;
     const identityRequired = !room.admin_room && !room.player_confirmed;
@@ -367,6 +379,8 @@
         ? '<i data-lucide="dice-5"></i><span>开始掷骰</span>'
         : room.game_type === "draw_guess"
         ? '<i data-lucide="paintbrush"></i><span>开始作画</span>'
+        : room.game_type === "blackjack"
+        ? '<i data-lucide="spade"></i><span>开始发牌</span>'
         : '<i data-lucide="play"></i><span>开始新一局</span>';
       note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不允许进入玩家席。";
     } else if (room.status === "finished") {
@@ -650,6 +664,160 @@
     );
     document.getElementById("diceRollAction").disabled = !canAct;
     document.getElementById("diceHoldAction").disabled = !canAct || !(game?.turn_total > 0);
+  }
+
+  function blackjackCardNode(card, hidden = false) {
+    const node = document.createElement("span");
+    const red = card && (card.suit === "♥" || card.suit === "♦");
+    node.className = `playing-card ${hidden ? "face-down" : ""} ${red ? "red" : ""}`;
+    if (hidden || !card) {
+      node.textContent = "?";
+      node.setAttribute("aria-label", "庄家暗牌");
+      return node;
+    }
+    node.setAttribute("aria-label", `${card.rank}${card.suit}`);
+    const rank = document.createElement("strong");
+    rank.textContent = card.rank;
+    const suit = document.createElement("span");
+    suit.textContent = card.suit;
+    node.append(rank, suit);
+    return node;
+  }
+
+  function renderBlackjack() {
+    if (room?.game_type !== "blackjack") return;
+    const game = room.game || {};
+    document.getElementById("blackjackDifficulty").textContent = difficultyLabel(room.difficulty);
+
+    const dealerCards = document.getElementById("blackjackDealerCards");
+    dealerCards.replaceChildren();
+    (Array.isArray(game.dealer_cards) ? game.dealer_cards : []).forEach((card) => {
+      dealerCards.appendChild(blackjackCardNode(card));
+    });
+    if (game.dealer_hidden) dealerCards.appendChild(blackjackCardNode(null, true));
+    document.getElementById("blackjackDealerTotal").textContent = game.dealer_hidden
+      ? "?"
+      : String(game.dealer_total ?? "?");
+    if (game.dealer_blackjack) {
+      document.getElementById("blackjackDealerTotal").textContent += " · 21点";
+    }
+
+    const resultLabels = { blackjack_win: "21点获胜", win: "赢", push: "平", loss: "输" };
+    const statusLabels = {
+      playing: "进行中", stand: "停牌", bust: "爆牌", blackjack: "21点", surrendered: "已投降",
+    };
+    const hands = document.getElementById("blackjackHands");
+    hands.replaceChildren();
+    Object.entries(game.hands || {})
+      .sort(([left], [right]) => Number(left) - Number(right))
+      .forEach(([number, hand]) => {
+        const own = number === String(room.visitor_number);
+        const current = room.is_current_player && number === String(room.current_player_number);
+        const item = document.createElement("article");
+        item.className = `blackjack-hand ${hand.status || "playing"} ${own ? "own" : ""} ${current ? "current" : ""}`;
+        const header = document.createElement("header");
+        const title = document.createElement("strong");
+        const label = (room.player_labels || []).find((entry) => entry.includes(`${number}号`)) || `${number}号`;
+        title.textContent = own ? `${label}（你）` : label;
+        const badge = document.createElement("span");
+        badge.className = `hand-status ${hand.status || "playing"}`;
+        badge.textContent = statusLabels[hand.status] || "进行中";
+        header.append(title, badge);
+        const cards = document.createElement("div");
+        cards.className = "playing-cards";
+        (Array.isArray(hand.cards) ? hand.cards : []).forEach((card) => {
+          cards.appendChild(blackjackCardNode(card));
+        });
+        const footer = document.createElement("footer");
+        const total = document.createElement("strong");
+        total.textContent = `${hand.value} 点`;
+        const result = document.createElement("span");
+        result.textContent = resultLabels[hand.result] || "";
+        footer.append(total, result);
+        item.append(header, cards, footer);
+        hands.appendChild(item);
+      });
+
+    const turn = document.getElementById("blackjackTurn");
+    const remaining = room.turn_deadline
+      ? Math.max(0, Math.ceil(room.turn_deadline - Number(room.server_time || 0)))
+      : 0;
+    if (game.finished) {
+      turn.textContent = "本局已经结算";
+    } else if (game.phase === "dealer_turn") {
+      turn.textContent = "庄家已经开牌，正在按规则补牌";
+    } else {
+      const currentLabel = room.current_player_name
+        ? `${room.current_player_name}（${room.current_player_number}号）`
+        : `${room.current_player_number || "?"}号`;
+      turn.textContent = room.is_current_player
+        ? `轮到你：要牌还是停牌${remaining ? ` · 剩余 ${remaining} 秒` : ""}`
+        : `轮到 ${currentLabel}${remaining ? ` · 剩余 ${remaining} 秒` : ""}`;
+    }
+
+    const history = document.getElementById("blackjackHistory");
+    history.replaceChildren();
+    const events = Array.isArray(game.history) ? game.history.slice(-12).reverse() : [];
+    if (!events.length) {
+      const empty = document.createElement("p");
+      empty.className = "blackjack-empty";
+      empty.textContent = "发牌后，要牌、停牌和庄家补牌都会记录在这里。";
+      history.appendChild(empty);
+    } else {
+      events.forEach((entry) => {
+        const item = document.createElement("div");
+        item.className = `blackjack-event ${entry.action || ""}`;
+        let text;
+        if (entry.action === "hit") {
+          text = `${entry.number} 号要牌 ${entry.card?.rank || ""}${entry.card?.suit || ""}，${entry.value} 点`;
+        } else if (entry.action === "stand") {
+          text = `${entry.number} 号停牌，${entry.value} 点`;
+        } else if (entry.action === "surrender") {
+          text = `${entry.number} 号投降`;
+        } else if (entry.action === "dealer_hit") {
+          text = `庄家补牌 ${entry.card?.rank || ""}${entry.card?.suit || ""}，${entry.dealer_total} 点`;
+        } else if (entry.action === "settle") {
+          text = `本局结算，庄家 ${entry.dealer_total} 点`;
+        } else {
+          text = "牌局进展";
+        }
+        item.textContent = text;
+        history.appendChild(item);
+      });
+    }
+
+    const hand = game.hands?.[String(room.visitor_number)];
+    const canAct = Boolean(
+      room.is_current_player
+      && room.is_player
+      && room.status === "active"
+      && game.phase === "player_turns"
+      && !game.finished
+      && hand?.status === "playing"
+      && !busy
+    );
+    document.getElementById("blackjackHitAction").disabled = !canAct;
+    document.getElementById("blackjackStandAction").disabled = !canAct;
+  }
+
+  async function blackjackAction(action) {
+    if (busy) return;
+    busy = true;
+    render();
+    try {
+      const data = await request("POST", "blackjack/action", {
+        visitor_token: visitorToken,
+        action,
+      });
+      setRoom(data.room);
+      render();
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "无法完成操作");
+    } finally {
+      busy = false;
+      render();
+    }
   }
 
   function syncDrawState() {
@@ -1380,6 +1548,8 @@
   });
   document.getElementById("diceRollAction").addEventListener("click", () => diceAction("roll"));
   document.getElementById("diceHoldAction").addEventListener("click", () => diceAction("hold"));
+  document.getElementById("blackjackHitAction").addEventListener("click", () => blackjackAction("hit"));
+  document.getElementById("blackjackStandAction").addEventListener("click", () => blackjackAction("stand"));
   drawCanvas.addEventListener("pointerdown", beginDrawing);
   drawCanvas.addEventListener("pointermove", continueDrawing);
   drawCanvas.addEventListener("pointerup", finishDrawing);

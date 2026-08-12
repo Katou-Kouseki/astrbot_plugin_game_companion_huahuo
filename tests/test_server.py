@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-
-from astrbot_plugin_game_companion.room_manager import RoomManager
+from astrbot_plugin_game_companion.blackjack import BlackjackCard, BlackjackGame
 from astrbot_plugin_game_companion.pig_dice import PigDiceGame
+from astrbot_plugin_game_companion.room_manager import RoomManager
 from astrbot_plugin_game_companion.server import GameRoomServer
 
 
@@ -19,6 +19,14 @@ class EndingXiangqiEngine:
 
     async def legal_moves(self, moves: list[str]) -> list[str]:
         return ["a3a4"] if not moves else []
+
+
+def fixed_blackjack_shoe(ranks: list[str]) -> list[BlackjackCard]:
+    suits = ("♠", "♥", "♦", "♣")
+    return [
+        BlackjackCard(rank=rank, suit=suits[index % 4])
+        for index, rank in enumerate(reversed(ranks))
+    ]
 
 
 def make_server(port: int = 6331, plugin=None) -> GameRoomServer:
@@ -69,6 +77,43 @@ async def test_chat_endpoint_routes_message_to_plugin_without_qq_transport() -> 
     plugin.submit_room_chat.assert_awaited_once_with(
         room, "你好", visitor_token=visitor.token
     )
+
+
+@pytest.mark.asyncio
+async def test_blackjack_action_endpoint_advances_the_round() -> None:
+    server = make_server()
+    room = await server.manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="blackjack",
+        difficulty="normal",
+    )
+    visitor = await server.manager.join(room)
+    await server.manager.claim_and_start(room, visitor.token, "")
+    room.game = BlackjackGame.deal(
+        difficulty="normal",
+        player_numbers=[visitor.number],
+        shoe=fixed_blackjack_shoe(["10", "10", "10", "10"]),
+    )
+    room.status = "active"
+
+    async with TestClient(TestServer(server._build_app())) as client:
+        response = await client.post(
+            f"/api/room/{room.access_token}/blackjack/action",
+            json={"visitor_token": visitor.token, "action": "stand"},
+            headers={"Origin": str(client.make_url("/")).rstrip("/")},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["data"]["room"]["status"] == "finished"
+    assert payload["data"]["room"]["game"]["finished"] is True
+    assert payload["data"]["room"]["game"]["results"][str(visitor.number)] == "push"
 
 
 def test_origin_requires_exact_local_or_public_origin() -> None:

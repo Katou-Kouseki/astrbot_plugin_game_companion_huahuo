@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
+from .blackjack import BlackjackGame
 from .draw_guess import DrawGuessGame
 from .gomoku import Difficulty, GomokuGame
 from .pig_dice import PigDiceGame
@@ -15,7 +16,8 @@ from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
 GameType = Literal[
-    "gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice", "draw_guess"
+    "gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice", "draw_guess",
+    "blackjack",
 ]
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
@@ -184,6 +186,7 @@ class GameRoom:
         | TurtleSoupGame
         | PigDiceGame
         | DrawGuessGame
+        | BlackjackGame
         | None
     ) = None
     scores: dict[GameType, GameScore] = field(
@@ -194,6 +197,7 @@ class GameRoom:
             "turtle_soup": GameScore(),
             "pig_dice": GameScore(),
             "draw_guess": GameScore(),
+            "blackjack": GameScore(),
         }
     )
     turtle_soup_stats: TurtleSoupStats = field(default_factory=TurtleSoupStats)
@@ -495,6 +499,7 @@ class GameRoom:
             "turtle_soup_progress": self._turtle_soup_progress(),
             "pig_dice_progress": self._pig_dice_progress(),
             "draw_guess_progress": self._draw_guess_progress(),
+            "blackjack_progress": self._blackjack_progress(),
             "player_number": player.number if player else None,
             "player_numbers": [
                 self.visitors[token].number
@@ -590,4 +595,14 @@ class GameRoom:
             "solved": self.game.solved,
             "timed_out": self.game.timed_out,
             "remaining_seconds": self.game.remaining_seconds,
+        }
+
+    def _blackjack_progress(self) -> dict[str, object] | None:
+        if not isinstance(self.game, BlackjackGame):
+            return None
+        return {
+            "phase": self.game.phase,
+            "finished": self.game.finished,
+            "dealer_blackjack": self.game.dealer_blackjack,
+            "hand_count": len(self.game.hands),
         }

@@ -13,6 +13,7 @@
     ["turtle_soup", "海龟汤"],
     ["pig_dice", "贪心骰子"],
     ["draw_guess", "你画我猜"],
+    ["blackjack", "二十一点"],
   ];
   let rooms = [];
   let tunnel = {};
@@ -245,6 +246,14 @@
           ? `${progress.processing ? "Bot 看图中" : progress.solved ? "已猜中" : progress.timed_out ? "已超时" : `剩余 ${progress.remaining_seconds} 秒`} · 猜测 ${progress.guess_count}/${progress.max_guesses}`
           : "等待开局";
         state.append(createText("small", `难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${detail}`));
+      } else if (room.game_type === "blackjack") {
+        const progress = room.blackjack_progress;
+        const phase = progress?.finished
+          ? "已结算"
+          : progress?.phase === "dealer_turn"
+          ? "庄家补牌中"
+          : `闲家 ${progress?.hand_count || 0} 手`;
+        state.append(createText("small", `难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${phase}`));
       } else {
         state.append(createText("small", `棋力：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"}`));
       }

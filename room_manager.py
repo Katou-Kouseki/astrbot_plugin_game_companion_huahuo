@@ -8,6 +8,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
 
+from .blackjack import BlackjackGame
 from .draw_guess import DrawGuessGame
 from .gomoku import BLACK, WHITE, Difficulty, GomokuGame
 from .models import (
@@ -46,6 +47,7 @@ SUPPORTED_GAMES: tuple[GameType, ...] = (
     "turtle_soup",
     "pig_dice",
     "draw_guess",
+    "blackjack",
 )
 
 
@@ -75,6 +77,7 @@ class RoomManager:
         draw_guess_max_guesses: int = 5,
         draw_guess_duration_seconds: int = 120,
         pig_dice_target_score: int = 50,
+        blackjack_max_players: int = 1,
         enabled_games: Mapping[GameType, bool] | None = None,
         xiangqi_engine: PikafishService | None = None,
         event_callback: RoomCallback | None = None,
@@ -94,6 +97,7 @@ class RoomManager:
             10, min(int(draw_guess_duration_seconds), 600)
         )
         self.pig_dice_target_score = max(20, min(int(pig_dice_target_score), 200))
+        self.blackjack_max_players = max(1, min(int(blackjack_max_players), 6))
         configured_games = enabled_games or {}
         self.enabled_games: dict[GameType, bool] = {
             game_type: bool(configured_games.get(game_type, True))
@@ -355,6 +359,12 @@ class RoomManager:
             if room.admin_room:
                 raise ValueError("这个房间需要管理员从游戏管理台安排玩家")
             if room.multiplayer.enabled:
+                if (
+                    room.status == "active"
+                    and isinstance(room.game, BlackjackGame)
+                    and not room.game.finished
+                ):
+                    raise ValueError("本局进行中，请等这一局结束后再加入玩家席")
                 if room.multiplayer.seat_for_token(visitor.token) is not None:
                     raise ValueError("你已经在玩家席")
                 if (
@@ -379,7 +389,10 @@ class RoomManager:
                 room.touch()
                 if first:
                     room.status = "setup"
-                    start_required = True
+                    start_required = not (
+                        room.game_type == "blackjack"
+                        and room.multiplayer.capacity > 1
+                    )
                 else:
                     room.add_message(
                         "system", f"{self._visitor_label(visitor)}加入了玩家席。"
@@ -650,6 +663,17 @@ class RoomManager:
                     duration_seconds=self.draw_guess_duration_seconds,
                 )
                 side_label = ""
+            elif room.game_type == "blackjack":
+                room.game = BlackjackGame.deal(
+                    difficulty=room.difficulty,
+                    player_numbers=[
+                        room.visitors[seat.visitor_token].number
+                        for seat in room.multiplayer.seats
+                        if seat.visitor_token in room.visitors
+                    ],
+                )
+                room.multiplayer.current_turn_index = 0
+                side_label = ""
             else:
                 room.game = TurtleSoupGame(
                     difficulty=room.difficulty,
@@ -678,6 +702,11 @@ class RoomManager:
                     f"你画我猜开始。玩家有 {room.game.duration_seconds} 秒作画，"
                     f"可让 Bot 猜 {room.game.max_guesses} 次。",
                 )
+            elif isinstance(room.game, BlackjackGame):
+                room.add_message(
+                    "system",
+                    "新一局二十一点开始，Bot 是庄家。轮到当前玩家要牌或停牌。",
+                )
             else:
                 room.add_message(
                     "system",
@@ -689,6 +718,17 @@ class RoomManager:
         if isinstance(room.game, TurtleSoupGame):
             async with room.lock:
                 self._reset_turn_deadline(room)
+        if isinstance(room.game, BlackjackGame):
+            async with room.lock:
+                if not room.game.finished:
+                    self._advance_blackjack_turn(room)
+                self._reset_turn_deadline(room)
+            if room.game.finished:
+                await self._finish_game(room)
+                return
+            if room.game.all_players_done():
+                await self._blackjack_dealer_turn(room)
+                return
         await self._emit("game_started", room, {})
         if self._is_bot_turn(room):
             await self._bot_turn(room)
@@ -776,6 +816,141 @@ class RoomManager:
             await self._finish_game(room)
         elif bot_turn:
             await self._bot_turn(room)
+
+    async def player_blackjack_action(
+        self, room: GameRoom, visitor_token: str, action: str
+    ) -> None:
+        """Apply one hit or stand for the player whose turn it is."""
+        normalized = str(action or "").strip().lower()
+        if normalized not in {"hit", "stand"}:
+            raise ValueError("二十一点操作只能是要牌或停牌")
+        dealer_ready = False
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if room.status != "active" or not isinstance(room.game, BlackjackGame):
+                raise ValueError("当前没有正在进行的二十一点")
+            game = room.game
+            if game.finished or game.phase != "player_turns":
+                raise ValueError("当前不是玩家要牌阶段")
+            if visitor.token != room.multiplayer.current_token:
+                raise PermissionError("还没轮到这位玩家")
+            event = (
+                game.hit(visitor.number)
+                if normalized == "hit"
+                else game.stand(visitor.number)
+            )
+            room.touch()
+            if game.all_players_done():
+                dealer_ready = True
+                room.multiplayer.turn_deadline = 0.0
+            else:
+                dealer_ready = self._advance_blackjack_turn(room)
+        await self._emit("blackjack_changed", room, event)
+        if dealer_ready:
+            await self._blackjack_dealer_turn(room)
+
+    def _advance_blackjack_turn(
+        self, room: GameRoom, *, now: float | None = None
+    ) -> bool:
+        """Move to the next unresolved hand and return whether all hands are done."""
+        state = room.multiplayer
+        game = room.game
+        if (
+            not state.enabled
+            or not state.seats
+            or not isinstance(game, BlackjackGame)
+            or game.phase != "player_turns"
+            or game.finished
+        ):
+            state.turn_deadline = 0.0
+            return False
+        current = time.time() if now is None else float(now)
+        count = len(state.seats)
+        start = state.current_turn_index % count
+        for offset in range(count):
+            index = (start + offset) % count
+            seat = state.seats[index]
+            visitor = room.visitors.get(seat.visitor_token)
+            if visitor is None:
+                continue
+            hand = game.hands.get(visitor.number)
+            if hand is None or hand.status != "playing":
+                continue
+            if visitor.connected and current - visitor.last_seen_at < 15:
+                state.current_turn_index = index
+                self._reset_turn_deadline(room, now=current)
+                return game.all_players_done()
+            game.stand(visitor.number)
+            room.add_message(
+                "system",
+                f"{self._visitor_label(visitor)}已离线，当前手牌自动停牌。",
+            )
+            if game.all_players_done():
+                state.turn_deadline = 0.0
+                return True
+        state.turn_deadline = 0.0
+        return game.all_players_done()
+
+    async def _blackjack_dealer_turn(self, room: GameRoom) -> None:
+        """Reveal the dealer hole card, draw to 17, then settle all hands."""
+        async with room.lock:
+            game = room.game
+            if (
+                room.status != "active"
+                or not isinstance(game, BlackjackGame)
+                or game.finished
+                or game.phase != "player_turns"
+                or not game.all_players_done()
+            ):
+                return
+            game.phase = "dealer_turn"
+            game.reveal_dealer()
+            room.touch()
+        await self._emit(
+            "blackjack_dealer_revealed",
+            room,
+            {
+                "dealer_total": game.dealer_total,
+                "dealer_soft": game.dealer_soft,
+            },
+        )
+        finished = False
+        while True:
+            async with room.lock:
+                game = room.game
+                if (
+                    room.status != "active"
+                    or not isinstance(game, BlackjackGame)
+                    or game.phase != "dealer_turn"
+                    or game.finished
+                ):
+                    return
+                if game.has_pending_hands() and game.dealer_must_hit:
+                    card = game.draw_dealer()
+                    room.touch()
+                    event = {
+                        "action": "dealer_hit",
+                        "card": card.as_dict(),
+                        "dealer_total": game.dealer_total,
+                        "dealer_soft": game.dealer_soft,
+                    }
+                else:
+                    game.settle()
+                    room.touch()
+                    event = {
+                        "action": "settle",
+                        "dealer_total": game.dealer_total,
+                        "dealer_soft": game.dealer_soft,
+                        "results": {
+                            str(key): value for key, value in game.results.items()
+                        },
+                    }
+                    finished = True
+            await self._emit("blackjack_changed", room, event)
+            if finished:
+                break
+            await asyncio.sleep(0.65)
+        await self._finish_game(room)
 
     async def update_drawing(
         self, room: GameRoom, visitor_token: str, strokes: Any
@@ -904,8 +1079,6 @@ class RoomManager:
             if accepted:
                 if difficulty is not None:
                     room.difficulty = difficulty
-                room.game = None
-                room.status = "setup"
                 room.touch()
                 return True
         if not accepted:
@@ -964,6 +1137,17 @@ class RoomManager:
                     duration_seconds=self.draw_guess_duration_seconds,
                 )
                 side_label = ""
+            elif isinstance(room.game, BlackjackGame):
+                room.game = BlackjackGame.deal(
+                    difficulty=difficulty,
+                    player_numbers=[
+                        room.visitors[seat.visitor_token].number
+                        for seat in room.multiplayer.seats
+                        if seat.visitor_token in room.visitors
+                    ],
+                )
+                room.multiplayer.current_turn_index = 0
+                side_label = ""
             else:
                 raise ValueError("当前游戏状态无法重新开始")
             room.status = "active"
@@ -984,6 +1168,10 @@ class RoomManager:
                     "system",
                     f"新一轮你画我猜开始，可让 Bot 猜 {room.game.max_guesses} 次。",
                 )
+            elif isinstance(room.game, BlackjackGame):
+                room.add_message(
+                    "system", "新一轮二十一点开始，Bot 是庄家，请当前玩家先行动。"
+                )
             else:
                 room.add_message(
                     "system",
@@ -993,6 +1181,17 @@ class RoomManager:
         if generation_requested:
             await self._emit("soup_generation_requested", room, {"rematch": True})
             return
+        if isinstance(room.game, BlackjackGame):
+            async with room.lock:
+                if not room.game.finished:
+                    self._advance_blackjack_turn(room)
+                self._reset_turn_deadline(room)
+            if room.game.finished:
+                await self._finish_game(room)
+                return
+            if room.game.all_players_done():
+                await self._blackjack_dealer_turn(room)
+                return
         await self._emit("game_started", room, {"rematch": True})
         if self._is_bot_turn(room):
             await self._bot_turn(room)
@@ -1012,12 +1211,36 @@ class RoomManager:
             room.add_message("system", "Bot 同意了悔棋。")
             return removed
 
-    async def resign(self, room: GameRoom) -> None:
-        """Finish the current game as a Bot win."""
+    async def resign(self, room: GameRoom, *, visitor_token: str = "") -> None:
+        """Finish a solo game as a Bot win, or surrender one Blackjack hand."""
+        dealer_ready = False
+        blackjack_continues = False
         async with room.lock:
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有正在进行的对局")
-            if isinstance(room.game, TurtleSoupGame):
+            if isinstance(room.game, BlackjackGame):
+                game = room.game
+                if game.finished or game.phase != "player_turns":
+                    raise ValueError("当前不是玩家要牌阶段")
+                if (
+                    not visitor_token
+                    or visitor_token != room.multiplayer.current_token
+                ):
+                    raise PermissionError("还没轮到这位玩家投降")
+                visitor = self._visitor(room, visitor_token)
+                game.surrender(visitor.number)
+                room.add_message(
+                    "system",
+                    f"{self._visitor_label(visitor)}选择投降，这一手记为输。",
+                )
+                room.touch()
+                if game.all_players_done():
+                    dealer_ready = True
+                    room.multiplayer.turn_deadline = 0.0
+                else:
+                    self._advance_blackjack_turn(room)
+                    blackjack_continues = True
+            elif isinstance(room.game, TurtleSoupGame):
                 room.game.give_up()
             elif isinstance(room.game, XiangqiGame):
                 room.game.winner = room.game.bot_side
@@ -1032,6 +1255,11 @@ class RoomManager:
             else:
                 raise ValueError("当前游戏不能认输")
             room.touch()
+        if blackjack_continues:
+            return
+        if dealer_ready:
+            await self._blackjack_dealer_turn(room)
+            return
         await self._finish_game(room)
 
     async def remove_player(
@@ -1042,6 +1270,7 @@ class RoomManager:
         reason: str = "玩家已被移到观众席",
     ) -> None:
         """Clear one seat, preserving multiplayer games while seats remain."""
+        dealer_ready = False
         async with room.lock:
             if room.multiplayer.enabled:
                 target = (
@@ -1052,6 +1281,13 @@ class RoomManager:
                 if target is None:
                     raise ValueError("当前没有玩家可以移到观众席")
                 self._remove_multiplayer_seat(room, target.token)
+                dealer_ready = bool(
+                    isinstance(room.game, BlackjackGame)
+                    and room.status == "active"
+                    and not room.game.finished
+                    and room.game.phase == "player_turns"
+                    and room.game.all_players_done()
+                )
                 if room.multiplayer.seats:
                     room.player_empty_since = None
                     self._sync_primary_player(room)
@@ -1069,9 +1305,12 @@ class RoomManager:
                 room.status = "waiting"
             room.touch()
             room.add_message("system", reason)
+        if dealer_ready:
+            await self._blackjack_dealer_turn(room)
 
     async def kick_visitor(self, room: GameRoom, visitor_number: int) -> None:
         """Invalidate one browser identity and clear its seat if necessary."""
+        dealer_ready = False
         async with room.lock:
             visitor = self._visitor_by_number(room, visitor_number)
             was_player = (
@@ -1081,6 +1320,13 @@ class RoomManager:
             )
             if room.multiplayer.enabled and was_player:
                 self._remove_multiplayer_seat(room, visitor.token)
+                dealer_ready = bool(
+                    isinstance(room.game, BlackjackGame)
+                    and room.status == "active"
+                    and not room.game.finished
+                    and room.game.phase == "player_turns"
+                    and room.game.all_players_done()
+                )
             room.visitors.pop(visitor.token, None)
             if was_player:
                 if room.multiplayer.enabled and room.multiplayer.seats:
@@ -1094,6 +1340,8 @@ class RoomManager:
                     room.status = "waiting"
             room.touch()
             room.add_message("system", f"{visitor.number} 号已被移出房间。")
+        if dealer_ready:
+            await self._blackjack_dealer_turn(room)
 
     async def pause(self, room: GameRoom) -> None:
         """Pause an active game without changing its board."""
@@ -1118,9 +1366,17 @@ class RoomManager:
             room.touch()
             self._reset_turn_deadline(room)
             room.add_message("system", "对局继续。")
+            blackjack_dealer = bool(
+                isinstance(room.game, BlackjackGame)
+                and room.game.phase == "dealer_turn"
+                and not room.game.finished
+            )
             bot_turn = not isinstance(
                 room.game, (TurtleSoupGame, DrawGuessGame)
             ) and self._game_is_bot_turn(room.game)
+        if blackjack_dealer:
+            await self._blackjack_dealer_turn(room)
+            return
         if bot_turn:
             await self._bot_turn(room)
 
@@ -1689,6 +1945,24 @@ class RoomManager:
                 else:
                     room.bot_wins += 1
                     result = "cooperative_unsolved"
+            elif isinstance(room.game, BlackjackGame):
+                results = list(room.game.results.values())
+                human = sum(
+                    1 for value in results if value in {"win", "blackjack_win"}
+                )
+                bot = sum(1 for value in results if value == "loss")
+                pushes = sum(1 for value in results if value == "push")
+                room.human_wins += human
+                room.bot_wins += bot
+                room.draws += pushes
+                if human and not bot:
+                    result = "human_win"
+                elif bot and not human:
+                    result = "bot_win"
+                elif human and bot:
+                    result = "mixed"
+                else:
+                    result = "draw"
             elif getattr(room.game, "draw", False):
                 room.draws += 1
                 result = "draw"
@@ -1707,42 +1981,106 @@ class RoomManager:
 
     async def _tick_multiplayer_room(self, room: GameRoom, now: float) -> None:
         """Expire swap requests and rotate an overdue active turn."""
+        dealer_ready = False
         async with room.lock:
             state = room.multiplayer
             if not state.enabled:
                 return
             self._purge_swap_requests(room, now)
             game = room.game
-            turn_active = bool(
-                room.status == "active"
-                and isinstance(game, TurtleSoupGame)
-                and game.phase == "ready"
-                and not game.processing
-                and state.seats
-                and state.turn_timeout_seconds
-            )
-            if not turn_active:
-                state.turn_deadline = 0.0
-                return
-            if not state.turn_deadline:
-                self._reset_turn_deadline(room, now=now)
-                return
-            if now < state.turn_deadline:
-                return
-            previous = room.visitors.get(state.current_token)
-            self._advance_multiplayer_turn(room, now=now)
-            current = room.visitors.get(state.current_token)
-            if previous and current and previous.token != current.token:
+            if isinstance(game, BlackjackGame):
+                dealer_ready = self._tick_blackjack_locked(room, now)
+            else:
+                turn_active = bool(
+                    room.status == "active"
+                    and isinstance(game, TurtleSoupGame)
+                    and game.phase == "ready"
+                    and not game.processing
+                    and state.seats
+                    and state.turn_timeout_seconds
+                )
+                if not turn_active:
+                    state.turn_deadline = 0.0
+                    return
+                if not state.turn_deadline:
+                    self._reset_turn_deadline(room, now=now)
+                    return
+                if now < state.turn_deadline:
+                    return
+                previous = room.visitors.get(state.current_token)
+                self._advance_multiplayer_turn(room, now=now)
+                current = room.visitors.get(state.current_token)
+                if previous and current and previous.token != current.token:
+                    room.add_message(
+                        "system",
+                        f"{self._visitor_label(previous)}回合超时，已轮到 {self._visitor_label(current)}。",
+                    )
+        if dealer_ready:
+            await self._blackjack_dealer_turn(room)
+
+    def _tick_blackjack_locked(self, room: GameRoom, now: float) -> bool:
+        """Rotate or auto-stand an overdue Blackjack hand; return dealer-ready."""
+        state = room.multiplayer
+        game = room.game
+        if (
+            room.status != "active"
+            or not isinstance(game, BlackjackGame)
+            or game.finished
+            or game.phase != "player_turns"
+        ):
+            state.turn_deadline = 0.0
+            return False
+        if game.all_players_done():
+            state.turn_deadline = 0.0
+            return True
+        previous = room.visitors.get(state.current_token)
+        if previous is not None:
+            hand = game.hands.get(previous.number)
+            if hand is not None and hand.status == "playing":
+                offline = not (
+                    previous.connected and now - previous.last_seen_at < 15
+                )
+                if offline:
+                    game.stand(previous.number)
+                    room.add_message(
+                        "system",
+                        f"{self._visitor_label(previous)}已离线，当前手牌自动停牌。",
+                    )
+                    if game.all_players_done():
+                        state.turn_deadline = 0.0
+                        return True
+                    return self._advance_blackjack_turn(room, now=now)
+        if not state.seats or not state.turn_timeout_seconds:
+            state.turn_deadline = 0.0
+            return False
+        if not state.turn_deadline:
+            self._reset_turn_deadline(room, now=now)
+            return False
+        if now < state.turn_deadline:
+            return False
+        if previous is not None:
+            hand = game.hands.get(previous.number)
+            if hand is not None and hand.status == "playing":
+                game.stand(previous.number)
                 room.add_message(
                     "system",
-                    f"{self._visitor_label(previous)}回合超时，已轮到 {self._visitor_label(current)}。",
+                    f"{self._visitor_label(previous)}回合超时，已自动停牌。",
                 )
+        if game.all_players_done():
+            state.turn_deadline = 0.0
+            return True
+        return self._advance_blackjack_turn(room, now=now)
 
     def _configure_multiplayer(self, room: GameRoom) -> None:
         """Apply the current game's seat policy without losing its primary player."""
-        if room.game_type == "turtle_soup":
+        if room.game_type in {"turtle_soup", "blackjack"}:
+            capacity = (
+                self.turtle_soup_max_players
+                if room.game_type == "turtle_soup"
+                else self.blackjack_max_players
+            )
             if room.multiplayer.enabled:
-                room.multiplayer.capacity = self.turtle_soup_max_players
+                room.multiplayer.capacity = capacity
                 room.multiplayer.turn_timeout_seconds = self.multiplayer_turn_timeout
                 room.multiplayer.swap_cooldown_seconds = self.swap_request_cooldown
                 room.multiplayer.swap_request_expiry_seconds = self.swap_request_expiry
@@ -1765,7 +2103,7 @@ class RoomManager:
             )
             room.multiplayer = MultiplayerState(
                 enabled=True,
-                capacity=self.turtle_soup_max_players,
+                capacity=capacity,
                 turn_timeout_seconds=self.multiplayer_turn_timeout,
                 swap_cooldown_seconds=self.swap_request_cooldown,
                 swap_request_expiry_seconds=self.swap_request_expiry,
@@ -1813,6 +2151,19 @@ class RoomManager:
         if old_index < 0:
             raise ValueError("该访客当前不在玩家席")
         was_current = old_index == state.current_turn_index
+        departing = room.visitors.get(visitor_token)
+        if (
+            departing is not None
+            and isinstance(room.game, BlackjackGame)
+            and not room.game.finished
+        ):
+            hand = room.game.hands.get(departing.number)
+            if (
+                hand is not None
+                and hand.status in {"playing", "stand", "blackjack"}
+                and not hand.result
+            ):
+                room.game.surrender(departing.number)
         state.seats.pop(old_index)
         if state.seats:
             if old_index < state.current_turn_index:
@@ -1824,6 +2175,14 @@ class RoomManager:
         else:
             state.current_turn_index = 0
             state.turn_deadline = 0.0
+        if (
+            state.seats
+            and isinstance(room.game, BlackjackGame)
+            and room.status == "active"
+            and room.game.phase == "player_turns"
+            and not room.game.finished
+        ):
+            self._advance_blackjack_turn(room)
         state.swap_requests = {
             key: item
             for key, item in state.swap_requests.items()
@@ -1858,9 +2217,19 @@ class RoomManager:
             state.turn_timeout_seconds
             and state.seats
             and room.status == "active"
-            and isinstance(game, TurtleSoupGame)
-            and game.phase == "ready"
-            and not game.processing
+            and (
+                (
+                    isinstance(game, TurtleSoupGame)
+                    and game.phase == "ready"
+                    and not game.processing
+                )
+                or (
+                    isinstance(game, BlackjackGame)
+                    and game.phase == "player_turns"
+                    and not game.finished
+                    and not game.all_players_done()
+                )
+            )
         )
         state.turn_deadline = (
             (time.time() if now is None else float(now)) + state.turn_timeout_seconds
@@ -1993,14 +2362,22 @@ class RoomManager:
     def _is_bot_turn(self, room: GameRoom) -> bool:
         return bool(
             room.game
-            and not isinstance(room.game, (TurtleSoupGame, DrawGuessGame))
+            and not isinstance(
+                room.game, (TurtleSoupGame, DrawGuessGame, BlackjackGame)
+            )
             and self._game_is_bot_turn(room.game)
         )
 
     @staticmethod
     def _game_is_bot_turn(
-        game: GomokuGame | XiangqiGame | TicTacToeGame | PigDiceGame,
+        game: GomokuGame
+        | XiangqiGame
+        | TicTacToeGame
+        | PigDiceGame
+        | BlackjackGame,
     ) -> bool:
+        if isinstance(game, BlackjackGame):
+            return False
         if isinstance(game, PigDiceGame):
             return game.turn == "bot"
         if isinstance(game, XiangqiGame):
@@ -2041,6 +2418,7 @@ class RoomManager:
             "turtle_soup": "海龟汤",
             "pig_dice": "贪心骰子",
             "draw_guess": "你画我猜",
+            "blackjack": "二十一点",
         }[game_type]
 
     @staticmethod

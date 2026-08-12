@@ -52,9 +52,11 @@ def test_config_defaults_match_product_contract() -> None:
         "turtle_soup",
         "pig_dice",
         "draw_guess",
+        "blackjack",
     ):
         assert schema[game_type]["items"]["enabled"]["default"] is True
     assert schema["pig_dice"]["items"]["target_score"]["default"] == 50
+    assert schema["blackjack"]["items"]["max_players"]["default"] == 1
 
 
 def test_metadata_registers_default_management_page() -> None:
@@ -65,7 +67,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.2.4"
+    assert metadata["version"] == "0.2.5"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -162,7 +164,7 @@ def test_webui_uses_one_room_chat_composer_for_turtle_soup_and_controls() -> Non
     assert 'id="chatInput"' in page
     assert 'id="soupSolution"' in page
     assert 'request("POST", "chat"' in script
-    assert '["turtle_soup", "pig_dice", "draw_guess"].includes(room.game_type)' in script
+    assert '["turtle_soup", "pig_dice", "draw_guess", "blackjack"].includes(room.game_type)' in script
     assert ".side-choice[hidden] { display: none; }" in styles
     assert 'chatInput.value = "";' in script
     assert "function submitChat" in script
@@ -222,6 +224,20 @@ def test_draw_guess_webui_and_visual_endpoint_are_registered() -> None:
     assert 'request("POST", "draw/guess"' in script
     assert '"/api/room/{access_token}/draw/guess"' in server
     assert '["draw_guess", "你画我猜"]' in manager
+
+
+def test_blackjack_webui_endpoint_and_management_registration() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    manager = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+
+    assert '"二十一点": "blackjack"' in source
+    assert '"/api/room/{access_token}/blackjack/action"' in server
+    assert 'id="blackjackStage"' in page
+    assert 'request("POST", "blackjack/action"' in script
+    assert '["blackjack", "二十一点"]' in manager
 
 
 def test_draw_guess_queues_local_changes_without_accepting_stale_polling_state() -> None:
