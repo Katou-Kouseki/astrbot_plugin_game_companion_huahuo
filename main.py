@@ -436,6 +436,126 @@ class GameCompanionPlugin(Star):
         self._settings_lock = asyncio.Lock()
         self._register_page_api()
 
+    def mobile_status(self) -> dict[str, Any]:
+        """Expose the game catalog to the authenticated companion gateway."""
+        games = [
+            {
+                "game_type": str(item.get("game_type") or ""),
+                "label": str(item.get("label") or ""),
+                "description": str(item.get("description") or ""),
+                "enabled": bool(self.enabled_games.get(str(item.get("game_type")), False)),
+            }
+            for item in GAME_CATALOG
+        ]
+        ready = bool(self.server_enabled and self.private_rooms_enabled)
+        blockers: list[str] = []
+        if not self.server_enabled:
+            blockers.append("游戏房间服务未启用")
+        if not self.private_rooms_enabled:
+            blockers.append("私聊游戏房间未启用")
+        if (
+            not self.public_base_url
+            and not self.auto_quick_tunnel
+            and str(self.server_host).strip().lower() in {"127.0.0.1", "localhost", "::1"}
+        ):
+            ready = False
+            blockers.append("手机房间需要可访问的监听地址或固定 HTTPS 地址")
+        if not any(item["enabled"] for item in games):
+            ready = False
+            blockers.append("没有已启用的游戏")
+        return {
+            "available": True,
+            "enabled": self.server_enabled,
+            "running": self.room_server.running,
+            "ready": ready,
+            "blockers": blockers,
+            "games": games,
+        }
+
+    async def mobile_create_room(self, user_id: str, game_type: str) -> dict[str, Any]:
+        """Create a game room for a paired phone user and return its WebUI URL."""
+        normalized_user = str(user_id or "").strip()[:120]
+        if not normalized_user:
+            raise ValueError("手机陪伴用户身份不能为空")
+        selected_game = self._game_type(game_type)
+        if not self.server_enabled:
+            raise RuntimeError("游戏房间服务已在插件配置中关闭")
+        if not self.private_rooms_enabled:
+            raise PermissionError("私聊创建游戏房间已关闭")
+        if not self.manager.game_enabled(selected_game):
+            raise PermissionError(f"管理员暂未开放{self._game_label(selected_game)}")
+
+        session_id = f"mobile:{normalized_user}"
+        rooms = self.manager.for_session(session_id)
+        if len(rooms) > 1:
+            raise ValueError("当前手机陪伴用户已有多个活动房间")
+        mobile_base_url = await self._ensure_mobile_room_access()
+        reused = bool(rooms)
+        if reused:
+            room = rooms[0]
+            visitor_token = room.player_token
+            if not visitor_token:
+                visitor = await self.manager.join(room)
+                await self.manager.assign_player(
+                    room,
+                    visitor.number,
+                    normalized_user,
+                    allow_non_numeric=True,
+                )
+                visitor_token = visitor.token
+        else:
+            if selected_game == "xiangqi":
+                await self.xiangqi_engine.ensure_ready()
+            room = await self.manager.create_room(
+                source="private",
+                session_id=session_id,
+                platform="android",
+                group_id="",
+                creator_qq=normalized_user,
+                creator_name="手机陪伴终端",
+                admin_room=False,
+                game_type=selected_game,
+                difficulty="normal",
+                turtle_soup_mode="bot_host",
+            )
+            visitor = await self.manager.join(room)
+            await self.manager.assign_player(
+                room,
+                visitor.number,
+                normalized_user,
+                allow_non_numeric=True,
+            )
+            await self.manager.start_game(room, visitor.token, "human_black")
+            visitor_token = visitor.token
+
+        url = (
+            f"{mobile_base_url.rstrip('/')}/room/{quote(room.access_token, safe='')}"
+            f"?visitor_token={quote(visitor_token, safe='')}"
+        )
+        return {
+            "url": url,
+            "room_id": room.room_id,
+            "game_type": room.game_type,
+            "reused_room": reused,
+        }
+
+    async def _ensure_mobile_room_access(self) -> str:
+        """Start the room server without forcing a public tunnel for LAN phones."""
+        if not self.room_server.running:
+            await self.room_server.start()
+        if self.public_base_url:
+            return self.public_base_url
+        if self.quick_tunnel.running and self.quick_tunnel.url:
+            return self.quick_tunnel.url
+        if str(self.server_host).strip().lower() in {"127.0.0.1", "localhost", "::1"}:
+            if not self.auto_quick_tunnel:
+                raise RuntimeError("手机房间需要可访问的监听地址或固定 HTTPS 地址")
+            await self._ensure_public_access()
+            if self.quick_tunnel.running and self.quick_tunnel.url:
+                return self.quick_tunnel.url
+            raise RuntimeError("手机房间访问通道尚未就绪")
+        return self.room_server.local_base_url
+
     async def initialize(self) -> None:
         """Start only the in-memory watchdog; the port opens lazily on demand."""
         self._watchdog_task = asyncio.create_task(self._watchdog())
