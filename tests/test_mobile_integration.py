@@ -21,7 +21,7 @@ async def test_mobile_room_uses_lan_server_and_prebinds_phone_user() -> None:
         running=True,
         local_base_url="http://127.0.0.1:6331",
     )
-    plugin.quick_tunnel = types.SimpleNamespace(running=False, url="")
+    plugin.quick_tunnel = types.SimpleNamespace(running=False, ready=False, url="")
 
     result = await plugin.mobile_create_room("mobile-owner", "gomoku")
 
@@ -44,7 +44,7 @@ async def test_mobile_room_reuses_the_phone_users_active_room() -> None:
     plugin.public_base_url = "https://games.example.com"
     plugin.manager = RoomManager(max_private_rooms=1)
     plugin.room_server = types.SimpleNamespace(running=True, local_base_url="http://127.0.0.1:6331")
-    plugin.quick_tunnel = types.SimpleNamespace(running=False, url="")
+    plugin.quick_tunnel = types.SimpleNamespace(running=False, ready=False, url="")
 
     first = await plugin.mobile_create_room("mobile-owner", "tictactoe")
     second = await plugin.mobile_create_room("mobile-owner", "gomoku")
@@ -52,3 +52,17 @@ async def test_mobile_room_reuses_the_phone_users_active_room() -> None:
     assert second["room_id"] == first["room_id"]
     assert second["game_type"] == "tictactoe"
     assert second["reused_room"] is True
+
+
+def test_room_url_rejects_a_running_but_unhealthy_tunnel() -> None:
+    plugin = object.__new__(GameCompanionPlugin)
+    plugin.public_base_url = ""
+    plugin.quick_tunnel = types.SimpleNamespace(
+        running=True,
+        ready=False,
+        url="https://stale.trycloudflare.com",
+    )
+    room = types.SimpleNamespace(access_token="room-token")
+
+    with pytest.raises(RuntimeError, match="尚未就绪"):
+        plugin._room_url(room)
