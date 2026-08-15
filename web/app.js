@@ -5,6 +5,7 @@
   const accessToken = match ? match[1] : "";
   const storageKey = `game-companion:${accessToken}:visitor`;
   const rememberIdentityKey = "game-companion:remember-identity";
+  const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
   const soupStage = document.getElementById("soupStage");
@@ -16,7 +17,9 @@
   const chatInput = document.getElementById("chatInput");
   const context = board.getContext("2d");
   const toast = document.getElementById("toast");
-  let visitorToken = accessToken ? window.localStorage.getItem(storageKey) || "" : "";
+  let visitorToken = accessToken
+    ? window.localStorage.getItem(storageKey) || mobileVisitorToken
+    : "";
   let room = null;
   let selectedSide = "human_black";
   let selectedPiece = null;

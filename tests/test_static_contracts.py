@@ -80,6 +80,15 @@ def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
         assert "<script>" not in content
 
 
+def test_mobile_room_can_resume_its_prebound_player_identity() -> None:
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert 'new URLSearchParams(window.location.search).get("visitor_token")' in script
+    assert "async def mobile_create_room" in source
+    assert 'session_id = f"mobile:{normalized_user}"' in source
+
+
 def test_trusted_browser_controls_are_registered_without_exposing_cookie() -> None:
     page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")

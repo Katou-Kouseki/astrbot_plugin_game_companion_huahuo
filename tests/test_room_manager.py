@@ -183,6 +183,24 @@ async def test_admin_room_requires_dashboard_assignment() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mobile_assignment_accepts_authenticated_non_qq_identity() -> None:
+    manager = RoomManager()
+    room = await create_room(manager, source="private", creator="mobile-owner")
+    visitor = await manager.join(room)
+
+    await manager.assign_player(
+        room,
+        visitor.number,
+        "mobile-owner",
+        allow_non_numeric=True,
+    )
+
+    assert room.player_token == visitor.token
+    assert room.player_qq == "mobile-owner"
+    assert visitor.identity_confirmed is True
+
+
+@pytest.mark.asyncio
 async def test_creator_correction_swaps_seat_and_resets_game() -> None:
     manager = RoomManager()
     room = await create_room(manager, creator="10001")

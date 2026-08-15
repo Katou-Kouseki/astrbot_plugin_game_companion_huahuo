@@ -419,13 +419,20 @@ class RoomManager:
             await self._emit("seats_changed", room, {"joined": visitor.number})
 
     async def assign_player(
-        self, room: GameRoom, visitor_number: int, player_qq: str
+        self,
+        room: GameRoom,
+        visitor_number: int,
+        player_qq: str,
+        *,
+        allow_non_numeric: bool = False,
     ) -> None:
         """Assign an administrator-reviewed visitor and QQ identity."""
         async with room.lock:
             visitor = self._visitor_by_number(room, visitor_number)
             player_qq = str(player_qq or "").strip()
-            if not player_qq.isdigit():
+            if not player_qq:
+                raise ValueError("玩家身份不能为空")
+            if not allow_non_numeric and not player_qq.isdigit():
                 raise ValueError("玩家 QQ 号必须只包含数字")
             if any(
                 item.identity_confirmed
