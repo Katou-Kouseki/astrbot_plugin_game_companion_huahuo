@@ -35,7 +35,7 @@ async def test_mobile_room_uses_lan_server_and_prebinds_phone_user() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mobile_room_reuses_the_phone_users_active_room() -> None:
+async def test_mobile_room_switches_the_phone_users_room_to_the_selected_game() -> None:
     plugin = object.__new__(GameCompanionPlugin)
     plugin.server_enabled = True
     plugin.private_rooms_enabled = True
@@ -50,8 +50,59 @@ async def test_mobile_room_reuses_the_phone_users_active_room() -> None:
     second = await plugin.mobile_create_room("mobile-owner", "gomoku")
 
     assert second["room_id"] == first["room_id"]
-    assert second["game_type"] == "tictactoe"
+    assert second["game_type"] == "gomoku"
     assert second["reused_room"] is True
+    assert second["switched_game"] is True
+    room = plugin.manager.rooms[second["room_id"]]
+    assert room.status == "active"
+
+
+@pytest.mark.asyncio
+async def test_mobile_room_reuses_the_same_selected_game_without_resetting_it() -> None:
+    plugin = object.__new__(GameCompanionPlugin)
+    plugin.server_enabled = True
+    plugin.private_rooms_enabled = True
+    plugin.server_host = "0.0.0.0"
+    plugin.auto_quick_tunnel = False
+    plugin.public_base_url = "https://games.example.com"
+    plugin.manager = RoomManager(max_private_rooms=1)
+    plugin.room_server = types.SimpleNamespace(running=True, local_base_url="http://127.0.0.1:6331")
+    plugin.quick_tunnel = types.SimpleNamespace(running=False, url="")
+
+    first = await plugin.mobile_create_room("mobile-owner", "gomoku")
+    room = plugin.manager.rooms[first["room_id"]]
+    game_before = room.game
+    second = await plugin.mobile_create_room("mobile-owner", "gomoku")
+
+    assert second["room_id"] == first["room_id"]
+    assert second["game_type"] == "gomoku"
+    assert second["reused_room"] is True
+    assert second["switched_game"] is False
+    assert room.game is game_before
+
+
+@pytest.mark.asyncio
+async def test_mobile_gateway_room_does_not_require_public_tunnel() -> None:
+    plugin = object.__new__(GameCompanionPlugin)
+    plugin.server_enabled = True
+    plugin.private_rooms_enabled = True
+    plugin.server_host = "127.0.0.1"
+    plugin.auto_quick_tunnel = False
+    plugin.public_base_url = ""
+    plugin.manager = RoomManager(max_private_rooms=1)
+    plugin.room_server = types.SimpleNamespace(
+        running=True,
+        local_base_url="http://127.0.0.1:6331",
+    )
+    plugin.quick_tunnel = types.SimpleNamespace(running=False, url="")
+
+    result = await plugin.mobile_create_room(
+        "mobile-owner",
+        "gomoku",
+        via_mobile_gateway=True,
+    )
+
+    assert result["url"].startswith("http://127.0.0.1:6331/room/")
 
 
 def test_room_url_rejects_a_running_but_unhealthy_tunnel() -> None:
