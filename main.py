@@ -436,7 +436,7 @@ class GameCompanionPlugin(Star):
         self._settings_lock = asyncio.Lock()
         self._register_page_api()
 
-    def mobile_status(self) -> dict[str, Any]:
+    def mobile_status(self, *, via_mobile_gateway: bool = False) -> dict[str, Any]:
         """Expose the game catalog to the authenticated companion gateway."""
         games = [
             {
@@ -454,7 +454,8 @@ class GameCompanionPlugin(Star):
         if not self.private_rooms_enabled:
             blockers.append("私聊游戏房间未启用")
         if (
-            not self.public_base_url
+            not via_mobile_gateway
+            and not self.public_base_url
             and not self.auto_quick_tunnel
             and str(self.server_host).strip().lower() in {"127.0.0.1", "localhost", "::1"}
         ):
@@ -472,7 +473,13 @@ class GameCompanionPlugin(Star):
             "games": games,
         }
 
-    async def mobile_create_room(self, user_id: str, game_type: str) -> dict[str, Any]:
+    async def mobile_create_room(
+        self,
+        user_id: str,
+        game_type: str,
+        *,
+        via_mobile_gateway: bool = False,
+    ) -> dict[str, Any]:
         """Create a game room for a paired phone user and return its WebUI URL."""
         normalized_user = str(user_id or "").strip()[:120]
         if not normalized_user:
@@ -489,8 +496,14 @@ class GameCompanionPlugin(Star):
         rooms = self.manager.for_session(session_id)
         if len(rooms) > 1:
             raise ValueError("当前手机陪伴用户已有多个活动房间")
-        mobile_base_url = await self._ensure_mobile_room_access()
+        if via_mobile_gateway:
+            if not self.room_server.running:
+                await self.room_server.start()
+            mobile_base_url = self.room_server.local_base_url
+        else:
+            mobile_base_url = await self._ensure_mobile_room_access()
         reused = bool(rooms)
+        switched_game = False
         if reused:
             room = rooms[0]
             visitor_token = room.player_token
@@ -503,6 +516,13 @@ class GameCompanionPlugin(Star):
                     allow_non_numeric=True,
                 )
                 visitor_token = visitor.token
+            if room.game_type != selected_game:
+                switched_game = await self.manager.switch_game(
+                    room,
+                    selected_game,
+                    force=True,
+                )
+                await self.manager.start_game(room, visitor_token, "human_black")
         else:
             if selected_game == "xiangqi":
                 await self.xiangqi_engine.ensure_ready()
@@ -537,6 +557,7 @@ class GameCompanionPlugin(Star):
             "room_id": room.room_id,
             "game_type": room.game_type,
             "reused_room": reused,
+            "switched_game": switched_game,
         }
 
     async def _ensure_mobile_room_access(self) -> str:
