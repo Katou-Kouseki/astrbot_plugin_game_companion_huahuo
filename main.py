@@ -60,7 +60,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.2.5"
+PLUGIN_VERSION = "0.2.6"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -566,13 +566,13 @@ class GameCompanionPlugin(Star):
             await self.room_server.start()
         if self.public_base_url:
             return self.public_base_url
-        if self.quick_tunnel.running and self.quick_tunnel.url:
+        if self.quick_tunnel.ready and self.quick_tunnel.url:
             return self.quick_tunnel.url
         if str(self.server_host).strip().lower() in {"127.0.0.1", "localhost", "::1"}:
             if not self.auto_quick_tunnel:
                 raise RuntimeError("手机房间需要可访问的监听地址或固定 HTTPS 地址")
             await self._ensure_public_access()
-            if self.quick_tunnel.running and self.quick_tunnel.url:
+            if self.quick_tunnel.ready and self.quick_tunnel.url:
                 return self.quick_tunnel.url
             raise RuntimeError("手机房间访问通道尚未就绪")
         return self.room_server.local_base_url
@@ -1269,7 +1269,7 @@ class GameCompanionPlugin(Star):
 
     def _room_url(self, room: GameRoom) -> str:
         base = self.public_base_url or (
-            self.quick_tunnel.url if self.quick_tunnel.running else ""
+            self.quick_tunnel.url if self.quick_tunnel.ready else ""
         )
         if not base:
             raise RuntimeError("外部访问地址尚未就绪")
@@ -3085,7 +3085,7 @@ class GameCompanionPlugin(Star):
             or not self.auto_quick_tunnel
             or not self.manager.rooms
             or not self.room_server.running
-            or self.quick_tunnel.running
+            or self.quick_tunnel.ready
             or (
                 self._tunnel_recovery_task is not None
                 and not self._tunnel_recovery_task.done()
