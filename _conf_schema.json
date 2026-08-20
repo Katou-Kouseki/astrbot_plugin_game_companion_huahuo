@@ -71,11 +71,9 @@
     "items": {
       "level": {
         "description": "日志等级",
-        "type": "select",
+        "type": "string",
         "default": "inherit",
-        "options": ["inherit", "debug", "info", "warning", "error"],
-        "labels": ["跟随 AstrBot", "Debug", "Info", "Warning", "Error"],
-        "hint": "默认跟随 AstrBot 全局日志等级；自定义等级只影响本插件。"
+        "hint": "默认跟随 AstrBot 全局日志等级；可填写 inherit、debug、info、warning 或 error，自定义等级只影响本插件。"
       }
     }
   },
