@@ -524,9 +524,15 @@ class GameRoomServer:
         }
 
     def _trusted_browser_enabled(self) -> bool:
+        external_base = str(
+            getattr(self.plugin, "external_base_url", "") or ""
+        )
         return bool(
             getattr(self.plugin, "trusted_browser_enabled", False)
-            and getattr(self.plugin, "public_base_url", "")
+            and (
+                getattr(self.plugin, "public_base_url", "")
+                or external_base
+            )
             and getattr(self.plugin, "trusted_identity_store", None) is not None
         )
 
@@ -615,6 +621,7 @@ class GameRoomServer:
             return True
         public_urls = (
             str(getattr(self.plugin, "public_base_url", "") or ""),
+            str(getattr(self.plugin, "external_base_url", "") or ""),
             str(getattr(getattr(self.plugin, "quick_tunnel", None), "url", "") or ""),
         )
         for public_url in public_urls:

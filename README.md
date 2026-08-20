@@ -103,12 +103,13 @@ WebUI 的身份区域可以取消当前浏览器信任；在 QQ 中发送 `/game
 
 房间服务默认按需监听 `127.0.0.1:6331`。如果端口已被占用，只会尝试后续十个端口，不会关闭或复用其他服务。
 
-推荐二选一：
+可按实际网络环境选择：
 
 1. 在 `server.public_base_url` 配置现有 HTTPS 反向代理地址。
-2. 安装 `cloudflared`，保留 `server.auto_quick_tunnel=true`，创建首个房间时按需生成 `trycloudflare.com` 临时 HTTPS 地址。
+2. 在 `server.external_base_url` 配置 FRP、ngrok、Tailscale Funnel 或其他反向代理地址。
+3. 安装 `cloudflared`，保留 `server.auto_quick_tunnel=true`，创建首个房间时按需生成 `trycloudflare.com` 临时 HTTPS 地址。
 
-插件不会自动下载 `cloudflared`、修改防火墙、执行 UPnP 或退回到公开服务器 IP。
+插件不会修改防火墙、执行 UPnP 或退回到公开服务器 IP。cloudflared 可以在配置中填写 `server.cloudflared_path`，也可以在游戏管理台通过代理下载到插件数据目录。
 
 Quick Tunnel 首次启动后会先连续检查公网健康状态，确认临时域名已经生效才签发房间链接；随后保持到插件卸载或管理员在管理台手动停止，房间超时销毁不会让旧链接直接变成 Cloudflare 1033。已销毁房间的关闭原因只在内存中短期保留，旧链接会显示房间已经结束或过期。存在活动房间时如果 `cloudflared` 意外退出或临时域名连续失去连通性，插件会按间隔自动重建通道，并在原 QQ 会话发送新链接；临时域名发生变化后，旧消息中的链接无法继续使用。
 
@@ -125,7 +126,12 @@ Quick Tunnel 首次启动后会先连续检查公网健康状态，确认临时�
 | 全部私聊房间上限 | 1 | `0` 为无限制 |
 | 玩家席无人超时 | 60 秒 | `0` 关闭该项自动销毁 |
 | 无有效操作超时 | 300 秒 | `0` 关闭该项自动销毁 |
-| 六个游戏独立开关 | 全部开启 | 关闭后禁止新建、切换和再来一局，不中断进行中的对局 |
+| 七个游戏独立开关 | 全部开启 | 关闭后禁止新建、切换和再来一局，不中断进行中的对局 |
+| 其他远程访问地址 | 空 | `server.external_base_url`，支持 FRP、ngrok、Tailscale Funnel 或反向代理 |
+| 局域网访问地址 | 空 | `server.access_host`，监听 `0.0.0.0` 时可填写手机实际访问的 IP |
+| cloudflared 路径 | 空 | `server.cloudflared_path`，留空时按 PATH、插件目录和托管目录查找 |
+| 允许下载 cloudflared | 开启 | 管理台可通过代理下载官方二进制 |
+| 插件日志等级 | 跟随 AstrBot | `logging.level` 可选 `inherit`、`debug`、`info`、`warning`、`error` |
 | 允许管理台下载 Pikafish | 开启 | 可完全关闭托管下载 |
 | 首次象棋房间自动下载 | 关闭 | 推荐在管理台确认后安装 |
 | 海龟汤每题最多提示 | 3 | `0` 为允许查看全部预生成提示 |
@@ -156,4 +162,4 @@ node --check web/app.js
 node --check pages/游戏管理台/manager.js
 ```
 
-最低支持 AstrBot `4.24.2`，当前开发与实机测试版本为 AstrBot `4.26.8`；需要 Python `3.12+`。插件版本为 `0.2.5`。
+最低支持 AstrBot `4.24.2`，当前开发与实机测试版本为 AstrBot `4.26.8`；需要 Python `3.12+`。插件版本为 `0.2.7`。

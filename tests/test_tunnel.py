@@ -27,6 +27,37 @@ class _ExitedProcess:
         return 7
 
 
+def test_tunnel_prefers_configured_binary_over_path_and_managed_files(tmp_path, monkeypatch) -> None:
+    configured = tmp_path / "custom-cloudflared"
+    configured.write_bytes(b"binary")
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    (managed / "cloudflared").write_bytes(b"managed")
+    monkeypatch.setattr("astrbot_plugin_game_companion.tunnel.shutil.which", lambda _name: str(tmp_path / "system-cloudflared"))
+    tunnel = QuickTunnel(
+        "http://127.0.0.1:42000",
+        search_paths=[managed],
+        configured_path=str(configured),
+        download_dir=managed,
+    )
+
+    assert tunnel.binary_path() == configured.resolve()
+    assert tunnel.binary_source() == "configured"
+
+
+def test_tunnel_selects_the_linux_amd64_release_asset(monkeypatch) -> None:
+    tunnel = QuickTunnel("http://127.0.0.1:42000")
+    monkeypatch.setattr(tunnel, "_platform_label", lambda: "linux-amd64")
+    release = {
+        "assets": [
+            {"name": "cloudflared-linux-arm64", "browser_download_url": "arm"},
+            {"name": "cloudflared-linux-amd64", "browser_download_url": "amd"},
+        ]
+    }
+
+    assert tunnel._select_asset(release)["browser_download_url"] == "amd"
+
+
 @pytest.mark.asyncio
 async def test_tunnel_records_an_exit_after_publishing_its_url() -> None:
     tunnel = QuickTunnel("http://127.0.0.1:42000")

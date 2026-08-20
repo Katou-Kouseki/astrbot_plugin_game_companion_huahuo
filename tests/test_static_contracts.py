@@ -16,6 +16,11 @@ def test_config_defaults_match_product_contract() -> None:
     assert rooms["max_private_rooms"]["default"] == 1
     assert rooms["empty_player_timeout_seconds"]["default"] == 60
     assert rooms["idle_timeout_seconds"]["default"] == 300
+    server = schema["server"]["items"]
+    assert server["cloudflared_path"]["default"] == ""
+    assert server["allow_cloudflared_download"]["default"] is True
+    assert server["external_base_url"]["default"] == ""
+    assert schema["logging"]["items"]["level"]["default"] == "inherit"
     assert rooms["allow_non_admin_group_creation"]["default"] is False
     assert "默认创建普通房间" in rooms["allow_non_admin_group_creation"]["hint"]
     identity = schema["identity"]["items"]
@@ -67,7 +72,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/StarfallMark/astrbot_plugin_game_companion"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.2.6"
+    assert metadata["version"] == "0.2.7"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:

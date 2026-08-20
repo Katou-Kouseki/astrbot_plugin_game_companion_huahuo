@@ -17,6 +17,7 @@
   ];
   let rooms = [];
   let tunnel = {};
+  let cloudflared = {};
   let xiangqiEngine = {};
   let enabledGames = {};
   let gameSettings = [];
@@ -298,12 +299,13 @@
     const badge = document.getElementById("serviceBadge");
     const action = document.getElementById("tunnelAction");
     tunnel = data.tunnel || {};
-    if (data.server?.public_base_url) {
-      badge.textContent = "固定 HTTPS";
+    cloudflared = tunnel;
+    if (data.server?.public_base_url || data.server?.external_base_url) {
+      badge.textContent = data.server?.public_base_url ? "固定 HTTPS" : "自定义外部地址";
       badge.className = "service-badge online";
       action.disabled = true;
       action.querySelector("span").textContent = "固定地址已配置";
-      document.getElementById("tunnelUrl").textContent = data.server.public_base_url;
+      document.getElementById("tunnelUrl").textContent = data.server.public_base_url || data.server.external_base_url;
     } else if (tunnel.running) {
       badge.textContent = "临时公网已开启";
       badge.className = "service-badge online";
@@ -319,6 +321,28 @@
       action.querySelector("span").textContent = tunnel.installed ? "启动临时访问" : "未安装 cloudflared";
       document.getElementById("tunnelUrl").textContent = "";
     }
+    renderCloudflared(cloudflared);
+  }
+
+  function renderCloudflared(data) {
+    const badge = document.getElementById("cloudflaredBadge");
+    const detail = document.getElementById("cloudflaredDetail");
+    const action = document.getElementById("cloudflaredAction");
+    if (!badge || !detail || !action) return;
+    if (data.installed) {
+      badge.textContent = data.running ? "运行中" : "已安装";
+      badge.className = "service-badge online";
+      const source = { configured: "手动路径", system: "系统 PATH", managed: "插件托管", bundled: "插件目录" }[data.source] || "已发现";
+      detail.textContent = `${source} · ${data.path || data.platform || ""}`;
+    } else {
+      badge.textContent = "未安装";
+      badge.className = data.error ? "service-badge error" : "service-badge";
+      detail.textContent = data.error || `适用版本：${data.platform || "自动检测"}`;
+    }
+    action.disabled = !data.allow_download || Boolean(data.configured_path);
+    action.title = data.configured_path
+      ? "当前使用手动配置的 cloudflared 路径"
+      : (data.allow_download ? "从 Cloudflare 官方发行版下载" : "插件配置已禁止下载");
   }
 
   function renderEngine(data) {
@@ -449,6 +473,27 @@
     } finally {
       action.querySelector("span").textContent = "安装 / 更新";
       action.disabled = !xiangqiEngine.allow_download || xiangqiEngine.configured;
+    }
+  }
+
+  async function installCloudflared() {
+    if (!await confirmAction({
+      title: "下载 Cloudflare Tunnel",
+      message: "将通过已配置的代理下载 Cloudflare 官方 cloudflared，并安装到插件数据目录。",
+      label: "开始下载",
+    })) return;
+    const action = document.getElementById("cloudflaredAction");
+    action.disabled = true;
+    action.querySelector("span").textContent = "正在下载";
+    try {
+      await endpoint("POST", "cloudflared/install");
+      showToast("cloudflared 已安装");
+      await loadRooms();
+    } catch (error) {
+      showToast(error?.message || "cloudflared 下载失败");
+    } finally {
+      action.querySelector("span").textContent = "下载 / 更新";
+      action.disabled = !cloudflared.allow_download || Boolean(cloudflared.configured_path);
     }
   }
 
@@ -625,6 +670,7 @@
   document.getElementById("refreshAction").addEventListener("click", loadRooms);
   document.getElementById("tunnelAction").addEventListener("click", toggleTunnel);
   document.getElementById("engineAction").addEventListener("click", installEngine);
+  document.getElementById("cloudflaredAction").addEventListener("click", installCloudflared);
   document.getElementById("saveSettingsAction").addEventListener("click", saveSettings);
   document.getElementById("reloadSettingsAction").addEventListener("click", loadSettings);
   document.querySelectorAll(".manager-tab").forEach((tab) => {

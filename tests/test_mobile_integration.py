@@ -26,7 +26,8 @@ async def test_mobile_room_uses_lan_server_and_prebinds_phone_user() -> None:
     result = await plugin.mobile_create_room("mobile-owner", "gomoku")
 
     assert result["game_type"] == "gomoku"
-    assert result["url"].startswith("http://127.0.0.1:6331/room/")
+    assert result["url"].startswith("http://")
+    assert "127.0.0.1:6331/room/" not in result["url"]
     assert "visitor_token=" in result["url"]
     room = plugin.manager.rooms[result["room_id"]]
     assert room.player_qq == "mobile-owner"
@@ -117,3 +118,32 @@ def test_room_url_rejects_a_running_but_unhealthy_tunnel() -> None:
 
     with pytest.raises(RuntimeError, match="尚未就绪"):
         plugin._room_url(room)
+
+
+def test_custom_external_base_url_bypasses_cloudflare() -> None:
+    plugin = object.__new__(GameCompanionPlugin)
+    plugin.public_base_url = ""
+    plugin.external_base_url = "https://frp.example.com/games"
+    plugin.quick_tunnel = types.SimpleNamespace(ready=False, url="")
+    room = types.SimpleNamespace(access_token="room-token")
+
+    assert plugin._room_url(room) == "https://frp.example.com/games/room/room-token"
+
+
+def test_mobile_status_allows_a_non_loopback_listener_without_cloudflare() -> None:
+    plugin = object.__new__(GameCompanionPlugin)
+    plugin.server_enabled = True
+    plugin.private_rooms_enabled = True
+    plugin.server_host = "0.0.0.0"
+    plugin.access_host = "192.168.1.20"
+    plugin.public_base_url = ""
+    plugin.external_base_url = ""
+    plugin.auto_quick_tunnel = False
+    plugin.room_server = types.SimpleNamespace(running=False)
+    plugin.quick_tunnel = types.SimpleNamespace(ready=False)
+    plugin.enabled_games = {game: True for game in ("gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice", "draw_guess", "blackjack")}
+
+    status = plugin.mobile_status()
+
+    assert status["ready"] is True
+    assert status["blockers"] == []

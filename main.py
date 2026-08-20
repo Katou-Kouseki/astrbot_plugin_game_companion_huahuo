@@ -5,7 +5,9 @@ import base64
 import binascii
 import inspect
 import json
+import logging
 import re
+import socket
 import sys
 import time
 from dataclasses import dataclass
@@ -60,7 +62,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.2.6"
+PLUGIN_VERSION = "0.2.7"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -278,29 +280,45 @@ class GameCompanionPlugin(Star):
 
         self.server_enabled = self._cfg_bool("server.enabled", True)
         self.server_host = self._cfg_str("server.host", "127.0.0.1") or "127.0.0.1"
+        self.access_host = self._cfg_str("server.access_host", "")
         self.server_port = self._cfg_int("server.port", 6331, minimum=1, maximum=65535)
         self.public_base_url = self._validated_public_url(
             self._cfg_str("server.public_base_url", "")
         )
+        self.external_base_url = self._validated_external_url(
+            self._cfg_str("server.external_base_url", "")
+        )
         self.auto_quick_tunnel = self._cfg_bool("server.auto_quick_tunnel", True)
+        self.cloudflared_path = self._cfg_str("server.cloudflared_path", "")
+        self.cloudflared_download_proxy = self._cfg_str(
+            "server.cloudflared_download_proxy", ""
+        )
+        self.allow_cloudflared_download = self._cfg_bool(
+            "server.allow_cloudflared_download", True
+        )
+        self.log_level = self._cfg_str("logging.level", "inherit").lower() or "inherit"
+        self._apply_log_level()
         self.trusted_browser_requested = self._cfg_bool(
             "identity.enable_trusted_browser", False
         )
         self.trusted_browser_ttl_days = self._cfg_int(
             "identity.trusted_browser_ttl_days", 30, minimum=1, maximum=365
         )
+        configured_access = self._configured_access_base()
         self.trusted_browser_enabled = bool(
-            self.trusted_browser_requested and self.public_base_url
+            self.trusted_browser_requested
+            and configured_access
+            and urlsplit(configured_access).scheme == "https"
         )
-        public_path = urlsplit(self.public_base_url).path.rstrip("/")
+        public_path = urlsplit(configured_access).path.rstrip("/")
         self.trusted_browser_cookie_path = public_path or "/"
         self.trusted_identity_store = TrustedIdentityStore(
             self.data_dir / "trusted_browsers.json",
             ttl_days=self.trusted_browser_ttl_days,
         )
-        if self.trusted_browser_requested and not self.public_base_url:
+        if self.trusted_browser_requested and not self.trusted_browser_enabled:
             logger.warning(
-                "[GameCompanion] 受信任浏览器需要固定 HTTPS 外部地址，当前已自动禁用"
+                "[GameCompanion] 受信任浏览器需要有效的 HTTPS 外部地址，当前已自动禁用"
             )
 
         self.group_rooms_enabled = self._cfg_bool("rooms.enable_group_rooms", True)
@@ -424,6 +442,10 @@ class GameCompanionPlugin(Star):
                 self.data_dir.parent.parent / "tools" / "bin",
                 self.plugin_root / "tools",
             ],
+            configured_path=self.cloudflared_path,
+            download_dir=self.data_dir / "tools" / "bin",
+            download_proxy=self.cloudflared_download_proxy,
+            allow_download=self.allow_cloudflared_download,
         )
         self._watchdog_task: asyncio.Task | None = None
         self._tunnel_recovery_task: asyncio.Task | None = None
@@ -453,11 +475,12 @@ class GameCompanionPlugin(Star):
             blockers.append("游戏房间服务未启用")
         if not self.private_rooms_enabled:
             blockers.append("私聊游戏房间未启用")
+        local_access_available = bool(self._local_access_base())
         if (
             not via_mobile_gateway
-            and not self.public_base_url
-            and not self.auto_quick_tunnel
-            and str(self.server_host).strip().lower() in {"127.0.0.1", "localhost", "::1"}
+            and not self._configured_access_base()
+            and not local_access_available
+            and not bool(getattr(self.quick_tunnel, "ready", False))
         ):
             ready = False
             blockers.append("手机房间需要可访问的监听地址或固定 HTTPS 地址")
@@ -552,6 +575,13 @@ class GameCompanionPlugin(Star):
             f"{mobile_base_url.rstrip('/')}/room/{quote(room.access_token, safe='')}"
             f"?visitor_token={quote(visitor_token, safe='')}"
         )
+        logger.info(
+            "[GameCompanion] 移动端房间已准备: room=%s game=%s reused=%s access=%s",
+            room.room_id,
+            room.game_type,
+            reused,
+            mobile_base_url,
+        )
         return {
             "url": url,
             "room_id": room.room_id,
@@ -564,18 +594,37 @@ class GameCompanionPlugin(Star):
         """Start the room server without forcing a public tunnel for LAN phones."""
         if not self.room_server.running:
             await self.room_server.start()
-        if self.public_base_url:
-            return self.public_base_url
-        if self.quick_tunnel.ready and self.quick_tunnel.url:
+        configured_access = self._configured_access_base()
+        if configured_access:
+            logger.info("[GameCompanion] 移动端使用配置的外部地址: %s", configured_access)
+            return configured_access
+        if bool(getattr(self.quick_tunnel, "ready", False)) and self.quick_tunnel.url:
             return self.quick_tunnel.url
+        local_access = self._local_access_base()
+        if local_access:
+            logger.info("[GameCompanion] 移动端使用局域网访问地址: %s", local_access)
+            return local_access
         if str(self.server_host).strip().lower() in {"127.0.0.1", "localhost", "::1"}:
             if not self.auto_quick_tunnel:
                 raise RuntimeError("手机房间需要可访问的监听地址或固定 HTTPS 地址")
             await self._ensure_public_access()
-            if self.quick_tunnel.ready and self.quick_tunnel.url:
+            if bool(getattr(self.quick_tunnel, "ready", False)) and self.quick_tunnel.url:
                 return self.quick_tunnel.url
             raise RuntimeError("手机房间访问通道尚未就绪")
-        return self.room_server.local_base_url
+        if not self.auto_quick_tunnel:
+            fallback = self._local_access_base(allow_unresolved=True)
+            if fallback:
+                logger.warning(
+                    "[GameCompanion] 无法自动确认局域网地址，返回监听地址 %s；"
+                    "建议配置 server.access_host",
+                    fallback,
+                )
+                return fallback
+            raise RuntimeError("手机房间需要可访问的监听地址或固定 HTTPS 地址")
+        await self._ensure_public_access()
+        if bool(getattr(self.quick_tunnel, "ready", False)) and self.quick_tunnel.url:
+            return self.quick_tunnel.url
+        raise RuntimeError("手机房间访问通道尚未就绪")
 
     async def initialize(self) -> None:
         """Start only the in-memory watchdog; the port opens lazily on demand."""
@@ -1254,11 +1303,26 @@ class GameCompanionPlugin(Star):
                     self.room_server.requested_port,
                     self.room_server.port,
                 )
-        if self.public_base_url:
+        if self._configured_access_base():
+            return
+        local_access = self._local_access_base()
+        if local_access:
+            logger.info(
+                "[GameCompanion] 使用局域网访问地址，不启动 Quick Tunnel: %s",
+                local_access,
+            )
+            return
+        fallback = self._local_access_base(allow_unresolved=True)
+        if fallback and not self.auto_quick_tunnel:
+            logger.warning(
+                "[GameCompanion] 无法自动确认局域网地址，将使用监听地址 %s；"
+                "建议配置 server.access_host",
+                fallback,
+            )
             return
         if not self.auto_quick_tunnel:
             await self.room_server.stop()
-            raise RuntimeError("未配置外部 HTTPS 地址，并且临时公网访问已关闭")
+            raise RuntimeError("未配置外部访问地址，并且临时公网访问已关闭")
         self.quick_tunnel.local_url = self.room_server.local_base_url
         try:
             await self.quick_tunnel.start(timeout=40)
@@ -1268,12 +1332,71 @@ class GameCompanionPlugin(Star):
             raise
 
     def _room_url(self, room: GameRoom) -> str:
-        base = self.public_base_url or (
-            self.quick_tunnel.url if self.quick_tunnel.ready else ""
-        )
+        base = self._configured_access_base() or (
+            self.quick_tunnel.url if bool(getattr(self.quick_tunnel, "ready", False)) else ""
+        ) or self._local_access_base(allow_unresolved=True)
         if not base:
             raise RuntimeError("外部访问地址尚未就绪")
         return f"{base.rstrip('/')}/room/{quote(room.access_token, safe='')}"
+
+    def _configured_access_base(self) -> str:
+        return self.public_base_url or getattr(self, "external_base_url", "")
+
+    def _local_access_base(self, *, allow_unresolved: bool = False) -> str:
+        """Return a browser-reachable LAN URL when the server is not loopback-only."""
+        host = str(getattr(self, "server_host", "127.0.0.1") or "127.0.0.1").strip()
+        normalized = host.lower()
+        if normalized in {"127.0.0.1", "localhost", "::1"}:
+            return ""
+        access_host = str(getattr(self, "access_host", "") or "").strip()
+        if normalized in {"0.0.0.0", "::", "[::]"}:
+            access_host = access_host or self._detect_access_host()
+        else:
+            access_host = access_host or host
+        if not access_host or (
+            not allow_unresolved
+            and access_host.lower() in {
+                "0.0.0.0",
+                "::",
+                "[::]",
+                "127.0.0.1",
+                "localhost",
+                "::1",
+            }
+        ):
+            return ""
+        if ":" in access_host and not access_host.startswith("["):
+            access_host = f"[{access_host}]"
+        port = int(
+            getattr(
+                self.room_server,
+                "port",
+                getattr(self, "server_port", 6331),
+            )
+            or 6331
+        )
+        return f"http://{access_host}:{port}"
+
+    def _detect_access_host(self) -> str:
+        configured = getattr(self, "access_host", "")
+        if configured:
+            return configured
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe.connect(("8.8.8.8", 80))
+            host = str(probe.getsockname()[0])
+            probe.close()
+            if host:
+                return host
+        except OSError:
+            pass
+        if str(self.server_host).strip().lower() in {"0.0.0.0", "::", "[::]"}:
+            logger.warning(
+                "[GameCompanion] 未能自动探测局域网地址，将使用监听地址 %s；建议配置 server.access_host",
+                self.server_host,
+            )
+            return self.server_host
+        return "127.0.0.1"
 
     def _resolve_event_room(self, event: AstrMessageEvent, room_id: str) -> GameRoom:
         actor = str(event.get_sender_id() or "")
@@ -3081,11 +3204,11 @@ class GameCompanionPlugin(Star):
 
     def _schedule_tunnel_recovery(self) -> None:
         if (
-            self.public_base_url
+            self._configured_access_base()
             or not self.auto_quick_tunnel
             or not self.manager.rooms
             or not self.room_server.running
-            or self.quick_tunnel.ready
+            or bool(getattr(self.quick_tunnel, "ready", False))
             or (
                 self._tunnel_recovery_task is not None
                 and not self._tunnel_recovery_task.done()
@@ -3174,6 +3297,12 @@ class GameCompanionPlugin(Star):
             "Install Pikafish",
         )
         register_api(
+            f"{PAGE_API_PREFIX}/cloudflared/install",
+            self.page_cloudflared_install,
+            ["POST"],
+            "Install cloudflared",
+        )
+        register_api(
             f"{PAGE_API_PREFIX}/settings",
             self.page_game_settings,
             ["GET"],
@@ -3197,6 +3326,8 @@ class GameCompanionPlugin(Star):
                     "running": self.room_server.running,
                     "port": self.room_server.port if self.room_server.running else None,
                     "public_base_url": self.public_base_url,
+                    "external_base_url": self.external_base_url,
+                    "access_host": self.access_host,
                 },
                 "tunnel": self.quick_tunnel.status(),
                 "xiangqi_engine": self.xiangqi_engine.status(),
@@ -3253,6 +3384,14 @@ class GameCompanionPlugin(Star):
         except (ValueError, RuntimeError, PermissionError, OSError) as exc:
             return {"status": "error", "message": str(exc), "data": {}}
         return {"status": "ok", "data": {"xiangqi_engine": status}}
+
+    async def page_cloudflared_install(self) -> dict[str, Any]:
+        try:
+            status = await self.quick_tunnel.install_latest()
+        except (ValueError, RuntimeError, PermissionError, OSError) as exc:
+            logger.warning("[GameCompanion] cloudflared 安装失败: %s", exc)
+            return {"status": "error", "message": str(exc), "data": {}}
+        return {"status": "ok", "data": {"tunnel": status}}
 
     async def page_game_settings(self) -> dict[str, Any]:
         return {"status": "ok", "data": self._game_settings_snapshot()}
@@ -3470,8 +3609,8 @@ class GameCompanionPlugin(Star):
         )
 
     async def page_tunnel_start(self) -> dict[str, Any]:
-        if self.public_base_url:
-            return {"status": "error", "message": "已配置固定外部地址", "data": {}}
+        if self._configured_access_base():
+            return {"status": "error", "message": "已配置外部访问地址", "data": {}}
         try:
             if not self.room_server.running:
                 await self.room_server.start()
@@ -3507,6 +3646,25 @@ class GameCompanionPlugin(Star):
 
     def _cfg_str(self, dotted_key: str, default: str = "") -> str:
         return str(self._cfg(dotted_key, default) or "").strip()
+
+    def _apply_log_level(self) -> None:
+        """Apply an optional plugin-only override; inherit leaves AstrBot's level intact."""
+        if self.log_level in {"inherit", ""}:
+            return
+        level = getattr(logging, self.log_level.upper(), None)
+        if isinstance(level, int):
+            try:
+                from astrbot.core.log import LogManager
+
+                plugin_logger = LogManager.get_plugin_logger(PLUGIN_NAME)
+            except (ImportError, AttributeError):
+                plugin_logger = logging.getLogger(f"astrbot.plugin.{PLUGIN_NAME}")
+            plugin_logger.setLevel(level)
+        else:
+            logger.warning(
+                "[GameCompanion] 未知日志等级 %s，将跟随 AstrBot 全局设置",
+                self.log_level,
+            )
 
     def _cfg_bool(self, dotted_key: str, default: bool) -> bool:
         value = self._cfg(dotted_key, default)
@@ -3675,6 +3833,16 @@ class GameCompanionPlugin(Star):
         parsed = urlsplit(value)
         if parsed.scheme != "https" or not parsed.netloc:
             logger.warning("[GameCompanion] 外部访问地址必须是 HTTPS，当前配置已忽略")
+            return ""
+        return value.rstrip("/")
+
+    @staticmethod
+    def _validated_external_url(value: str) -> str:
+        if not value:
+            return ""
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            logger.warning("[GameCompanion] 外部访问地址必须是 HTTP 或 HTTPS，当前配置已忽略")
             return ""
         return value.rstrip("/")
 

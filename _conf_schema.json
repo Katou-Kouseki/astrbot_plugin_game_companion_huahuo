@@ -15,6 +15,12 @@
         "default": "127.0.0.1",
         "hint": "推荐保持 127.0.0.1，由 Quick Tunnel 或 HTTPS 反向代理提供外部访问。"
       },
+      "access_host": {
+        "description": "局域网访问地址",
+        "type": "string",
+        "default": "",
+        "hint": "监听 0.0.0.0 时填写手机实际可访问的局域网 IP；留空时自动探测。"
+      },
       "port": {
         "description": "首选监听端口",
         "type": "int",
@@ -27,11 +33,49 @@
         "default": "",
         "hint": "例如 https://bot.example.com/games。留空时可按需启动 Cloudflare Quick Tunnel。"
       },
+      "external_base_url": {
+        "description": "其他远程访问地址",
+        "type": "string",
+        "default": "",
+        "hint": "填写 FRP、ngrok、Tailscale Funnel 或反向代理提供的完整 HTTP/HTTPS 地址，优先于 Cloudflare。"
+      },
       "auto_quick_tunnel": {
         "description": "创建房间时自动启动临时公网访问",
         "type": "bool",
         "default": true,
-        "hint": "需要预先安装 cloudflared；插件不会自行下载。"
+        "hint": "没有配置其他外部地址时，按需启动 Cloudflare Quick Tunnel。"
+      },
+      "cloudflared_path": {
+        "description": "cloudflared 可执行文件路径",
+        "type": "string",
+        "default": "",
+        "hint": "留空时按系统 PATH、插件目录和插件托管目录依次查找。"
+      },
+      "allow_cloudflared_download": {
+        "description": "允许管理台下载 cloudflared",
+        "type": "bool",
+        "default": true,
+        "hint": "从 Cloudflare 官方发行版下载到插件数据目录。"
+      },
+      "cloudflared_download_proxy": {
+        "description": "cloudflared 下载代理",
+        "type": "string",
+        "default": "",
+        "hint": "例如 http://127.0.0.1:7890；留空时继承 HTTPS_PROXY 或 HTTP_PROXY。"
+      }
+    }
+  },
+  "logging": {
+    "description": "插件日志",
+    "type": "object",
+    "items": {
+      "level": {
+        "description": "日志等级",
+        "type": "select",
+        "default": "inherit",
+        "options": ["inherit", "debug", "info", "warning", "error"],
+        "labels": ["跟随 AstrBot", "Debug", "Info", "Warning", "Error"],
+        "hint": "默认跟随 AstrBot 全局日志等级；自定义等级只影响本插件。"
       }
     }
   },
