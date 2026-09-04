@@ -12,12 +12,13 @@ from .gomoku import Difficulty, GomokuGame
 from .pig_dice import PigDiceGame
 from .tictactoe import TicTacToeGame
 from .turtle_soup import TurtleSoupGame
+from .undercover import UndercoverGame
 from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
 GameType = Literal[
     "gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice", "draw_guess",
-    "blackjack",
+    "blackjack", "undercover",
 ]
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
@@ -44,11 +45,13 @@ class TurtleSoupStats:
 class PlayerSeat:
     """A browser visitor occupying one reusable multiplayer seat."""
 
-    visitor_token: str
+    number: int = 0
+    visitor_token: str = ""
     qq: str = ""
     display_name: str = ""
     identity_confirmed: bool = False
     seated_at: float = field(default_factory=time.time)
+    is_ai: bool = False
 
 
 @dataclass(slots=True)
@@ -165,6 +168,10 @@ class GameRoom:
     game_type: GameType
     difficulty: Difficulty
     turtle_soup_mode: TurtleSoupMode = "bot_host"
+    undercover_host_camp_scales: str | None = None
+    undercover_ai_fill_enabled: bool = False
+    undercover_min_players: int = 2
+    undercover_allow_host_customize_camp_scales: bool = True
     created_at: float = field(default_factory=time.time)
     last_activity_at: float = field(default_factory=time.time)
     player_empty_since: float | None = field(default_factory=time.time)
@@ -187,6 +194,7 @@ class GameRoom:
         | PigDiceGame
         | DrawGuessGame
         | BlackjackGame
+        | UndercoverGame
         | None
     ) = None
     scores: dict[GameType, GameScore] = field(
@@ -198,6 +206,7 @@ class GameRoom:
             "pig_dice": GameScore(),
             "draw_guess": GameScore(),
             "blackjack": GameScore(),
+            "undercover": GameScore(),
         }
     )
     turtle_soup_stats: TurtleSoupStats = field(default_factory=TurtleSoupStats)
@@ -425,6 +434,23 @@ class GameRoom:
             ),
             "turtle_soup_mode": self.turtle_soup_mode,
             "difficulty": self.difficulty,
+            "undercover_host_camp_scales": self.undercover_host_camp_scales,
+            "undercover_ai_fill_enabled": self.undercover_ai_fill_enabled,
+            "undercover_min_players": self.undercover_min_players,
+            "undercover_allow_host_customize_camp_scales": (
+                self.undercover_allow_host_customize_camp_scales
+            ),
+            "player_seats": [
+                {
+                    "number": seat.number,
+                    "visitor_token": seat.visitor_token,
+                    "display_name": seat.display_name,
+                    "identity_confirmed": bool(seat.identity_confirmed),
+                    "is_ai": bool(seat.is_ai),
+                    "seated_at": seat.seated_at,
+                }
+                for seat in (multiplayer.seats if multiplayer.enabled else [])
+            ],
             "visitors": [
                 item.public_snapshot(
                     is_player=item.token in player_tokens,
@@ -442,6 +468,12 @@ class GameRoom:
                     or self.status in {"finished", "rematch_pending"}
                 )
                 if isinstance(self.game, DrawGuessGame)
+                else self.game.snapshot(
+                    visitor_player_number=(
+                        visitor.number if visitor else None
+                    )
+                )
+                if isinstance(self.game, UndercoverGame)
                 else self.game.snapshot()
                 if self.game
                 else None
@@ -500,6 +532,7 @@ class GameRoom:
             "pig_dice_progress": self._pig_dice_progress(),
             "draw_guess_progress": self._draw_guess_progress(),
             "blackjack_progress": self._blackjack_progress(),
+            "undercover_progress": self._undercover_progress(),
             "player_number": player.number if player else None,
             "player_numbers": [
                 self.visitors[token].number
@@ -606,3 +639,8 @@ class GameRoom:
             "dealer_blackjack": self.game.dealer_blackjack,
             "hand_count": len(self.game.hands),
         }
+
+    def _undercover_progress(self) -> dict[str, object] | None:
+        if not isinstance(self.game, UndercoverGame):
+            return None
+        return self.game.progress()

@@ -5,6 +5,9 @@
   const accessToken = match ? match[1] : "";
   const storageKey = `game-companion:${accessToken}:visitor`;
   const rememberIdentityKey = "game-companion:remember-identity";
+  let ucRevealedGameKey = "";       // 已展示过身份卡的本局标识（防重复弹卡）
+  let ucPrevMyTurn = false;         // 上一帧本机是否处于发言轮，用于“轮到你了”提醒
+  let ucPrevExpectedSpeaker = null; // 上一帧当前发言者，用于发言轮切换的醒目标语
   const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
@@ -12,6 +15,7 @@
   const diceStage = document.getElementById("diceStage");
   const blackjackStage = document.getElementById("blackjackStage");
   const drawStage = document.getElementById("drawStage");
+  const undercoverStage = document.getElementById("undercoverStage");
   const drawCanvas = document.getElementById("drawCanvas");
   const drawContext = drawCanvas.getContext("2d");
   const chatInput = document.getElementById("chatInput");
@@ -38,6 +42,450 @@
   let drawDirty = false;
   let drawRevision = -1;
 
+  /* ============================================================
+     Canvas 游戏（五子棋/井字棋/象棋/你画我猜）深/浅配色
+     - 所有颜色按"暗色 vs 浅色"分别给值
+     - 每个 canvas 重绘函数取对应 palette
+     ============================================================ */
+  function isDarkTheme() {
+    return document.body.classList.contains("dark");
+  }
+
+  function getGamePalette(gameType) {
+    const dark = isDarkTheme();
+    switch (gameType) {
+      case "tictactoe":
+        return dark
+          ? {
+              bg: "#2a2a2e",
+              line: "#d2d7d4",
+              x: "#e07b71",
+              o: "#6fb8d0",
+              lastMoveHint: "rgba(85, 192, 150, .16)",
+            }
+          : {
+              bg: "#f3f0e8",
+              line: "#3e4a44",
+              x: "#a33d35",
+              o: "#236a72",
+              lastMoveHint: "rgba(33, 92, 69, .09)",
+            };
+      case "gomoku":
+        return dark
+          ? {
+              board: "#3a3530",
+              line: "#cbb998",
+              star: "#b3a48b",
+              blackStone: "#151514",
+              whiteStone: "#e9ecef",
+              whiteEdge: "#6b7271",
+              lastMoveDot: "#e6857c",
+            }
+          : {
+              board: "#d4a85f",
+              line: "#5d472c",
+              star: "#4a3823",
+              blackStone: "#242724",
+              whiteStone: "#f7f8f5",
+              whiteEdge: "#9da39e",
+              lastMoveDot: "#b8483c",
+            };
+      case "xiangqi":
+        return dark
+          ? {
+              board: "#37332a",
+              line: "#ccb48a",
+              river: "#a58d60",
+              red: "#e08a79",
+              blackText: "#cdd8d3",
+              pieceBg: "#2d2b27",
+              pieceRing: "#7a684a",
+              legalHint: "rgba(85, 192, 150, .72)",
+              lastBox: "#e6857c",
+            }
+          : {
+              board: "#d7a85d",
+              line: "#563c23",
+              river: "#654528",
+              red: "#8b2b24",
+              blackText: "#1e2220",
+              pieceBg: "#f1d49a",
+              pieceRing: "#704e22",
+              legalHint: "rgba(28, 104, 70, .72)",
+              lastBox: "#b43e35",
+            };
+      default:
+        return null;
+    }
+  }
+
+  /* ============================================================
+     花火打字机动画 + 思考中占位
+     - TYPED_PROGRESS：key -> { shownChars, timerId, fullText }
+     - TYPED_DONE：已显示完整的消息 key（下次 render 直接跳过动画）
+     ============================================================ */
+  const TYPED_PROGRESS = new Map();
+  const TYPED_DONE = new Set();
+  // 每 tick 推进的字符数：1 时平稳，2 时偶尔加速，更有真人感
+  const TYPING_BASE_MS = 22;
+  const TYPING_JITTER_MS = 18;
+  // 思考中占位超时阈值：最后一条玩家消息超过 N 秒还没有 bot 回复，就不再显示了
+  const THINKING_TIMEOUT_SEC = 90;
+
+  /** 消息稳定ID（同一消息跨 refresh 不变，用于延续打字机进度） */
+  function messageKey(message) {
+    const tsMs = Math.round(Number(message.ts || 0) * 1000);
+    const sender = String(
+      message.role === "bot" ? "花火" : (message.sender_name || message.sender_number || "?")
+    );
+    const raw = String(message.content || "");
+    // 首 24 字符参与指纹，避免长文本拼接过慢
+    const head = raw.length > 24 ? raw.slice(0, 24) + raw.length.toString(36) : raw;
+    return `${tsMs.toString(36)}|${sender.length.toString(36)}|${head}`;
+  }
+
+  /**
+   * 停止并清理所有现存打字机定时器（每次 replaceChildren 全量重绘前必须调用，
+   * 避免旧 DOM 上的定时器继续跑造成内存泄漏）
+   */
+  function teardownAllTypingTimers() {
+    for (const state of TYPED_PROGRESS.values()) {
+      if (state.timerId) {
+        clearTimeout(state.timerId);
+        state.timerId = null;
+      }
+    }
+  }
+
+  /** 某条 bot 消息的打字机主循环：按自然间隔推进一步，然后 setTimeout 自调度 */
+  function runTypingTick(contentEl, key, fullText, onProgress) {
+    const state = TYPED_PROGRESS.get(key);
+    if (!state) return;
+    if (state.shownChars >= fullText.length) {
+      state.timerId = null;
+      TYPED_DONE.add(key);
+      TYPED_PROGRESS.delete(key);
+      onProgress?.(fullText, /* done */ true);
+      return;
+    }
+    // 偶尔在句末 / 标点后多停顿一下，模仿真人思考节奏
+    const nextChar = fullText.charAt(state.shownChars);
+    const isPunctuation = /[。，、！？!?.;:：；,.]/.test(nextChar);
+    const step = isPunctuation ? 1 : (Math.random() < 0.15 ? 2 : 1);
+    state.shownChars = Math.min(fullText.length, state.shownChars + step);
+    const currentText = fullText.slice(0, state.shownChars);
+    // 推进后调用回调：更新 content 文本 + 滚到底
+    onProgress?.(currentText, false);
+    if (state.shownChars >= fullText.length) {
+      state.timerId = null;
+      TYPED_DONE.add(key);
+      TYPED_PROGRESS.delete(key);
+      onProgress?.(fullText, true);
+      return;
+    }
+    const delay = isPunctuation
+      ? TYPING_BASE_MS + 110 + Math.floor(Math.random() * TYPING_JITTER_MS)
+      : TYPING_BASE_MS + Math.floor(Math.random() * TYPING_JITTER_MS);
+    state.timerId = setTimeout(() => runTypingTick(contentEl, key, fullText, onProgress), delay);
+  }
+
+  /**
+   * 是否需要展示"花导思考中…"占位：
+   * 条件：
+   * 1. 有历史消息
+   * 2. 最后一条非 system 消息是玩家（user）发的
+   * 3. 距该条玩家消息发出时间 < THINKING_TIMEOUT_SEC 秒
+   * 4. 该条玩家消息之后再也没有 bot 的发言
+   */
+  function shouldShowThinking(messages, nowSec) {
+    if (!messages || !messages.length) return false;
+    let lastBotIdx = -1;
+    let lastUserIdx = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const role = messages[i].role || "system";
+      if (lastBotIdx === -1 && role === "bot") { lastBotIdx = i; continue; }
+      if (lastUserIdx === -1 && role === "user") { lastUserIdx = i; continue; }
+      if (lastBotIdx !== -1 && lastUserIdx !== -1) break;
+    }
+    if (lastUserIdx === -1) return false;
+    // 最近一条是 bot 回复了 → 不再思考
+    if (lastBotIdx > lastUserIdx) return false;
+    const ts = Number(messages[lastUserIdx].ts || 0);
+    if (!ts) return false;
+    return nowSec - ts < THINKING_TIMEOUT_SEC;
+  }
+
+  /* ============================================================
+     文本过滤：去掉 QQ 表情代码(如 &&happy&&)，统一 Bot→花火，
+     统一 "游戏伴侣"→"花火陪你玩"
+     ============================================================ */
+  const EMOTICON_MAP = {
+    happy: "😊", laugh: "😂", smile: "🙂", grin: "😁", cheerful: "😄", joy: "🤗",
+    love: "🥰", like: "❤️", heart: "💗", kiss: "😘", shy: "🥺", cute: "😽",
+    sad: "😢", cry: "😭", disappointed: "😞",
+    angry: "😠", mad: "😡",
+    confused: "😕", thinking: "🤔", hmm: "🧐", worry: "😟",
+    surprised: "😲", shocked: "😱",
+    cool: "😎", sunglasses: "🕶️",
+    sleepy: "😴", tired: "😩",
+    sick: "🤒",
+    playful: "😜", tease: "😝", naughty: "😈",
+    clap: "👏", nice: "👍", good: "✨", star: "⭐", luck: "🍀",
+    sorry: "💦", sweat: "💧",
+  };
+  const EMOTICON_REGEX = /&&([A-Za-z0-9_\u4e00-\u9fa5]{1,16})&&/g;
+
+  /** 清洗显示文本：表情、Bot 字样、旧品牌名。对非字符串安全返回原值 */
+  function sanitizeDisplayText(value) {
+    if (value == null) return value;
+    if (typeof value !== "string") return value;
+    let out = value.replace(EMOTICON_REGEX, (_match, key) => {
+      const k = String(key).toLowerCase();
+      return EMOTICON_MAP[k] ?? "";
+    });
+    // 独立的 Bot 字样替换为花火（避免影响变量名，但此处只在展示文本中调用，安全）
+    out = out.replace(/\bBot\b/g, "花火");
+    out = out.replace(/游戏伴侣/g, "花火陪你玩");
+    return out;
+  }
+
+  /* ============================================================
+     主题 & 背景外观（localStorage 持久化）
+     ============================================================ */
+  const THEME_KEY = "game-companion:theme";
+  const APPEARANCE_KEY = "game-companion:appearance";
+  const DEFAULT_BG_URL = new URL("../../assets/background.webp", window.location.href).href;
+
+  const DEFAULT_APPEARANCE = Object.freeze({
+    enabled: true,   // 是否启用自定义背景
+    dataUrl: null,   // 用户上传的 dataURL，null = 用内置默认图
+    blur: 14,        // 0 ~ 30 px
+    overlay: 0.75,   // 0 ~ 1 蒙层不透明度（1 = 纯主题色）
+  });
+
+  let appearance = loadAppearance();
+
+  function loadTheme() {
+    const saved = window.localStorage.getItem(THEME_KEY);
+    if (saved === "light" || saved === "dark") return saved;
+    // 首次：跟随系统
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
+    return "light";
+  }
+
+  function applyTheme(theme) {
+    document.body.classList.toggle("dark", theme === "dark");
+    const iconEl = document.getElementById("themeIcon");
+    if (iconEl) {
+      iconEl.setAttribute("data-lucide", theme === "dark" ? "sun" : "moon");
+      icons();
+    }
+    render();
+  }
+
+  function saveTheme(theme) {
+    window.localStorage.setItem(THEME_KEY, theme);
+  }
+
+  function loadAppearance() {
+    try {
+      const raw = window.localStorage.getItem(APPEARANCE_KEY);
+      // 首次访问：默认直接启用内置背景图（写入 localStorage，避免后续 load/save 不一致）
+      if (!raw) {
+        const defaults = { ...DEFAULT_APPEARANCE };
+        try {
+          window.localStorage.setItem(APPEARANCE_KEY, JSON.stringify(defaults));
+        } catch (_) { /* ignore */ }
+        return defaults;
+      }
+      const parsed = JSON.parse(raw);
+      return {
+        enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_APPEARANCE.enabled,
+        dataUrl: typeof parsed.dataUrl === "string" ? parsed.dataUrl : DEFAULT_APPEARANCE.dataUrl,
+        blur: Number.isFinite(parsed.blur) ? Math.max(0, Math.min(30, parsed.blur)) : DEFAULT_APPEARANCE.blur,
+        overlay: Number.isFinite(parsed.overlay) ? Math.max(0, Math.min(1, parsed.overlay)) : DEFAULT_APPEARANCE.overlay,
+      };
+    } catch (_e) {
+      return { ...DEFAULT_APPEARANCE };
+    }
+  }
+
+  function saveAppearance() {
+    try {
+      window.localStorage.setItem(APPEARANCE_KEY, JSON.stringify({
+        enabled: appearance.enabled,
+        // 如果图片太大导致 localStorage 溢出，至少其他参数能保住
+        dataUrl: null,
+        blur: appearance.blur,
+        overlay: appearance.overlay,
+      }));
+      // 尝试把 dataUrl 塞进去（失败则降级为无图）
+      if (appearance.dataUrl) {
+        const tmp = JSON.stringify({
+          enabled: appearance.enabled,
+          dataUrl: appearance.dataUrl,
+          blur: appearance.blur,
+          overlay: appearance.overlay,
+        });
+        window.localStorage.setItem(APPEARANCE_KEY, tmp);
+      }
+    } catch (err) {
+      // 配额溢出：清除 dataUrl，至少保留开关和模糊度
+      appearance.dataUrl = null;
+      try {
+        window.localStorage.setItem(APPEARANCE_KEY, JSON.stringify({
+          enabled: appearance.enabled,
+          dataUrl: null,
+          blur: appearance.blur,
+          overlay: appearance.overlay,
+        }));
+      } catch (_) { /* ignore */ }
+      showToast("图片太大，无法保存到浏览器；本次已启用，但刷新后会回到内置图。");
+    }
+  }
+
+  /**
+   * 通过 CSS 自定义属性 + body class（bg-on）来驱动背景外观。
+   * 不能再用 <style> 动态注入整段文本 —— 浏览器 CSP "style-src 'self'" 会直接拦截，
+   * 背景完全不生效还会报错。改用 classList.toggle + CSSOM.setProperty 这两个 CSP 不拦截的操作。
+   */
+  function applyAppearance() {
+    const root = document.documentElement;
+    const body = document.body;
+    // 1. 开关：控制伪元素显示与否、body 是否透明露出背景图
+    body.classList.toggle("bg-on", !!appearance.enabled);
+    // 2. 背景图：设置 CSS 变量。 URL 中含引号先转义防止 url("…") 闭合逃逸。
+    const imageUrl = (appearance.dataUrl || DEFAULT_BG_URL).replace(/"/g, '\\"');
+    root.style.setProperty("--bg-image", `url("${imageUrl}")`);
+    // 3. 模糊度
+    root.style.setProperty("--bg-blur", `${appearance.blur}px`);
+    // 4. 蒙层不透明度（写在 CSS 渐变里的 rgba alpha 中）
+    root.style.setProperty("--bg-opacity", String(appearance.overlay));
+
+    // 同步 UI 控件显示
+    const bgEnabled = document.getElementById("bgEnabled");
+    const blurRange = document.getElementById("blurRange");
+    const blurValue = document.getElementById("blurValue");
+    const overlayRange = document.getElementById("overlayRange");
+    const overlayValue = document.getElementById("overlayValue");
+    const fileLabel = document.getElementById("bgFileLabel");
+    if (bgEnabled) bgEnabled.checked = appearance.enabled;
+    if (blurRange) blurRange.value = String(appearance.blur);
+    if (blurValue) blurValue.textContent = `${appearance.blur} px`;
+    if (overlayRange) overlayRange.value = String(Math.round(appearance.overlay * 100));
+    if (overlayValue) overlayValue.textContent = appearance.overlay.toFixed(2);
+    if (fileLabel) {
+      fileLabel.textContent = appearance.dataUrl
+        ? "已使用我的背景图（点击可更换）"
+        : "上传自己的背景图（推荐 16:9 ）";
+    }
+  }
+
+  function initAppearance() {
+    const theme = loadTheme();
+    // 先应用主题，再应用背景（背景需要知道暗色/亮色）
+    applyTheme(theme);
+    applyAppearance();
+  }
+
+  function bindAppearanceControls() {
+    const themeToggle = document.getElementById("themeToggle");
+    if (themeToggle) {
+      themeToggle.addEventListener("click", () => {
+        const current = document.body.classList.contains("dark") ? "dark" : "light";
+        const next = current === "dark" ? "light" : "dark";
+        saveTheme(next);
+        applyTheme(next);
+        // 主题变化后，背景的蒙层颜色也要重绘
+        applyAppearance();
+      });
+    }
+
+    const panel = document.getElementById("appearancePanel");
+    const openBtn = document.getElementById("appearanceBtn");
+    const closeBtn = document.getElementById("appearanceClose");
+    const mask = document.getElementById("appearanceMask");
+    const openPanel = () => { if (panel) panel.hidden = false; icons(); };
+    const closePanel = () => { if (panel) panel.hidden = true; };
+    if (openBtn) openBtn.addEventListener("click", openPanel);
+    if (closeBtn) closeBtn.addEventListener("click", closePanel);
+    if (mask) mask.addEventListener("click", closePanel);
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && panel && !panel.hidden) closePanel();
+    });
+
+    const bgEnabled = document.getElementById("bgEnabled");
+    if (bgEnabled) {
+      bgEnabled.addEventListener("change", (event) => {
+        appearance.enabled = !!event.target.checked;
+        saveAppearance();
+        applyAppearance();
+      });
+    }
+
+    const blurRange = document.getElementById("blurRange");
+    if (blurRange) {
+      blurRange.addEventListener("input", (event) => {
+        appearance.blur = Math.max(0, Math.min(30, parseInt(event.target.value || "0", 10)));
+        applyAppearance();
+      });
+      blurRange.addEventListener("change", () => saveAppearance());
+    }
+
+    const overlayRange = document.getElementById("overlayRange");
+    if (overlayRange) {
+      overlayRange.addEventListener("input", (event) => {
+        const v = parseInt(event.target.value || "0", 10) / 100;
+        appearance.overlay = Math.max(0, Math.min(1, v));
+        applyAppearance();
+      });
+      overlayRange.addEventListener("change", () => saveAppearance());
+    }
+
+    const bgFile = document.getElementById("bgFile");
+    if (bgFile) {
+      bgFile.addEventListener("change", (event) => {
+        const file = event.target.files && event.target.files[0];
+        event.target.value = ""; // 允许下次选择相同文件
+        if (!file) return;
+        if (!/^image\//.test(file.type)) {
+          showToast("请选择图片格式文件");
+          return;
+        }
+        const reader = new FileReader();
+        reader.onerror = () => showToast("图片读取失败");
+        reader.onload = () => {
+          appearance.dataUrl = String(reader.result || "");
+          appearance.enabled = true;
+          saveAppearance();
+          applyAppearance();
+          showToast("背景已应用并保存在本机浏览器");
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    const bgUseBuiltin = document.getElementById("bgUseBuiltin");
+    if (bgUseBuiltin) {
+      bgUseBuiltin.addEventListener("click", () => {
+        appearance.dataUrl = null;
+        appearance.enabled = true;
+        saveAppearance();
+        applyAppearance();
+        showToast("已恢复内置默认背景图");
+      });
+    }
+    const bgClear = document.getElementById("bgClear");
+    if (bgClear) {
+      bgClear.addEventListener("click", () => {
+        appearance.dataUrl = null;
+        saveAppearance();
+        applyAppearance();
+        showToast("已清除我的背景图，现使用内置默认图");
+      });
+    }
+  }
+
   function icons() {
     if (window.lucide?.createIcons) window.lucide.createIcons();
   }
@@ -46,11 +494,63 @@
     return new URL(`../../api/room/${accessToken}/${action}${query}`, window.location.href).toString();
   }
 
-  function showToast(message) {
+  function showToast(message, duration = 2600) {
+    if (!toast) return;
     window.clearTimeout(toastTimer);
-    toast.textContent = message;
+    toast.textContent = sanitizeDisplayText(message);
     toast.hidden = false;
-    toastTimer = window.setTimeout(() => { toast.hidden = true; }, 2600);
+    toastTimer = window.setTimeout(() => { toast.hidden = true; }, Math.max(800, Number(duration) || 2600));
+  }
+
+  function showUcIdentityReveal(my) {
+    const overlay = document.getElementById("ucRevealOverlay");
+    if (!overlay || !my || !my.camp) return;
+    const campMap = {
+      civilian: ["平民", "is-civilian", "你是平民：你的词条和大多数玩家一致。找到卧底，把卧底投票出局即可获胜。"],
+      undercover: ["卧底", "is-undercover", "你是卧底：你的词条与多数人不同。隐藏好自己，把平民投票出局即可获胜。"],
+      whiteboard: ["白板", "is-whiteboard", "你是白板：你没有词条。先模仿别人混入，等卧底全部出局后你就赢了。"],
+    };
+    const [campName, cls, hint] = campMap[my.camp] || [ucCampText(my.camp), "", "请妥善保管自己的词条，不要向其他玩家透露。"];
+    const campEl = document.getElementById("ucRevealCamp");
+    campEl.textContent = my.camp === "whiteboard" ? "白板" : `${campName}`;
+    campEl.className = `uc-reveal-camp ${cls || ""}`;
+    const wordEl = document.getElementById("ucRevealWord");
+    if (my.camp === "whiteboard") {
+      wordEl.textContent = "无词条 · 靠猜";
+    } else {
+      wordEl.textContent = my.word || "—";
+    }
+    document.getElementById("ucRevealHint").textContent = hint;
+    const card = document.getElementById("ucRevealCard");
+    // 重新触发入场动画
+    card.style.animation = "none";
+    void card.offsetWidth;
+    card.style.animation = "";
+    overlay.hidden = false;
+  }
+
+  /**
+   * 醒目弹出“轮到谁发言”全屏动画通知（所有玩家/观众都能看到）
+   * 传入 nextNumber：true 表示显示“接下来谁发言”，false 表示当前发言者本人。
+   */
+  function showSpeechTurnNotification(playerNumber, isMine) {
+    const old = document.querySelector(".speech-turn-notification");
+    if (old) old.remove();
+    const note = document.createElement("div");
+    note.className = "speech-turn-notification";
+    note.dataset.live = "1";
+    if (isMine) {
+      note.innerHTML = `<span>到你发言了！</span><strong>${playerNumber}号</strong>`;
+    } else {
+      note.innerHTML = `<span>接下来发言</span><strong>${playerNumber}号</strong>`;
+    }
+    document.body.appendChild(note);
+    window.setTimeout(() => {
+      if (note && document.contains(note)) {
+        note.classList.add("is-out");
+        window.setTimeout(() => { if (document.contains(note)) note.remove(); }, 700);
+      }
+    }, 1700);
   }
 
   function rememberIdentity() {
@@ -72,8 +572,77 @@
         if (nextRoom[key] === undefined) nextRoom[key] = room[key];
       });
     }
+    nextRoom._snapshot_local_ms = Date.now();
     room = nextRoom;
   }
+
+  // 每秒刷新 谁是卧底 setup 阶段倒计时（不用等长轮询）
+  window.setInterval(() => {
+    if (!room || room.game_type !== "undercover") {
+      const cc = document.getElementById("ucStartCountdown");
+      if (cc) cc.hidden = true;
+      return;
+    }
+    const big = document.getElementById("ucStartCountdown");
+    if (big) big.hidden = room.status !== "setup";
+    const note = document.getElementById("seatNote");
+    if (note) note.hidden = room.status === "setup"; // 大字倒计时显示时隐去小字
+    if (room.status !== "setup") return;
+    const deadline = Number(room.turn_deadline || 0);
+    const capacity = Number(room.player_capacity || 0);
+    const current = (room.player_seats || []).length;
+    const serverBase = Number(room.server_time || 0);
+    const takenAt = Number(room._snapshot_local_ms || Date.now()) / 1000;
+    const nowServer = serverBase + ((Date.now() / 1000) - takenAt);
+    const remain = deadline ? Math.max(0, Math.ceil(deadline - nowServer)) : 0;
+    const capacityText = capacity > 0 ? `${current}/${capacity}` : `${current}`;
+    const remainingText = deadline && remain > 0
+      ? (capacity > 0 && current >= capacity ? "人满，即将开局" : `${remain} 秒后自动开局`)
+      : "等待更多玩家加入...";
+    if (big) {
+      const mainNum = capacity > 0 && current >= capacity ? "准备开局" : (deadline && remain > 0 ? `${remain}` : "--");
+      big.innerHTML = `开始倒计时 · <strong>${mainNum}</strong> ${(capacity > 0 && current >= capacity) || !(deadline && remain > 0) ? "" : "秒"}`;
+      big.setAttribute("data-detail", `已入座 ${capacityText} 人 · ${remainingText}`);
+    }
+  }, 1000);
+
+  // 每秒刷新 谁是卧底 对局中的轮次/发言/投票倒计时（不等长轮询）
+  window.setInterval(() => {
+    if (!room || room.game_type !== "undercover" || room.status !== "active") return;
+    const timer = document.getElementById("ucTurnTimer");
+    if (!timer) return;
+    const game = room.game || {};
+    const deadline = Number(room.turn_deadline || 0);
+    const serverBase = Number(room.server_time || 0);
+    const takenAt = Number(room._snapshot_local_ms || Date.now()) / 1000;
+    const nowServer = serverBase + ((Date.now() / 1000) - takenAt);
+    const remain = deadline ? Math.max(0, Math.ceil(deadline - nowServer)) : 0;
+    const timerActive = deadline && remain > 0;
+    const phase = game.phase;
+    let text = "";
+    if (phase === "speech" || phase === "pk") {
+      // “轮到 X号 发言”由 ucExpectedSpeaker 展示，这里只补充倒计时，避免重复
+      const who = game.expected_speaker_number;
+      text = who ? (timerActive ? `（剩余 ${remain} 秒）` : "（不限时）") : "";
+    } else if (phase === "voting") {
+      const voted = Array.isArray(game.voted_this_round_player_numbers)
+        ? game.voted_this_round_player_numbers.length
+        : 0;
+      const rnds = game.rounds_public || [];
+      const cur = rnds.length ? rnds[rnds.length - 1] : null;
+      const voters = Array.isArray(cur ? cur.vote_player_numbers : null)
+        ? cur.vote_player_numbers.length
+        : 0;
+      text = timerActive
+        ? `已投 ${voted}/${voters || "-"} · 剩余 ${remain} 秒`
+        : `已投 ${voted}/${voters || "-"}`;
+    } else if (phase === "finished") {
+      text = "";
+    } else {
+      text = "";
+    }
+    timer.textContent = text;
+  }, 1000);
 
   async function request(method, action, payload = {}) {
     const response = await window.fetch(endpoint(action), {
@@ -177,7 +746,7 @@
   function statusLabel(status) {
     return {
       waiting: "等待玩家", setup: "等待开局", active: "对局中", paused: "已暂停",
-      finished: "本局结束", rematch_pending: "等待 Bot 回应", closed: "房间已结束",
+      finished: "本局结束", rematch_pending: "等待 花火 回应", closed: "房间已结束",
     }[status] || "等待中";
   }
 
@@ -216,6 +785,7 @@
       pig_dice: "贪心骰子",
       draw_guess: "你画我猜",
       blackjack: "二十一点",
+      undercover: "谁是卧底",
     }[room?.game_type] || "棋类游戏";
   }
 
@@ -227,17 +797,24 @@
     const pigDice = room.game_type === "pig_dice";
     const drawGuess = room.game_type === "draw_guess";
     const blackjack = room.game_type === "blackjack";
-    document.title = `游戏伴侣 · ${gameLabel()}`;
-    document.getElementById("gameTitle").textContent = gameLabel();
+    const undercover = room.game_type === "undercover";
+    document.title = sanitizeDisplayText(`花火陪你玩 · ${gameLabel()}`);
+    document.getElementById("gameTitle").textContent = sanitizeDisplayText(gameLabel());
     document.getElementById("brandIcon").setAttribute(
       "data-lucide",
-      turtleSoup ? "shell" : (pigDice ? "dice-5" : (blackjack ? "spade" : (drawGuess ? "paintbrush" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3"))))),
+      turtleSoup ? "shell" : (pigDice ? "dice-5" : (blackjack ? "spade" : (undercover ? "spy" : (drawGuess ? "paintbrush" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")))))),
     );
-    boardStage.hidden = turtleSoup || pigDice || blackjack || drawGuess;
+    boardStage.hidden = turtleSoup || pigDice || blackjack || drawGuess || undercover;
+    const turnPanel = document.querySelector("section.turn-panel");
+    if (turnPanel) {
+      // 谁是卧底、二十一点各有专属阶段/状态显示，隐藏通用"当前回合 走棋"面板
+      turnPanel.hidden = blackjack || undercover;
+    }
     soupStage.hidden = !turtleSoup;
     diceStage.hidden = !pigDice;
     blackjackStage.hidden = !blackjack;
     drawStage.hidden = !drawGuess;
+    undercoverStage.hidden = !undercover;
     boardStage.classList.toggle("xiangqi", xiangqi);
     boardStage.classList.toggle("tictactoe", tictactoe);
     board.width = xiangqi ? 720 : 760;
@@ -257,7 +834,7 @@
         : (tictactoe ? "三乘三井字棋棋盘" : "十五乘十五五子棋棋盘"),
     );
     const buttons = Array.from(document.querySelectorAll("[data-side]"));
-    let values = [["human_black", "我先手"], ["bot_black", "Bot先手"], ["random", "随机"]];
+    let values = [["human_black", "我先手"], ["bot_black", "花火先手"], ["random", "随机"]];
     if (xiangqi) {
       values = [["human_red", "我执红"], ["human_black", "我执黑"], ["random", "随机"]];
     } else if (tictactoe) {
@@ -292,8 +869,8 @@
         : `${room.visitor_number || "?"}号观众`)
       : `匿名观众（${room.visitor_number || "?"}号）`;
     chatInput.placeholder = room.game_type === "turtle_soup"
-      ? "提问、给线索，或和 Bot 聊天"
-      : "和 Bot 说点什么";
+      ? "提问、给线索，或和 花火 聊天"
+      : "和 花火 说点什么";
     document.getElementById("chatSend").disabled = chatBusy;
     const pigDice = room.game_type === "pig_dice";
     const drawGuess = room.game_type === "draw_guess";
@@ -307,7 +884,7 @@
     const playerHostedSoup = turtleSoup && room.turtle_soup_mode === "player_host";
     document.getElementById("humanScoreLabel").textContent = drawGuess ? "猜中" : turtleSoup ? (playerHostedSoup ? "玩家" : "解开") : "玩家";
     document.getElementById("drawScoreLabel").textContent = drawGuess ? "总轮数" : turtleSoup ? "总题数" : (pigDice ? "总局数" : "平局");
-    document.getElementById("botScoreLabel").textContent = drawGuess ? "未猜中" : turtleSoup ? (playerHostedSoup ? "Bot 猜中" : "放弃") : "Bot";
+    document.getElementById("botScoreLabel").textContent = drawGuess ? "未猜中" : turtleSoup ? (playerHostedSoup ? "花火 猜中" : "放弃") : "花火";
     if (turtleSoup || pigDice || drawGuess) document.getElementById("drawScore").textContent = room.score?.games ?? 0;
     renderSeat();
     renderPeople();
@@ -316,6 +893,7 @@
     renderPigDice();
     renderBlackjack();
     renderDrawGuess();
+    renderUndercover();
     drawBoard();
     renderTurn();
     icons();
@@ -334,9 +912,10 @@
     const trustedText = document.getElementById("trustedIdentityText");
     const forgetIdentity = document.getElementById("forgetIdentity");
     const sideChoice = document.getElementById("sideChoice");
+    const identityTokenInline = document.getElementById("identityTokenInline");
     badge.textContent = room.is_player ? "玩家席" : "观众席";
     badge.className = `seat-badge ${room.is_player ? "player" : ""}`;
-    sideChoice.hidden = ["turtle_soup", "pig_dice", "draw_guess", "blackjack"].includes(room.game_type) || !(["waiting", "setup", "finished"].includes(room.status));
+    sideChoice.hidden = ["turtle_soup", "pig_dice", "draw_guess", "blackjack", "undercover"].includes(room.game_type) || !(["waiting", "setup", "finished"].includes(room.status));
     action.hidden = false;
     action.disabled = busy;
     const identityRequired = !room.admin_room && !room.player_confirmed;
@@ -351,11 +930,16 @@
       forgetIdentity.hidden = !room.trusted_browser_active;
     }
     if (identityRequired) {
-      identityToken.textContent = room.identity_token || "--------";
-      identityTokenNote.textContent = room.identity_token
-        ? (room.source === "group" ? "请在原群聊中 @Bot 直接发送令牌，或发送：" : "请在原私聊中发送令牌，或发送：")
-          + "绑定玩家 " + room.identity_token
-        : "令牌已过期，刷新页面后重新获取";
+      const token = room.identity_token || "--------";
+      identityToken.textContent = token;
+      if (identityTokenInline) identityTokenInline.textContent = token;
+      if (!room.identity_token) {
+        identityTokenNote.textContent = "绑定码已过期，刷新页面后重新获取";
+      } else if (room.source === "group") {
+        identityTokenNote.textContent = `群内直接发送：/绑定玩家 ${token}；或点击上方「一键复制」直接粘贴到群里发送即可。`;
+      } else {
+        identityTokenNote.textContent = `私聊里发送：/绑定玩家 ${token}；或点击上方「一键复制」直接粘贴发送即可。`;
+      }
     }
     if (!room.is_player && room.admin_room) {
       action.innerHTML = '<i data-lucide="clock-3"></i><span>等待管理员安排</span>';
@@ -374,25 +958,40 @@
         ? `玩家席 ${room.player_numbers?.length || 0} / ${capacity || "不限"}，加入后按顺序轮流操作。`
         : room.player_number ? `${room.player_number} 号正在玩家席。` : "第一个加入玩家席的人开始对局。";
     } else if (room.status === "setup") {
-      action.innerHTML = room.game_type === "turtle_soup"
-        ? room.turtle_soup_mode === "player_host"
-          ? '<i data-lucide="message-circle-question"></i><span>开始让 Bot 猜</span>'
-          : '<i data-lucide="sparkles"></i><span>开始出题</span>'
-        : room.game_type === "pig_dice"
-        ? '<i data-lucide="dice-5"></i><span>开始掷骰</span>'
-        : room.game_type === "draw_guess"
-        ? '<i data-lucide="paintbrush"></i><span>开始作画</span>'
-        : room.game_type === "blackjack"
-        ? '<i data-lucide="spade"></i><span>开始发牌</span>'
-        : '<i data-lucide="play"></i><span>开始新一局</span>';
-      note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不允许进入玩家席。";
+      if (room.game_type === "undercover") {
+        // 谁是卧底：倒计时自动开，不需要任何按钮
+        action.hidden = true;
+        const capacity = Number(room.player_capacity || 0);
+        const current = (room.player_seats || []).length;
+        const deadline = Number(room.turn_deadline || 0);
+        const serverNow = Number(room.server_time || Date.now() / 1000);
+        const remain = Math.max(0, Math.ceil(deadline - serverNow));
+        const capacityText = capacity > 0 ? ` ${current}/${capacity} 人` : ` ${current} 人`;
+        const remainText = remain > 0
+          ? ((capacity > 0 && current >= capacity) ? "，人满立即开始" : `，约 ${remain} 秒后自动开始（人满立即开）`)
+          : "，等待开始...";
+        note.textContent = `已入座${capacityText}${remainText}。`;
+      } else {
+        action.innerHTML = room.game_type === "turtle_soup"
+          ? room.turtle_soup_mode === "player_host"
+            ? '<i data-lucide="message-circle-question"></i><span>开始让 花火 猜</span>'
+            : '<i data-lucide="sparkles"></i><span>开始出题</span>'
+          : room.game_type === "pig_dice"
+          ? '<i data-lucide="dice-5"></i><span>开始掷骰</span>'
+          : room.game_type === "draw_guess"
+          ? '<i data-lucide="paintbrush"></i><span>开始作画</span>'
+          : room.game_type === "blackjack"
+          ? '<i data-lucide="spade"></i><span>开始发牌</span>'
+          : '<i data-lucide="play"></i><span>开始新一局</span>';
+        note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不允许进入玩家席。";
+      }
     } else if (room.status === "finished") {
       action.innerHTML = room.game_type === "turtle_soup"
         ? `<i data-lucide="rotate-ccw"></i><span>${room.turtle_soup_mode === "player_host" ? "申请再出一题" : "申请再来一道"}</span>`
         : '<i data-lucide="rotate-ccw"></i><span>申请再来一局</span>';
-      note.textContent = "Bot 会结合当前人格决定是否接受。";
+      note.textContent = "花火 会结合当前人格决定是否接受。";
     } else if (room.status === "rematch_pending") {
-      action.innerHTML = '<i data-lucide="loader-circle"></i><span>等待 Bot 回应</span>';
+      action.innerHTML = '<i data-lucide="loader-circle"></i><span>等待 花火 回应</span>';
       action.disabled = true;
       note.textContent = "";
     } else {
@@ -401,39 +1000,82 @@
     }
   }
 
+  // 随机英文名：未绑定 QQ 的成员显示“观众-<英文>”，根据成员号稳定生成，避免每次重绘变化
+  const _FAKE_ADJ = ["Clear", "Swift", "Bright", "Quiet", "Bold", "Calm", "Crimson", "Ever", "Frost", "Grand"];
+  const _FAKE_NOUN = ["River", "Fox", "Pine", "Comet", "Lark", "North", "Echo", "Cedar", "Mist", "Raven"];
+  function fakeEnglishName(seed) {
+    let h = 0;
+    const s = String(seed == null ? "" : seed);
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return _FAKE_ADJ[h % _FAKE_ADJ.length] + _FAKE_NOUN[(h >>> 3) % _FAKE_NOUN.length];
+  }
+  // 房间成员显示名：绑定了 QQ 显示其昵称；否则显示“观众-<英文>”。一律不带座位号，避免与游戏内玩家号码混淆
+  function memberName(visitor) {
+    return visitor.identity_confirmed && visitor.display_name
+      ? visitor.display_name
+      : `观众-${fakeEnglishName(visitor.number)}`;
+  }
+
   function renderPeople() {
     const list = document.getElementById("peopleList");
     list.replaceChildren();
     const visitors = Array.isArray(room.visitors) ? room.visitors : [];
-    document.getElementById("peopleCount").textContent = `${visitors.length} 人`;
-    visitors.forEach((visitor) => {
-      const chip = document.createElement("span");
-      chip.className = `person-chip ${visitor.online ? "online" : ""} ${visitor.is_player ? "player" : ""}`;
-      chip.textContent = `${visitor.display_name ? `${visitor.display_name}（${visitor.number}号）` : `${visitor.number}号`}${visitor.is_player ? " · 玩家" : ""}`;
-      if (room.multiplayer_enabled && !room.is_player && visitor.is_player) {
-        const request = document.createElement("button");
-        request.type = "button";
-        request.textContent = "申请交换";
-        const cooldown = Number(room.swap_cooldown_until || 0);
-        request.disabled = !room.player_confirmed || Boolean(room.outgoing_swap_request) || (cooldown && cooldown > (room.server_time || Date.now() / 1000));
-        request.addEventListener("click", () => requestSeatSwap(visitor.number));
-        chip.appendChild(request);
-      }
-      if (room.multiplayer_enabled && visitor.number === room.visitor_number && room.is_player) {
-        (room.incoming_swap_requests || []).forEach((swap) => {
-          const accept = document.createElement("button");
-          accept.type = "button";
-          accept.textContent = `${swap.requester_number}号申请，接受`;
-          accept.addEventListener("click", () => respondSeatSwap(swap.request_id, true));
-          chip.appendChild(accept);
-          const decline = document.createElement("button");
-          decline.type = "button";
-          decline.textContent = "拒绝";
-          decline.addEventListener("click", () => respondSeatSwap(swap.request_id, false));
-          chip.appendChild(decline);
-        });
-      }
-      list.appendChild(chip);
+    // 已入座的玩家始终保留；离线/已关闭页面残留的观众不再计入，避免“莫名其妙多出的观众”
+    const players = visitors.filter((v) => v.is_player);
+    const spectators = visitors.filter((v) => !v.is_player && v.online);
+    const countParts = [
+      players.length ? `玩家${players.length}` : "",
+      spectators.length ? `观众${spectators.length}` : "",
+    ].filter(Boolean).join(" / ");
+    document.getElementById("peopleCount").textContent =
+      `${visitors.length} 人${countParts ? " · " + countParts : ""}`;
+    const groups = [
+      { label: "玩家", members: players },
+      { label: "观众", members: spectators },
+    ];
+    groups.forEach((group) => {
+      if (!group.members.length) return;
+      const head = document.createElement("div");
+      head.className = "people-group";
+      const labelSpan = document.createElement("span");
+      labelSpan.className = "people-group-label";
+      labelSpan.textContent = group.label;
+      const countSpan = document.createElement("span");
+      countSpan.className = "people-group-count";
+      countSpan.textContent = group.members.length;
+      head.appendChild(labelSpan);
+      head.appendChild(countSpan);
+      list.appendChild(head);
+      group.members.forEach((visitor) => {
+        const chip = document.createElement("span");
+        chip.className = `person-chip ${visitor.online ? "online" : ""} ${group.label === "玩家" ? "player" : ""}`;
+        // 绑定了显示 QQ 昵称，未绑定显示“观众-<英文>”，不再显示座位号
+        chip.textContent = memberName(visitor);
+        if (room.multiplayer_enabled && !room.is_player && visitor.is_player) {
+          const request = document.createElement("button");
+          request.type = "button";
+          request.textContent = "申请交换";
+          const cooldown = Number(room.swap_cooldown_until || 0);
+          request.disabled = !room.player_confirmed || Boolean(room.outgoing_swap_request) || (cooldown && cooldown > (room.server_time || Date.now() / 1000));
+          request.addEventListener("click", () => requestSeatSwap(visitor.number));
+          chip.appendChild(request);
+        }
+        if (room.multiplayer_enabled && visitor.number === room.visitor_number && room.is_player) {
+          (room.incoming_swap_requests || []).forEach((swap) => {
+            const accept = document.createElement("button");
+            accept.type = "button";
+            accept.textContent = `${swap.requester_number}号申请，接受`;
+            accept.addEventListener("click", () => respondSeatSwap(swap.request_id, true));
+            chip.appendChild(accept);
+            const decline = document.createElement("button");
+            decline.type = "button";
+            decline.textContent = "拒绝";
+            decline.addEventListener("click", () => respondSeatSwap(swap.request_id, false));
+            chip.appendChild(decline);
+          });
+        }
+        list.appendChild(chip);
+      });
     });
   }
 
@@ -494,9 +1136,15 @@
 
   function renderMessages() {
     const list = document.getElementById("messages");
+    // 全量重绘前必须清掉旧 DOM 上的打字机定时器，避免泄漏
+    teardownAllTypingTimers();
     const wasNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
     list.replaceChildren();
     const messages = Array.isArray(room.messages) ? room.messages : [];
+    // 用户是否主动留在底部附近（打字机推进时滚动跟随需要实时判断）
+    const userStaysNearBottom = () =>
+      list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+
     if (!messages.length) {
       const empty = document.createElement("span");
       empty.className = "empty-message";
@@ -504,6 +1152,7 @@
       list.appendChild(empty);
       return;
     }
+
     messages.slice(-60).forEach((message) => {
       const role = message.role || "system";
       const item = document.createElement("article");
@@ -512,7 +1161,7 @@
         const meta = document.createElement("span");
         meta.className = "message-meta";
         if (role === "bot") {
-          meta.textContent = "Bot";
+          meta.textContent = "花火";
         } else {
           const sender = String(message.sender_name || "匿名观众");
           meta.textContent = message.sender_number
@@ -523,10 +1172,78 @@
       }
       const content = document.createElement("p");
       content.className = "message-content";
-      content.textContent = String(message.content || "");
+      const rawText = sanitizeDisplayText(String(message.content || ""));
+
+      if (role === "bot" && rawText.length > 0) {
+        // —— 花火的消息：打字机动画
+        const key = messageKey(message);
+        if (TYPED_DONE.has(key)) {
+          // 之前已完整显示过 → 秒显
+          content.textContent = rawText;
+        } else {
+          // 从现有进度继续（如果有），否则从 0 开始
+          const cached = TYPED_PROGRESS.get(key);
+          const startShown = cached ? cached.shownChars : 0;
+          const safeStart = Math.max(0, Math.min(rawText.length, startShown));
+          if (!cached) {
+            TYPED_PROGRESS.set(key, { shownChars: safeStart, timerId: null, fullText: rawText });
+          } else {
+            // 文本变化？（极少发生）强制重置进度
+            if (cached.fullText !== rawText) {
+              cached.shownChars = 0;
+              cached.fullText = rawText;
+            } else {
+              cached.shownChars = safeStart;
+            }
+            cached.timerId = null;
+          }
+          content.textContent = rawText.slice(0, safeStart);
+          if (safeStart < rawText.length) {
+            // 打字中：加闪烁光标 class
+            content.classList.add("typing-active");
+            // 用短延迟启动第一个 tick，保证首次渲染后再跑动画
+            const state = TYPED_PROGRESS.get(key);
+            if (state) {
+              state.timerId = setTimeout(() => {
+                runTypingTick(content, key, rawText, (_shown, done) => {
+                  // 进度回调：刷新文本 + 用户没手动滑上去就跟随滚动
+                  content.textContent = done ? rawText : _shown;
+                  if (done) content.classList.remove("typing-active");
+                  if (userStaysNearBottom() || activeRoomView === "chat") {
+                    list.scrollTop = list.scrollHeight;
+                  }
+                });
+              }, 60);
+            }
+          }
+        }
+      } else {
+        // 玩家消息 / system 消息：一次性直接显示
+        content.textContent = rawText;
+      }
       item.appendChild(content);
       list.appendChild(item);
     });
+
+    // —— 思考中占位：玩家刚发完消息，花火还没回复时显示
+    const nowSec = Date.now() / 1000;
+    if (shouldShowThinking(messages, nowSec)) {
+      const think = document.createElement("article");
+      think.className = "message bot chat thinking-wrap";
+      const meta = document.createElement("span");
+      meta.className = "message-meta";
+      meta.textContent = "花火";
+      think.appendChild(meta);
+      const indicator = document.createElement("p");
+      indicator.className = "message-content typing-indicator";
+      indicator.innerHTML = [
+        "<span class=\"thinking-label\">花导思考中</span>",
+        "<span class=\"dots\"><b></b><b></b><b></b></span>",
+      ].join("");
+      think.appendChild(indicator);
+      list.appendChild(think);
+    }
+
     if (wasNearBottom || activeRoomView === "chat") list.scrollTop = list.scrollHeight;
     if (activeRoomView === "chat") lastSeenMessageId = latestMessageId(room);
   }
@@ -537,11 +1254,11 @@
     const puzzle = game?.puzzle;
     const playerHosted = game?.mode === "player_host" || room.turtle_soup_mode === "player_host";
     document.getElementById("soupTitle").textContent = playerHosted
-      ? "玩家出题 · Bot 猜"
-      : puzzle?.title || "正在准备题目";
+      ? "玩家出题 · 花火 猜"
+      : sanitizeDisplayText(puzzle?.title || "正在准备题目");
     document.getElementById("soupSurface").textContent = playerHosted
-      ? "玩家轮流提供公开线索或回答 Bot 的问题；Bot 不会提前看到隐藏汤底。"
-      : puzzle?.surface || (game?.failure_reason ? "Bot 正在重新整理题目。" : "Bot 正在构思一道新的海龟汤。");
+      ? "玩家轮流提供公开线索或回答 花火 的问题；花火 不会提前看到隐藏汤底。"
+      : sanitizeDisplayText(puzzle?.surface || (game?.failure_reason ? "花火 正在重新整理题目。" : "花火 正在构思一道新的海龟汤。"));
     document.getElementById("soupContentLevel").textContent = {
       all_ages: "全年龄", normal: "普通", unrestricted: "不限制",
     }[puzzle?.content_level || game?.content_level] || "普通";
@@ -555,9 +1272,9 @@
       : `${game?.discovered_fact_count ?? 0} / ${game?.key_fact_count ?? 0}`;
     const progressLabels = document.querySelectorAll(".soup-progress dt");
     if (progressLabels.length === 4) {
-      progressLabels[0].textContent = playerHosted ? "Bot 提问" : "提问";
+      progressLabels[0].textContent = playerHosted ? "花火 提问" : "提问";
       progressLabels[1].textContent = playerHosted ? "参与玩家" : "提示";
-      progressLabels[2].textContent = playerHosted ? "Bot 猜测" : "答案尝试";
+      progressLabels[2].textContent = playerHosted ? "花火 猜测" : "答案尝试";
       progressLabels[3].textContent = playerHosted ? "公开回合" : "关键事实";
     }
 
@@ -594,10 +1311,10 @@
         const response = document.createElement("p");
         response.className = "response";
         response.textContent = entry.kind === "reverse" && entry.pending
-          ? entry.response || "Bot 推理中"
+          ? sanitizeDisplayText(entry.response || "花火 推理中")
           : entry.kind === "reverse"
-          ? `Bot ${entry.bot_action === "guess" ? "猜测" : "提问"}：${entry.response || ""}`
-          : entry.response || "Bot 判断中";
+          ? `花火 ${entry.bot_action === "guess" ? "猜测" : "提问"}：${sanitizeDisplayText(entry.response || "")}`
+          : sanitizeDisplayText(entry.response || "花火 判断中");
         item.append(prompt, response);
         history.appendChild(item);
       });
@@ -606,7 +1323,7 @@
 
     const solution = document.getElementById("soupSolution");
     solution.hidden = playerHosted || !puzzle?.solution;
-    document.getElementById("soupSolutionText").textContent = puzzle?.solution || "";
+    document.getElementById("soupSolutionText").textContent = sanitizeDisplayText(puzzle?.solution || "");
 
   }
 
@@ -618,7 +1335,7 @@
     document.getElementById("diceHumanScore").textContent = game?.human_score ?? 0;
     document.getElementById("diceBotScore").textContent = game?.bot_score ?? 0;
     document.getElementById("diceTurnTotal").textContent = game?.turn_total ?? 0;
-    document.getElementById("diceRisk").textContent = `Bot 风格：${{
+    document.getElementById("diceRisk").textContent = `花火 风格：${{
       cautious: "稳健", balanced: "均衡", bold: "大胆",
     }[game?.risk_style] || "均衡"}`;
 
@@ -634,9 +1351,9 @@
 
     const status = document.getElementById("diceStatus");
     if (!game) status.textContent = "等待开局";
-    else if (game.finished) status.textContent = game.winner === "human" ? "玩家获胜" : "Bot 获胜";
+    else if (game.finished) status.textContent = game.winner === "human" ? "玩家获胜" : "花火 获胜";
     else if (room.status === "paused") status.textContent = "对局已暂停";
-    else status.textContent = game.turn === "human" ? "轮到玩家" : "Bot 正在掷骰";
+    else status.textContent = game.turn === "human" ? "轮到玩家" : "花火 正在掷骰";
 
     const history = document.getElementById("diceHistory");
     history.replaceChildren();
@@ -650,7 +1367,7 @@
       entries.forEach((entry) => {
         const item = document.createElement("div");
         item.className = `dice-event ${entry.actor || "human"} ${entry.action || "roll"}`;
-        const actor = entry.actor === "human" ? "玩家" : "Bot";
+        const actor = entry.actor === "human" ? "玩家" : "花火";
         let text = `${actor} 掷出 ${entry.value}`;
         if (entry.action === "bust") text = `${actor} 掷出 1，损失 ${entry.lost || 0} 分`;
         if (entry.action === "hold") text = `${actor} 收手，存下 ${entry.banked || 0} 分`;
@@ -837,6 +1554,444 @@
     }
   }
 
+  function ucCampText(camp) {
+    return { civilian: "平民", undercover: "卧底", whiteboard: "白板" }[camp] || camp || "未公布";
+  }
+  function ucPlayerLabel(player) {
+    const base = `${player.player_number}号${player.display_name ? " · " + player.display_name : ""}`;
+    if (player.camp && room?.status === "finished") {
+      return `${base}（${ucCampText(player.camp)}）`;
+    }
+    return base;
+  }
+
+  function renderUndercover() {
+    if (!room || room.game_type !== "undercover") return;
+    const snap = room.game || {};
+    const stage = document.getElementById("undercoverStage");
+    if (stage.hidden) return;
+
+    // 1. 顶部 round label + 阵营统计
+    const roundNumber = Number(snap.current_round_number || 0);
+    const phaseText = {
+      idle: "等待玩家入座",
+      preparing: "发词准备",
+      speech: "发言轮",
+      pk: "PK 子轮",
+      voting: "投票轮",
+      finished: "本局结束",
+    }[snap.phase] || snap.phase || "等待开始";
+    document.getElementById("ucRoundLabel").textContent = roundNumber
+      ? `第 ${roundNumber} 轮 · ${phaseText}`
+      : `${phaseText}`;
+
+    const campCounts = snap.camp_info?.counts_live || snap.camp_info?.counts_all || {};
+    const campUl = document.getElementById("ucCampCounts");
+    campUl.innerHTML = "";
+    const campOrder = ["civilian", "undercover", "whiteboard"];
+    campOrder.forEach((camp) => {
+      const total = Number(snap.camp_info?.counts_all?.[camp] || 0);
+      const live = Number(campCounts[camp] || 0);
+      // 白板即使未配置也始终展示（0/0）
+      const li = document.createElement("li");
+      li.className = `uc-camp-${camp}`;
+      li.innerHTML = `<span>${ucCampText(camp)}</span><strong>${live}/${total}</strong>`;
+      campUl.appendChild(li);
+    });
+
+    // 1b. 房主阵营自定义面板 + 手动添AI按钮
+    const hostCard = document.getElementById("ucHostCampCard");
+    if (hostCard) {
+      const waiting = ["waiting", "setup"].includes(room.status || "");
+      const canCustomize = !!room.undercover_allow_host_customize_camp_scales;
+      const seats = Array.isArray(room.player_seats) ? room.player_seats : [];
+      // 房主定义：第一个绑定QQ身份的真人玩家；admin_room 直接取第一个非AI入座者作为管理权限
+      let hostSeat = null;
+      if (!!room.admin_room) {
+        hostSeat = seats.find((s) => !s.is_ai) || seats[0] || null;
+      } else {
+        hostSeat = seats.find((s) => !s.is_ai && !!s.identity_confirmed) || null;
+      }
+      const amHost = !!hostSeat && (hostSeat.visitor_token === visitorToken);
+      hostCard.hidden = !(waiting && (canCustomize || !!room.admin_room) && amHost);
+      if (!hostCard.hidden) {
+        const hostHint = document.getElementById("ucHostCampHint");
+        const civ = document.getElementById("ucHostCivInput");
+        const uc = document.getElementById("ucHostUcInput");
+        const wb = document.getElementById("ucHostWbInput");
+        const save = document.getElementById("ucHostCampSave");
+        const addAi = document.getElementById("ucHostAddAi");
+        const seatCount = document.getElementById("ucHostSeatCount");
+        const defaultScales = (room.undercover_host_camp_scales || "4 1 0")
+          .split(/[\s:：,，]+/).map((x) => Number(x) || 0);
+        if (defaultScales.length < 3) defaultScales.push(0, 0, 0);
+        if (document.activeElement !== civ) civ.value = String(defaultScales[0] || 4);
+        if (document.activeElement !== uc) uc.value = String(defaultScales[1] || 1);
+        if (document.activeElement !== wb) wb.value = String(defaultScales[2] || 0);
+        if (hostHint) hostHint.textContent = `当前比例：${civ.value} 民 ${uc.value} 卧 ${wb.value} 白（按实际人数按比例折算）`;
+        const capacity = Number(room.player_capacity || 0);
+        const current = seats.length;
+        if (seatCount) seatCount.textContent = capacity > 0
+          ? `当前 ${current}/${capacity} 人 · 至少 ${Number(room.undercover_min_players || 2)} 人开局`
+          : `当前 ${current} 人 · 至少 ${Number(room.undercover_min_players || 2)} 人开局`;
+        // —— 保存房间设置
+        if (save && !save.dataset.bound) {
+          save.dataset.bound = "1";
+          save.addEventListener("click", async () => {
+            const civN = Math.max(1, Math.min(20, Number(civ.value) || 1));
+            const ucN = Math.max(1, Math.min(10, Number(uc.value) || 1));
+            const wbN = Math.max(0, Math.min(5, Number(wb.value) || 0));
+            if (!accessToken || !visitorToken) {
+              showToast("请先进入玩家席");
+              return;
+            }
+            try {
+              save.disabled = true;
+              const res = await request(
+                "POST",
+                "undercover/camp_scales",
+                { visitor_token: visitorToken, camp_scales: `${civN} ${ucN} ${wbN}` }
+              );
+              if (res?.camp_scales && res?.room) {
+                setRoom(res.room);
+                render();
+                showToast(`已保存房间设置：${res.camp_scales.raw}`);
+              } else if (res?.error) {
+                showToast(res.error);
+              } else {
+                showToast("保存失败");
+              }
+            } catch (err) {
+              showToast(err?.message || "保存失败");
+            } finally {
+              save.disabled = false;
+            }
+          });
+        }
+        // —— 添加一位 AI 玩家
+        if (addAi && !addAi.dataset.bound) {
+          addAi.dataset.bound = "1";
+          addAi.addEventListener("click", async () => {
+            if (!accessToken || !visitorToken) {
+              showToast("请先进入玩家席");
+              return;
+            }
+            try {
+              addAi.disabled = true;
+              const res = await request(
+                "POST",
+                "undercover/add_ai",
+                { visitor_token: visitorToken }
+              );
+              if (res?.room) {
+                setRoom(res.room);
+                render();
+                showToast(res?.display_name
+                  ? `已加入 ${res.display_name}（现在 ${res.live_count || current + 1} 人）`
+                  : "已添加 AI 玩家");
+              } else if (res?.error) {
+                showToast(res.error);
+              } else {
+                showToast("添加失败");
+              }
+            } catch (err) {
+              showToast(err?.message || "添加失败");
+            } finally {
+              addAi.disabled = false;
+            }
+          });
+        }
+      }
+    }
+
+    // 2. 玩家卡片网格
+    const grid = document.getElementById("ucPlayersGrid");
+    grid.innerHTML = "";
+    const players = snap.players_public || [];
+    const expectedSpeaker = snap.expected_speaker_number;
+    const voterNumber = snap.voter_player_number;
+    players.forEach((p) => {
+      const card = document.createElement("article");
+      card.className = "uc-player-card";
+      if (p.is_out) card.classList.add("is-out");
+      if (expectedSpeaker === p.player_number && !p.is_out) card.classList.add("is-speaking");
+      if (snap.phase === "voting" && voterNumber && p.player_number !== voterNumber && !p.is_out) {
+        card.classList.add("can-vote-target");
+      }
+      // 是否本轮被投最高（平票）
+      if ((snap.last_pk_targets || []).includes(p.player_number)) {
+        card.classList.add("is-pk");
+      }
+      const nameLine = document.createElement("strong");
+      nameLine.className = "uc-pn-name";
+      nameLine.textContent = `${p.player_number}号${p.display_name ? " · " + sanitizeDisplayText(p.display_name) : ""}`;
+      card.appendChild(nameLine);
+      // 如果 visitor 是本人，要高亮显示
+      if (room.visitor_number && p.player_number === room.visitor_number) {
+        card.classList.add("is-me");
+      }
+      const meta = document.createElement("div");
+      meta.className = "uc-pn-meta";
+      const statusChip = document.createElement("span");
+      statusChip.className = p.is_out ? "chip chip-out" : "chip chip-live";
+      statusChip.textContent = p.is_out ? "已出局" : "存活";
+      meta.appendChild(statusChip);
+      if (p.camp && room?.status === "finished") {
+        const campSpan = document.createElement("span");
+        campSpan.className = "chip chip-camp";
+        campSpan.textContent = ucCampText(p.camp);
+        meta.appendChild(campSpan);
+      }
+      if (p.word && room?.status === "finished") {
+        const wordSpan = document.createElement("span");
+        wordSpan.className = "chip chip-word";
+        wordSpan.textContent = `词条「${p.word}」`;
+        meta.appendChild(wordSpan);
+      }
+      // 被投票数（进行中只在投票阶段显示各目标得票，不显示投手）
+      if (snap.vote_tally_live && snap.phase === "voting") {
+        const votes = Number(snap.vote_tally_live[p.player_number] || 0);
+        if (votes > 0) {
+          const v = document.createElement("span");
+          v.className = "chip chip-votes";
+          v.textContent = `${votes} 票`;
+          meta.appendChild(v);
+        }
+      }
+      card.appendChild(meta);
+      grid.appendChild(card);
+    });
+
+    // 3. 我的身份卡（只有本人能看到 camp/word）
+    const my = snap.my || {};
+    const campEl = document.getElementById("ucMyCamp");
+    const wordEl = document.getElementById("ucMyWord");
+    const hintEl = document.getElementById("ucCampHint");
+    campEl.className = "uc-id-camp";
+    if (!my.is_player) {
+      campEl.textContent = "观众席";
+      wordEl.textContent = "—";
+      hintEl.textContent = "仅玩家能看到身份词条；请先绑定并加入玩家席。";
+    } else if (my.camp && my.word) {
+      const campName = ucCampText(my.camp);
+      campEl.classList.add(`is-${my.camp}`);
+      campEl.textContent = campName;
+      wordEl.textContent = my.word;
+      const map = {
+        civilian: "你是平民：你的词条和大多数玩家一致，找到卧底并把他们投出局就赢了。",
+        undercover: "你是卧底：你的词条与多数人不同，隐藏自己并把平民投票出局即可获胜。",
+        whiteboard: "你是白板：你没有词条；先模仿他人描述混入，等卧底全出局后你就赢了。",
+      };
+      hintEl.textContent = map[my.camp] || "请妥善保管自己的词条，不要向其他玩家透露。";
+    } else {
+      // 开局抽选身份词条时的提示
+      const dealing =
+        my.is_player &&
+        room.status === "active" &&
+        snap.reveal_identity !== false &&
+        roundNumber >= 1 &&
+        ["speech", "pk", "preparing"].includes(snap.phase) &&
+        !my.camp;
+      if (dealing) {
+        campEl.textContent = "抽选中";
+        wordEl.textContent = "…";
+        hintEl.textContent = "花火 正在抽选你的身份词条卡，请稍候…";
+      } else {
+        campEl.textContent = "未开始";
+        wordEl.textContent = "—";
+        hintEl.textContent = "对局开始后这里将显示你个人的身份与词条。";
+      }
+    }
+
+    // 4. 发言 & 投票时间线
+    const timeline = document.getElementById("ucTimeline");
+    timeline.innerHTML = "";
+    const rounds = snap.rounds_public || [];
+    rounds.forEach((r) => {
+      const header = document.createElement("header");
+      header.className = "uc-round-header";
+      const title = document.createElement("h4");
+      title.textContent = r.is_pk
+        ? `第 ${r.round_number} 轮 · PK 子轮`
+        : `第 ${r.round_number} 轮`;
+      header.appendChild(title);
+      if (r.out_player_number) {
+        const outBadge = document.createElement("span");
+        outBadge.className = "chip chip-out";
+        outBadge.textContent = `${r.out_player_number}号 被淘汰`;
+        header.appendChild(outBadge);
+      }
+      if (r.pk_reason) {
+        const pkBadge = document.createElement("span");
+        pkBadge.className = "chip chip-pk";
+        pkBadge.textContent = "平票 → PK";
+        header.appendChild(pkBadge);
+      }
+      timeline.appendChild(header);
+      const ul = document.createElement("ul");
+      ul.className = "uc-round-list";
+      // 发言列表（按 speaking_order 顺序）
+      (r.speech_order || []).forEach((pn) => {
+        const sp = (r.speeches || []).find((s) => Number(s.player_number) === Number(pn));
+        const li = document.createElement("li");
+        li.className = "uc-round-speech";
+        const head = document.createElement("strong");
+        head.textContent = `${pn}号`;
+        const content = document.createElement("div");
+        content.className = "uc-speech-content";
+        content.textContent = sp ? sanitizeDisplayText(sp.content) : "（尚未发言）";
+        li.appendChild(head);
+        li.appendChild(content);
+        ul.appendChild(li);
+      });
+      // 投票列表（只显示 vote_tally 或全员投完的完整 votes）
+      const votes = r.votes || [];
+      const voteHeaderLi = document.createElement("li");
+      voteHeaderLi.className = "uc-round-votes";
+      const vh = document.createElement("strong");
+      const allVoted = votes.length >= (r.speech_order || []).length;
+      if (allVoted && votes.length) {
+        vh.textContent = "投票结果（完整）";
+        const voteBlock = document.createElement("div");
+        voteBlock.className = "uc-votes-block";
+        votes.forEach((v) => {
+          const row = document.createElement("div");
+          row.className = "uc-vote-row";
+          row.innerHTML = `<span>${v.voter_number}号</span> → <span>${v.target_number}号</span>`;
+          voteBlock.appendChild(row);
+        });
+        voteHeaderLi.appendChild(vh);
+        voteHeaderLi.appendChild(voteBlock);
+      } else if (snap.vote_tally_live && Object.keys(snap.vote_tally_live).length) {
+        vh.textContent = "当前投票数（不显示投手）";
+        const voteBlock = document.createElement("div");
+        voteBlock.className = "uc-votes-block";
+        Object.entries(snap.vote_tally_live).forEach(([target, count]) => {
+          if (!Number(count)) return;
+          const row = document.createElement("div");
+          row.className = "uc-vote-row";
+          row.innerHTML = `<span>${target}号</span>：<span>${Number(count)} 票</span>`;
+          voteBlock.appendChild(row);
+        });
+        if (voteBlock.childNodes.length) {
+          voteHeaderLi.appendChild(vh);
+          voteHeaderLi.appendChild(voteBlock);
+        }
+      }
+      if (voteHeaderLi.childNodes.length > 0) ul.appendChild(voteHeaderLi);
+      timeline.appendChild(ul);
+    });
+
+    // 5. 操作区：发言 / 投票 / PK banner
+    document.getElementById("ucPhase").textContent = phaseText;
+
+    // 5b. 发词阶段的提示 + 开场身份卡动画
+    if (snap.phase === "preparing") {
+      document.getElementById("ucPhase").textContent = "发词中… 花火正在抽选你的身份词条卡";
+    }
+    if (
+      snap.phase === "speech" &&
+      roundNumber === 1 &&
+      my.is_player && my.camp &&
+      (my.camp === "whiteboard" || my.word) &&
+      snap.reveal_identity !== false &&
+      room.status !== "finished"
+    ) {
+      const gkey = `${roundNumber}:${my.camp}:${my.word}`;
+      if (ucRevealedGameKey !== gkey) {
+        ucRevealedGameKey = gkey;
+        showUcIdentityReveal(my);
+      }
+    }
+    const expectedSpan = document.getElementById("ucExpectedSpeaker");
+    if (expectedSpeaker && snap.phase !== "finished") {
+      const nextNumber = snap.next_speaker_number;
+      expectedSpan.textContent = `轮到 ${expectedSpeaker}号 发言` +
+        (nextNumber ? ` · 下一位 ${nextNumber}号` : "");
+    } else {
+      expectedSpan.textContent = "";
+    }
+    const speechBox = document.getElementById("ucSpeechBox");
+    const voteBox = document.getElementById("ucVoteBox");
+    const pkBanner = document.getElementById("ucPkBanner");
+    const speechBtn = document.getElementById("ucSpeechSubmit");
+    const input = document.getElementById("ucSpeechInput");
+    const counter = document.getElementById("ucSpeechCount");
+    const isMyTurn = my.is_player && my.player_number && expectedSpeaker && Number(my.player_number) === Number(expectedSpeaker);
+    const canSpeak = ["speech", "pk"].includes(snap.phase) && isMyTurn;
+    // 轮到你发言时的提醒（进入发言轮才提示，避免每次 render 都弹）
+    if (canSpeak && !ucPrevMyTurn) {
+      const myCampName = my.camp ? ucCampText(my.camp) : "";
+      showToast(
+        `本轮轮到你发言${myCampName ? "（你是" + myCampName + "）" : ""}！请在下方描述你的词条。`,
+        3400
+      );
+    }
+    ucPrevMyTurn = canSpeak;
+    // 发言切换的醒目全屏提示（当前发言者变化则给所有玩家/观众弹出）
+    if (
+      snap.phase !== "finished" &&
+      ucPrevExpectedSpeaker !== (expectedSpeaker || null) &&
+      expectedSpeaker
+    ) {
+      showSpeechTurnNotification(expectedSpeaker, isMyTurn);
+    }
+    ucPrevExpectedSpeaker = expectedSpeaker || null;
+    speechBox.hidden = !["speech", "pk", "preparing"].includes(snap.phase);
+    speechBtn.disabled = !canSpeak || input.value.trim().length < 1;
+    input.disabled = !canSpeak;
+    input.placeholder = canSpeak
+      ? "轮到你发言：输入 1-500 字描述你的词条，不要直接点名词条本身。"
+      : "当前不是你的发言轮次。";
+    counter.textContent = `${(input.value || "").length}/500`;
+
+    // 投票卡
+    voteBox.hidden = snap.phase !== "voting" || !my.is_player;
+    const voteGrid = document.getElementById("ucVoteGrid");
+    voteGrid.innerHTML = "";
+    if (!voteBox.hidden && my.is_player) {
+      const alreadyVoted =
+        Array.isArray(snap.voted_this_round_player_numbers) &&
+        snap.voted_this_round_player_numbers.includes(Number(my.player_number));
+      const canVote =
+        !alreadyVoted &&
+        my.camp !== "whiteboard"
+          ? true
+          : !alreadyVoted; // 所有人都能投（包括白板），Theresa3rd 允许白板投票
+      players.forEach((p) => {
+        if (Number(p.player_number) === Number(my.player_number)) return; // 不能投自己
+        if (p.is_out) return; // 不能投已出局
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "uc-vote-card";
+        card.dataset.target_number = String(p.player_number);
+        card.disabled = !canVote;
+        if (snap.vote_tally_live && Number(snap.vote_tally_live[p.player_number] || 0) > 0) {
+          card.classList.add("has-votes");
+        }
+        card.innerHTML = `<strong>${p.player_number}号</strong><span>${sanitizeDisplayText(p.display_name || "")}</span><em>${Number(snap.vote_tally_live?.[p.player_number] || 0)} 票</em>`;
+        voteGrid.appendChild(card);
+      });
+      if (alreadyVoted) {
+        const tip = document.createElement("p");
+        tip.className = "uc-vote-tip";
+        tip.textContent = "你已完成本轮投票，等待其他玩家投票即可。";
+        voteGrid.appendChild(tip);
+      }
+    }
+
+    // PK banner
+    const pkTargets = snap.pending_pk_targets || [];
+    if (pkTargets.length && snap.phase !== "finished") {
+      pkBanner.hidden = false;
+      pkBanner.textContent = `平票！${pkTargets.map((n) => n + "号").join("、")} 需要补充发言 PK，稍后重新投票。`;
+    } else {
+      pkBanner.hidden = true;
+    }
+
+    // 结算 overlay 交给通用 game_finished 弹窗
+  }
+
   function renderDrawGuess() {
     if (room?.game_type !== "draw_guess") return;
     syncDrawState();
@@ -852,18 +2007,18 @@
     document.getElementById("drawGuessCount").textContent = `猜测 ${game.guess_count || 0} / ${game.max_guesses || 5}`;
     const prompt = document.getElementById("drawPrompt");
     if (game.finished && game.answer) {
-      prompt.textContent = `答案是“${game.answer}”。${game.solved ? "这轮合作成功。" : "下一轮可以换个画法。"}`;
+      prompt.textContent = sanitizeDisplayText(`答案是“${game.answer}”。${game.solved ? "这轮合作成功。" : "下一轮可以换个画法。"}`);
     } else if (game.answer && room.is_player) {
-      prompt.textContent = `题目：${game.answer}。请把它画出来，观众和 Bot 不会看到答案。`;
+      prompt.textContent = sanitizeDisplayText(`题目：${game.answer}。请把它画出来，观众和 花火 不会看到答案。`);
     } else if (game.processing) {
-      prompt.textContent = "Bot 正在看图，只会消耗一次猜测。";
+      prompt.textContent = "花火 正在看图，只会消耗一次猜测。";
     } else if (!room.game) {
       prompt.textContent = room.is_player ? "开始后，你会在这里看到题目。" : "等待玩家开始新一轮。";
     } else {
-      prompt.textContent = room.is_player ? "画出题目后，点击“让 Bot 猜”；可以继续补画。" : "玩家正在作画，你可以在对话区和 Bot 聊天。";
+      prompt.textContent = room.is_player ? "画出题目后，点击“让 花火 猜”；可以继续补画。" : "玩家正在作画，你可以在对话区和 花火 聊天。";
     }
     drawContext.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-    drawContext.fillStyle = "#fffdf8";
+    drawContext.fillStyle = isDarkTheme() ? "#22282d" : "#fffdf8";
     drawContext.fillRect(0, 0, drawCanvas.width, drawCanvas.height);
     drawStrokes.forEach(drawStroke);
     const readonly = busy || !room.is_player || room.status !== "active" || game.processing || game.finished;
@@ -882,13 +2037,13 @@
     if (!guesses.length) {
       const empty = document.createElement("p");
       empty.className = "draw-empty";
-      empty.textContent = "Bot 的每次猜测会显示在这里";
+      empty.textContent = "花火 的每次猜测会显示在这里";
       history.appendChild(empty);
     } else {
       guesses.forEach((item) => {
         const entry = document.createElement("div");
         entry.className = `draw-guess ${item.correct ? "correct" : "wrong"}`;
-        entry.textContent = `第 ${item.number} 次：${item.guess}${item.correct ? " · 猜中" : " · 不对"}`;
+        entry.textContent = sanitizeDisplayText(`第 ${item.number} 次：${item.guess}${item.correct ? " · 猜中" : " · 不对"}`);
         history.appendChild(entry);
       });
     }
@@ -1002,10 +2157,10 @@
       const format = drawCanvas.toDataURL("image/webp", 0.78);
       const data = await request("POST", "draw/guess", { visitor_token: visitorToken, image_data_url: format });
       setRoom(data.room);
-      showToast(data.correct ? "Bot 猜中了" : `Bot 猜：${data.guess}`);
+      showToast(data.correct ? "花火 猜中了" : `花火 猜：${data.guess}`);
     } catch (error) {
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
-      showToast(error?.message || "Bot 暂时无法看图");
+      showToast(error?.message || "花火 暂时无法看图");
     } finally {
       busy = false;
       render();
@@ -1032,9 +2187,13 @@
   async function submitChat(event) {
     event.preventDefault();
     if (chatBusy || !room) return;
-    const text = chatInput.value.trim();
+    const rawText = chatInput.value;
+    const text = rawText.trim();
     if (!text) return;
     chatBusy = true;
+    // 发送前立即清空输入框，解决"回车后文字不消失"的问题
+    chatInput.value = "";
+    chatInput.style.height = "";
     const optimisticId = `pending-${Date.now()}`;
     if (!Array.isArray(room.messages)) room.messages = [];
     room.messages.push({
@@ -1049,9 +2208,11 @@
     try {
       const data = await request("POST", "chat", { visitor_token: visitorToken, text });
       setRoom(data.room);
-      chatInput.value = "";
-      chatInput.style.height = "";
     } catch (error) {
+      // 发送失败：恢复输入框中的原文，方便用户重试
+      chatInput.value = rawText;
+      chatInput.style.height = "auto";
+      chatInput.style.height = `${Math.min(chatInput.scrollHeight, 126)}px`;
       room.messages = room.messages.filter((message) => message.id !== optimisticId);
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
       showToast(error?.message || "消息发送失败");
@@ -1071,11 +2232,11 @@
       stone.textContent = "?";
       const game = room.game;
       label.textContent = game?.preparing
-        ? "Bot 出题中"
+        ? "花火 出题中"
         : game?.processing
-          ? "Bot 判断中"
+          ? "花火 判断中"
           : room.status === "finished"
-            ? (game?.mode === "player_host" ? (game?.bot_solved ? "Bot 已猜中" : "出题结束") : (game?.solved ? "已经解开" : "汤底揭晓"))
+            ? (game?.mode === "player_host" ? (game?.bot_solved ? "花火 已猜中" : "出题结束") : (game?.solved ? "已经解开" : "汤底揭晓"))
             : room.status === "paused"
               ? "已经暂停"
               : game?.phase === "ready"
@@ -1087,7 +2248,7 @@
       stone.classList.add("o");
       stone.textContent = room.game?.solved ? "✓" : "✎";
       label.textContent = room.game?.processing
-        ? "Bot 看图中"
+        ? "花火 看图中"
         : room.status === "finished"
         ? (room.game?.solved ? "合作猜中" : "本轮结束")
         : room.is_player ? "轮到你作画" : "观看玩家作画";
@@ -1097,10 +2258,30 @@
       stone.classList.add("o");
       stone.textContent = room.game?.last_roll || "?";
       label.textContent = room.game?.finished
-        ? (room.game.winner === "human" ? "玩家获胜" : "Bot 获胜")
+        ? (room.game.winner === "human" ? "玩家获胜" : "花火 获胜")
         : room.status === "paused"
           ? "已经暂停"
-          : room.game?.turn === "human" ? "玩家回合" : "Bot 回合";
+          : room.game?.turn === "human" ? "玩家回合" : "花火 回合";
+      return;
+    }
+    if (room.game_type === "blackjack") {
+      const game = room.game;
+      stone.classList.add("o");
+      stone.textContent = "♠";
+      if (room.status === "finished" || game?.finished) {
+        label.textContent = game?.winner ? (game.winner === "player" ? "闲家赢" : "庄家赢") : "本局结束";
+      } else if (room.status === "paused") {
+        label.textContent = "已暂停";
+      } else {
+        label.textContent = game?.phase === "dealer_turn"
+          ? "庄家补牌"
+          : `闲家回合 ${game?.hand_count || 0}/${room.player_numbers?.length || 1}`;
+      }
+      return;
+    }
+    if (room.game_type === "undercover") {
+      stone.textContent = "·";
+      label.textContent = statusLabel(room.status);
       return;
     }
     if (!room.game) {
@@ -1114,11 +2295,11 @@
       : (tictactoe ? room.game.human_mark : room.game.human_color);
     const humanTurn = room.game.turn === humanSide;
     if (pendingMove) {
-      label.textContent = "Bot 思考中";
+      label.textContent = "花火 思考中";
     } else {
       label.textContent = room.game.winner
-        ? (room.game.winner === humanSide ? "玩家获胜" : "Bot 获胜")
-        : (room.game.draw ? "平局" : (humanTurn ? "玩家走棋" : "Bot 思考中"));
+        ? (room.game.winner === humanSide ? "玩家获胜" : "花火 获胜")
+        : (room.game.draw ? "平局" : (humanTurn ? "玩家走棋" : "花火 思考中"));
     }
     if (xiangqi) {
       stone.classList.add(room.game.turn === "red" ? "red" : "black");
@@ -1138,14 +2319,15 @@
   }
 
   function drawTicTacToe() {
+    const palette = getGamePalette("tictactoe");
     const size = board.width;
     const inset = 58;
     const playSize = size - inset * 2;
     const cell = playSize / 3;
     context.clearRect(0, 0, size, size);
-    context.fillStyle = "#f3f0e8";
+    context.fillStyle = palette.bg;
     context.fillRect(0, 0, size, size);
-    context.strokeStyle = "#3e4a44";
+    context.strokeStyle = palette.line;
     context.lineWidth = 8;
     context.lineCap = "round";
     for (let index = 1; index < 3; index += 1) {
@@ -1170,7 +2352,7 @@
       ? [pendingMove.row, pendingMove.column]
       : room?.game?.last_move;
     if (Array.isArray(lastMove)) {
-      context.fillStyle = "rgba(33, 92, 69, .09)";
+      context.fillStyle = palette.lastMoveHint;
       context.fillRect(
         inset + lastMove[1] * cell + 10,
         inset + lastMove[0] * cell + 10,
@@ -1184,13 +2366,14 @@
   }
 
   function drawTicTacToeMark(row, column, mark, inset, cell) {
+    const palette = getGamePalette("tictactoe");
     const centerX = inset + (column + 0.5) * cell;
     const centerY = inset + (row + 0.5) * cell;
     const radius = cell * 0.27;
     context.lineWidth = 15;
     context.lineCap = "round";
     if (mark === 1) {
-      context.strokeStyle = "#a33d35";
+      context.strokeStyle = palette.x;
       context.beginPath();
       context.moveTo(centerX - radius, centerY - radius);
       context.lineTo(centerX + radius, centerY + radius);
@@ -1199,27 +2382,28 @@
       context.stroke();
       return;
     }
-    context.strokeStyle = "#236a72";
+    context.strokeStyle = palette.o;
     context.beginPath();
     context.arc(centerX, centerY, radius, 0, Math.PI * 2);
     context.stroke();
   }
 
   function drawGomoku() {
+    const palette = getGamePalette("gomoku");
     const size = board.width;
     const margin = 48;
     const gap = (size - margin * 2) / 14;
     context.clearRect(0, 0, size, size);
-    context.fillStyle = "#d4a85f";
+    context.fillStyle = palette.board;
     context.fillRect(0, 0, size, size);
-    context.strokeStyle = "#5d472c";
+    context.strokeStyle = palette.line;
     context.lineWidth = 1.6;
     for (let index = 0; index < 15; index += 1) {
       const point = margin + index * gap;
       context.beginPath(); context.moveTo(margin, point); context.lineTo(size - margin, point); context.stroke();
       context.beginPath(); context.moveTo(point, margin); context.lineTo(point, size - margin); context.stroke();
     }
-    context.fillStyle = "#4a3823";
+    context.fillStyle = palette.star;
     [[3, 3], [3, 11], [7, 7], [11, 3], [11, 11]].forEach(([row, column]) => {
       context.beginPath();
       context.arc(margin + column * gap, margin + row * gap, 4, 0, Math.PI * 2);
@@ -1238,17 +2422,19 @@
     if (Array.isArray(lastMove)) {
       context.beginPath();
       context.arc(margin + lastMove[1] * gap, margin + lastMove[0] * gap, 5, 0, Math.PI * 2);
-      context.fillStyle = "#b8483c";
+      context.fillStyle = palette.lastMoveDot;
       context.fill();
     }
   }
 
   function drawGomokuStone(row, column, color, margin, gap) {
+    const palette = getGamePalette("gomoku");
+    const isBlack = color === 1;
     context.beginPath();
     context.arc(margin + column * gap, margin + row * gap, gap * 0.41, 0, Math.PI * 2);
-    context.fillStyle = color === 1 ? "#242724" : "#f7f8f5";
+    context.fillStyle = isBlack ? palette.blackStone : palette.whiteStone;
     context.fill();
-    context.strokeStyle = color === 1 ? "#121412" : "#9da39e";
+    context.strokeStyle = isBlack ? palette.blackStone : palette.whiteEdge;
     context.lineWidth = 1.5;
     context.stroke();
   }
@@ -1266,6 +2452,7 @@
   }
 
   function drawXiangqi() {
+    const palette = getGamePalette("xiangqi");
     const width = board.width;
     const height = board.height;
     const marginX = 54;
@@ -1273,9 +2460,9 @@
     const gapX = (width - marginX * 2) / 8;
     const gapY = (height - marginY * 2) / 9;
     context.clearRect(0, 0, width, height);
-    context.fillStyle = "#d7a85d";
+    context.fillStyle = palette.board;
     context.fillRect(0, 0, width, height);
-    context.strokeStyle = "#563c23";
+    context.strokeStyle = palette.line;
     context.lineWidth = 1.7;
     for (let row = 0; row < 10; row += 1) {
       const y = marginY + row * gapY;
@@ -1303,7 +2490,7 @@
       context.stroke();
     });
     context.save();
-    context.fillStyle = "#654528";
+    context.fillStyle = palette.river;
     context.font = '600 29px "Noto Serif SC", "Songti SC", serif';
     context.textAlign = "center";
     context.textBaseline = "middle";
@@ -1317,7 +2504,7 @@
         const [row, column] = displayPoint(move[2], move[3]);
         context.beginPath();
         context.arc(marginX + column * gapX, marginY + row * gapY, 10, 0, Math.PI * 2);
-        context.fillStyle = "rgba(28, 104, 70, .72)";
+        context.fillStyle = palette.legalHint;
         context.fill();
       });
     }
@@ -1336,7 +2523,7 @@
     if (Array.isArray(lastMove)) {
       [[lastMove[0], lastMove[1]], [lastMove[2], lastMove[3]]].forEach(([modelRow, modelColumn]) => {
         const [row, column] = displayPoint(modelRow, modelColumn);
-        context.strokeStyle = "#b43e35";
+        context.strokeStyle = palette.lastBox;
         context.lineWidth = 3;
         context.strokeRect(
           marginX + column * gapX - gapX * 0.31,
@@ -1349,28 +2536,30 @@
   }
 
   function drawXiangqiPiece(modelRow, modelColumn, piece, marginX, marginY, gapX, gapY) {
+    const palette = getGamePalette("xiangqi");
     const [row, column] = displayPoint(modelRow, modelColumn);
     const x = marginX + column * gapX;
     const y = marginY + row * gapY;
-    const red = piece === piece.toUpperCase();
+    const isRed = piece === piece.toUpperCase();
     const labels = {
       K: "帅", A: "仕", B: "相", N: "马", R: "车", C: "炮", P: "兵",
       k: "将", a: "士", b: "象", n: "马", r: "车", c: "炮", p: "卒",
     };
+    const textColor = isRed ? palette.red : palette.blackText;
     context.beginPath();
     context.arc(x, y, Math.min(gapX, gapY) * 0.39, 0, Math.PI * 2);
-    context.fillStyle = "#f1d49a";
+    context.fillStyle = palette.pieceBg;
     context.fill();
-    context.strokeStyle = red ? "#a3332e" : "#242724";
+    context.strokeStyle = palette.pieceRing;
     context.lineWidth = 2.5;
     context.stroke();
-    context.fillStyle = red ? "#a3332e" : "#242724";
+    context.fillStyle = textColor;
     context.font = `700 ${Math.floor(Math.min(gapX, gapY) * 0.43)}px "Noto Serif SC", "Songti SC", serif`;
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.fillText(labels[piece] || piece, x, y + 1);
     if (selectedPiece?.[0] === modelRow && selectedPiece?.[1] === modelColumn) {
-      context.strokeStyle = "#176347";
+      context.strokeStyle = isDarkTheme() ? "#55c096" : "#176347";
       context.lineWidth = 4;
       context.stroke();
     }
@@ -1560,11 +2749,126 @@
   document.getElementById("drawUndo").addEventListener("click", () => changeDrawing(drawStrokes.slice(0, -1)));
   document.getElementById("drawClear").addEventListener("click", () => changeDrawing([]));
   document.getElementById("drawGuessAction").addEventListener("click", guessDrawing);
+  // 绑定码一键复制
+  const copyBindCommand = document.getElementById("copyBindCommand");
+  if (copyBindCommand) {
+    copyBindCommand.addEventListener("click", async () => {
+      const token = (room?.identity_token || "").trim();
+      if (!token) {
+        showToast("当前没有可复制的绑定码");
+        return;
+      }
+      const text = `/绑定玩家 ${token}`;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
+        showToast("已复制：" + text);
+      } catch (err) {
+        showToast("复制失败，请手动选择复制。");
+      }
+    });
+  }
+  // 谁是卧底发言字数计数
+  const ucSpeechInput = document.getElementById("ucSpeechInput");
+  if (ucSpeechInput) {
+    ucSpeechInput.addEventListener("input", () => {
+      const counter = document.getElementById("ucSpeechCount");
+      if (counter) counter.textContent = `${ucSpeechInput.value.length}/500`;
+      const btn = document.getElementById("ucSpeechSubmit");
+      if (btn) {
+        const my = (room?.game?.my) || {};
+        const expected = room?.game?.expected_speaker_number;
+        const isMyTurn = my.is_player && my.player_number && expected && Number(my.player_number) === Number(expected);
+        const canSpeak = room?.game && ["speech", "pk"].includes(room.game.phase) && isMyTurn;
+        btn.disabled = !canSpeak || ucSpeechInput.value.trim().length < 1;
+      }
+    });
+  }
+  // 提交发言
+  const ucSpeechSubmit = document.getElementById("ucSpeechSubmit");
+  if (ucSpeechSubmit) {
+    ucSpeechSubmit.addEventListener("click", async () => {
+      if (!ucSpeechInput || !visitorToken || !accessToken) return;
+      const content = ucSpeechInput.value.trim();
+      if (!content) return;
+      ucSpeechSubmit.disabled = true;
+      try {
+        const res = await request(
+          "POST",
+          "undercover/speech",
+          { visitor_token: visitorToken, content }
+        );
+        if (res?.room) {
+          setRoom(res.room);
+          ucSpeechInput.value = "";
+          const counter = document.getElementById("ucSpeechCount");
+          if (counter) counter.textContent = "0/500";
+          if (res?.notice) showToast(res.notice, 3200);
+          render();
+        } else if (res?.error) {
+          showToast(res.error);
+        }
+      } catch (error) {
+        // 词条拦截 / 相似度拦截等：提示玩家原因，并刷新到当前状态
+        showToast(error?.message || "发言提交失败，请换个说法", 3200);
+        try { await loadState(); render(); } catch (_syncError) { /* 轮询会重试 */ }
+      } finally {
+        ucSpeechSubmit.disabled = false;
+      }
+    });
+  }
+  // 身份卡关闭
+  const ucRevealClose = document.getElementById("ucRevealClose");
+  if (ucRevealClose) {
+    ucRevealClose.addEventListener("click", () => {
+      const overlay = document.getElementById("ucRevealOverlay");
+      if (overlay) overlay.hidden = true;
+    });
+  }
+  // 投票（事件委托）
+  const ucVoteGrid = document.getElementById("ucVoteGrid");
+  if (ucVoteGrid) {
+    ucVoteGrid.addEventListener("click", async (event) => {
+      const target = event.target.closest(".uc-vote-card");
+      if (!target || target.disabled || !visitorToken || !accessToken) return;
+      const num = Number(target.dataset.target_number);
+      if (!num) return;
+      target.disabled = true;
+      try {
+        const res = await request(
+          "POST",
+          "undercover/vote",
+          { visitor_token: visitorToken, target_number: num }
+        );
+        if (res?.room) {
+          setRoom(res.room);
+          render();
+        } else if (res?.error) {
+          showToast(res.error);
+        }
+      } catch (error) {
+        showToast(error?.message || "投票失败", 3200);
+        try { await loadState(); render(); } catch (_syncError) { /* 轮询会重试 */ }
+      }
+    });
+  }
   board.addEventListener("click", moveAt);
   window.addEventListener("pagehide", (event) => {
     if (!event.persisted) notifyLeave();
   });
   setRoomView("game");
+  initAppearance();
+  bindAppearanceControls();
   icons();
   join()
     .then(() => { setConnection("online", "已连接"); pollTimer = window.setTimeout(poll, 1000); })

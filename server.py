@@ -17,7 +17,7 @@ from .room_manager import RoomManager
 class GameRoomServer:
     """Serve the mobile game UI without sharing AstrBot's dashboard port."""
 
-    ASSETS = {"index.html", "app.css", "app.js", "lucide.min.js"}
+    ASSETS = {"index.html", "app.css", "app.js", "lucide.min.js", "background.webp"}
     TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{24,80}")
     TRUSTED_BROWSER_COOKIE = "game_companion_device"
 
@@ -116,6 +116,27 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/soup/hint", self._soup_hint)
         app.router.add_post("/api/room/{access_token}/soup/reverse", self._soup_reverse)
         app.router.add_post("/api/room/{access_token}/soup/correct", self._soup_correct)
+        app.router.add_post(
+            "/api/room/{access_token}/undercover/speech", self._undercover_speech
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/undercover/vote", self._undercover_vote
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/undercover/pk", self._undercover_pk
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/undercover/camp_scales",
+            self._undercover_set_camp_scales,
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/undercover/add_ai",
+            self._undercover_add_ai_seat,
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/undercover/batch_words",
+            self._undercover_batch_words,
+        )
         app.router.add_post(
             "/api/room/{access_token}/seat/swap/request", self._seat_swap_request
         )
@@ -430,6 +451,150 @@ class GameRoomServer:
         await self.manager.leave(room, str(payload.get("visitor_token") or ""))
         return self._response({"left": True})
 
+    async def _undercover_speech(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        content = str(payload.get("content") or "")
+        await self.manager.player_undercover_speech(room, visitor_token, content)
+        resp = {"room": room.public_snapshot(visitor_token)}
+        if getattr(room.game, "last_speech_masked", False):
+            resp["notice"] = "发言中包含你的词条，已自动打码为「***」并发出。"
+        return self._response(resp)
+
+    async def _undercover_vote(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        try:
+            target = int(payload.get("target_number"))
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"status": "error", "message": "target_number 必须是整数"},
+                status=400,
+            )
+        result = await self.manager.player_undercover_vote(
+            room, visitor_token, target
+        )
+        return self._response(
+            {
+                **result,
+                "room": room.public_snapshot(visitor_token),
+            }
+        )
+
+    async def _undercover_pk(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        raw = payload.get("pk_targets") or []
+        try:
+            targets = [int(x) for x in raw]
+        except (TypeError, ValueError):
+            return web.json_response(
+                {"status": "error", "message": "pk_targets 必须是整数数组"},
+                status=400,
+            )
+        await self.manager.continue_undercover_pk(room, visitor_token, targets)
+        return self._response({"room": room.public_snapshot(visitor_token)})
+
+    async def _undercover_set_camp_scales(self, request: web.Request) -> web.Response:
+        """房主（1号玩家）在游戏开始前自定义阵营比例。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        scales_str = str(payload.get("camp_scales") or "").strip()
+        try:
+            parsed = await self.manager.set_undercover_host_camp_scales(
+                room, visitor_token, scales_str
+            )
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=400,
+            )
+        return self._response(
+            {
+                "camp_scales": {
+                    "civilian": parsed[0],
+                    "undercover": parsed[1],
+                    "whiteboard": parsed[2],
+                    "raw": "{} {} {}".format(*parsed),
+                },
+                "room": room.public_snapshot(visitor_token),
+            }
+        )
+
+    async def _undercover_add_ai_seat(self, request: web.Request) -> web.Response:
+        """房主/管理员手动追加一位 AI 玩家（计入总数，不可超容量）。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        try:
+            result = await self.manager.add_undercover_ai_seat(
+                room, visitor_token
+            )
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=400,
+            )
+        return self._response({**result, "room": room.public_snapshot(visitor_token)})
+
+    async def _undercover_batch_words(self, request: web.Request) -> web.Response:
+        """通过管理台快捷批量导入词条（每行一对 词1 词2），普通玩家调用会失败。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        # 必须是管理员房间，或玩家是房主(1号)，才允许批量加词
+        if not room.admin_room:
+            seat = room.multiplayer.seat_for_token(visitor_token)
+            if seat is None or seat.number != 1:
+                return web.json_response(
+                    {"status": "error", "message": "仅管理员房间或房主能批量导入词条"},
+                    status=403,
+                )
+        raw_text = str(payload.get("text") or "")
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        store = getattr(self.manager, "undercover_word_store", None)
+        if store is None:
+            return web.json_response(
+                {"status": "error", "message": "词库未初始化，无法批量添加"},
+                status=500,
+            )
+        added: list[dict] = []
+        skipped: list[str] = []
+        for line in lines:
+            # 支持"词1 词2" / "词1,词2" / "词1:词2" / "词1　词2"（中日文全角空格）
+            tokens = [
+                t
+                for t in __import__("re").split(r"[\s,，:：\t]+", line)
+                if t
+            ]
+            if len(tokens) != 2:
+                skipped.append(f"格式错误：{line}")
+                continue
+            word1, word2 = tokens
+            record = store.add(word1, word2)
+            if record:
+                added.append(record)
+            else:
+                skipped.append(f"重复/非法：{word1} vs {word2}")
+        return self._response(
+            {
+                "added_count": len(added),
+                "skipped_count": len(skipped),
+                "skipped": skipped,
+                "total_now": len(store.list_all()),
+            }
+        )
+
     async def _resolve_trusted_identity(self, request: web.Request) -> Any | None:
         if not self._trusted_browser_enabled():
             return None
@@ -639,8 +804,12 @@ class GameRoomServer:
         return False
 
     @staticmethod
-    def _response(data: dict[str, Any]) -> web.Response:
-        return web.json_response({"status": "ok", "data": data})
+    def _response(
+        data: dict[str, Any],
+        *,
+        status: int = 200,
+    ) -> web.Response:
+        return web.json_response({"status": "ok", "data": data}, status=status)
 
     @staticmethod
     def _headers(content_type: str) -> dict[str, str]:

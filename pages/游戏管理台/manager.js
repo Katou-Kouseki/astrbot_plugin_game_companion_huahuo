@@ -14,6 +14,7 @@
     ["pig_dice", "贪心骰子"],
     ["draw_guess", "你画我猜"],
     ["blackjack", "二十一点"],
+    ["undercover", "谁是卧底"],
   ];
   let rooms = [];
   let tunnel = {};
@@ -232,19 +233,19 @@
         const phase = progress?.phase === "preparing"
           ? "出题中"
           : (progress?.processing ? "判断中" : `提问 ${progress?.question_count || 0} · 提示 ${progress?.hints_used || 0}`);
-        const soupMode = room.turtle_soup_mode === "player_host" ? "玩家出题" : "Bot 出题";
+        const soupMode = room.turtle_soup_mode === "player_host" ? "玩家出题" : "花火 出题";
         state.append(createText("small", `${soupMode} · 难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${phase}`));
       } else if (room.game_type === "pig_dice") {
         const progress = room.pig_dice_progress;
         const style = { cautious: "稳健", balanced: "均衡", bold: "大胆" }[progress?.risk_style] || "均衡";
         const score = progress
-          ? `玩家 ${progress.human_score} · Bot ${progress.bot_score} · 本回合 ${progress.turn_total}`
+          ? `玩家 ${progress.human_score} · 花火 ${progress.bot_score} · 本回合 ${progress.turn_total}`
           : "等待开局";
         state.append(createText("small", `风格：${style} · ${score}`));
       } else if (room.game_type === "draw_guess") {
         const progress = room.draw_guess_progress;
         const detail = progress
-          ? `${progress.processing ? "Bot 看图中" : progress.solved ? "已猜中" : progress.timed_out ? "已超时" : `剩余 ${progress.remaining_seconds} 秒`} · 猜测 ${progress.guess_count}/${progress.max_guesses}`
+          ? `${progress.processing ? "花火 看图中" : progress.solved ? "已猜中" : progress.timed_out ? "已超时" : `剩余 ${progress.remaining_seconds} 秒`} · 猜测 ${progress.guess_count}/${progress.max_guesses}`
           : "等待开局";
         state.append(createText("small", `难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${detail}`));
       } else if (room.game_type === "blackjack") {
@@ -255,6 +256,20 @@
           ? "庄家补牌中"
           : `闲家 ${progress?.hand_count || 0} 手`;
         state.append(createText("small", `难度：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"} · ${phase}`));
+      } else if (room.game_type === "undercover") {
+        const progress = room.undercover_progress || {};
+        const phaseLabel = {
+          idle: "等待入座",
+          preparing: "发词准备",
+          speech: "发言轮",
+          pk: "PK 发言轮",
+          voting: "投票轮",
+          finished: "已结束",
+        }[progress.phase] || (progress.phase ? String(progress.phase) : "等待开局");
+        const roundText = Number(progress.round_number)
+          ? `第 ${progress.round_number} 轮 · 存活 ${progress.players_live}/${progress.players_total} 人`
+          : `存活 ${progress.players_live || 0}/${progress.players_total || 0} 人`;
+        state.append(createText("small", `${phaseLabel} · ${roundText}`));
       } else {
         state.append(createText("small", `棋力：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"}`));
       }
@@ -593,10 +608,308 @@
       reset.textContent = "恢复本游戏默认值";
       reset.addEventListener("click", () => resetGameSettings(game.game_type));
       card.appendChild(reset);
+
+      if (game.game_type === "undercover") {
+        card.appendChild(buildUndercoverWordsPanel());
+      }
       grid.appendChild(card);
     });
     document.getElementById("settingsNotice").textContent = data.notice || "";
     icons();
+  }
+
+  function buildUndercoverWordsPanel() {
+    const wrap = document.createElement("section");
+    wrap.className = "uc-word-panel";
+    wrap.style.marginTop = ".9rem";
+    wrap.style.borderTop = "1px solid var(--border, #e6e6e6)";
+    wrap.style.paddingTop = ".8rem";
+
+    const head = document.createElement("header");
+    head.style.display = "flex";
+    head.style.justifyContent = "space-between";
+    head.style.alignItems = "center";
+    head.style.marginBottom = ".6rem";
+    const title = document.createElement("h4");
+    title.style.margin = "0";
+    title.style.color = "var(--text-strong, #222)";
+    title.textContent = "词库管理";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "text-button";
+    open.textContent = "展开词条";
+    open.addEventListener("click", () => {
+      tableWrap.hidden = !tableWrap.hidden;
+      addRow.hidden = !addRow.hidden;
+      open.textContent = tableWrap.hidden ? "展开词条" : "收起词条";
+      if (!tableWrap.hidden) loadUndercoverWords(tbody, countLabel);
+    });
+    head.append(title, open);
+    wrap.appendChild(head);
+
+    const intro = document.createElement("p");
+    intro.style.margin = "0 0 .55rem";
+    intro.style.color = "var(--muted, #666)";
+    intro.style.fontSize = ".82rem";
+    intro.textContent = "默认内置 30 对常见词条；Bot 也会在开新局时 LLM 生成新词条并自动加入。每条对局开始前系统会自动做去重（最近 10 次不重复）。";
+    wrap.appendChild(intro);
+
+    const countLabel = createText("small", "当前共 0 对", "uc-word-count");
+    countLabel.style.color = "var(--muted, #666)";
+    wrap.appendChild(countLabel);
+
+    const addRow = document.createElement("div");
+    addRow.style.display = "flex";
+    addRow.style.flexWrap = "wrap";
+    addRow.style.alignItems = "center";
+    addRow.style.gap = ".4rem";
+    addRow.style.margin = ".4rem 0 .7rem";
+    addRow.hidden = true;
+    const w1 = document.createElement("input");
+    w1.type = "text";
+    w1.maxLength = 10;
+    w1.placeholder = "词条 1";
+    w1.style.flex = "1 1 120px";
+    w1.style.padding = ".35rem .5rem";
+    w1.style.borderRadius = ".5rem";
+    w1.style.border = "1px solid var(--border, #ddd)";
+    w1.style.font = "inherit";
+    const w2 = document.createElement("input");
+    w2.type = "text";
+    w2.maxLength = 10;
+    w2.placeholder = "词条 2";
+    w2.style.flex = "1 1 120px";
+    w2.style.padding = ".35rem .5rem";
+    w2.style.borderRadius = ".5rem";
+    w2.style.border = "1px solid var(--border, #ddd)";
+    w2.style.font = "inherit";
+    const addBtn = document.createElement("button");
+    addBtn.type = "button";
+    addBtn.className = "primary-action";
+    addBtn.textContent = "添加词条";
+    addBtn.style.padding = ".35rem .75rem";
+    addBtn.addEventListener("click", async () => {
+      const word1 = w1.value.trim();
+      const word2 = w2.value.trim();
+      if (!word1 || !word2) {
+        showToast("两个词条都不能为空");
+        return;
+      }
+      addBtn.disabled = true;
+      try {
+        const res = await endpoint("POST", "undercover_words/add", { word1, word2 });
+        renderUndercoverWords(res?.data?.items || [], tbody, countLabel);
+        w1.value = "";
+        w2.value = "";
+        showToast(res?.status === "ok" ? "已添加" : res?.message || "添加失败");
+      } catch (err) {
+        showToast(err?.message || "添加失败");
+      } finally {
+        addBtn.disabled = false;
+      }
+    });
+    addRow.append(w1, w2, addBtn);
+    wrap.appendChild(addRow);
+
+    // ========= 批量 & LLM 导入区 =========
+    const batchBox = document.createElement("div");
+    batchBox.style.margin = ".6rem 0 .9rem";
+    batchBox.style.padding = ".65rem";
+    batchBox.style.border = "1px dashed var(--border, #ddd)";
+    batchBox.style.borderRadius = ".6rem";
+    batchBox.style.backgroundColor = "var(--surface-alt, #fafafa)";
+    batchBox.hidden = true;
+
+    const batchRow1 = document.createElement("div");
+    batchRow1.style.display = "flex";
+    batchRow1.style.alignItems = "center";
+    batchRow1.style.gap = ".5rem";
+    batchRow1.style.marginBottom = ".4rem";
+
+    const llmBtn = document.createElement("button");
+    llmBtn.type = "button";
+    llmBtn.className = "primary-action";
+    llmBtn.textContent = "AI 生成 10 对新词";
+    llmBtn.style.padding = ".3rem .75rem";
+    llmBtn.addEventListener("click", async () => {
+      llmBtn.disabled = true;
+      try {
+        const res = await endpoint("POST", "undercover_words/llm_generate_batch", {
+          count: 10,
+        });
+        const items = res?.data?.items || [];
+        const skipped = res?.data?.skipped || 0;
+        if (tableWrap && !tableWrap.hidden) {
+          renderUndercoverWords(items, tbody, countLabel);
+        } else {
+          loadUndercoverWords(tbody, countLabel);
+        }
+        showToast(
+          res?.status === "ok"
+            ? `AI 生成完成：新增 ${res.data.added || 0} 对，跳过重复 ${skipped} 对`
+            : res?.message || "生成失败"
+        );
+      } catch (err) {
+        showToast(err?.message || "AI 生成失败，稍后重试");
+      } finally {
+        llmBtn.disabled = false;
+      }
+    });
+
+    const batchHint = document.createElement("small");
+    batchHint.style.color = "var(--muted, #666)";
+    batchHint.textContent =
+      "每行一对词条，格式：词1 词2（空格/逗号/冒号均可分隔）。也可直接点上面按钮让 AI 批量生成。";
+    batchRow1.append(llmBtn, batchHint);
+    batchBox.appendChild(batchRow1);
+
+    const textarea = document.createElement("textarea");
+    textarea.rows = 4;
+    textarea.placeholder =
+      "示例：\n可乐 雪碧\n苹果, 梨\n咖啡：奶茶\n口红 唇釉";
+    textarea.style.width = "100%";
+    textarea.style.boxSizing = "border-box";
+    textarea.style.resize = "vertical";
+    textarea.style.padding = ".45rem .55rem";
+    textarea.style.borderRadius = ".5rem";
+    textarea.style.border = "1px solid var(--border, #ddd)";
+    textarea.style.font = "inherit";
+    textarea.style.color = "var(--text, #222)";
+    textarea.style.background = "var(--surface-solid, #fff)";
+    batchBox.appendChild(textarea);
+
+    const batchActRow = document.createElement("div");
+    batchActRow.style.display = "flex";
+    batchActRow.style.justifyContent = "flex-end";
+    batchActRow.style.gap = ".4rem";
+    batchActRow.style.marginTop = ".4rem";
+    const batchBtn = document.createElement("button");
+    batchBtn.type = "button";
+    batchBtn.className = "primary-action";
+    batchBtn.textContent = "批量添加";
+    batchBtn.style.padding = ".3rem .85rem";
+    batchBtn.addEventListener("click", async () => {
+      const text = textarea.value.trim();
+      if (!text) {
+        showToast("请先粘贴词条内容");
+        return;
+      }
+      batchBtn.disabled = true;
+      try {
+        const res = await endpoint("POST", "undercover_words/batch_import", {
+          text,
+        });
+        if (tableWrap && !tableWrap.hidden) {
+          renderUndercoverWords(res?.data?.items || [], tbody, countLabel);
+        } else {
+          loadUndercoverWords(tbody, countLabel);
+        }
+        const added = res?.data?.added_count || 0;
+        const skippedCount = res?.data?.skipped_count || 0;
+        const skipped = res?.data?.skipped || [];
+        const msg =
+          `批量完成：新增 ${added} 对，跳过 ${skippedCount} 对` +
+          (skipped.length > 0 ? `\n跳过明细：\n${skipped.slice(0, 5).join("\n")}` : "");
+        showToast(res?.status === "ok" ? msg : res?.message || "批量添加失败");
+        if (res?.status === "ok") textarea.value = "";
+      } catch (err) {
+        showToast(err?.message || "批量添加失败");
+      } finally {
+        batchBtn.disabled = false;
+      }
+    });
+    batchActRow.appendChild(batchBtn);
+    batchBox.appendChild(batchActRow);
+    wrap.appendChild(batchBox);
+
+    // 同步折叠显示
+    const originToggle = open.addEventListener; // noop
+    // 让 batchBox 和 tableWrap/addRow 同步展开/收起
+    (function patchToggle() {
+      const prev = open.onclick;
+      open.addEventListener("click", () => {
+        batchBox.hidden = addRow.hidden;
+      });
+    })();
+
+    const tableWrap = document.createElement("div");
+    tableWrap.style.maxHeight = "340px";
+    tableWrap.style.overflow = "auto";
+    tableWrap.style.border = "1px solid var(--border, #ddd)";
+    tableWrap.style.borderRadius = ".6rem";
+    tableWrap.hidden = true;
+
+    const table = document.createElement("table");
+    table.className = "uc-word-table";
+    table.style.width = "100%";
+    table.style.borderCollapse = "collapse";
+    table.style.fontSize = ".88rem";
+
+    const thead = document.createElement("thead");
+    thead.innerHTML =
+      '<tr style="background: var(--surface-alt, #f7f7f7)">' +
+      "<th>#</th><th>词条 1</th><th>词条 2</th><th>操作</th></tr>";
+    thead.querySelectorAll("th").forEach((th) => {
+      th.style.padding = ".4rem .65rem";
+      th.style.textAlign = "left";
+      th.style.borderBottom = "1px solid var(--border, #ddd)";
+      th.style.color = "var(--text-strong, #222)";
+    });
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    table.appendChild(tbody);
+    tableWrap.appendChild(table);
+    wrap.appendChild(tableWrap);
+
+    return wrap;
+  }
+
+  async function loadUndercoverWords(tbody, countLabel) {
+    try {
+      const res = await endpoint("GET", "undercover_words");
+      renderUndercoverWords(res?.data?.items || [], tbody, countLabel);
+    } catch (err) {
+      showToast(err?.message || "读取词库失败");
+    }
+  }
+
+  function renderUndercoverWords(items, tbody, countLabel) {
+    tbody.replaceChildren();
+    items.forEach((item) => {
+      const tr = document.createElement("tr");
+      tr.style.borderBottom = "1px dashed var(--border, #eee)";
+      const tdId = document.createElement("td");
+      tdId.textContent = String(item.id);
+      const td1 = document.createElement("td");
+      td1.textContent = String(item.word1 || "");
+      const td2 = document.createElement("td");
+      td2.textContent = String(item.word2 || "");
+      const tdAct = document.createElement("td");
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "text-button";
+      del.textContent = "删除";
+      del.style.color = "var(--red, #c6373a)";
+      del.addEventListener("click", async () => {
+        if (!window.confirm(`确认删除词条对「${item.word1} / ${item.word2}」？`)) return;
+        try {
+          const res = await endpoint("POST", "undercover_words/delete", { id: item.id });
+          renderUndercoverWords(res?.data?.items || [], tbody, countLabel);
+          showToast(res?.status === "ok" ? "已删除" : res?.message || "删除失败");
+        } catch (err) {
+          showToast(err?.message || "删除失败");
+        }
+      });
+      tdAct.appendChild(del);
+      [tdId, td1, td2, tdAct].forEach((td) => {
+        td.style.padding = ".4rem .65rem";
+        td.style.color = "var(--text, #222)";
+      });
+      tr.append(tdId, td1, td2, tdAct);
+      tbody.appendChild(tr);
+    });
+    if (countLabel) countLabel.textContent = `当前共 ${items.length} 对`;
   }
 
   function resetGameSettings(gameType) {

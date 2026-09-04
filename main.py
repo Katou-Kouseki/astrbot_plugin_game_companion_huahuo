@@ -20,7 +20,6 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
-from astrbot.api.web import request
 
 from .blackjack import BlackjackGame
 from .draw_guess import DrawGuessGame
@@ -57,6 +56,8 @@ from .turtle_soup_ai import (
     validation_passed,
     validation_prompt,
 )
+from .undercover import UndercoverGame
+from .undercover_words import UndercoverWordStore
 from .xiangqi import BLACK as XIANGQI_BLACK
 from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
@@ -250,6 +251,166 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
         ),
     },
+    {
+        "game_type": "undercover",
+        "label": "谁是卧底",
+        "description": "多人社交推理：每人随机词条，按轮次发言描述，投票淘汰可疑玩家。",
+        "fields": (
+            {
+                "key": "max_players",
+                "config_key": "undercover.max_players",
+                "label": "最大玩家席",
+                "type": "int",
+                "default": 10,
+                "minimum": 2,
+                "maximum": 20,
+                "unit": "人",
+                "hint": "默认 10 人；2 人即可开局（民 1 + 卧底 1）。",
+            },
+            {
+                "key": "min_players",
+                "config_key": "undercover.min_players",
+                "label": "最低开局人数",
+                "type": "int",
+                "default": 2,
+                "minimum": 2,
+                "maximum": 10,
+                "unit": "人",
+                "hint": "低于该人数不会自动开局；手动开始也会拒绝。",
+            },
+            {
+                "key": "camp_scales_default",
+                "config_key": "undercover.camp_scales_default",
+                "label": "默认阵营比例（平民 卧底 白板）",
+                "type": "str",
+                "default": "4 1 0",
+                "hint": "以空格或冒号分隔，如 4:1:0；实际会按参与人数按比例分配，保证卧底至少 1 人。",
+            },
+            {
+                "key": "allow_host_customize_camp_scales",
+                "config_key": "undercover.allow_host_customize_camp_scales",
+                "label": "允许首位玩家（房主）自定义阵营比例",
+                "type": "bool",
+                "default": True,
+                "hint": "开启后，第一个进入谁是卧底房间玩家席的玩家可以在 WebUI 调整默认的民/卧/白比例，无需进入管理台。",
+            },
+            {
+                "key": "match_seconds",
+                "config_key": "undercover.match_seconds",
+                "label": "匹配等待时长",
+                "type": "int",
+                "default": 180,
+                "minimum": 10,
+                "maximum": 600,
+                "unit": "秒",
+                "hint": "达到上限时若仍未凑满最大席位，按当前已入座人数开局。",
+            },
+            {
+                "key": "prepare_seconds",
+                "config_key": "undercover.prepare_seconds",
+                "label": "发词准备时长",
+                "type": "int",
+                "default": 10,
+                "minimum": 0,
+                "maximum": 120,
+                "unit": "秒",
+                "hint": "开局前让玩家查看身份词条的缓冲时间。",
+            },
+            {
+                "key": "speaking_seconds",
+                "config_key": "undercover.speaking_seconds",
+                "label": "单人次发言时长上限",
+                "type": "int",
+                "default": 160,
+                "minimum": 0,
+                "maximum": 600,
+                "unit": "秒",
+                "hint": "默认 160 秒；设为 0 表示由前端自动跳过当前玩家（本轮不做超时强跳）。",
+            },
+            {
+                "key": "voting_seconds",
+                "config_key": "undercover.voting_seconds",
+                "label": "投票时长上限",
+                "type": "int",
+                "default": 120,
+                "minimum": 0,
+                "maximum": 600,
+                "unit": "秒",
+                "hint": "默认 120 秒；超时未投票视为本轮弃权。",
+            },
+            {
+                "key": "first_round_non_voting",
+                "config_key": "undercover.first_round_non_voting",
+                "label": "首轮不投票的最低存活人数",
+                "type": "int",
+                "default": 3,
+                "minimum": 2,
+                "maximum": 10,
+                "unit": "人",
+                "hint": "首轮存活人数 ≤ 该值时，第一轮发言后直接进入下一轮，不再投票。",
+            },
+            {
+                "key": "send_identity_in_card",
+                "config_key": "undercover.send_identity_in_card",
+                "label": "告知身份（开场发放身份/词条卡）",
+                "type": "bool",
+                "default": True,
+                "hint": "开启后开场会以动画卡片告知玩家身份与词条；关闭则不展示身份卡。",
+            },
+            {
+                "key": "similarity",
+                "config_key": "undercover.similarity",
+                "label": "发言相似度阈值",
+                "type": "int",
+                "default": 80,
+                "minimum": 0,
+                "maximum": 100,
+                "unit": "%",
+                "hint": "发言与历史发言相似度超过该阈值会被驳回并要求换说法，防止复读；0 表示不检测。",
+            },
+            {
+                "key": "failed_mute_seconds",
+                "config_key": "undercover.failed_mute_seconds",
+                "label": "失败方禁言时长",
+                "type": "int",
+                "default": 0,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "游戏失败阵营被禁言的秒数；0 表示不禁言。",
+            },
+            {
+                "key": "violated_mute_seconds",
+                "config_key": "undercover.violated_mute_seconds",
+                "label": "违规（说出词条）禁言时长",
+                "type": "int",
+                "default": 0,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "平民/卧底误说自己的词条后禁言秒数；0 表示不禁言。",
+            },
+            {
+                "key": "ai_fill_enabled",
+                "config_key": "undercover.ai_fill_enabled",
+                "label": "开启 AI 玩家自动补位（可作为人数不足的后备玩法）",
+                "type": "bool",
+                "default": True,
+                "hint": "开启后，如果人数少于最低开局人数，Bot 会自动以 AI 玩家身份补位。AI 玩家会自动发言描述和投票。",
+            },
+            {
+                "key": "ai_fill_min_players",
+                "config_key": "undercover.ai_fill_min_players",
+                "label": "AI 补位后的最低总人数",
+                "type": "int",
+                "default": 3,
+                "minimum": 2,
+                "maximum": 8,
+                "unit": "人",
+                "hint": "真实玩家 + AI 玩家达到该人数才开局；真实玩家如果已≥最低开局人数，则不强制补 AI。",
+            },
+        ),
+    },
 )
 
 
@@ -267,10 +428,38 @@ class _RecentPrivateGameResult:
     "让 Bot 与用户通过可视化房间自然地一起玩游戏。",
     PLUGIN_VERSION,
 )
+
+
+def _uc_ai_fallback(camp: str, round_no: int) -> str:
+    """谁是卧底 AI 发言的本地兜底文案：按轮次轮换，避免整局复读同一句。"""
+    index = max(0, (round_no - 1) % 4)
+    if camp == "whiteboard":
+        pool = [
+            "嗯……这东西我觉得大家都接触过，就不过多形容了。",
+            "我想大家心里应该都有数，反正挺日常的一样东西。",
+            "这个嘛，每天都会见到，我就不细说了哈。",
+            "大家都懂的，我就不点破了，免得没意思。",
+        ]
+    else:
+        pool = [
+            "它挺日常的吧，大家应该都不陌生，我感觉经常能碰见。",
+            "这东西还挺常见的，说不上多特别，但肯定不冷门。",
+            "我第一反应是家里、生活里都离不开的那种，你们懂的。",
+            "它虽然普通，但几乎人人都接触过，应该很好猜。",
+        ]
+    return pool[index]
+
+
 class GameCompanionPlugin(Star):
     """Game rooms that preserve AstrBot's normal conversation pipeline."""
 
-    def __init__(self, context: Context, config: AstrBotConfig) -> None:
+    def __init__(
+        self,
+        context: Context,
+        config: AstrBotConfig | None = None,
+        *args,
+        **kwargs,
+    ) -> None:
         super().__init__(context)
         self.context = context
         self.config = config or {}
@@ -390,6 +579,59 @@ class GameCompanionPlugin(Star):
         self.blackjack_max_players = self._cfg_int(
             "blackjack.max_players", 1, minimum=1, maximum=6
         )
+        # ------------------------ 谁是卧底配置 ------------------------
+        self.undercover_max_players = self._cfg_int(
+            "undercover.max_players", 10, minimum=2, maximum=20
+        )
+        self.undercover_min_players = self._cfg_int(
+            "undercover.min_players", 2, minimum=2, maximum=10
+        )
+        self.undercover_camp_scales_default = (
+            self._cfg_str("undercover.camp_scales_default", "4 1 0") or "4 1 0"
+        )
+        self.undercover_allow_host_customize_camp_scales = self._cfg_bool(
+            "undercover.allow_host_customize_camp_scales", True
+        )
+        self.undercover_match_seconds = self._cfg_int(
+            "undercover.match_seconds", 180, minimum=10, maximum=600
+        )
+        self.undercover_prepare_seconds = self._cfg_int(
+            "undercover.prepare_seconds", 10, minimum=0, maximum=120
+        )
+        self.undercover_speaking_seconds = self._cfg_int(
+            "undercover.speaking_seconds", 160, minimum=0, maximum=600
+        )
+        self.undercover_voting_seconds = self._cfg_int(
+            "undercover.voting_seconds", 120, minimum=0, maximum=600
+        )
+        self.undercover_first_round_non_voting = self._cfg_int(
+            "undercover.first_round_non_voting", 3, minimum=2, maximum=10
+        )
+        self.undercover_send_identity_in_card = self._cfg_bool(
+            "undercover.send_identity_in_card", True
+        )
+        self.undercover_similarity = self._cfg_int(
+            "undercover.similarity", 80, minimum=0, maximum=100
+        )
+        # 失败禁言 / 违规禁言（单位：秒，0 表示不禁言）
+        self.undercover_failed_mute_seconds = self._cfg_int(
+            "undercover.failed_mute_seconds", 0, minimum=0, maximum=3600
+        )
+        self.undercover_violated_mute_seconds = self._cfg_int(
+            "undercover.violated_mute_seconds", 0, minimum=0, maximum=3600
+        )
+        self.undercover_ai_fill_enabled = self._cfg_bool(
+            "undercover.ai_fill_enabled", True
+        )
+        self.undercover_ai_fill_min_players = self._cfg_int(
+            "undercover.ai_fill_min_players", 3, minimum=2, maximum=8
+        )
+        # 去重窗口：记录 N 次抽取到的词条，避免短时间重复
+        self._undercover_word_window: list[tuple[str, str]] = []
+        self._undercover_word_window_max = 10
+        self.undercover_word_store = UndercoverWordStore(
+            self.data_dir / "undercover_words.json"
+        )
         self.multiplayer_turn_timeout = self._cfg_non_negative(
             "multiplayer.turn_timeout_seconds", 60
         )
@@ -425,6 +667,20 @@ class GameCompanionPlugin(Star):
             draw_guess_duration_seconds=self.draw_guess_duration_seconds,
             pig_dice_target_score=self.pig_dice_target_score,
             blackjack_max_players=self.blackjack_max_players,
+            undercover_max_players=self.undercover_max_players,
+            undercover_min_players=self.undercover_min_players,
+            undercover_camp_scales_default=self.undercover_camp_scales_default,
+            undercover_allow_host_customize_camp_scales=self.undercover_allow_host_customize_camp_scales,
+            undercover_match_seconds=self.undercover_match_seconds,
+            undercover_prepare_seconds=self.undercover_prepare_seconds,
+            undercover_speaking_seconds=self.undercover_speaking_seconds,
+            undercover_voting_seconds=self.undercover_voting_seconds,
+            undercover_first_round_non_voting=self.undercover_first_round_non_voting,
+            undercover_send_identity_in_card=self.undercover_send_identity_in_card,
+            undercover_similarity=self.undercover_similarity,
+            undercover_ai_fill_enabled=self.undercover_ai_fill_enabled,
+            undercover_ai_fill_min_players=self.undercover_ai_fill_min_players,
+            undercover_word_store=self.undercover_word_store,
             enabled_games=self.enabled_games,
             xiangqi_engine=self.xiangqi_engine,
             event_callback=self._on_room_event,
@@ -659,15 +915,15 @@ class GameCompanionPlugin(Star):
 
         难度必须由你结合当前人格、关系和用户请求自行决定，不能把难度选择交给网页用户。
         支持 gomoku（五子棋）、xiangqi（中国象棋）、tictactoe（井字棋）、
-        turtle_soup（海龟汤）、pig_dice（贪心骰子）、draw_guess（你画我猜）
-        和 blackjack（二十一点，Bot 当庄家）。
+        turtle_soup（海龟汤）、pig_dice（贪心骰子）、draw_guess（你画我猜）、
+        blackjack（二十一点，Bot 当庄家）和 undercover（谁是卧底，多人社交推理）。
         不要因为普通聊天中偶然提到游戏名称就调用本工具。
         当前 QQ 会话已有房间时只返回原房间入口；切换游戏、再来一局和其他局内操作
         全部由用户进入 WebUI 后完成，不能在 QQ 中代替用户执行。
 
         Args:
-            game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、turtle_soup、pig_dice 或 draw_guess。
-            difficulty(string): 你决定使用的难度，只能是 easy、normal、hard；贪心骰子中分别表示稳健、均衡和大胆，二十一点中影响庄家软 17 规则。
+            game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、turtle_soup、pig_dice、draw_guess、blackjack 或 undercover。
+            difficulty(string): 你决定使用的难度，只能是 easy、normal、hard；贪心骰子中分别表示稳健、均衡和大胆，二十一点中影响庄家软 17 规则；谁是卧底时忽略。
             turtle_soup_mode(string): 海龟汤玩法；bot_host 表示 Bot 出题玩家猜，player_host 表示玩家给线索 Bot 猜。非海龟汤时忽略。
             admin_room(boolean): 仅当群聊中的游戏管理员明确要求创建管理员房间时传 true。普通群聊房间必须传 false；非游戏管理员不能创建管理员房间。
             confirm_abandon(boolean): 切换游戏且当前局未结束时，用户是否已明确同意放弃本局。
@@ -805,6 +1061,7 @@ class GameCompanionPlugin(Star):
             "pig_dice": f"继续掷或收手，先到 {self.manager.pig_dice_target_score} 分获胜",
             "draw_guess": "用户在网页作画，Bot 通过视觉模型猜词",
             "blackjack": "玩家对 Bot 庄家比点数，可 1-6 人各自对庄",
+            "undercover": "多人社交推理，按轮次发言描述→投票淘汰找卧底",
         }
         enabled = [
             game_type
@@ -821,7 +1078,7 @@ class GameCompanionPlugin(Star):
             for index, game_type in enumerate(enabled, start=1)
         ] or ["当前没有已开放的游戏。"]
         lines = [
-            "游戏伴侣 · 游戏菜单",
+            "花火陪你玩 · 游戏菜单",
             "",
             *game_lines,
             *(
@@ -1092,6 +1349,44 @@ class GameCompanionPlugin(Star):
                 f"实时局面：Bot 是庄家，明牌{upcard.rank + upcard.suit if upcard else '未发'}，"
                 f"暗牌未公开；{state_text}。各家点数：{hands}。"
                 "庄家只按固定规则补牌，不能主观作弊。"
+            )
+            return lines
+
+        if isinstance(game, UndercoverGame):
+            counts = game.camp_counts()
+            live = game.camp_counts(live_only=True)
+            camp_line = "阵营分布：平民{}/{}、卧底{}/{}、白板{}/{}".format(
+                live.get("civilian", 0), counts.get("civilian", 0),
+                live.get("undercover", 0), counts.get("undercover", 0),
+                live.get("whiteboard", 0), counts.get("whiteboard", 0),
+            )
+            phase_desc = {
+                "preparing": "正在发词准备",
+                "speech": "发言轮次",
+                "pk": "平票 PK 发言轮",
+                "voting": "投票阶段",
+                "finished": "本局已结束",
+            }.get(str(game.phase), "进行中")
+            round_desc = (
+                f"第 {game.current_round_number} 轮"
+                if game.current_round_number
+                else "准备期"
+            )
+            expected = game.expected_speaker_number
+            lines.append(
+                f"实时状态：谁是卧底 {round_desc}，阶段={phase_desc}。"
+                + camp_line
+                + "。"
+                + (
+                    f"当前轮到 {expected} 号玩家发言。"
+                    if expected is not None and phase_desc != "本局已结束"
+                    else "存活玩家正在投票淘汰可疑目标。"
+                    if game.phase == "voting"
+                    else ""
+                )
+            )
+            lines.append(
+                "注：进行中不能公布玩家身份，结束后会在 WebUI 一次性揭晓全员身份和词条。"
             )
             return lines
 
@@ -1423,6 +1718,34 @@ class GameCompanionPlugin(Star):
             if isinstance(room.game, TurtleSoupGame):
                 self._spawn(self._prepare_turtle_soup(room, room.game))
             return
+        if event_name == "undercover_word_pair_requested":
+            # 尝试用 LLM 生成一对词条，经去重窗口检查后持久化；失败留给 room_manager 本地 fallback
+            pair = await self._llm_generate_undercover_words(room)
+            if pair is not None:
+                payload["word_pair"] = pair
+            return
+        if event_name == "undercover_game_started":
+            if self.undercover_send_identity_in_card and isinstance(
+                room.game, UndercoverGame
+            ):
+                self._spawn(self._deliver_undercover_identities(room, room.game))
+            if isinstance(room.game, UndercoverGame):
+                # 开局后轮到第一位玩家发言，如果第一位是 AI，立即驱动
+                self._spawn(self._undercover_ai_step_if_needed(room))
+            return
+        if event_name == "undercover_speech_submitted":
+            self._spawn(self._undercover_commentary_speech(room, payload))
+            self._spawn(self._undercover_ai_step_if_needed(room))
+            return
+        if event_name == "undercover_vote_submitted":
+            self._spawn(self._undercover_commentary_vote(room, payload))
+            self._spawn(self._undercover_ai_step_if_needed(room))
+            return
+        if event_name == "undercover_pk_started":
+            return
+        if event_name == "undercover_turn_timeout":
+            self._spawn(self._undercover_turn_timeout(room))
+            return
         if event_name == "game_started":
             self._capture_round_participants(room, reset=True)
             if room.player_identity_confirmed:
@@ -1638,6 +1961,9 @@ class GameCompanionPlugin(Star):
             "mixed": "本局多名玩家各有胜负",
             "cooperative_success": "合作成功",
             "cooperative_unsolved": "合作未完成",
+            "uc_civilian_win": "平民阵营获得最终胜利",
+            "uc_undercover_win": "卧底阵营坚持到最后并获得胜利",
+            "uc_whiteboard_win": "白板在没有卧底的情况下撑到最后",
         }.get(str(payload.get("result")), "对局结束")
 
     @classmethod
@@ -1698,6 +2024,32 @@ class GameCompanionPlugin(Star):
             visitor, cleaned, is_player, is_current_player = (
                 await self.manager.begin_room_chat(room, visitor_token, text)
             )
+            # 谁是卧底：当前发言玩家的聊天消息自动记作本轮发言（优先级高于控制命令）
+            if (
+                room.game_type == "undercover"
+                and isinstance(room.game, UndercoverGame)
+                and room.game.phase in {"speech", "pk"}
+                and is_player
+                and visitor.number == room.game.expected_speaker_number
+            ):
+                try:
+                    await self.manager.player_undercover_speech(
+                        room, visitor.token, cleaned
+                    )
+                    reply = "已将此条聊天作为你本轮的发言记录。"
+                    await self.manager.add_room_chat_reply(
+                        room,
+                        visitor,
+                        reply,
+                        message_type="control",
+                    )
+                    return {
+                        "action": "undercover_speech",
+                        "reply": reply,
+                    }
+                except (ValueError, RuntimeError, PermissionError) as exc:
+                    # 失败时走普通聊天回应对话
+                    pass
             action, options = self._room_chat_action(room, cleaned)
             if action in {"soup_question", "soup_answer", "soup_respond"}:
                 action = await self._refine_turtle_chat_action(
@@ -2099,7 +2451,7 @@ class GameCompanionPlugin(Star):
         state = "\n".join(self._live_game_state(room))
         system_prompt = (
             f"{persona}\n\n{scene}\n\n{memory}\n\n"
-            f"你正在游戏伴侣 WebUI 的房间中与用户聊天，当前游戏是{self._game_label(room.game_type)}。"
+            f"你正在花火陪你玩 WebUI 的房间中与用户聊天，当前游戏是{self._game_label(room.game_type)}。"
             "这里的聊天只属于当前房间，不得声称已向 QQ 发消息。保持原有人格、关系和自然语气。"
             "系统会在模型调用前执行有权限的游戏指令；你不能自行声称已经落子、切换游戏、投降、"
             "暂停、悔棋或改变房间状态。海龟汤中绝不能透露未公开的汤底或隐藏事实。"
@@ -2496,7 +2848,7 @@ class GameCompanionPlugin(Star):
             )
         system_prompt = (
             f"{persona}\n\n{companion_scene}\n\n{memory}\n\n"
-            f"你正在与用户通过游戏伴侣 WebUI 玩{self._game_label(room.game_type)}。保持原有人格和关系语气，"
+            f"你正在与用户通过花火陪你玩 WebUI 玩{self._game_label(room.game_type)}。保持原有人格和关系语气，"
             "只回应当前游戏事件，不输出规则说明或格式标签。"
             f"{role_constraint}海龟汤中绝不能猜测或泄露尚未公开的汤底。"
         ).strip()
@@ -2509,6 +2861,47 @@ class GameCompanionPlugin(Star):
             logger.debug("[GameCompanion] 生成人格化游戏回复失败: %s", exc)
             return ""
         return str(getattr(response, "completion_text", "") or "").strip()[:500]
+
+    async def _llm_gen_neutral(self, prompt: str, *, system_prompt: str = "") -> str:
+        """管理台等无会话场景的中性 LLM 生成：不注入游戏人格与记忆。
+
+        优先使用任一活跃房间的会话 Provider，其次使用默认 Provider；均不可用时返回空字符串，
+        由调用方决定本地兜底策略。
+        """
+        provider = None
+        candidates = [None]
+        try:
+            for r in self.manager.rooms.values():
+                sid = getattr(r, "session_id", None)
+                if sid:
+                    candidates.append(sid)
+        except Exception:
+            pass
+        for session_id in candidates:
+            try:
+                p = self.context.get_using_provider(session_id)
+            except Exception as exc:
+                logger.debug("[GameCompanion] 获取中立 LLM Provider 失败: %s", exc)
+                p = None
+            if p is not None and callable(getattr(p, "text_chat", None)):
+                provider = p
+                if session_id:
+                    break
+        if provider is None:
+            return ""
+        use_system = (
+            system_prompt
+            or "你是中文助手。请严格按照要求只输出结构化内容，不要任何解释、前后缀或 markdown 代码块。"
+        )
+        try:
+            response = await asyncio.wait_for(
+                provider.text_chat(prompt=prompt, system_prompt=use_system),
+                timeout=30,
+            )
+        except Exception as exc:
+            logger.debug("[GameCompanion] 中立 LLM 生成失败: %s", exc)
+            return ""
+        return str(getattr(response, "completion_text", "") or "").strip()
 
     @staticmethod
     def _persona_text(persona: object) -> str:
@@ -2712,7 +3105,7 @@ class GameCompanionPlugin(Star):
         summary = (
             "Bot 与用户完成了游戏：" + "；".join(summaries) + "。"
             if summaries
-            else "用户在游戏伴侣房间中与 Bot 和其他房间成员进行了交流。"
+            else "用户在花火陪你玩房间中与 Bot 和其他房间成员进行了交流。"
         )
         metadata = {
             "games": {
@@ -3045,7 +3438,7 @@ class GameCompanionPlugin(Star):
                 registrar(
                     {
                         "name": "game_companion_invite",
-                        "module": "游戏伴侣",
+                        "module": "花火陪你玩",
                         "label": "邀请一起玩游戏",
                         "description": "结合近期共同游戏、当前人格和生活状态，自然邀请用户玩一局游戏。",
                         "when": "有闲暇、想陪用户玩，或对最近胜负仍有余味时",
@@ -3243,13 +3636,15 @@ class GameCompanionPlugin(Star):
         if room.admin_room:
             instruction += "这是管理员审核房间，访客需要由管理员在游戏管理台安排玩家。"
         else:
+            # 统一的绑定引导：无论群/私都是发 /绑定玩家 命令
             bind_hint = (
-                "在原群聊中 @Bot 发送"
+                "群里发送："
                 if room.source == "group"
-                else "在原私聊中发送"
+                else "私聊中发送："
             )
             instruction += (
-                f"提醒用户打开页面后查看一次性 QQ 绑定令牌，并{bind_hint}“绑定玩家 令牌”，"
+                f"提醒用户打开页面后查看绑定码，{bind_hint}/绑定玩家 {room.identity_token}；"
+                "或点击页面「一键复制」按钮，直接粘贴到群里发送即可。"
                 "绑定成功后再点击加入玩家席。"
             )
         if room.game_type == "turtle_soup":
@@ -3258,6 +3653,13 @@ class GameCompanionPlugin(Star):
             instruction += "说明玩家进入玩家席后直接开始，先手由系统随机决定。"
         elif room.game_type == "draw_guess":
             instruction += "说明玩家进入玩家席后在网页画布作画，并手动点击让 Bot 猜。"
+        elif room.game_type == "undercover":
+            instruction += (
+                f"说明谁是卧底最低 {self.undercover_min_players} 人即可开局。"
+                "进入玩家席后会在页面顶部倒计时自动开始（人满立即开局）；"
+                "系统会给每位玩家派发身份词条，按照座位顺序依次发言描述，投票淘汰可疑玩家。"
+                "在发言轮次，当前发言玩家可以直接在房间聊天区输入消息，会被自动记入发言。"
+            )
         else:
             instruction += "说明玩家进入后可选择执棋方。"
         timeout = self.manager.empty_player_timeout
@@ -3314,6 +3716,192 @@ class GameCompanionPlugin(Star):
             ["POST"],
             "Update game settings",
         )
+        register_api(
+            f"{PAGE_API_PREFIX}/undercover_words",
+            self.page_undercover_words,
+            ["GET"],
+            "List undercover word pairs",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/undercover_words/add",
+            self.page_undercover_words_add,
+            ["POST"],
+            "Add undercover word pair",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/undercover_words/delete",
+            self.page_undercover_words_delete,
+            ["POST"],
+            "Delete undercover word pair",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/undercover_words/batch_import",
+            self.page_undercover_words_batch_import,
+            ["POST"],
+            "Batch import undercover word pairs",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/undercover_words/llm_generate_batch",
+            self.page_undercover_words_llm_generate_batch,
+            ["POST"],
+            "Ask LLM to generate undercover word pairs in batch",
+        )
+
+    async def page_undercover_words(self) -> dict[str, Any]:
+        store = self.undercover_word_store
+        items = store.list_all() if store is not None else []
+        return {"status": "ok", "data": {"items": items}}
+
+    async def page_undercover_words_add(
+        self, payload: Any = None
+    ) -> dict[str, Any]:
+        store = self.undercover_word_store
+        if store is None:
+            return {"status": "error", "message": "词库不可用", "data": {"items": []}}
+        payload = payload or {}
+        w1 = str(payload.get("word1") or "").strip()
+        w2 = str(payload.get("word2") or "").strip()
+        if not w1 or not w2:
+            return {
+                "status": "error",
+                "message": "两个词条都不能为空",
+                "data": {"items": store.list_all()},
+            }
+        if len(w1) > 10 or len(w2) > 10:
+            return {
+                "status": "error",
+                "message": "每个词条不超过 10 个字",
+                "data": {"items": store.list_all()},
+            }
+        added = store.add(w1, w2)
+        if added is None:
+            return {
+                "status": "error",
+                "message": "这对词条（或反向）已存在，或长度无效",
+                "data": {"items": store.list_all()},
+            }
+        return {"status": "ok", "data": {"items": store.list_all(), "added": added}}
+
+    async def page_undercover_words_delete(
+        self, payload: Any = None
+    ) -> dict[str, Any]:
+        store = self.undercover_word_store
+        if store is None:
+            return {"status": "error", "message": "词库不可用", "data": {"items": []}}
+        payload = payload or {}
+        try:
+            item_id = int(payload.get("id"))
+        except (TypeError, ValueError):
+            return {
+                "status": "error",
+                "message": "id 必须是整数",
+                "data": {"items": store.list_all()},
+            }
+        ok = store.delete(item_id)
+        if not ok:
+            return {
+                "status": "error",
+                "message": "词条不存在或已被删除",
+                "data": {"items": store.list_all()},
+            }
+        return {"status": "ok", "data": {"items": store.list_all()}}
+
+    async def page_undercover_words_batch_import(
+        self, payload: Any = None
+    ) -> dict[str, Any]:
+        store = self.undercover_word_store
+        if store is None:
+            return {"status": "error", "message": "词库不可用", "data": {"items": []}}
+        import re
+        payload = payload or {}
+        text = str(payload.get("text") or "")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        added = 0
+        skipped: list[str] = []
+        for line in lines:
+            tokens = [t for t in re.split(r"[\s,，:：\t]+", line) if t]
+            if len(tokens) != 2:
+                skipped.append(f"格式错误：{line}")
+                continue
+            w1, w2 = tokens
+            if store.add(w1, w2) is not None:
+                added += 1
+            else:
+                skipped.append(f"重复/非法：{w1} vs {w2}")
+        items = store.list_all()
+        return {
+            "status": "ok",
+            "data": {
+                "added_count": added,
+                "skipped_count": len(skipped),
+                "skipped": skipped,
+                "items": items,
+            },
+        }
+
+    async def page_undercover_words_llm_generate_batch(
+        self, payload: Any = None
+    ) -> dict[str, Any]:
+        store = self.undercover_word_store
+        if store is None:
+            return {"status": "error", "message": "词库不可用", "data": {"items": []}}
+        payload = payload or {}
+        try:
+            count = max(3, min(int(payload.get("count") or 10), 30))
+        except (TypeError, ValueError):
+            count = 10
+        added = 0
+        skipped = 0
+        # 用严格 JSON list 让模型一次返回多对
+        prompt = (
+            f"请返回恰好 {count} 对中文 \"谁是卧底\" 游戏词条，JSON 数组格式："
+            f"[{{\"word1\":\"词A\",\"word2\":\"词B\"}}, ...]。"
+            "要求：两个词必须是中文，长度 2-10 字，语义相关但有明确差异（例如：可乐/雪碧、牛奶/豆浆、口红/唇釉）；"
+            "不要重复；不要输出任何其他文字；不要 markdown 代码块；"
+            "词条类型尽量多样化，覆盖食物、日用品、人物、影视、科技、游戏等领域。"
+        )
+        try:
+            text = await asyncio.wait_for(
+                self._llm_gen_neutral(prompt),
+                timeout=30,
+            )
+            parsed = extract_json_object(text)
+            if isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
+                pairs_src = parsed["items"]
+            elif isinstance(parsed, list):
+                pairs_src = parsed
+            else:
+                # 尝试多种包装
+                pairs_src = []
+                for key in ("pairs", "words", "result", "data"):
+                    if isinstance(parsed, dict) and isinstance(parsed.get(key), list):
+                        pairs_src = parsed[key]; break
+        except Exception:
+            pairs_src = []
+        # 遍历入库；窗口去重用已有的机制
+        for item in pairs_src:
+            if not isinstance(item, dict): continue
+            w1 = str(item.get("word1") or item.get("w1") or "").strip()
+            w2 = str(item.get("word2") or item.get("w2") or "").strip()
+            if not (2 <= len(w1) <= 10 and 2 <= len(w2) <= 10 and w1 != w2):
+                skipped += 1; continue
+            if self._uc_word_in_window((w1, w2)):
+                skipped += 1; continue
+            record = store.add(w1, w2)
+            if record is None:
+                skipped += 1; continue
+            self._push_uc_word_window((w1, w2))
+            added += 1
+        items = store.list_all()
+        return {
+            "status": "ok" if added > 0 else "error",
+            "message": "" if added > 0 else "LLM 未返回有效词条，请稍后再试",
+            "data": {
+                "added": added,
+                "skipped": skipped,
+                "items": items,
+            },
+        }
 
     async def page_rooms(self) -> dict[str, Any]:
         return {
@@ -3509,7 +4097,7 @@ class GameCompanionPlugin(Star):
             if normalized not in allowed:
                 raise ValueError(f"{label}选项无效")
             return normalized
-        if field_type == "string":
+        if field_type in ("string", "str"):
             maximum_length = int(field.get("maximum_length", 500))
             if len(normalized) > maximum_length:
                 raise ValueError(f"{label}不能超过 {maximum_length} 个字符")
@@ -3633,6 +4221,387 @@ class GameCompanionPlugin(Star):
         await self.quick_tunnel.stop()
         await self.room_server.stop()
         return {"status": "ok", "data": {"tunnel": self.quick_tunnel.status()}}
+
+    # =====================================================================
+    # 谁是卧底：LLM 取词 / 身份分发 / 旁白解说
+    # =====================================================================
+
+    def _uc_word_in_window(self, pair: tuple[str, str]) -> bool:
+        w1, w2 = pair
+        for (a, b) in self._undercover_word_window:
+            if {w1, w2} == {a, b}:
+                return True
+        return False
+
+    def _push_uc_word_window(self, pair: tuple[str, str]) -> None:
+        if self._uc_word_in_window(pair):
+            return
+        self._undercover_word_window.append(pair)
+        over = len(self._undercover_word_window) - self._undercover_word_window_max
+        if over > 0:
+            del self._undercover_word_window[:over]
+
+    async def _llm_generate_undercover_words(
+        self, room: GameRoom
+    ) -> tuple[str, str] | None:
+        """尝试用 LLM 生成一对词条。成功则持久化并记录窗口；任何失败返回 None。"""
+        prompt = (
+            "生成一对 2-4 字的中文常见名词作为谁是卧底词库，"
+            "两个词意思接近但不同，比如 \"牛奶/豆浆\"、\"苹果/梨\"。"
+            "只输出严格 JSON，不要加任何解释或额外文字："
+            '{ "word1": "平民词", "word2": "卧底词" }'
+        )
+        try:
+            raw = await asyncio.wait_for(
+                self._generate_persona_text(room, prompt), timeout=8.0
+            )
+        except Exception:
+            return None
+        obj = extract_json_object(str(raw or ""))
+        if not isinstance(obj, dict):
+            return None
+        w1 = str(obj.get("word1") or "").strip()
+        w2 = str(obj.get("word2") or "").strip()
+        if not w1 or not w2 or w1 == w2:
+            return None
+        if len(w1) > 10 or len(w2) > 10:
+            return None
+        pair = (w1, w2)
+        if self._uc_word_in_window(pair):
+            return None  # 短时间重复则 fallback，保证不重复
+        store = self.undercover_word_store
+        try:
+            store.add(w1, w2)  # 去重失败也没关系
+        except Exception:
+            pass
+        self._push_uc_word_window(pair)
+        return pair
+
+    async def _deliver_undercover_identities(
+        self, room: GameRoom, game: UndercoverGame
+    ) -> None:
+        """通过 AstrBot 私聊把身份词条发给每个玩家；失败或未绑定 QQ 时仅依赖 WebUI 身份卡。"""
+        for player in game.players_all:
+            try:
+                snap = game.snapshot(player.player_number)
+                mine = snap.get("my") or {}
+                camp_label = {
+                    "civilian": "平民",
+                    "undercover": "卧底",
+                    "whiteboard": "白板",
+                }.get(str(mine.get("camp") or ""), str(mine.get("camp") or "平民"))
+                word = str(mine.get("word") or "")
+                qq = str(player.qq or "")
+                if not qq:
+                    continue
+                name = player.display_name or f"{player.player_number}号玩家"
+                text = (
+                    f"【花火陪你玩·谁是卧底】{name} 你是：{camp_label}。"
+                )
+                if camp_label == "白板":
+                    text += "白板没有词条，你的目标是在不暴露的情况下，模仿他人描述坚持到卧底被淘汰。"
+                else:
+                    text += f"你的词条是：「{word}」。"
+                text += "请勿向其他人泄露；更多细节请在 WebUI 身份卡查看。"
+                # AstrBot 的私聊接口：如果 fail 直接吞掉
+                try:
+                    from astrbot.api.message_components import Plain
+
+                    await self.context.send_private_message(
+                        qq,
+                        Plain(text),
+                    )
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        # 统一提示：身份已派发
+        room.add_message(
+            "system",
+            "身份词条已分别发送至各位玩家的 WebUI 身份卡；"
+            "如开启私聊通道，也会同步到 QQ 私聊。请各自前往查看。",
+        )
+
+    async def _undercover_commentary_speech(
+        self, room: GameRoom, payload: dict[str, Any]
+    ) -> None:
+        if time.time() - room.last_commentary_at < self.commentary_cooldown:
+            return
+        player_number = payload.get("player_number") or "?"
+        content = str(payload.get("content") or "")
+        if len(content) > 120:
+            content = content[:120] + "…"
+        prompt = (
+            f"谁是卧底第 {payload.get('round') or '?'} 轮："
+            f"{player_number} 号玩家刚刚描述了自己的词条。"
+            f"请用花火人格，以 40 字以内自然点评，绝对不要指出任何玩家的身份或词条。"
+            f"发言摘要：{content}"
+        )
+        try:
+            room.last_commentary_at = time.time()
+            await self._comment(room, prompt)
+        except Exception:
+            pass
+
+    async def _undercover_commentary_vote(
+        self, room: GameRoom, payload: dict[str, Any]
+    ) -> None:
+        if time.time() - room.last_commentary_at < self.commentary_cooldown:
+            return
+        need_pk = bool(payload.get("need_pk"))
+        out_num = payload.get("out_player_number")
+        round_num = payload.get("round") or "?"
+        if need_pk:
+            targets = payload.get("pk_targets") or []
+            labels = "、".join(str(x) + "号" for x in targets) or "平票玩家"
+            prompt = (
+                f"谁是卧底第 {round_num} 轮投票：平票！{labels} 将进入 PK 发言。"
+                f"请用花火人格 50 字内渲染气氛，不要暴露任何玩家身份或词条。"
+            )
+        elif out_num is not None:
+            prompt = (
+                f"谁是卧底第 {round_num} 轮投票结束：{out_num} 号玩家被大家投出局了。"
+                f"请用花火人格 50 字内渲染气氛，不要暴露他是平民/卧底/白板。"
+            )
+        else:
+            prompt = (
+                f"谁是卧底第 {round_num} 轮投票结束。"
+                f"请用花火人格 40 字内简短说一句悬念。"
+            )
+        try:
+            room.last_commentary_at = time.time()
+            await self._comment(room, prompt)
+        except Exception:
+            pass
+
+    async def _undercover_ai_step_if_needed(self, room: GameRoom) -> None:
+        """检查是否轮到 AI 玩家发言 / 还有 AI 玩家没投票，如果是则自动驱动。
+
+        只要房间里存在 AI 玩家席（无论是自动补位还是房主手动添加）就驱动，
+        不依赖 undercover_ai_fill_enabled 开关——那个开关只控制“自动补位”行为。
+        """
+        has_ai = any(
+            getattr(seat, "is_ai", False)
+            for seat in (getattr(room.multiplayer, "seats", None) or [])
+        )
+        if not has_ai:
+            return
+        if not isinstance(room.game, UndercoverGame):
+            return
+        if room.game.finished:
+            return
+        game = room.game
+        try:
+            # 1) 发言阶段：当前是 AI 玩家就自动发言
+            if game.phase in ("speech", "pk"):
+                exp = game.expected_speaker_number
+                seat = next(
+                    (s for s in room.multiplayer.seats if s.number == exp), None
+                )
+                if seat is not None and getattr(seat, "is_ai", False):
+                    # 小延时避免栈过深
+                    await asyncio.sleep(0.6)
+                    await self._undercover_ai_do_speech(room, seat)
+                    return
+            # 2) 投票阶段：还有 AI 没投就自动投（只要有任何一个没投的 AI 就投一次，递归继续直到全投完）
+            if game.phase == "voting":
+                all_live_nums = sorted([
+                    p.number for p in game.players if not p.is_out
+                ])
+                voted = set(game.snapshot(None).get("voted_this_round_player_numbers") or [])
+                for n in all_live_nums:
+                    if n in voted: continue
+                    seat = next((s for s in room.multiplayer.seats if s.number == n), None)
+                    if seat and getattr(seat, "is_ai", False):
+                        await asyncio.sleep(0.5)
+                        await self._undercover_ai_do_vote(room, seat)
+                        # 递归推进（可能下一个还是 AI）
+                        self._spawn(self._undercover_ai_step_if_needed(room))
+                        return
+        except Exception:
+            # AI 出错不影响真人玩家流程
+            return
+
+    async def _undercover_turn_timeout(self, room: GameRoom) -> None:
+        """发言/投票回合超时后的兜底驱动，防止整局卡死在“该谁发言”。
+
+        若超时的是 AI → 走 AI 自动发言/投票；
+        若超时的是真人 → 自动跳过其发言并继续推进，避免挂机卡局。
+        """
+        game = room.game
+        if not isinstance(game, UndercoverGame) or game.finished:
+            return
+        if game.phase in ("speech", "pk"):
+            exp = game.expected_speaker_number
+            if exp is None:
+                return
+            seat = next(
+                (s for s in room.multiplayer.seats if s.number == exp), None
+            )
+            if seat is None:
+                return
+            if getattr(seat, "is_ai", False):
+                await self._undercover_ai_step_if_needed(room)
+                return
+            # 真人在限定时间内未发言：自动跳过并推进
+            try:
+                await self.manager.player_undercover_speech(
+                    room, seat.visitor_token, "（本回合发言超时，自动跳过）"
+                )
+            except Exception:
+                return
+            # 下一位可能是 AI，顺手驱动
+            await self._undercover_ai_step_if_needed(room)
+            return
+        if game.phase == "voting":
+            await self._undercover_ai_step_if_needed(room)
+
+    async def _undercover_ai_do_speech(
+        self, room: GameRoom, seat
+    ) -> None:
+        game: UndercoverGame = room.game  # type: ignore[assignment]
+        snap = game.snapshot(seat.number)
+        my = snap.get("my") or {}
+        camp = str(my.get("camp") or "")
+        word = str(my.get("word") or "")
+        # 收集本轮已经说完的玩家发言
+        rounds = snap.get("rounds_public") or []
+        prev_speeches: list[str] = []
+        if rounds:
+            for s in rounds[-1].get("speeches") or []:
+                prev_speeches.append(f"{s.get('player_number')}号：{s.get('content') or ''}")
+        others_context = (
+            ("已发言玩家：" + "；".join(prev_speeches[-6:])) if prev_speeches else "本轮你第一个发言"
+        )
+        # 收集 AI 自己之前几轮说过的话，提示它不要重复（这是“连续两轮一模一样”的根因之一）
+        own_history = [
+            str(s["content"])
+            for s in game.rounds_speeches()
+            if int(s.get("player_number", 0)) == int(seat.number)
+        ]
+        round_no = max(1, int(game.current_round_number or 0))
+        anti_repeat = (
+            f"这是第{round_no}轮发言，你之前已经说过：{'；'.join(own_history[-3:])}。"
+            f"请务必换一种新的说法和套路，绝不要重复或大幅雷同自己之前任何一句，要有差异化。"
+            if own_history
+            else f"这是第{round_no}轮发言，你还没有说过任何话。"
+        )
+        if camp == "whiteboard":
+            prompt = (
+                "你正在玩中文「谁是卧底」，你抽到的是【白板】（没有词条，只能靠猜）。"
+                f"{anti_repeat}。{others_context}。"
+                "请以「花火」的身份，像真人闲聊一样，随口说一句 20-45 字的中性描述，"
+                "不要直接说词条、不要暴露自己是白板，也不能说得太离谱或太空泛；"
+                "可以围绕某个生活场景、感受或联想来圆场，能用语气词、插科打诨更自然；"
+                "不要输出任何引号或说明；只输出你要说的那一句话，且语气要松弛口语化。"
+            )
+        elif camp in ("civilian", "undercover"):
+            role = "平民" if camp == "civilian" else "卧底"
+            other = "卧底" if camp == "civilian" else "平民"
+            prompt = (
+                f"你正在玩中文「谁是卧底」，你是{role}，抽到的词条是【{word}】。"
+                f"{anti_repeat}。{others_context}。"
+                f"请以「花火」的身份，像真人闲聊一样，用一句 20-45 字的话，"
+                f"从【{word}】的某一具体侧面（颜色/形状/气味/声音/用法/价格/季节/生活中的小故事等）"
+                "做口语化的描述，要有画面感和个人体感，千万别用『日常生活中常见』这类空话；"
+                f"既要让平民能分辨出它，又不能直接点破词条，更不能让{other}一眼就锁定是哪个词；"
+                "句式、用词和上一句尽量不同，可以带点语气词；不要输出任何引号或说明；只输出你要说的那一句话。"
+            )
+        else:
+            return
+        try:
+            content = await asyncio.wait_for(
+                self._generate_persona_text(room, prompt),
+                timeout=15,
+            )
+            content = str(content or "").strip()
+            # 去掉首尾多余的引号
+            content = content.strip("“”\"'「」")
+            if len(content) < 4:
+                content = _uc_ai_fallback(camp, round_no)
+            if len(content) > 80:
+                content = content[:80]
+            await self.manager.player_undercover_speech(
+                room, seat.visitor_token, content
+            )
+        except Exception:
+            # 失败时用一句本地兜底文案（按轮次轮换，避免整局一句复读），避免卡住整轮
+            fallback = _uc_ai_fallback(camp, round_no)
+            try:
+                await self.manager.player_undercover_speech(
+                    room, seat.visitor_token, fallback
+                )
+            except Exception:
+                pass
+
+    async def _undercover_ai_do_vote(
+        self, room: GameRoom, seat
+    ) -> None:
+        game: UndercoverGame = room.game  # type: ignore[assignment]
+        my_snap = game.snapshot(seat.number)
+        rounds = my_snap.get("rounds_public") or []
+        live_players = my_snap.get("players_public") or []
+        live_nums = [int(p["player_number"]) for p in live_players if not p.get("is_out")]
+        if not rounds:
+            # 没有发言记录，随便投一个非自己的
+            targets = [n for n in live_nums if n != seat.number]
+            if not targets: return
+            await self.manager.player_undercover_vote(room, seat.visitor_token, targets[0])
+            return
+        last = rounds[-1]
+        round_speeches = last.get("speeches") or []
+        # 组装提示：把每个存活玩家本轮的发言列出来
+        lines = []
+        for s in round_speeches:
+            pn = int(s.get("player_number") or 0)
+            if pn in live_nums and pn != seat.number:
+                lines.append(f"{pn}号玩家说：{s.get('content') or ''}")
+        if not lines:
+            targets = [n for n in live_nums if n != seat.number]
+            if targets:
+                await self.manager.player_undercover_vote(room, seat.visitor_token, targets[0])
+            return
+        my_camp = str((my_snap.get("my") or {}).get("camp") or "")
+        my_word = str((my_snap.get("my") or {}).get("word") or "")
+        hint = (
+            f"你是白板，你不知道任何词条。"
+            if my_camp == "whiteboard"
+            else (
+                f"你是{'平民' if my_camp == 'civilian' else '卧底'}，你的词是【{my_word}】。"
+                + ("平民要尽量投出卧底；" if my_camp == "civilian" else "卧底要尽量投掉平民；")
+            )
+        )
+        prompt = (
+            f"你正在玩「谁是卧底」。{hint}"
+            f"以下是本轮除你之外所有存活玩家的发言：\n"
+            + "\n".join(lines[:8])
+            + f"\n请判断谁最可疑（最不像自己阵营的人），只返回一个整数（玩家编号 1-{max(live_nums)}），"
+            "不要返回任何其他文字或说明。"
+        )
+        target = None
+        try:
+            text = await asyncio.wait_for(
+                self._generate_persona_text(room, prompt),
+                timeout=15,
+            )
+            m = __import__("re").search(r"\d+", str(text or ""))
+            if m:
+                n = int(m.group())
+                if n in live_nums and n != seat.number:
+                    target = n
+        except Exception:
+            target = None
+        if target is None:
+            candidates = [n for n in live_nums if n != seat.number]
+            target = candidates[0] if candidates else None
+        if target is not None:
+            try:
+                await self.manager.player_undercover_vote(
+                    room, seat.visitor_token, int(target)
+                )
+            except Exception:
+                pass
 
     def _cfg(self, dotted_key: str, default: Any = None) -> Any:
         if dotted_key in self.config:
@@ -3775,9 +4744,16 @@ class GameCompanionPlugin(Star):
             "21點": "blackjack",
             "二十一点": "blackjack",
             "黑杰克": "blackjack",
+            "undercover": "undercover",
+            "under-cover": "undercover",
+            "谁是卧底": "undercover",
+            "誰是臥底": "undercover",
+            "卧底": "undercover",
+            "臥底": "undercover",
+            "谁是臥底": "undercover",
         }
         if normalized not in aliases:
-            raise ValueError("目前只支持五子棋、中国象棋、井字棋、海龟汤、贪心骰子、你画我猜和二十一点")
+            raise ValueError("目前只支持五子棋、中国象棋、井字棋、海龟汤、贪心骰子、你画我猜、二十一点和谁是卧底")
         return aliases[normalized]  # type: ignore[return-value]
 
     @staticmethod
@@ -3790,6 +4766,7 @@ class GameCompanionPlugin(Star):
             "pig_dice": "贪心骰子",
             "draw_guess": "你画我猜",
             "blackjack": "二十一点",
+            "undercover": "谁是卧底",
         }[game_type]
 
     @staticmethod

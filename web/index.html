@@ -4,7 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#f2f4f1" />
-  <title>游戏伴侣</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23215c45'/%3E%3Ctext x='50%25' y='54%25' font-family='Noto Sans SC,Microsoft YaHei,sans-serif' font-size='34' font-weight='700' text-anchor='middle' dominant-baseline='middle' fill='white'%3E%E8%8A%B1%3C/text%3E%3C/svg%3E" />
+  <title>花火陪你玩</title>
   <link rel="stylesheet" href="../../assets/app.css" />
 </head>
 <body>
@@ -13,7 +14,7 @@
       <div class="brand">
         <span class="brand-mark"><i id="brandIcon" data-lucide="grid-3x3"></i></span>
         <div>
-          <span class="eyebrow">游戏伴侣</span>
+          <span class="eyebrow">花火陪你玩</span>
           <h1 id="gameTitle">棋类游戏</h1>
         </div>
       </div>
@@ -21,6 +22,14 @@
         <span id="connectionDot" class="connection-dot"></span>
         <span id="roomStatus">正在进入房间</span>
         <code id="roomId"></code>
+      </div>
+      <div class="top-actions" aria-label="外观工具">
+        <button id="themeToggle" type="button" class="icon-btn" title="切换夜间/白天模式" aria-label="切换主题">
+          <i id="themeIcon" data-lucide="moon"></i>
+        </button>
+        <button id="appearanceBtn" type="button" class="icon-btn" title="外观设置（背景/模糊度）" aria-label="外观设置">
+          <i data-lucide="palette"></i>
+        </button>
       </div>
     </header>
 
@@ -53,7 +62,7 @@
           </div>
           <span id="soupContentLevel" class="difficulty">普通</span>
         </header>
-        <p id="soupSurface" class="soup-surface">Bot 正在构思一道新的海龟汤。</p>
+        <p id="soupSurface" class="soup-surface">花火 正在构思一道新的海龟汤。</p>
         <dl class="soup-progress">
           <div><dt>提问</dt><dd id="soupQuestionCount">0</dd></div>
           <div><dt>提示</dt><dd id="soupHintCount">0 / 3</dd></div>
@@ -79,7 +88,7 @@
         <div class="dice-scores" aria-label="当前分数">
           <div class="human"><span>玩家</span><strong id="diceHumanScore">0</strong></div>
           <div class="turn-bank"><span>本回合</span><strong id="diceTurnTotal">0</strong></div>
-          <div class="bot"><span>Bot</span><strong id="diceBotScore">0</strong></div>
+          <div class="bot"><span>花火</span><strong id="diceBotScore">0</strong></div>
         </div>
         <div class="dice-table">
           <div id="diceCube" class="dice-cube waiting" aria-label="尚未掷骰">
@@ -88,7 +97,7 @@
           <div class="dice-readout">
             <span class="label">当前状态</span>
             <strong id="diceStatus">等待开局</strong>
-            <span id="diceRisk">Bot 风格：均衡</span>
+            <span id="diceRisk">花火 风格：均衡</span>
           </div>
         </div>
         <div id="diceHistory" class="dice-history" aria-live="polite"></div>
@@ -106,13 +115,13 @@
         <header class="blackjack-header">
           <div>
             <span class="label">二十一点</span>
-            <h2>和 Bot 庄家比点数</h2>
+            <h2>和 花火 庄家比点数</h2>
           </div>
-          <span class="difficulty">Bot 是庄家 · <strong id="blackjackDifficulty">普通</strong></span>
+          <span class="difficulty">花火 是庄家 · <strong id="blackjackDifficulty">普通</strong></span>
         </header>
         <div class="blackjack-dealer">
           <div class="dealer-readout">
-            <span class="label">庄家（Bot）</span>
+            <span class="label">庄家（花火）</span>
             <strong id="blackjackDealerTotal">?</strong>
           </div>
           <div id="blackjackDealerCards" class="playing-cards" aria-label="庄家手牌"></div>
@@ -130,18 +139,122 @@
         </footer>
       </section>
 
+      <section id="undercoverStage" class="uc-stage" hidden aria-label="谁是卧底">
+        <header class="uc-camp-summary" aria-live="polite">
+          <div>
+            <span class="label">谁是卧底</span>
+            <h2 id="ucRoundLabel">准备中</h2>
+          </div>
+          <ul id="ucCampCounts" class="uc-camp-counts" aria-label="阵营统计"></ul>
+        </header>
+        <section id="ucHostCampCard" class="uc-host-camp-card" hidden aria-label="房主阵营比例设置">
+          <div class="uc-host-camp-title">
+            <strong>🎲 房主阵营设置</strong>
+            <small id="ucHostCampHint">当前比例：4 民 1 卧 0 白（按实际人数按比例折算）</small>
+          </div>
+          <div class="uc-host-camp-row">
+            <label>平民：<input id="ucHostCivInput" type="number" min="1" max="20" step="1" value="4"></label>
+            <label>卧底：<input id="ucHostUcInput" type="number" min="1" max="10" step="1" value="1"></label>
+            <label>白板：<input id="ucHostWbInput" type="number" min="0" max="5" step="1" value="0"></label>
+            <button id="ucHostCampSave" type="button" class="primary-action">保存房间设置</button>
+          </div>
+          <div class="uc-host-camp-row">
+            <button id="ucHostAddAi" type="button" class="secondary-action">
+              ➕ 添加一位 AI 玩家（计入总数，不超容量上限）
+            </button>
+            <small id="ucHostSeatCount" class="muted">
+              当前 0/0 人
+            </small>
+          </div>
+        </section>
+
+        <div id="ucPlayersGrid" class="uc-players-grid" aria-label="玩家列表"></div>
+
+        <section id="ucIdentityCard" class="uc-identity-card" aria-live="polite">
+          <h3>我的身份卡</h3>
+          <div class="uc-id-row">
+            <span class="uc-id-camp" id="ucMyCamp">未绑定</span>
+            <span class="uc-id-word" id="ucMyWord">—</span>
+          </div>
+          <p class="uc-id-note" id="ucCampHint">
+            绑定并加入玩家席后，这里会显示你的阵营和词条。
+          </p>
+        </section>
+
+        <section class="uc-speech-timeline" aria-label="历史发言">
+          <h3>发言与投票时间线</h3>
+          <div id="ucTimeline" class="uc-timeline-list"></div>
+        </section>
+
+        <footer class="uc-op-area">
+          <div class="uc-phase-readout" id="ucPhaseReadout">
+            <span>阶段：<strong id="ucPhase">等待开始</strong></span>
+            <span id="ucExpectedSpeaker"></span>
+            <span id="ucTurnTimer"></span>
+          </div>
+          <div id="ucSpeechBox" class="uc-speech-box">
+            <textarea
+              id="ucSpeechInput"
+              rows="3"
+              maxlength="500"
+              placeholder="轮到你发言时，在这里描述你的词条（1-500 字）。"
+            ></textarea>
+            <div class="uc-speech-tools">
+              <span id="ucSpeechCount">0/500</span>
+              <button
+                id="ucSpeechSubmit"
+                class="primary-action"
+                type="button"
+              >
+                <i data-lucide="message-square-plus"></i><span>提交发言</span>
+              </button>
+            </div>
+          </div>
+          <div id="ucVoteBox" class="uc-vote-box" hidden>
+            <h3>请投出你认为的卧底</h3>
+            <div id="ucVoteGrid" class="uc-vote-grid"></div>
+          </div>
+          <div id="ucPkBanner" class="uc-pk-banner" hidden role="alert"></div>
+        </footer>
+
+        <!-- 开场发放身份词条的动画卡片 -->
+        <div
+          id="ucRevealOverlay"
+          class="uc-reveal-overlay"
+          hidden
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ucRevealCamp"
+        >
+          <div class="uc-reveal-card" id="ucRevealCard">
+            <div class="uc-reveal-decktop">你的身份是</div>
+            <div class="uc-reveal-camp" id="ucRevealCamp">—</div>
+            <div class="uc-reveal-wordbox">
+              <span class="uc-reveal-wordtag">本局你的词条</span>
+              <span class="uc-reveal-word" id="ucRevealWord">—</span>
+            </div>
+            <p class="uc-reveal-hint" id="ucRevealHint"></p>
+            <button
+              id="ucRevealClose"
+              class="primary-action"
+              type="button"
+            >知道了，开始游戏</button>
+          </div>
+        </div>
+      </section>
+
       <section id="drawStage" class="draw-stage" hidden aria-label="你画我猜">
         <header class="draw-header">
           <div>
             <span class="label">你画我猜</span>
-            <h2>你来画，Bot 来猜</h2>
+            <h2>你来画，花火 来猜</h2>
           </div>
           <div class="draw-status-readout">
             <strong id="drawTimer">120 秒</strong>
             <span id="drawGuessCount">猜测 0 / 5</span>
           </div>
         </header>
-        <p id="drawPrompt" class="draw-prompt">进入玩家席后，画出你看到的题目。答案不会显示给观众或 Bot。</p>
+        <p id="drawPrompt" class="draw-prompt">进入玩家席后，画出你看到的题目。答案不会显示给观众或 花火。</p>
         <div class="draw-toolbar" aria-label="画笔工具">
           <label class="draw-color" title="画笔颜色">
             <span class="sr-only">画笔颜色</span>
@@ -163,7 +276,7 @@
         </div>
         <div id="drawHistory" class="draw-history" aria-live="polite"></div>
         <footer class="draw-actions">
-          <button id="drawGuessAction" class="primary-action" type="button"><i data-lucide="sparkles"></i><span>让 Bot 猜</span></button>
+          <button id="drawGuessAction" class="primary-action" type="button"><i data-lucide="sparkles"></i><span>让 花火 猜</span></button>
         </footer>
       </section>
 
@@ -186,9 +299,14 @@
             <span id="seatBadge" class="seat-badge">观众席</span>
           </div>
           <div id="identityChallenge" class="identity-challenge" hidden>
-            <span class="label">QQ 绑定令牌</span>
-            <code id="identityToken">--------</code>
-            <small id="identityTokenNote">请在原群聊中 @Bot 直接发送令牌，或发送：绑定玩家 令牌</small>
+            <span class="label">QQ 绑定码</span>
+            <div class="bind-code-row">
+              <code id="identityToken">--------</code>
+              <button id="copyBindCommand" class="copy-bind-command" type="button" title="一键复制绑定命令">
+                <i data-lucide="copy"></i><span>一键复制</span>
+              </button>
+            </div>
+            <small id="identityTokenNote">在群聊里发送：<code class="bind-command-inline">绑定玩家 <span id="identityTokenInline">--------</span></code>；或者直接点击右侧「一键复制」，粘贴到群里发送即可。</small>
             <label id="rememberIdentityOption" class="remember-identity" hidden>
               <input id="rememberIdentity" type="checkbox" checked />
               <span>在此浏览器记住我的身份</span>
@@ -201,19 +319,20 @@
           </div>
           <div class="side-choice" id="sideChoice" role="group" aria-label="选择先后手">
             <button type="button" data-side="human_black" class="is-active">我先手</button>
-            <button type="button" data-side="bot_black">Bot先手</button>
+            <button type="button" data-side="bot_black">花火先手</button>
             <button type="button" data-side="random">随机</button>
           </div>
           <button id="seatAction" class="primary-action" type="button" disabled>
             <i data-lucide="log-in"></i><span>加入对局</span>
           </button>
           <p id="seatNote" class="seat-note"></p>
+          <div id="ucStartCountdown" class="uc-start-countdown" hidden></div>
         </section>
 
         <section class="score-panel" aria-label="房间比分">
           <div><span id="humanScoreLabel">玩家</span><strong id="humanScore">0</strong></div>
           <div><span id="drawScoreLabel">平局</span><strong id="drawScore">0</strong></div>
-          <div><span id="botScoreLabel">Bot</span><strong id="botScore">0</strong></div>
+          <div><span id="botScoreLabel">花火</span><strong id="botScore">0</strong></div>
         </section>
 
         <section class="people-panel">
@@ -231,17 +350,17 @@
         </section>
       </section>
 
-      <aside id="chatPanel" class="chat-panel" aria-label="Bot 对话">
+      <aside id="chatPanel" class="chat-panel" aria-label="花火 对话">
         <header class="chat-header">
           <div>
             <span class="label">房间对话</span>
-            <h2>Bot 对话</h2>
+            <h2>花火 对话</h2>
           </div>
           <span id="chatIdentity" class="chat-identity">匿名观众</span>
         </header>
         <div id="messages" class="messages" aria-live="polite"></div>
         <form id="chatComposer" class="chat-composer">
-          <textarea id="chatInput" rows="2" maxlength="500" placeholder="和 Bot 说点什么"></textarea>
+          <textarea id="chatInput" rows="2" maxlength="500" placeholder="和 花火 说点什么"></textarea>
           <button id="chatSend" class="chat-send" type="submit" title="发送消息">
             <i data-lucide="send"></i><span class="sr-only">发送消息</span>
           </button>
@@ -249,6 +368,64 @@
       </aside>
     </section>
   </main>
+
+  <!-- 外观设置面板 -->
+  <section id="appearancePanel" class="appearance-panel" hidden aria-label="外观设置">
+    <div class="panel-card">
+      <header class="panel-header">
+        <div>
+          <span class="label">显示</span>
+          <h2>外观设置</h2>
+        </div>
+        <button id="appearanceClose" type="button" class="icon-btn" title="关闭" aria-label="关闭"><i data-lucide="x"></i></button>
+      </header>
+      <div class="panel-body">
+        <div class="panel-group">
+          <div class="panel-row">
+            <span class="switch-label">启用自定义背景</span>
+            <label class="switch">
+              <input id="bgEnabled" type="checkbox" />
+              <span class="switch-track"><span class="switch-thumb"></span></span>
+            </label>
+          </div>
+          <p class="panel-hint">关闭时使用纯主题色作为背景。</p>
+        </div>
+
+        <div class="panel-group">
+          <label class="file-upload">
+            <input id="bgFile" type="file" accept="image/*" hidden />
+            <i data-lucide="image-plus"></i>
+            <span id="bgFileLabel">上传自己的背景图（推荐 16:9 ）</span>
+          </label>
+          <div class="panel-actions-row">
+            <button id="bgUseBuiltin" type="button" class="secondary-action compact">恢复内置默认图</button>
+            <button id="bgClear" type="button" class="secondary-action compact">清除我的背景</button>
+          </div>
+        </div>
+
+        <div class="panel-group">
+          <div class="panel-row">
+            <span class="slider-label">背景模糊度</span>
+            <strong id="blurValue">14 px</strong>
+          </div>
+          <input id="blurRange" type="range" min="0" max="30" value="14" class="panel-range" />
+        </div>
+
+        <div class="panel-group">
+          <div class="panel-row">
+            <span class="slider-label">蒙层透明度</span>
+            <strong id="overlayValue">0.75</strong>
+          </div>
+          <input id="overlayRange" type="range" min="0" max="100" value="75" class="panel-range" />
+          <p class="panel-hint">越低背景越明显，越高越接近纯色主题。</p>
+        </div>
+      </div>
+      <footer class="panel-footer">
+        <span class="panel-hint">所有设置只保存在当前浏览器（localStorage）。</span>
+      </footer>
+    </div>
+    <div id="appearanceMask" class="panel-mask"></div>
+  </section>
 
   <div id="toast" class="toast" hidden role="status"></div>
   <script src="../../assets/lucide.min.js"></script>
