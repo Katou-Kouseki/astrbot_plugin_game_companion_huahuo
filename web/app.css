@@ -2081,3 +2081,166 @@ body.dark .uc-speech-box textarea:focus {
 /* 提交发言按钮：优先级高于 .uc-speech-tools span，保证按钮文字可见（暗色下也是绿底白字） */
   .primary-action span,
   body.dark .primary-action span { color: inherit; }
+
+/* ====== 谁是卧底：结算获胜动画卡片 ====== */
+.uc-result-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--bg, #f5f7f8) 45%, rgba(0, 0, 0, 0.62));
+  backdrop-filter: blur(6px);
+  animation: ucResultOverlayFade 0.45s ease both;
+}
+.uc-result-card {
+  position: relative;
+  z-index: 2;
+  width: min(460px, 94vw);
+  max-height: 86vh;
+  overflow: auto;
+  padding: 32px 28px 26px;
+  border-radius: 26px;
+  text-align: center;
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--green) 20%, transparent), 0 30px 80px rgba(0, 0, 0, 0.5);
+  transform-origin: center center;
+  animation: ucResultCardIn 1s cubic-bezier(0.2, 0.85, 0.25, 1.12);
+}
+.uc-result-card.is-undercover {
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--red) 24%, transparent), 0 30px 80px rgba(0, 0, 0, 0.5);
+}
+.uc-result-card.is-whiteboard {
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--gold) 26%, transparent), 0 30px 80px rgba(0, 0, 0, 0.5);
+}
+.uc-result-badge {
+  font-size: 64px;
+  line-height: 1;
+  display: inline-block;
+  animation: ucResultBadgePop 0.9s cubic-bezier(0.2, 0.85, 0.3, 1.3) 0.25s both;
+}
+.uc-result-title {
+  margin-top: 10px;
+  font-size: 44px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: var(--green);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.12), 0 0 26px color-mix(in srgb, var(--green) 45%, transparent);
+}
+.uc-result-title.is-undercover {
+  color: var(--red);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.12), 0 0 26px color-mix(in srgb, var(--red) 45%, transparent);
+}
+.uc-result-title.is-whiteboard {
+  color: var(--gold);
+  text-shadow: 0 3px 0 rgba(0, 0, 0, 0.12), 0 0 26px color-mix(in srgb, var(--gold) 45%, transparent);
+}
+.uc-result-message {
+  margin: 10px 0 4px;
+  font-size: 15px;
+  color: var(--muted);
+}
+.uc-result-words {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin: 16px 0 14px;
+  flex-wrap: wrap;
+}
+.uc-result-word {
+  flex: 1 1 150px;
+  max-width: 210px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--green) 40%, transparent);
+  background: var(--green-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.uc-result-word.is-undercover {
+  border-color: color-mix(in srgb, var(--red) 40%, transparent);
+  background: var(--red-soft);
+}
+.uc-result-word span {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 1px;
+}
+.uc-result-word strong {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text-strong);
+}
+.uc-result-players {
+  margin: 0 0 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.uc-result-player {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  border-bottom: 1px dashed var(--border);
+  background: var(--surface-alt);
+}
+.uc-result-player:last-child { border-bottom: 0; }
+.uc-result-player .uc-rp-name {
+  color: var(--text);
+  font-weight: 600;
+}
+.uc-result-player .uc-rp-role { color: var(--muted); }
+.uc-result-player.is-civilian .uc-rp-role { color: var(--green); font-weight: 700; }
+.uc-result-player.is-undercover .uc-rp-role { color: var(--red); font-weight: 700; }
+.uc-result-player.is-whiteboard .uc-rp-role { color: var(--gold); font-weight: 700; }
+.uc-result-player.is-out .uc-rp-name {
+  text-decoration: line-through;
+  opacity: 0.72;
+}
+.uc-result-confetti {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  overflow: hidden;
+}
+.uc-confetti {
+  position: absolute;
+  top: -3vh;
+  width: 10px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--cf-color, var(--gold));
+  opacity: 0;
+  animation: ucConfettiFall 3s linear infinite;
+}
+@keyframes ucResultOverlayFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ucResultCardIn {
+  0%   { opacity: 0; transform: translateY(-38vh) scale(0.3) rotate(-10deg) rotateX(70deg); filter: brightness(2.2) blur(6px); }
+  38%  { opacity: 1; transform: translateY(4vh) scale(1.22) rotate(4deg) rotateX(-20deg); filter: brightness(1.08); }
+  58%  { opacity: 1; transform: translateY(-2vh) scale(0.97) rotate(-1deg) rotateX(3deg); filter: brightness(1); }
+  76%  { opacity: 1; transform: translateY(1vh) scale(1.05) rotate(0.4deg) rotateX(0deg); }
+  100% { opacity: 1; transform: translateY(0) scale(1) rotate(0deg) rotateX(0deg); }
+}
+@keyframes ucResultBadgePop {
+  0%   { transform: scale(0) rotate(-180deg); }
+  55%  { transform: scale(1.35) rotate(10deg); }
+  75%  { transform: scale(0.92) rotate(-4deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+@keyframes ucConfettiFall {
+  0%   { transform: translate3d(0, 0, 0) rotate(0deg); opacity: 0; }
+  8%   { opacity: 1; }
+  100% { transform: translate3d(var(--cf-drift, 0), 110vh, 0) rotate(720deg); opacity: 0.9; }
+}

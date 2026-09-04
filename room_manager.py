@@ -2957,7 +2957,7 @@ class RoomManager:
             finished = room.game.finished
             snapshot = room.game.snapshot(voter_number)
             if out_player is not None:
-                label = f"{out_player.display_name}（{out_player.player_number}号）"
+                label = f"{out_player['display_name']}（{out_player['number']}号）"
                 room.add_message(
                     "system",
                     f"第 {round_number} 轮投票结束：{label} 被投出局。",
@@ -2981,7 +2981,7 @@ class RoomManager:
                 "need_pk": need_pk,
                 "pk_targets": pk_targets,
                 "out_player_number": (
-                    out_player.player_number if out_player is not None else None
+                    out_player["number"] if out_player is not None else None
                 ),
             },
         )

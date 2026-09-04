@@ -8,6 +8,7 @@
   let ucRevealedGameKey = "";       // 已展示过身份卡的本局标识（防重复弹卡）
   let ucPrevMyTurn = false;         // 上一帧本机是否处于发言轮，用于“轮到你了”提醒
   let ucPrevExpectedSpeaker = null; // 上一帧当前发言者，用于发言轮切换的醒目标语
+  let ucResultShownKey = "";         // 已展示过结算动画的本局标识（防重复弹出）
   const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
@@ -522,6 +523,93 @@
     }
     document.getElementById("ucRevealHint").textContent = hint;
     const card = document.getElementById("ucRevealCard");
+    // 重新触发入场动画
+    card.style.animation = "none";
+    void card.offsetWidth;
+    card.style.animation = "";
+    overlay.hidden = false;
+  }
+
+  /**
+   * 结算获胜动画卡片（所有玩家/观众都能看到）
+   * 进入 finished 时弹出，展示获胜阵营、结语、双方词条与全体身份揭晓，并播放彩带。
+   */
+  function showUndercoverResultOverlay(snap, players) {
+    const overlay = document.getElementById("ucResultOverlay");
+    const card = document.getElementById("ucResultCard");
+    if (!overlay || !card) return;
+    const winner = snap.winner || {};
+    const camp = winner.camp || "unknown";
+    const campMeta = {
+      civilian: ["平民获胜", "is-civilian", "🛡️"],
+      undercover: ["卧底获胜", "is-undercover", "🕵️"],
+      whiteboard: ["白板获胜", "is-whiteboard", "📋"],
+    };
+    const [title, cls, icon] = campMeta[camp] || ["本局结束", "", "🏆"];
+    const titleEl = document.getElementById("ucResultTitle");
+    titleEl.textContent = title;
+    titleEl.className = `uc-result-title ${cls || ""}`;
+    card.className = `uc-result-card ${cls || ""}`;
+    document.getElementById("ucResultBadge").textContent = icon;
+    document.getElementById("ucResultMessage").textContent =
+      sanitizeDisplayText(winner.message || "本局对局结束，胜负已分。");
+
+    // 平民词条 vs 卧底词条对比
+    const wordsBox = document.getElementById("ucResultWords");
+    wordsBox.innerHTML = "";
+    const addWord = (label, value, wordCls) => {
+      const chip = document.createElement("div");
+      chip.className = `uc-result-word ${wordCls || ""}`;
+      const tag = document.createElement("span");
+      tag.textContent = label;
+      const text = document.createElement("strong");
+      text.textContent = sanitizeDisplayText(value || "—");
+      chip.appendChild(tag);
+      chip.appendChild(text);
+      wordsBox.appendChild(chip);
+    };
+    if (winner.civilian_word || winner.undercover_word) {
+      addWord("平民词条", winner.civilian_word, "is-civilian");
+      addWord("卧底词条", winner.undercover_word, "is-undercover");
+    }
+
+    // 全体身份揭晓
+    const list = document.getElementById("ucResultPlayers");
+    list.innerHTML = "";
+    (Array.isArray(players) ? players : []).forEach((p) => {
+      const row = document.createElement("div");
+      row.className = `uc-result-player is-${p.camp || ""}`;
+      if (p.is_out) row.classList.add("is-out");
+      const name = document.createElement("span");
+      name.className = "uc-rp-name";
+      name.textContent = `${p.player_number}号${p.display_name ? " · " + sanitizeDisplayText(p.display_name) : ""}`;
+      const role = document.createElement("span");
+      role.className = "uc-rp-role";
+      role.textContent = p.camp
+        ? `${ucCampText(p.camp)}${p.word ? "「" + sanitizeDisplayText(p.word) + "」" : ""}`
+        : "—";
+      row.appendChild(name);
+      row.appendChild(role);
+      list.appendChild(row);
+    });
+
+    // 彩带
+    const confetti = document.getElementById("ucResultConfetti");
+    if (confetti) {
+      confetti.innerHTML = "";
+      const colors = ["var(--green)", "var(--red)", "var(--gold)", "#4f8ef7", "#c084fc"];
+      for (let i = 0; i < 28; i++) {
+        const piece = document.createElement("i");
+        piece.className = "uc-confetti";
+        piece.style.left = `${(Math.random() * 100).toFixed(2)}%`;
+        piece.style.setProperty("--cf-color", colors[i % colors.length]);
+        piece.style.setProperty("--cf-drift", `${(Math.random() * 120 - 60).toFixed(1)}px`);
+        piece.style.animationDelay = `${(Math.random() * 1.6).toFixed(2)}s`;
+        piece.style.animationDuration = `${(2.4 + Math.random() * 1.8).toFixed(2)}s`;
+        confetti.appendChild(piece);
+      }
+    }
+
     // 重新触发入场动画
     card.style.animation = "none";
     void card.offsetWidth;
@@ -1989,7 +2077,19 @@
       pkBanner.hidden = true;
     }
 
-    // 结算 overlay 交给通用 game_finished 弹窗
+    // 游戏结束结算动画：进入 finished 时每局只弹出一次，新对局开始后重置
+    const resultOverlay = document.getElementById("ucResultOverlay");
+    if (snap.phase === "finished" && room.status === "finished") {
+      const key = `g${Number(room.score?.games || 0)}`;
+      if (ucResultShownKey !== key) {
+        ucResultShownKey = key;
+        showUndercoverResultOverlay(snap, players);
+      }
+    } else if (ucResultShownKey) {
+      // 离开结束态（申请再来一局/新对局开局）时清除标记并收起结算卡
+      ucResultShownKey = "";
+      if (resultOverlay && !resultOverlay.hidden) resultOverlay.hidden = true;
+    }
   }
 
   function renderDrawGuess() {
@@ -2832,6 +2932,14 @@
   if (ucRevealClose) {
     ucRevealClose.addEventListener("click", () => {
       const overlay = document.getElementById("ucRevealOverlay");
+      if (overlay) overlay.hidden = true;
+    });
+  }
+  // 结算卡关闭
+  const ucResultClose = document.getElementById("ucResultClose");
+  if (ucResultClose) {
+    ucResultClose.addEventListener("click", () => {
+      const overlay = document.getElementById("ucResultOverlay");
       if (overlay) overlay.hidden = true;
     });
   }

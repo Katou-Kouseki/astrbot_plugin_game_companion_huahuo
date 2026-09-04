@@ -241,6 +241,30 @@
             >知道了，开始游戏</button>
           </div>
         </div>
+
+        <!-- 结算获胜动画卡片（平民/卧底/白板获胜醒目弹出） -->
+        <div
+          id="ucResultOverlay"
+          class="uc-result-overlay"
+          hidden
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ucResultTitle"
+        >
+          <div class="uc-result-confetti" id="ucResultConfetti"></div>
+          <div class="uc-result-card" id="ucResultCard">
+            <div class="uc-result-badge" id="ucResultBadge">🏆</div>
+            <div class="uc-result-title" id="ucResultTitle">本局结束</div>
+            <p class="uc-result-message" id="ucResultMessage"></p>
+            <div class="uc-result-words" id="ucResultWords"></div>
+            <div class="uc-result-players" id="ucResultPlayers"></div>
+            <button
+              id="ucResultClose"
+              class="primary-action"
+              type="button"
+            >知道了，查看复盘</button>
+          </div>
+        </div>
       </section>
 
       <section id="drawStage" class="draw-stage" hidden aria-label="你画我猜">
