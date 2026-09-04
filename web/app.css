@@ -2087,13 +2087,16 @@ body.dark .uc-speech-box textarea:focus {
   position: fixed;
   inset: 0;
   z-index: 130;
-  display: flex;
+  display: none;
   align-items: center;
   justify-content: center;
   padding: 20px;
   background: color-mix(in srgb, var(--bg, #f5f7f8) 45%, rgba(0, 0, 0, 0.62));
   backdrop-filter: blur(6px);
   animation: ucResultOverlayFade 0.45s ease both;
+}
+.uc-result-overlay:not([hidden]) {
+  display: flex;
 }
 .uc-result-card {
   position: relative;
