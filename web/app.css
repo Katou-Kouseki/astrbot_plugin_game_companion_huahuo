@@ -2247,3 +2247,110 @@ body.dark .uc-speech-box textarea:focus {
   8%   { opacity: 1; }
   100% { transform: translate3d(var(--cf-drift, 0), 110vh, 0) rotate(720deg); opacity: 0.9; }
 }
+
+/* ====== 谁是卧底：规则说明 & 战绩排行面板 ====== */
+.uc-info-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+.uc-info-card {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-alt);
+  overflow: hidden;
+}
+.uc-info-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.2s ease;
+}
+.uc-info-toggle:hover {
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+.uc-info-toggle:focus-visible {
+  outline: 2px solid var(--green);
+  outline-offset: -2px;
+}
+.uc-info-arrow {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 0.25s ease;
+}
+.uc-info-toggle.is-open .uc-info-arrow {
+  transform: rotate(225deg) translateY(2px);
+}
+.uc-info-body {
+  padding: 4px 16px 14px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+.uc-info-body p { margin: 8px 0; }
+.uc-info-body strong { color: var(--text-strong); }
+.uc-rules-tip {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.uc-leaderboard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.uc-lb-empty {
+  margin: 6px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.uc-lb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+.uc-lb-row.is-top {
+  border-color: color-mix(in srgb, var(--gold) 45%, transparent);
+  background: var(--gold-soft);
+}
+.uc-lb-rank {
+  flex: none;
+  width: 26px;
+  text-align: center;
+  font-weight: 700;
+}
+.uc-lb-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-weight: 600;
+}
+.uc-lb-wins {
+  flex: none;
+  color: var(--muted);
+  font-weight: 700;
+}
+.uc-lb-row.is-top .uc-lb-wins { color: var(--gold); }

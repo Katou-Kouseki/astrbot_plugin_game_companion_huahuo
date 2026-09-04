@@ -2172,6 +2172,30 @@ class RoomManager:
                     result = "uc_whiteboard_win"
                 else:
                     result = "draw"
+                # 房间内获胜次数排行榜：获胜阵营的每位玩家 +1
+                if camp in {"civilian", "undercover", "whiteboard"}:
+                    for uc_player in room.game.players:
+                        if uc_player.camp != camp:
+                            continue
+                        seat = next(
+                            (
+                                s
+                                for s in room.multiplayer.seats
+                                if s.number == uc_player.number
+                            ),
+                            None,
+                        )
+                        if seat is None:
+                            continue
+                        entry = room.player_win_counts.setdefault(
+                            seat.visitor_token, {"name": "", "wins": 0}
+                        )
+                        entry["wins"] = int(entry.get("wins") or 0) + 1
+                        entry["name"] = (
+                            seat.display_name.strip()
+                            or uc_player.display_name.strip()
+                            or f"{uc_player.number}号"
+                        )
             elif getattr(room.game, "draw", False):
                 room.draws += 1
                 result = "draw"
@@ -2866,7 +2890,13 @@ class RoomManager:
         store = self.undercover_word_store
         if store is None:
             raise RuntimeError("谁是卧底词库不可用，请检查配置")
-        return store.random_pair()
+        # 本地兜底同样避开已用过的词对，配合 LLM 去重
+        exclude: set[tuple[str, str]] = set()
+        try:
+            exclude = set(store.used_pairs(200))
+        except Exception:
+            exclude = set()
+        return store.random_pair(exclude=exclude)
 
     async def player_undercover_speech(
         self, room: GameRoom, visitor_token: str, content: str
@@ -2933,6 +2963,9 @@ class RoomManager:
                 "content": cleaned,
             },
         )
+        # 白板发言说出词条会直接结束游戏：触发统一结算流程（发公告/更新战绩）
+        if room.game.finished:
+            await self._finish_game(room)
         return snapshot
 
     async def player_undercover_vote(

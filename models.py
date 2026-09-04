@@ -216,6 +216,8 @@ class GameRoom:
     chat_transcripts: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     close_reason: str = ""
     last_commentary_at: float = 0.0
+    # 房间内玩家获胜次数排行榜：visitor_token -> {"name": str, "wins": int}
+    player_win_counts: dict[str, dict[str, object]] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     chat_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
@@ -484,6 +486,17 @@ class GameRoom:
                 "draws": self.draws,
                 "games": self.completed_games,
             },
+            "leaderboard": [
+                {
+                    "name": str(info.get("name") or "未知玩家"),
+                    "wins": int(info.get("wins") or 0),
+                }
+                for _token, info in sorted(
+                    self.player_win_counts.items(),
+                    key=lambda kv: int(kv[1].get("wins") or 0),
+                    reverse=True,
+                )
+            ],
             "turtle_soup_stats": {
                 "questions": self.turtle_soup_stats.questions,
                 "hints": self.turtle_soup_stats.hints,

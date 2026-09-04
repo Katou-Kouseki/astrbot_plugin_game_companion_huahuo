@@ -359,12 +359,13 @@ class UndercoverGame:
         player = next(
             (p for p in self.players if p.number == int(player_number)), None
         )
-        # 词条打码：平民/卧底说出自己的词条时，自动把词条屏蔽为「***」再发言，白板不受限
-        if player is not None and player.camp != "whiteboard" and player.word:
-            word = player.word
-            if word in content:
-                content = content.replace(word, "***")
-                self.last_speech_masked = True
+        # 词条打码：非白板玩家发言中出现任一当前词条（平民词/卧底词）时，
+        # 自动把词条屏蔽为「***」再发言，防止 AI/真人说漏嘴把词条暴露到公屏；白板不受限
+        if player is not None and player.camp != "whiteboard":
+            for word in (self.civilian_word, self.undercover_word):
+                if word and word in content:
+                    content = content.replace(word, "***")
+                    self.last_speech_masked = True
         # 相似度拦截：发言时即判定。
         # 1) 与同轮其他玩家已发言内容高度相似 → 直接驳回本次发言（不回弹对方发言、不要求任何人重讲），
         #    恶意重复相同发言只会一直被拒，无法挤掉其他玩家已有的发言。
@@ -396,6 +397,23 @@ class UndercoverGame:
                 at=time.time(),
             )
         )
+        # 白板说词条：直接获胜（规则：白板发言内容中包含任一词条即白板获胜）
+        if player is not None and player.camp == "whiteboard" and not self.finished:
+            for w in (self.civilian_word, self.undercover_word):
+                if w and w in content:
+                    self.finished = True
+                    self.phase = "finished"
+                    self.winner_camp = "whiteboard"
+                    self.winner_message = "白板直接说出了词条，白板获胜！"
+                    self.winner = {
+                        "camp": "whiteboard",
+                        "message": self.winner_message,
+                        "civilian_word": self.civilian_word,
+                        "undercover_word": self.undercover_word,
+                    }
+                    break
+        if self.finished:
+            return True
         # 推进到下一个发言者
         self.current_speaker_index += 1
         # 所有待发言玩家发言完毕

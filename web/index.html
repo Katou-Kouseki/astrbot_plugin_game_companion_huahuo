@@ -181,6 +181,41 @@
           </p>
         </section>
 
+        <div class="uc-info-panels">
+          <section class="uc-info-card">
+            <button
+              id="ucRulesToggle"
+              class="uc-info-toggle"
+              type="button"
+              aria-expanded="false"
+            >
+              <span>📜 游戏规则</span>
+              <i class="uc-info-arrow" aria-hidden="true"></i>
+            </button>
+            <div id="ucRulesBody" class="uc-info-body" hidden>
+              <p><strong>【平民】</strong>找出混在玩家中所有的卧底和白板</p>
+              <p><strong>【卧底】</strong>隐藏自己，直到所有平民出局，或者存活至仅剩2人为止</p>
+              <p><strong>【白板】</strong>没有词条，根据其他玩家的发言推测词条，找出卧底或者存活到仅剩2人为止，白板不会出现在前两名发言玩家当中</p>
+              <p><strong>【词条】</strong>除了白板以外，其他玩家的发言中不允许出现词条本身，否则游戏自动结束。当白板的发言内容中包含任意一个词条时，白板获胜</p>
+              <p class="uc-rules-tip">如无法收到私聊词条，请添加花火为好友。</p>
+            </div>
+          </section>
+          <section class="uc-info-card">
+            <button
+              id="ucBoardToggle"
+              class="uc-info-toggle"
+              type="button"
+              aria-expanded="false"
+            >
+              <span>🏆 本房战绩排行</span>
+              <i class="uc-info-arrow" aria-hidden="true"></i>
+            </button>
+            <div id="ucBoardBody" class="uc-info-body" hidden>
+              <div id="ucLeaderboard" class="uc-leaderboard"></div>
+            </div>
+          </section>
+        </div>
+
         <section class="uc-speech-timeline" aria-label="历史发言">
           <h3>发言与投票时间线</h3>
           <div id="ucTimeline" class="uc-timeline-list"></div>

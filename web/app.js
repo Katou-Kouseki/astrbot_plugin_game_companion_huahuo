@@ -531,6 +531,41 @@
   }
 
   /**
+   * 渲染房间内玩家获胜次数排行榜（按胜场降序，最多展示前 10 名）。
+   */
+  function renderUndercoverLeaderboard(room) {
+    const board = document.getElementById("ucLeaderboard");
+    if (!board) return;
+    const list = Array.isArray(room.leaderboard) ? room.leaderboard : [];
+    board.innerHTML = "";
+    if (!list.length) {
+      const empty = document.createElement("p");
+      empty.className = "uc-lb-empty";
+      empty.textContent = "暂无战绩，快来打一局吧～";
+      board.appendChild(empty);
+      return;
+    }
+    const medals = ["🥇", "🥈", "🥉"];
+    list.slice(0, 10).forEach((row, idx) => {
+      const el = document.createElement("div");
+      el.className = "uc-lb-row" + (idx === 0 ? " is-top" : "");
+      const rank = document.createElement("span");
+      rank.className = "uc-lb-rank";
+      rank.textContent = medals[idx] || `${idx + 1}`;
+      const name = document.createElement("span");
+      name.className = "uc-lb-name";
+      name.textContent = sanitizeDisplayText(String(row.name || "未知玩家"));
+      const wins = document.createElement("span");
+      wins.className = "uc-lb-wins";
+      wins.textContent = `${Number(row.wins) || 0} 胜`;
+      el.appendChild(rank);
+      el.appendChild(name);
+      el.appendChild(wins);
+      board.appendChild(el);
+    });
+  }
+
+  /**
    * 结算获胜动画卡片（所有玩家/观众都能看到）
    * 进入 finished 时弹出，展示获胜阵营、结语、双方词条与全体身份揭晓，并播放彩带。
    */
@@ -2077,6 +2112,9 @@
       pkBanner.hidden = true;
     }
 
+    // 战绩排行（每次刷新轻量重绘）
+    renderUndercoverLeaderboard(room);
+
     // 游戏结束结算动画：进入 finished 时每局只弹出一次，新对局开始后重置
     const resultOverlay = document.getElementById("ucResultOverlay");
     if (snap.phase === "finished" && room.status === "finished") {
@@ -2943,6 +2981,20 @@
       if (overlay) overlay.hidden = true;
     });
   }
+  // 规则说明 / 战绩排行折叠面板
+  const bindUcInfoToggle = (btnId, bodyId) => {
+    const btn = document.getElementById(btnId);
+    const body = document.getElementById(bodyId);
+    if (!btn || !body) return;
+    btn.addEventListener("click", () => {
+      const open = body.hidden;
+      body.hidden = !open;
+      btn.setAttribute("aria-expanded", String(open));
+      btn.classList.toggle("is-open", open);
+    });
+  };
+  bindUcInfoToggle("ucRulesToggle", "ucRulesBody");
+  bindUcInfoToggle("ucBoardToggle", "ucBoardBody");
   // 投票（事件委托）
   const ucVoteGrid = document.getElementById("ucVoteGrid");
   if (ucVoteGrid) {
