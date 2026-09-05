@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 from pathlib import Path
@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from astrbot_plugin_game_companion.draw_guess import DrawGuessGame, DrawWord
-from astrbot_plugin_game_companion.main import GameCompanionPlugin
-from astrbot_plugin_game_companion.room_manager import RoomManager
-from astrbot_plugin_game_companion.server import GameRoomServer
+from astrbot_plugin_game_companion_huahuo.draw_guess import DrawGuessGame, DrawWord
+from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.server import GameRoomServer
 
 
 async def make_draw_room(*, target: str = "苹果", max_guesses: int = 5):

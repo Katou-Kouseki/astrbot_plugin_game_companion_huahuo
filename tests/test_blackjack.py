@@ -1,7 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
-from astrbot_plugin_game_companion.blackjack import (
+from astrbot_plugin_game_companion_huahuo.blackjack import (
     BlackjackCard,
     BlackjackGame,
     _best_value,

@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import copy
 
 import pytest
 
-from astrbot_plugin_game_companion.room_manager import RoomManager
-from astrbot_plugin_game_companion.tictactoe import (
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.tictactoe import (
     EMPTY,
     NOUGHT,
     X,

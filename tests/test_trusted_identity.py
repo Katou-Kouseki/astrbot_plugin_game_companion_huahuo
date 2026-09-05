@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import time
 from http.cookies import SimpleCookie
@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from astrbot_plugin_game_companion.room_manager import RoomManager
-from astrbot_plugin_game_companion.server import GameRoomServer
-from astrbot_plugin_game_companion.trusted_identity import TrustedIdentityStore
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.server import GameRoomServer
+from astrbot_plugin_game_companion_huahuo.trusted_identity import TrustedIdentityStore
 
 
 async def make_room(manager: RoomManager):

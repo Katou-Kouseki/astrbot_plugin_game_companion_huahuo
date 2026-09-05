@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 
 import pytest
-from astrbot_plugin_game_companion.blackjack import BlackjackCard, BlackjackGame
-from astrbot_plugin_game_companion.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.blackjack import BlackjackCard, BlackjackGame
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 
 
 async def create_room(

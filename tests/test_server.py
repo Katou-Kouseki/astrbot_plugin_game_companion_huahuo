@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import socket
 from pathlib import Path
@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from astrbot_plugin_game_companion.blackjack import BlackjackCard, BlackjackGame
-from astrbot_plugin_game_companion.pig_dice import PigDiceGame
-from astrbot_plugin_game_companion.room_manager import RoomManager
-from astrbot_plugin_game_companion.server import GameRoomServer
+from astrbot_plugin_game_companion_huahuo.blackjack import BlackjackCard, BlackjackGame
+from astrbot_plugin_game_companion_huahuo.pig_dice import PigDiceGame
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.server import GameRoomServer
 
 
 class EndingXiangqiEngine:
@@ -351,7 +351,7 @@ async def test_pig_dice_endpoint_never_accepts_a_client_supplied_roll(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "astrbot_plugin_game_companion.pig_dice.secrets.randbelow", lambda _n: 4
+        "astrbot_plugin_game_companion_huahuo.pig_dice.secrets.randbelow", lambda _n: 4
     )
     server = make_server(0)
     room = await server.manager.create_room(

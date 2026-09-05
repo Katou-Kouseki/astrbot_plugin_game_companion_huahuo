@@ -1,13 +1,13 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from astrbot_plugin_game_companion.blackjack import BlackjackCard, BlackjackGame
-from astrbot_plugin_game_companion.main import GameCompanionPlugin
-from astrbot_plugin_game_companion.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.blackjack import BlackjackCard, BlackjackGame
+from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 
 
 def make_plugin() -> GameCompanionPlugin:

@@ -1,11 +1,11 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from astrbot_plugin_game_companion.main import GameCompanionPlugin
-from astrbot_plugin_game_companion.models import GameRoom
+from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.models import GameRoom
 
 
 def make_room() -> GameRoom:

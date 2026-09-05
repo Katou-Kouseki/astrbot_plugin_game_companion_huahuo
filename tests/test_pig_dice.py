@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
 
-from astrbot_plugin_game_companion.pig_dice import PigDiceGame
-from astrbot_plugin_game_companion.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.pig_dice import PigDiceGame
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 
 
 def test_roll_accumulates_until_player_holds() -> None:
@@ -88,10 +88,10 @@ async def test_room_manager_runs_dynamic_bot_turn_without_model(
         return None
 
     monkeypatch.setattr(
-        "astrbot_plugin_game_companion.pig_dice.secrets.randbelow", lambda _n: 3
+        "astrbot_plugin_game_companion_huahuo.pig_dice.secrets.randbelow", lambda _n: 3
     )
     monkeypatch.setattr(
-        "astrbot_plugin_game_companion.room_manager.asyncio.sleep", no_delay
+        "astrbot_plugin_game_companion_huahuo.room_manager.asyncio.sleep", no_delay
     )
     manager = RoomManager(event_callback=callback)
     room = await manager.create_room(

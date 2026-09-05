@@ -1,16 +1,16 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from astrbot_plugin_game_companion.draw_guess import DrawGuessGame, DrawWord
-from astrbot_plugin_game_companion.gomoku import WHITE, GomokuGame
-from astrbot_plugin_game_companion.main import GameCompanionPlugin
-from astrbot_plugin_game_companion.models import GameRoom
-from astrbot_plugin_game_companion.pig_dice import PigDiceGame
-from astrbot_plugin_game_companion.tictactoe import NOUGHT, TicTacToeGame
-from astrbot_plugin_game_companion.xiangqi import BLACK, XiangqiGame
+from astrbot_plugin_game_companion_huahuo.draw_guess import DrawGuessGame, DrawWord
+from astrbot_plugin_game_companion_huahuo.gomoku import WHITE, GomokuGame
+from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.models import GameRoom
+from astrbot_plugin_game_companion_huahuo.pig_dice import PigDiceGame
+from astrbot_plugin_game_companion_huahuo.tictactoe import NOUGHT, TicTacToeGame
+from astrbot_plugin_game_companion_huahuo.xiangqi import BLACK, XiangqiGame
 
 
 def make_room(game_type: str, game: object) -> GameRoom:

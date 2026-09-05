@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import pytest
-from astrbot_plugin_game_companion.gomoku import BLACK, EMPTY, WHITE, GomokuGame
-from astrbot_plugin_game_companion.main import GameCompanionPlugin
-from astrbot_plugin_game_companion.models import GameRoom
+from astrbot_plugin_game_companion_huahuo.gomoku import BLACK, EMPTY, WHITE, GomokuGame
+from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.models import GameRoom
 
 
 def make_room(game: GomokuGame) -> GameRoom:

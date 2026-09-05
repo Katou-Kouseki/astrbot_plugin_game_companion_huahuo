@@ -1,12 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from astrbot_plugin_game_companion.pikafish import PikafishService
-from astrbot_plugin_game_companion.room_manager import RoomManager
-from astrbot_plugin_game_companion.xiangqi import RED, XiangqiGame
+from astrbot_plugin_game_companion_huahuo.pikafish import PikafishService
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.xiangqi import RED, XiangqiGame
 
 
 class FakePikafish:

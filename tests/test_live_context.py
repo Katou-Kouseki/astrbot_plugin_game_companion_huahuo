@@ -1,14 +1,14 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from astrbot_plugin_game_companion.gomoku import BLACK, GomokuGame
-from astrbot_plugin_game_companion.main import GameCompanionPlugin
-from astrbot_plugin_game_companion.models import GameRoom, PlayerSeat
-from astrbot_plugin_game_companion.pig_dice import PigDiceGame
-from astrbot_plugin_game_companion.turtle_soup import SoupPuzzle, TurtleSoupGame
+from astrbot_plugin_game_companion_huahuo.gomoku import BLACK, GomokuGame
+from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.models import GameRoom, PlayerSeat
+from astrbot_plugin_game_companion_huahuo.pig_dice import PigDiceGame
+from astrbot_plugin_game_companion_huahuo.turtle_soup import SoupPuzzle, TurtleSoupGame
 
 
 def make_room(*, game_type: str = "pig_dice", source: str = "private") -> GameRoom:
@@ -195,17 +195,17 @@ async def test_recent_private_result_survives_room_close_then_expires() -> None:
     )
 
     plugin._remember_private_game_result(room, {"result": "human_win"})
-    with patch("astrbot_plugin_game_companion.main.time.time", return_value=100.0):
+    with patch("astrbot_plugin_game_companion_huahuo.main.time.time", return_value=100.0):
         plugin._finalize_private_game_result(room)
     active_request = SimpleNamespace(system_prompt="")
-    with patch("astrbot_plugin_game_companion.main.time.time", return_value=1899.0):
+    with patch("astrbot_plugin_game_companion_huahuo.main.time.time", return_value=1899.0):
         await plugin.inject_game_context(event, active_request)
 
     assert "最近一局结果：五子棋，玩家获胜" in active_request.system_prompt
     assert "玩家执黑、Bot 执白" in active_request.system_prompt
 
     expired_request = SimpleNamespace(system_prompt="")
-    with patch("astrbot_plugin_game_companion.main.time.time", return_value=1900.0):
+    with patch("astrbot_plugin_game_companion_huahuo.main.time.time", return_value=1900.0):
         await plugin.inject_game_context(event, expired_request)
 
     assert expired_request.system_prompt == ""

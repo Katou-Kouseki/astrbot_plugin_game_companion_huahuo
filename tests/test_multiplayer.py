@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import time
@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from astrbot_plugin_game_companion.main import GameCompanionPlugin
-from astrbot_plugin_game_companion.room_manager import RoomManager
-from astrbot_plugin_game_companion.turtle_soup import (
+from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.turtle_soup import (
     TurtleSoupGame,
     puzzle_from_mapping,
 )

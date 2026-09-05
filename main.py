@@ -885,7 +885,7 @@ class GameCompanionPlugin(Star):
         self._watchdog_task = asyncio.create_task(self._watchdog())
         self._register_companion_invite_ability()
         logger.info(
-            "[GameCompanion] 游戏伴侣已加载；房间服务将在首次创建房间时按需启动"
+            "[GameCompanion] 花火陪你玩已加载；房间服务将在首次创建房间时按需启动"
         )
 
     async def terminate(self) -> None:
@@ -1006,7 +1006,7 @@ class GameCompanionPlugin(Star):
         _ = event, kwargs
         return self._json_error("海龟汤问答已移至 WebUI，请在房间的 Bot 对话栏中继续")
 
-    @filter.command("游戏伴侣")
+    @filter.command("花火陪你玩")
     async def game_companion_status(self, event: AstrMessageEvent):
         """Return a small fallback status without taking over ordinary chat."""
         rooms = self.manager.for_session(event.unified_msg_origin)
@@ -1033,7 +1033,7 @@ class GameCompanionPlugin(Star):
 
     @filter.command_group("game")
     def game_commands(self):
-        """游戏伴侣的显式 QQ 指令。"""
+        """花火陪你玩的显式 QQ 指令。"""
         pass
 
     @game_commands.command("游戏菜单", alias={"菜单", "menu"})

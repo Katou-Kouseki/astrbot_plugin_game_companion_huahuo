@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from astrbot_plugin_game_companion.tunnel import QuickTunnel
+from astrbot_plugin_game_companion_huahuo.tunnel import QuickTunnel
 
 
 class _Output:
@@ -33,7 +33,7 @@ def test_tunnel_prefers_configured_binary_over_path_and_managed_files(tmp_path, 
     managed = tmp_path / "managed"
     managed.mkdir()
     (managed / "cloudflared").write_bytes(b"managed")
-    monkeypatch.setattr("astrbot_plugin_game_companion.tunnel.shutil.which", lambda _name: str(tmp_path / "system-cloudflared"))
+    monkeypatch.setattr("astrbot_plugin_game_companion_huahuo.tunnel.shutil.which", lambda _name: str(tmp_path / "system-cloudflared"))
     tunnel = QuickTunnel(
         "http://127.0.0.1:42000",
         search_paths=[managed],
