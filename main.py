@@ -20,6 +20,7 @@ from astrbot.api.event import AstrMessageEvent, MessageChain, filter
 from astrbot.api.message_components import Plain
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
+from astrbot.api.web import request
 
 from .blackjack import BlackjackGame
 from .draw_guess import DrawGuessGame
@@ -63,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.3.3"
+PLUGIN_VERSION = "0.3.4"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -693,6 +694,7 @@ class GameCompanionPlugin(Star):
             undercover_word_store=self.undercover_word_store,
             enabled_games=self.enabled_games,
             xiangqi_engine=self.xiangqi_engine,
+            global_stats_path=self.data_dir / "global_leaderboard.json",
             event_callback=self._on_room_event,
         )
         self.room_server = GameRoomServer(
@@ -2578,8 +2580,15 @@ class GameCompanionPlugin(Star):
             return
         if visitor is not None:
             room.record_chat_memory(visitor, "bot", reply)
-        if accept and room.status == "rematch_pending" and room.player_token:
-            await self.manager.restart_finished_game(room, difficulty=difficulty)
+        if accept and room.status == "rematch_pending":
+            try:
+                await self.manager.restart_finished_game(room, difficulty=difficulty)
+            except (ValueError, PermissionError, RuntimeError) as exc:
+                logger.warning("[GameCompanion] 再来一局无法开始: %s", exc)
+                async with room.lock:
+                    if room.status == "rematch_pending":
+                        room.status = "finished"
+                        room.add_message("system", "再来一局暂时无法开始，房间已回到结束状态。")
 
     async def _prepare_turtle_soup(self, room: GameRoom, game: TurtleSoupGame) -> None:
         if game.mode != "bot_host":

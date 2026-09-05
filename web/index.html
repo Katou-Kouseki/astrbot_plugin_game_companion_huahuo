@@ -207,7 +207,7 @@
               type="button"
               aria-expanded="false"
             >
-              <span>🏆 本房战绩排行</span>
+              <span>🏆 全局战绩排行</span>
               <i class="uc-info-arrow" aria-hidden="true"></i>
             </button>
             <div id="ucBoardBody" class="uc-info-body" hidden>
@@ -433,6 +433,35 @@
       </aside>
     </section>
   </main>
+
+  <!-- 防窥屏：未绑定 QQ 的访客看不到对局内容，仅展示绑定引导 -->
+  <section id="peekGate" class="peek-gate" hidden aria-label="绑定 QQ 后查看对局">
+    <div class="peek-card">
+      <header class="peek-header">
+        <i data-lucide="eye-off"></i>
+        <h2>绑定 QQ 后查看对局</h2>
+      </header>
+      <p class="peek-desc">
+        为防止利用多个浏览器窥屏，未绑定 QQ 的访客暂不能查看对局内容。
+        绑定成功后将以观众身份进入，可以看到对局情况。
+      </p>
+      <div id="peekChallenge" class="identity-challenge">
+        <span class="label">QQ 绑定码</span>
+        <div class="bind-code-row">
+          <code id="peekToken">--------</code>
+          <button id="copyPeekBind" class="copy-bind-command" type="button" title="一键复制绑定命令">
+            <i data-lucide="copy"></i><span>一键复制</span>
+          </button>
+        </div>
+        <small id="peekTokenNote">在群聊里发送：<code class="bind-command-inline">绑定玩家 <span id="peekTokenInline">--------</span></code>；或点击「一键复制」粘贴发送。</small>
+        <label id="peekRememberOption" class="remember-identity" hidden>
+          <input id="peekRemember" type="checkbox" checked />
+          <span>在此浏览器记住我的身份</span>
+        </label>
+      </div>
+      <p id="peekStatus" class="peek-status">绑定成功后页面会自动切换为观众席。</p>
+    </div>
+  </section>
 
   <!-- 外观设置面板 -->
   <section id="appearancePanel" class="appearance-panel" hidden aria-label="外观设置">

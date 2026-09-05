@@ -189,9 +189,10 @@ class UndercoverGame:
         self.undercover_word = uc_word
         pools = self.players[:]
         random.shuffle(pools)
-        # 前两名玩家不能是白板（规则来自 Theresa3rd）。
-        # 首轮发言顺序为席位号升序，因此“前两名”指席位号最小的两位存活玩家。
-        top_two = set(sorted(p.number for p in self.players)[:2])
+        # 一次性随机排序，作为本局固定发言顺序（后续各轮沿用，仅剔除出局者）
+        self.speaking_order = [p.number for p in pools]
+        # 前两名玩家不能是白板：白板从随机顺序的第 3 位起分配
+        top_two = set(self.speaking_order[:2])
         non_top_two = [p for p in pools if p.number not in top_two]
         wb_players: list[UCPlayer] = []
         for _index in range(wb_count):
@@ -287,36 +288,15 @@ class UndercoverGame:
             parts.append(f"{voter_name}（{v.voter_number}号） → {target_name}（{v.target_number}号）")
         return "；".join(parts) if parts else ""
 
-    def _whiteboard_guard(self, order: list[int]) -> list[int]:
-        """保证每轮前两名发言人不是白板（规则来自 Theresa3rd：前两名玩家不能是白板）。
-
-        保持其余玩家的相对发言顺序不变，把白板整体挪到前两名之后；
-        若轮转后白板已进入前两位，则用后续非白板玩家补足前两名，白板顺延到第 3 位及之后。
-        """
-        if len(order) < 3:
-            return order
-        is_wb = {p.number: (p.camp == "whiteboard") for p in self.players}
-        non_wb = [n for n in order if not is_wb.get(n)]
-        wb = [n for n in order if is_wb.get(n)]
-        return non_wb[:2] + wb + non_wb[2:]
-
     def _start_new_round(self, pk_from_targets: list[int] | None = None) -> None:
         live = self._live_player_numbers()
         round_number = len(self.rounds) + 1
         if pk_from_targets is None:
-            if self.rounds and self.speaking_order:
-                # 顺序发言：以上一轮发言顺序为基础，剔除出局者并把上轮首位发言人移到本轮末尾。
-                # 例如第 1 轮顺序 1,2,3 → 第 2 轮 2,3,1 → 第 3 轮 3,1,2，轮流打头（第 2 轮 2 号先讲）。
-                # 用 dict.fromkeys 去重（本轮顺序里每个号码只保留一次）
-                ordered = list(dict.fromkeys(n for n in self.speaking_order if n in live))
-                if ordered:
-                    ordered = ordered[1:] + [ordered[0]]
-                speech = ordered + [n for n in live if n not in ordered]
-            else:
-                # 首轮：按座位号从小到大顺序发言（1 号先讲）
-                speech = sorted(live)
-            # 白板永不进入每轮前两名发言人（规则来自 Theresa3rd）
-            speech = self._whiteboard_guard(speech)
+            if not self.speaking_order:
+                # 兜底：无既定顺序时（如直接调用本方法），一次性随机排序
+                self.speaking_order = random.sample(live, len(live))
+            # 固定随机顺序发言：每轮仅剔除出局者，顺序保持不变
+            speech = [n for n in self.speaking_order if n in live]
             vote = live[:]
             rnd = UCRound(round_number, speech, vote)
             self.rounds.append(rnd)

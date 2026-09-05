@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import Any, Literal
 
 from .blackjack import BlackjackGame
@@ -125,6 +127,7 @@ class RoomManager:
         undercover_word_store: UndercoverWordStore | None = None,
         enabled_games: Mapping[GameType, bool] | None = None,
         xiangqi_engine: PikafishService | None = None,
+        global_stats_path: str | Path | None = None,
         event_callback: RoomCallback | None = None,
     ) -> None:
         self.max_group_rooms = max(0, int(max_group_rooms))
@@ -180,6 +183,58 @@ class RoomManager:
         self._access_index: dict[str, str] = {}
         self._closed_access: dict[str, tuple[str, float]] = {}
         self._lock = asyncio.Lock()
+        # 全局胜场榜：仅统计已绑定 QQ 的玩家，跨房间汇总；qq -> {"name": str, "wins": int}
+        self.global_stats_path = Path(global_stats_path) if global_stats_path else None
+        self.global_player_wins: dict[str, dict[str, object]] = (
+            self._load_global_stats() if self.global_stats_path else {}
+        )
+
+    def global_leaderboard(self, limit: int = 50) -> list[dict[str, object]]:
+        """返回跨房间全局胜场榜（按胜场降序）。"""
+        return [
+            {
+                "name": str(info.get("name") or "未知玩家"),
+                "wins": int(info.get("wins") or 0),
+            }
+            for info in sorted(
+                self.global_player_wins.values(),
+                key=lambda info: int(info.get("wins") or 0),
+                reverse=True,
+            )
+        ][:max(0, int(limit))]
+
+    def _load_global_stats(self) -> dict[str, dict[str, object]]:
+        """从磁盘加载全局胜场数据；文件缺失或损坏时回退为空。"""
+        if self.global_stats_path is None or not self.global_stats_path.is_file():
+            return {}
+        try:
+            raw = json.loads(self.global_stats_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            logger.warning("[GameCompanion] 全局胜场数据无法解析，将重新开始统计。")
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: dict[str, dict[str, object]] = {}
+        for qq, info in raw.items():
+            if not isinstance(qq, str) or not qq.strip() or not isinstance(info, dict):
+                continue
+            cleaned[qq.strip()] = {
+                "name": str(info.get("name") or ""),
+                "wins": max(0, int(info.get("wins") or 0)),
+            }
+        return cleaned
+
+    def _save_global_stats(self) -> None:
+        """将全局胜场数据写回磁盘。"""
+        if self.global_stats_path is None:
+            return
+        try:
+            self.global_stats_path.write_text(
+                json.dumps(self.global_player_wins, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.warning("[GameCompanion] 全局胜场数据保存失败。")
 
     async def create_room(
         self,
@@ -482,11 +537,16 @@ class RoomManager:
                             if s.visitor_token
                             and (s.is_ai or s.visitor_token in room.visitors)
                         )
-                        if (
+                        full = (
                             room.multiplayer.capacity > 0
                             and live_count >= room.multiplayer.capacity
-                        ):
+                        )
+                        if full:
                             room.multiplayer.turn_deadline = time.time()
+                        elif room.multiplayer.turn_deadline:
+                            # 有新玩家加入时开局倒计时顺延 10 秒，避免仓促开局
+                            room.multiplayer.turn_deadline += 10
+                            room.touch()
                 if room.game_type != "undercover" or room.status != "setup":
                     # 谁是卧底 setup 阶段使用 match_seconds 倒计时，不被这里重置
                     self._reset_turn_deadline(room)
@@ -696,6 +756,83 @@ class RoomManager:
             room.touch()
         await self._emit("player_confirmed", room, {})
 
+    async def _setup_undercover_game(self, room: GameRoom) -> str:
+        """初始化谁是卧底：AI 补位、重编座位号、取词条并分配身份。返回固定空 side_label。"""
+        if not room.multiplayer.enabled:
+            raise ValueError("谁是卧底必须在多人模式下进行")
+        live_seats = [
+            seat
+            for seat in room.multiplayer.seats
+            if seat.is_ai or seat.visitor_token in room.visitors
+        ]
+        # AI 补位：人数少于 ai_fill_min_players 时追加 AI 玩家
+        if (
+            self.undercover_ai_fill_enabled
+            and len(live_seats) < self.undercover_ai_fill_min_players
+        ):
+            import uuid
+            extra = self.undercover_ai_fill_min_players - len(live_seats)
+            # AI 编号全局递增：基于已存在的 AI 席位计数，避免多次补位都叫“AI1号”
+            base_ai = sum(1 for s in room.multiplayer.seats if s.is_ai)
+            for idx in range(extra):
+                room.multiplayer.capacity = max(
+                    room.multiplayer.capacity,
+                    len(room.multiplayer.seats) + 1,
+                )
+                ai_token = f"ai-{uuid.uuid4().hex[:8]}"
+                ai_display = f"花火·AI{base_ai + idx + 1}号"
+                ai_seat = PlayerSeat(
+                    number=len(room.multiplayer.seats) + 1,
+                    visitor_token=ai_token,
+                    qq=ai_token,
+                    display_name=ai_display,
+                    identity_confirmed=True,
+                    is_ai=True,
+                )
+                # 注册 AI 到 visitors，保持玩家可见性一致
+                ai_v = Visitor(
+                    number=room.next_visitor_number,
+                    token=ai_token,
+                    qq=ai_token,
+                    display_name=ai_display,
+                    identity_confirmed=True,
+                )
+                ai_v.last_seen_at = time.time()
+                ai_v.connected = True
+                room.next_visitor_number += 1
+                room.visitors[ai_token] = ai_v
+                room.multiplayer.seats.append(ai_seat)
+                live_seats.append(ai_seat)
+        # 最终按列表顺序重编一次 seat.number，保证真人/AI 编号连续 1..N
+        for idx, seat in enumerate(room.multiplayer.seats):
+            seat.number = idx + 1
+        self._sync_visitor_numbers(room)
+        if len(live_seats) < self.undercover_min_players:
+            raise ValueError(
+                f"谁是卧底至少需要 {self.undercover_min_players} 位已入座玩家"
+            )
+        word_pair = await self._fetch_undercover_word_pair(room)
+        # 阵营比例：优先房主自定义覆盖，否则默认
+        camp_scales = self.undercover_camp_scales_default
+        host_scales = getattr(room, "undercover_host_camp_scales", None)
+        if isinstance(host_scales, str) and host_scales.strip():
+            parsed = _parse_camp_scales(host_scales.strip())
+            if parsed[1] > 0:  # 卧底数必须保证>0
+                camp_scales = parsed
+        room.game = UndercoverGame(
+            camp_scales=camp_scales,
+            first_round_non_voting=self.undercover_first_round_non_voting,
+            similarity=self.undercover_similarity,
+            reveal_identity=self.undercover_send_identity_in_card,
+            show_voters=self.undercover_show_voters,
+        )
+        room.game.attach_players(
+            [(seat.number, seat.qq, seat.display_name) for seat in live_seats]
+        )
+        room.game.assign_words(word_pair)
+        room.multiplayer.current_turn_index = 0
+        return ""
+
     async def start_game(self, room: GameRoom, visitor_token: str, side: str) -> None:
         """Start a game after a seat has been assigned."""
         self.require_game_enabled(room.game_type)
@@ -774,83 +911,7 @@ class RoomManager:
                 room.multiplayer.current_turn_index = 0
                 side_label = ""
             elif room.game_type == "undercover":
-                if not room.multiplayer.enabled:
-                    raise ValueError("谁是卧底必须在多人模式下进行")
-                live_seats = [
-                    seat
-                    for seat in room.multiplayer.seats
-                    if seat.is_ai or seat.visitor_token in room.visitors
-                ]
-                # AI 补位：人数少于 ai_fill_min_players 时追加 AI 玩家
-                if (
-                    self.undercover_ai_fill_enabled
-                    and len(live_seats) < self.undercover_ai_fill_min_players
-                ):
-                    import uuid
-                    extra = self.undercover_ai_fill_min_players - len(live_seats)
-                    # AI 编号全局递增：基于已存在的 AI 席位计数，避免多次补位都叫“AI1号”
-                    base_ai = sum(1 for s in room.multiplayer.seats if s.is_ai)
-                    for idx in range(extra):
-                        room.multiplayer.capacity = max(
-                            room.multiplayer.capacity,
-                            len(room.multiplayer.seats) + 1,
-                        )
-                        ai_token = f"ai-{uuid.uuid4().hex[:8]}"
-                        ai_display = f"花火·AI{base_ai + idx + 1}号"
-                        ai_seat = PlayerSeat(
-                            number=len(room.multiplayer.seats) + 1,
-                            visitor_token=ai_token,
-                            qq=ai_token,
-                            display_name=ai_display,
-                            identity_confirmed=True,
-                            is_ai=True,
-                        )
-                        # 注册 AI 到 visitors，保持玩家可见性一致
-                        ai_v = Visitor(
-                            number=room.next_visitor_number,
-                            token=ai_token,
-                            qq=ai_token,
-                            display_name=ai_display,
-                            identity_confirmed=True,
-                        )
-                        ai_v.last_seen_at = time.time()
-                        ai_v.connected = True
-                        room.next_visitor_number += 1
-                        room.visitors[ai_token] = ai_v
-                        room.multiplayer.seats.append(ai_seat)
-                        live_seats.append(ai_seat)
-                # 最终按列表顺序重编一次 seat.number，保证真人/AI 编号连续 1..N
-                for idx, seat in enumerate(room.multiplayer.seats):
-                    seat.number = idx + 1
-                self._sync_visitor_numbers(room)
-                if len(live_seats) < self.undercover_min_players:
-                    raise ValueError(
-                        f"谁是卧底至少需要 {self.undercover_min_players} 位已入座玩家"
-                    )
-                word_pair = await self._fetch_undercover_word_pair(room)
-                # 阵营比例：优先房主自定义覆盖，否则默认
-                camp_scales = self.undercover_camp_scales_default
-                host_scales = getattr(room, "undercover_host_camp_scales", None)
-                if isinstance(host_scales, str) and host_scales.strip():
-                    parsed = _parse_camp_scales(host_scales.strip())
-                    if parsed[1] > 0:  # 卧底数必须保证>0
-                        camp_scales = parsed
-                room.game = UndercoverGame(
-                    camp_scales=camp_scales,
-                    first_round_non_voting=self.undercover_first_round_non_voting,
-                    similarity=self.undercover_similarity,
-                    reveal_identity=self.undercover_send_identity_in_card,
-                    show_voters=self.undercover_show_voters,
-                )
-                room.game.attach_players(
-                    [
-                        (seat.number, seat.qq, seat.display_name)
-                        for seat in live_seats
-                    ]
-                )
-                room.game.assign_words(word_pair)
-                room.multiplayer.current_turn_index = 0
-                side_label = ""
+                side_label = await self._setup_undercover_game(room)
             else:
                 room.game = TurtleSoupGame(
                     difficulty=room.difficulty,
@@ -1295,7 +1356,14 @@ class RoomManager:
         """Start another game in the same room, preserving its player and score."""
         self.require_game_enabled(room.game_type)
         async with room.lock:
-            if not room.player_token or room.player is None:
+            if room.multiplayer.enabled:
+                has_players = any(
+                    seat.is_ai or seat.visitor_token in room.visitors
+                    for seat in room.multiplayer.seats
+                )
+            else:
+                has_players = bool(room.player_token and room.player is not None)
+            if not has_players:
                 raise ValueError("当前房间没有可以继续对局的玩家")
             if room.status not in {"finished", "rematch_pending"} or room.game is None:
                 raise ValueError("当前对局尚未结束，不能直接再来一局")
@@ -1352,6 +1420,8 @@ class RoomManager:
                 )
                 room.multiplayer.current_turn_index = 0
                 side_label = ""
+            elif isinstance(room.game, UndercoverGame):
+                side_label = await self._setup_undercover_game(room)
             else:
                 raise ValueError("当前游戏状态无法重新开始")
             room.status = "active"
@@ -1376,6 +1446,20 @@ class RoomManager:
                 room.add_message(
                     "system", "新一轮二十一点开始，Bot 是庄家，请当前玩家先行动。"
                 )
+            elif isinstance(room.game, UndercoverGame):
+                counts = room.game.camp_counts()
+                civ = counts.get("civilian", 0)
+                uc = counts.get("undercover", 0)
+                wb = counts.get("whiteboard", 0)
+                parts = [f"平民 {civ} 人", f"卧底 {uc} 人"]
+                if wb:
+                    parts.append(f"白板 {wb} 人")
+                room.add_message(
+                    "system",
+                    "新一局谁是卧底开始。"
+                    + "、".join(parts)
+                    + "。按座位顺序依次发言描述你的词条。",
+                )
             else:
                 room.add_message(
                     "system",
@@ -1396,6 +1480,16 @@ class RoomManager:
             if room.game.all_players_done():
                 await self._blackjack_dealer_turn(room)
                 return
+        if isinstance(room.game, UndercoverGame):
+            async with room.lock:
+                await self._emit(
+                    "undercover_game_started",
+                    room,
+                    {
+                        "camp_counts": room.game.camp_counts(),
+                        "words_assigned": True,
+                    },
+                )
         await self._emit("game_started", room, {"rematch": True})
         if self._is_bot_turn(room):
             await self._bot_turn(room)
@@ -2204,6 +2298,18 @@ class RoomManager:
                             or uc_player.display_name.strip()
                             or f"{uc_player.number}号"
                         )
+                        # 全局胜场榜：仅累计已绑定 QQ 的玩家，跨房间汇总
+                        qq = (seat.qq or "").strip()
+                        if seat.identity_confirmed and qq:
+                            global_entry = self.global_player_wins.setdefault(
+                                qq, {"name": "", "wins": 0}
+                            )
+                            global_entry["wins"] = (
+                                int(global_entry.get("wins") or 0) + 1
+                            )
+                            if entry["name"]:
+                                global_entry["name"] = entry["name"]
+                            self._save_global_stats()
             elif getattr(room.game, "draw", False):
                 room.draws += 1
                 result = "draw"

@@ -568,7 +568,7 @@
   }
 
   /**
-   * 渲染房间内玩家获胜次数排行榜（按胜场降序，最多展示前 10 名）。
+   * 渲染全局胜场榜（跨房间汇总已绑定玩家数据，按胜场降序，最多展示前 10 名）。
    */
   function renderUndercoverLeaderboard(room) {
     const board = document.getElementById("ucLeaderboard");
@@ -578,7 +578,7 @@
     if (!list.length) {
       const empty = document.createElement("p");
       empty.className = "uc-lb-empty";
-      empty.textContent = "暂无战绩，快来打一局吧～";
+      empty.textContent = "暂无全局战绩，快来打一局吧～";
       board.appendChild(empty);
       return;
     }
@@ -1018,8 +1018,43 @@
     syncDrawState();
   }
 
+  // 防窥屏：未绑定 QQ 的访客整页遮挡，仅展示绑定引导；绑定后自动进入观众席
+  function renderPeekGate() {
+    const gate = document.getElementById("peekGate");
+    if (!gate) return;
+    const blocked = Boolean(room) && room.status !== "closed" && !room.player_confirmed;
+    gate.hidden = !blocked;
+    if (!blocked || !room) return;
+    const challenge = document.getElementById("peekChallenge");
+    const rememberOption = document.getElementById("peekRememberOption");
+    const rememberInput = document.getElementById("peekRemember");
+    const statusEl = document.getElementById("peekStatus");
+    const token = room.identity_token || "";
+    document.getElementById("peekToken").textContent = token || "--------";
+    const inline = document.getElementById("peekTokenInline");
+    if (inline) inline.textContent = token || "--------";
+    const note = document.getElementById("peekTokenNote");
+    if (room.admin_room) {
+      challenge.hidden = true;
+      if (statusEl) statusEl.textContent = "管理员将在游戏管理台为你绑定 QQ，绑定成功后自动进入观众席。";
+    } else if (!token) {
+      challenge.hidden = false;
+      note.textContent = "绑定码已过期，刷新页面后重新获取";
+      if (statusEl) statusEl.textContent = "";
+    } else {
+      challenge.hidden = false;
+      note.textContent = room.source === "group"
+        ? `群内直接发送：/绑定玩家 ${token}；或点击上方「一键复制」直接粘贴到群里发送即可。`
+        : `私聊里发送：/绑定玩家 ${token}；或点击上方「一键复制」直接粘贴发送即可。`;
+      if (statusEl) statusEl.textContent = "绑定成功后页面会自动切换为观众席。";
+    }
+    rememberOption.hidden = !(challenge.hidden === false && room.trusted_browser_available);
+    if (rememberInput) rememberInput.checked = rememberIdentity();
+  }
+
   function render() {
     if (!room) return;
+    renderPeekGate();
     document.getElementById("roomId").textContent = room.room_id || "";
     document.getElementById("roomStatus").textContent = statusLabel(room.status);
     document.getElementById("visitorLabel").textContent = room.visitor_number
@@ -3016,6 +3051,41 @@
       } catch (err) {
         showToast("复制失败，请手动选择复制。");
       }
+    });
+  }
+  // 防窥屏绑定码一键复制
+  const copyPeekBind = document.getElementById("copyPeekBind");
+  if (copyPeekBind) {
+    copyPeekBind.addEventListener("click", async () => {
+      const token = (room?.identity_token || "").trim();
+      if (!token) {
+        showToast("当前没有可复制的绑定码");
+        return;
+      }
+      const text = `/绑定玩家 ${token}`;
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
+        showToast("已复制：" + text);
+      } catch (err) {
+        showToast("复制失败，请手动选择复制。");
+      }
+    });
+  }
+  const peekRememberInput = document.getElementById("peekRemember");
+  if (peekRememberInput) {
+    peekRememberInput.addEventListener("change", (event) => {
+      window.localStorage.setItem(rememberIdentityKey, event.target.checked ? "1" : "0");
     });
   }
   // 谁是卧底发言字数计数

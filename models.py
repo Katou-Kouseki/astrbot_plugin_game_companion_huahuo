@@ -324,7 +324,11 @@ class GameRoom:
         """Mark a meaningful room operation."""
         self.last_activity_at = time.time()
 
-    def public_snapshot(self, visitor_token: str = "") -> dict[str, object]:
+    def public_snapshot(
+        self,
+        visitor_token: str = "",
+        global_leaderboard: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
         """Return room state without QQ identities or management secrets."""
         visitor = self.visitors.get(visitor_token)
         player = self.player
@@ -486,17 +490,27 @@ class GameRoom:
                 "draws": self.draws,
                 "games": self.completed_games,
             },
-            "leaderboard": [
-                {
-                    "name": str(info.get("name") or "未知玩家"),
-                    "wins": int(info.get("wins") or 0),
-                }
-                for _token, info in sorted(
-                    self.player_win_counts.items(),
-                    key=lambda kv: int(kv[1].get("wins") or 0),
-                    reverse=True,
-                )
-            ],
+            "leaderboard": (
+                [
+                    {
+                        "name": str(info.get("name") or "未知玩家"),
+                        "wins": int(info.get("wins") or 0),
+                    }
+                    for info in global_leaderboard
+                ]
+                if global_leaderboard is not None
+                else [
+                    {
+                        "name": str(info.get("name") or "未知玩家"),
+                        "wins": int(info.get("wins") or 0),
+                    }
+                    for _token, info in sorted(
+                        self.player_win_counts.items(),
+                        key=lambda kv: int(kv[1].get("wins") or 0),
+                        reverse=True,
+                    )
+                ]
+            ),
             "turtle_soup_stats": {
                 "questions": self.turtle_soup_stats.questions,
                 "hints": self.turtle_soup_stats.hints,
