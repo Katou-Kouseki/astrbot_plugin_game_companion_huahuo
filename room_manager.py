@@ -118,6 +118,7 @@ class RoomManager:
         undercover_voting_seconds: int = 120,
         undercover_first_round_non_voting: int = 3,
         undercover_send_identity_in_card: bool = True,
+        undercover_show_voters: bool = False,
         undercover_similarity: int = 80,
         undercover_ai_fill_enabled: bool = True,
         undercover_ai_fill_min_players: int = 3,
@@ -160,6 +161,7 @@ class RoomManager:
             2, min(int(undercover_first_round_non_voting), 10)
         )
         self.undercover_send_identity_in_card = bool(undercover_send_identity_in_card)
+        self.undercover_show_voters = bool(undercover_show_voters)
         self.undercover_similarity = max(0, min(int(undercover_similarity), 100))
         self.undercover_ai_fill_enabled = bool(undercover_ai_fill_enabled)
         self.undercover_ai_fill_min_players = max(
@@ -838,6 +840,7 @@ class RoomManager:
                     first_round_non_voting=self.undercover_first_round_non_voting,
                     similarity=self.undercover_similarity,
                     reveal_identity=self.undercover_send_identity_in_card,
+                    show_voters=self.undercover_show_voters,
                 )
                 room.game.attach_players(
                     [
@@ -2994,18 +2997,20 @@ class RoomManager:
             out_player = result.get("out_player")
             finished = room.game.finished
             snapshot = room.game.snapshot(voter_number)
+            # 开关「展示具体投票人」开启时，房间对话同步附上本轮的逐票明细
+            vote_detail = room.game.round_vote_breakdown() if self.undercover_show_voters else ""
             if out_player is not None:
                 label = f"{out_player['display_name']}（{out_player['number']}号）"
-                room.add_message(
-                    "system",
-                    f"第 {round_number} 轮投票结束：{label} 被投出局。",
-                )
+                msg = f"第 {round_number} 轮投票结束：{label} 被投出局。"
+                if vote_detail:
+                    msg += f"票型：{vote_detail}。"
+                room.add_message("system", msg)
             elif need_pk and pk_targets:
                 labels = "、".join(str(x) + "号" for x in pk_targets)
-                room.add_message(
-                    "system",
-                    f"第 {round_number} 轮投票平票：{labels} 最高票相同，进入 PK 发言轮。",
-                )
+                msg = f"第 {round_number} 轮投票平票：{labels} 最高票相同，进入 PK 发言轮。"
+                if vote_detail:
+                    msg += f"票型：{vote_detail}。"
+                room.add_message("system", msg)
                 # 启动 PK 子轮
                 room.game.continue_pk(pk_targets)
                 room.touch()

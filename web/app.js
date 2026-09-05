@@ -5,7 +5,6 @@
   const accessToken = match ? match[1] : "";
   const storageKey = `game-companion:${accessToken}:visitor`;
   const rememberIdentityKey = "game-companion:remember-identity";
-  let ucRevealedGameKey = "";       // 已展示过身份卡的本局标识（防重复弹卡）
   let ucPrevMyTurn = false;         // 上一帧本机是否处于发言轮，用于“轮到你了”提醒
   let ucPrevExpectedSpeaker = null; // 上一帧当前发言者，用于发言轮切换的醒目标语
   let ucResultShownKey = "";         // 已展示过结算动画的本局标识（防重复弹出）
@@ -2015,24 +2014,66 @@
         li.appendChild(content);
         ul.appendChild(li);
       });
-      // 投票列表（只显示 vote_tally 或全员投完的完整 votes）
+      // 投票列表（管理台开启「展示具体投票人」时显示逐票明细，否则只显示得票统计）
       const votes = r.votes || [];
       const voteHeaderLi = document.createElement("li");
       voteHeaderLi.className = "uc-round-votes";
       const vh = document.createElement("strong");
       const allVoted = votes.length >= (r.speech_order || []).length;
+      // 统一格式化「X号·昵称」
+      const fmtPn = (n) => {
+        const p = players.find((x) => Number(x.player_number) === Number(n));
+        const label = p ? p.display_name || "" : "";
+        return `${n}号${label && label !== `${n}号` ? " · " + label : ""}`;
+      };
       if (allVoted && votes.length) {
-        vh.textContent = "投票结果（完整）";
-        const voteBlock = document.createElement("div");
-        voteBlock.className = "uc-votes-block";
-        votes.forEach((v) => {
-          const row = document.createElement("div");
-          row.className = "uc-vote-row";
-          row.innerHTML = `<span>${v.voter_number}号</span> → <span>${v.target_number}号</span>`;
-          voteBlock.appendChild(row);
-        });
-        voteHeaderLi.appendChild(vh);
-        voteHeaderLi.appendChild(voteBlock);
+        if (snap.show_voters) {
+          vh.textContent = "投票结果（含投票人）";
+          const voteBlock = document.createElement("div");
+          voteBlock.className = "uc-votes-block";
+          votes.forEach((v) => {
+            const row = document.createElement("div");
+            row.className = "uc-vote-row is-flow";
+            const voter = document.createElement("span");
+            voter.className = "uc-voter";
+            voter.textContent = fmtPn(v.voter_number);
+            const arrow = document.createElement("i");
+            arrow.className = "uc-vote-arrow";
+            arrow.textContent = "→";
+            const target = document.createElement("span");
+            target.className = "uc-target";
+            target.textContent = fmtPn(v.target_number);
+            row.appendChild(voter);
+            row.appendChild(arrow);
+            row.appendChild(target);
+            voteBlock.appendChild(row);
+          });
+          voteHeaderLi.appendChild(vh);
+          voteHeaderLi.appendChild(voteBlock);
+        } else {
+          vh.textContent = "投票结果（票数统计）";
+          const voteBlock = document.createElement("div");
+          voteBlock.className = "uc-votes-block";
+          const tally = {};
+          votes.forEach((v) => {
+            tally[v.target_number] = (tally[v.target_number] || 0) + 1;
+          });
+          Object.entries(tally).forEach(([target, count]) => {
+            const row = document.createElement("div");
+            row.className = "uc-vote-row is-tally";
+            const who = document.createElement("span");
+            who.className = "uc-target";
+            who.textContent = fmtPn(Number(target));
+            const num = document.createElement("em");
+            num.className = "uc-vote-count";
+            num.textContent = `${count} 票`;
+            row.appendChild(who);
+            row.appendChild(num);
+            voteBlock.appendChild(row);
+          });
+          voteHeaderLi.appendChild(vh);
+          voteHeaderLi.appendChild(voteBlock);
+        }
       } else if (snap.vote_tally_live && Object.keys(snap.vote_tally_live).length) {
         vh.textContent = "当前投票数（不显示投手）";
         const voteBlock = document.createElement("div");
@@ -2040,8 +2081,15 @@
         Object.entries(snap.vote_tally_live).forEach(([target, count]) => {
           if (!Number(count)) return;
           const row = document.createElement("div");
-          row.className = "uc-vote-row";
-          row.innerHTML = `<span>${target}号</span>：<span>${Number(count)} 票</span>`;
+          row.className = "uc-vote-row is-tally";
+          const who = document.createElement("span");
+          who.className = "uc-target";
+          who.textContent = fmtPn(Number(target));
+          const num = document.createElement("em");
+          num.className = "uc-vote-count";
+          num.textContent = `${Number(count)} 票`;
+          row.appendChild(who);
+          row.appendChild(num);
           voteBlock.appendChild(row);
         });
         if (voteBlock.childNodes.length) {
@@ -2068,11 +2116,17 @@
       snap.reveal_identity !== false &&
       room.status !== "finished"
     ) {
-      const gkey = `${roundNumber}:${my.camp}:${my.word}`;
-      if (ucRevealedGameKey !== gkey) {
-        ucRevealedGameKey = gkey;
-        revealUcIdentity(my);
+      // 身份卡只在本局首次发放时弹出一次；标记写入 localStorage（键含房间令牌 + 本局 uid），
+      // 刷新页面 / 重新打开链接后不会重复弹出，新一局 uid 变化会再次弹出。
+      const revealKey = `uc:revealed:${accessToken}:${snap.game_uid || ""}`;
+      let alreadyRevealed = false;
+      try {
+        alreadyRevealed = !!window.localStorage.getItem(revealKey);
+        if (!alreadyRevealed) window.localStorage.setItem(revealKey, "1");
+      } catch (_err) {
+        alreadyRevealed = false; // localStorage 不可用时退回“总是弹出”
       }
+      if (!alreadyRevealed) revealUcIdentity(my);
     }
     const expectedSpan = document.getElementById("ucExpectedSpeaker");
     if (expectedSpeaker && snap.phase !== "finished") {

@@ -63,7 +63,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.3.2"
+PLUGIN_VERSION = "0.3.3"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -358,6 +358,14 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "hint": "开启后开场会以动画卡片告知玩家身份与词条；关闭则不展示身份卡。",
             },
             {
+                "key": "show_voters",
+                "config_key": "undercover.show_voters",
+                "label": "投票结算展示具体投票人",
+                "type": "bool",
+                "default": False,
+                "hint": "开启后，投票结果会展示每张票投给了谁（时间线与房间对话同步）；关闭则只显示各玩家得票数与被淘汰结果。",
+            },
+            {
                 "key": "similarity",
                 "config_key": "undercover.similarity",
                 "label": "发言相似度阈值",
@@ -608,6 +616,9 @@ class GameCompanionPlugin(Star):
         self.undercover_send_identity_in_card = self._cfg_bool(
             "undercover.send_identity_in_card", True
         )
+        self.undercover_show_voters = self._cfg_bool(
+            "undercover.show_voters", False
+        )
         self.undercover_similarity = self._cfg_int(
             "undercover.similarity", 80, minimum=0, maximum=100
         )
@@ -675,6 +686,7 @@ class GameCompanionPlugin(Star):
             undercover_voting_seconds=self.undercover_voting_seconds,
             undercover_first_round_non_voting=self.undercover_first_round_non_voting,
             undercover_send_identity_in_card=self.undercover_send_identity_in_card,
+            undercover_show_voters=self.undercover_show_voters,
             undercover_similarity=self.undercover_similarity,
             undercover_ai_fill_enabled=self.undercover_ai_fill_enabled,
             undercover_ai_fill_min_players=self.undercover_ai_fill_min_players,

@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
+from uuid import uuid4
 
 
 UCCamp = str  # "civilian" | "undercover" | "whiteboard" | "none"
@@ -128,13 +129,17 @@ class UndercoverGame:
         first_round_non_voting: int = 3,
         similarity: int = 0,
         reveal_identity: bool = True,
+        show_voters: bool = False,
     ) -> None:
+        self.game_uid = uuid4().hex[:10]
         self.camp_scales = camp_scales
         self.first_round_non_voting = max(2, int(first_round_non_voting))
         # 发言相似度（0~100）：超过阈值判定为“与历史发言雷同”，驳回并提示换说法
         self.similarity = max(0, min(int(similarity), 100))
         # 是否在开场发放身份（身份/词条卡），受管理台“告知身份”开关控制
         self.reveal_identity = bool(reveal_identity)
+        # 投票结算时是否展示具体投票人（时间线 + 房间对话）
+        self.show_voters = bool(show_voters)
         # 最近一次被驳回发言的原因，供 room_manager / main 返回给前端提示
         self.last_speech_reject_reason: str | None = None
         self.last_speech_masked: bool = False
@@ -184,8 +189,10 @@ class UndercoverGame:
         self.undercover_word = uc_word
         pools = self.players[:]
         random.shuffle(pools)
-        # 前两名玩家不能是白板（规则来自 Theresa3rd）
-        non_top_two = [p for p in pools if p.number not in (pools[0].number, pools[1].number)] if len(pools) >= 3 else pools[:]
+        # 前两名玩家不能是白板（规则来自 Theresa3rd）。
+        # 首轮发言顺序为席位号升序，因此“前两名”指席位号最小的两位存活玩家。
+        top_two = set(sorted(p.number for p in self.players)[:2])
+        non_top_two = [p for p in pools if p.number not in top_two]
         wb_players: list[UCPlayer] = []
         for _index in range(wb_count):
             if not non_top_two:
@@ -264,6 +271,35 @@ class UndercoverGame:
     def _live_player_numbers(self) -> list[int]:
         return [p.number for p in self.players if not p.is_out]
 
+    def _player_by_number(self, number: int) -> UCPlayer | None:
+        return next((p for p in self.players if p.number == number), None)
+
+    def round_vote_breakdown(self) -> str:
+        """把当前（pending）轮的每张票拼成「1号（昵称） → 3号（昵称）」文本，供房间对话展示。"""
+        if self.pending_round is None:
+            return ""
+        parts: list[str] = []
+        for v in self.pending_round.votes:
+            voter = self._player_by_number(v.voter_number)
+            target = self._player_by_number(v.target_number)
+            voter_name = (voter.display_name or f"{v.voter_number}号") if voter else f"{v.voter_number}号"
+            target_name = (target.display_name or f"{v.target_number}号") if target else f"{v.target_number}号"
+            parts.append(f"{voter_name}（{v.voter_number}号） → {target_name}（{v.target_number}号）")
+        return "；".join(parts) if parts else ""
+
+    def _whiteboard_guard(self, order: list[int]) -> list[int]:
+        """保证每轮前两名发言人不是白板（规则来自 Theresa3rd：前两名玩家不能是白板）。
+
+        保持其余玩家的相对发言顺序不变，把白板整体挪到前两名之后；
+        若轮转后白板已进入前两位，则用后续非白板玩家补足前两名，白板顺延到第 3 位及之后。
+        """
+        if len(order) < 3:
+            return order
+        is_wb = {p.number: (p.camp == "whiteboard") for p in self.players}
+        non_wb = [n for n in order if not is_wb.get(n)]
+        wb = [n for n in order if is_wb.get(n)]
+        return non_wb[:2] + wb + non_wb[2:]
+
     def _start_new_round(self, pk_from_targets: list[int] | None = None) -> None:
         live = self._live_player_numbers()
         round_number = len(self.rounds) + 1
@@ -279,6 +315,8 @@ class UndercoverGame:
             else:
                 # 首轮：按座位号从小到大顺序发言（1 号先讲）
                 speech = sorted(live)
+            # 白板永不进入每轮前两名发言人（规则来自 Theresa3rd）
+            speech = self._whiteboard_guard(speech)
             vote = live[:]
             rnd = UCRound(round_number, speech, vote)
             self.rounds.append(rnd)
@@ -697,6 +735,8 @@ class UndercoverGame:
             pending_pk_targets = list(self.pending_round.speech_player_numbers)
         return {
             "phase": self.phase,
+            "game_uid": self.game_uid,
+            "show_voters": self.show_voters,
             "round_number": len(self.rounds),
             "current_round_number": len(self.rounds),
             "camp_info": camp_info,

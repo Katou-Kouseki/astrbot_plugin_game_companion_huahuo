@@ -1278,7 +1278,7 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   border: 1px solid var(--border);
   border-radius: 1rem;
   padding: 1rem;
-  max-height: 420px;
+  max-height: 55vh;
   overflow: auto;
 }
 .uc-round-header {
@@ -1335,13 +1335,36 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 }
 .uc-votes-block {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-  gap: .25rem .5rem;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: .3rem .6rem;
 }
 .uc-vote-row {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
   font-size: .88rem;
   color: var(--text);
+  padding: .28rem .5rem;
+  border-radius: .55rem;
+  background: color-mix(in srgb, var(--surface-alt) 55%, transparent);
 }
+.uc-vote-row.is-flow {
+  grid-column: 1 / -1;
+  gap: .5rem;
+}
+.uc-vote-arrow {
+  font-style: normal;
+  color: var(--muted);
+  opacity: .75;
+}
+.uc-vote-count {
+  font-style: normal;
+  font-weight: 700;
+  color: var(--red);
+  margin-left: auto;
+}
+.uc-voter { color: var(--muted); }
+.uc-target { font-weight: 600; color: var(--text-strong); }
 
 .uc-op-area {
   display: grid;
@@ -1457,11 +1480,15 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 }
 
 @media (min-width: 768px) {
-  .uc-stage { grid-template-columns: 1fr 1fr; }
+  .uc-stage { grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); }
   .uc-camp-summary { grid-column: 1 / -1; }
   .uc-players-grid { grid-column: 1 / -1; }
   .uc-identity-card { grid-column: 1; }
-  .uc-speech-timeline { grid-column: 2; max-height: none; }
+  /* 规则/战绩面板放进左列身份卡下方，填补空白 */
+  .uc-info-panels { grid-column: 1; }
+  /* 时间线独占右列并跨两行，解除限高滚动，充分利用页面高度 */
+  .uc-speech-timeline { grid-column: 2; grid-row: span 2; max-height: none; }
+  .uc-timeline-list { max-height: none; overflow: visible; }
   .uc-op-area { grid-column: 1 / -1; }
 }
 
