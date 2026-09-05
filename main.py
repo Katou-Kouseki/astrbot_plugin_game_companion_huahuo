@@ -62,8 +62,8 @@ from .xiangqi import BLACK as XIANGQI_BLACK
 from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
-PLUGIN_NAME = "astrbot_plugin_game_companion"
-PLUGIN_VERSION = "0.3.0"
+PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
+PLUGIN_VERSION = "0.3.1"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -422,14 +422,6 @@ class _RecentPrivateGameResult:
     expires_at: float = 0.0
 
 
-@register(
-    PLUGIN_NAME,
-    "StarfallMark",
-    "让 Bot 与用户通过可视化房间自然地一起玩游戏。",
-    PLUGIN_VERSION,
-)
-
-
 def _uc_ai_fallback(camp: str, round_no: int) -> str:
     """谁是卧底 AI 发言的本地兜底文案：按轮次轮换，避免整局复读同一句，且尽量不露馅。"""
     index = max(0, (round_no - 1) % 4)
@@ -450,6 +442,12 @@ def _uc_ai_fallback(camp: str, round_no: int) -> str:
     return pool[index]
 
 
+@register(
+    PLUGIN_NAME,
+    "Katou-Kouseki",
+    "让 Bot 与用户通过可视化房间自然地一起玩游戏。",
+    PLUGIN_VERSION,
+)
 class GameCompanionPlugin(Star):
     """Game rooms that preserve AstrBot's normal conversation pipeline."""
 
@@ -3643,9 +3641,9 @@ class GameCompanionPlugin(Star):
                 else "私聊中发送："
             )
             instruction += (
-                f"提醒用户打开页面后查看绑定码，{bind_hint}/绑定玩家 {room.identity_token}；"
-                "或点击页面「一键复制」按钮，直接粘贴到群里发送即可。"
-                "绑定成功后再点击加入玩家席。"
+                f"提醒用户打开页面后查看页面顶部的一次性绑定码，并在{bind_hint}发送该绑定码"
+                "（形如：绑定玩家 8位大写字母数字；原私聊也可直接发送绑定码）。"
+                "或点击页面「一键复制」按钮后直接粘贴发送。绑定成功后再点击加入玩家席。"
             )
         if room.game_type == "turtle_soup":
             instruction += "说明玩家进入玩家席后由 Bot 准备题目。"

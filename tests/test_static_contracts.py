@@ -70,10 +70,10 @@ def test_metadata_registers_default_management_page() -> None:
 
     assert metadata["astrbot_version"] == ">=4.24.2"
     assert metadata["repo"] == (
-        "https://github.com/StarfallMark/astrbot_plugin_game_companion"
+        "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.2.8"
+    assert metadata["version"] == "0.3.1"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:

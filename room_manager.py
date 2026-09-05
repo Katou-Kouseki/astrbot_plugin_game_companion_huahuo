@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 import secrets
@@ -39,6 +40,8 @@ from .undercover_words import UndercoverWordStore
 from .xiangqi import BLACK as XIANGQI_BLACK
 from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
+
+logger = logging.getLogger("astrbot_plugin_game_companion")
 
 RoomCallback = Callable[[str, GameRoom, dict[str, Any]], Awaitable[None]]
 

@@ -180,7 +180,7 @@ class GameRoomServer:
         return web.json_response(
             {
                 "ok": True,
-                "plugin": "astrbot_plugin_game_companion",
+                "plugin": "astrbot_plugin_game_companion_huahuo",
                 "rooms": len(self.manager.rooms),
             },
             headers=self._headers("application/json"),
