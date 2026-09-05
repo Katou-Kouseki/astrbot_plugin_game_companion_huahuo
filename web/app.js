@@ -506,6 +506,11 @@
   function showUcIdentityReveal(my) {
     const overlay = document.getElementById("ucRevealOverlay");
     if (!overlay || !my || !my.camp) return;
+    // 结束预热，展示正式身份牌
+    const preheat = document.getElementById("ucPreheat");
+    if (preheat) preheat.hidden = true;
+    const cardEl = document.getElementById("ucRevealCard");
+    if (cardEl) cardEl.hidden = false;
     const campMap = {
       civilian: ["平民", "is-civilian", "你是平民：你的词条和大多数玩家一致。找到卧底，把卧底投票出局即可获胜。"],
       undercover: ["卧底", "is-undercover", "你是卧底：你的词条与多数人不同。隐藏好自己，把平民投票出局即可获胜。"],
@@ -528,6 +533,39 @@
     void card.offsetWidth;
     card.style.animation = "";
     overlay.hidden = false;
+  }
+
+  // 发词前先播放一段“甄选词条”预热，再弹出身份牌
+  const UC_PREHEAT_MS = 6000;
+  let ucPreheatTimer = null;
+  let ucPreheatCounter = null;
+  function showUcPreheatCountdown() {
+    const secEl = document.getElementById("ucPreheatSec");
+    if (!secEl) return;
+    const end = Date.now() + UC_PREHEAT_MS;
+    window.clearInterval(ucPreheatCounter);
+    const tick = () => {
+      const remain = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+      secEl.textContent = remain > 0 ? `约 ${remain} 秒后发放…` : "";
+    };
+    tick();
+    ucPreheatCounter = window.setInterval(tick, 500);
+  }
+  function revealUcIdentity(my) {
+    if (!my || !my.camp) return;
+    const overlay = document.getElementById("ucRevealOverlay");
+    if (!overlay) return;
+    const cardEl = document.getElementById("ucRevealCard");
+    const preheat = document.getElementById("ucPreheat");
+    if (cardEl) cardEl.hidden = true;
+    if (preheat) preheat.hidden = false;
+    showUcPreheatCountdown();
+    overlay.hidden = false;
+    window.clearTimeout(ucPreheatTimer);
+    ucPreheatTimer = window.setTimeout(() => {
+      window.clearInterval(ucPreheatCounter);
+      showUcIdentityReveal(my);
+    }, UC_PREHEAT_MS);
   }
 
   /**
@@ -663,17 +701,15 @@
     note.className = "speech-turn-notification";
     note.dataset.live = "1";
     if (isMine) {
-      note.innerHTML = `<span>到你发言了！</span><strong>${playerNumber}号</strong>`;
+      note.innerHTML = `<span>到你发言了！</span><strong>${playerNumber}号</strong><em class="speech-sec"></em>`;
     } else {
-      note.innerHTML = `<span>接下来发言</span><strong>${playerNumber}号</strong>`;
+      note.innerHTML = `<span>接下来发言</span><strong>${playerNumber}号</strong><em class="speech-sec"></em>`;
     }
     document.body.appendChild(note);
+    // 弹出动画结束后，逐渐缩小收缩到棋盘顶部，持续显示发言倒计时（由每秒 tick 同步）
     window.setTimeout(() => {
-      if (note && document.contains(note)) {
-        note.classList.add("is-out");
-        window.setTimeout(() => { if (document.contains(note)) note.remove(); }, 700);
-      }
-    }, 1700);
+      if (note && document.contains(note)) note.classList.add("is-dock");
+    }, 1800);
   }
 
   function rememberIdentity() {
@@ -765,6 +801,16 @@
       text = "";
     }
     timer.textContent = text;
+    // 同步顶部停靠的“轮到 X号”发言倒计时；离开发言/PK 阶段时自动收起
+    const dock = document.querySelector(".speech-turn-notification.is-dock");
+    if (dock) {
+      if (!["speech", "pk"].includes(phase)) {
+        dock.remove();
+      } else {
+        const secEl = dock.querySelector(".speech-sec");
+        if (secEl) secEl.textContent = timerActive ? `⏳ ${remain}s` : "不限时";
+      }
+    }
   }, 1000);
 
   async function request(method, action, payload = {}) {
@@ -1150,8 +1196,10 @@
       players.length ? `玩家${players.length}` : "",
       spectators.length ? `观众${spectators.length}` : "",
     ].filter(Boolean).join(" / ");
+    // 总人数只统计“仍在场的”：已入座玩家 + 在线观众；已关闭页面的离线观众不计入
+    const total = players.length + spectators.length;
     document.getElementById("peopleCount").textContent =
-      `${visitors.length} 人${countParts ? " · " + countParts : ""}`;
+      `${total} 人${countParts ? " · " + countParts : ""}`;
     const groups = [
       { label: "玩家", members: players },
       { label: "观众", members: spectators },
@@ -2023,7 +2071,7 @@
       const gkey = `${roundNumber}:${my.camp}:${my.word}`;
       if (ucRevealedGameKey !== gkey) {
         ucRevealedGameKey = gkey;
-        showUcIdentityReveal(my);
+        revealUcIdentity(my);
       }
     }
     const expectedSpan = document.getElementById("ucExpectedSpeaker");
@@ -2971,6 +3019,12 @@
     ucRevealClose.addEventListener("click", () => {
       const overlay = document.getElementById("ucRevealOverlay");
       if (overlay) overlay.hidden = true;
+      window.clearTimeout(ucPreheatTimer);
+      window.clearInterval(ucPreheatCounter);
+      const preheat = document.getElementById("ucPreheat");
+      if (preheat) preheat.hidden = true;
+      const card = document.getElementById("ucRevealCard");
+      if (card) card.hidden = false;
     });
   }
   // 结算卡关闭

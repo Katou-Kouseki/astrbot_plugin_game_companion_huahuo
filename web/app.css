@@ -706,7 +706,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   display: none;
   align-items: center;
   justify-content: center;
-  background: color-mix(in srgb, var(--bg, #f5f7f8) 70%, rgba(0, 0, 0, 0.5));
+  background: color-mix(in srgb, var(--page-bg, #f5f7f8) 70%, rgba(0, 0, 0, 0.5));
   backdrop-filter: blur(6px);
   padding: 20px;
 }
@@ -749,7 +749,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .uc-reveal-wordbox {
   padding: 14px;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--bg, #f5f7f8) 80%, transparent);
+  background: color-mix(in srgb, var(--page-bg, #f5f7f8) 80%, transparent);
   border: 1px dashed var(--border, #d9dedd);
   margin-bottom: 12px;
 }
@@ -775,6 +775,44 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 }
 .uc-reveal-card .primary-action { width: 100%; justify-content: center; }
 body.dark .uc-reveal-camp.is-whiteboard { color: #bdc3c7; }
+/* 深色模式：阵营铭牌改用亮色，避免深绿/深红在暗底上难以辨认 */
+body.dark .uc-reveal-camp.is-civilian { color: #7be0a9; }
+body.dark .uc-reveal-camp.is-undercover { color: #f69a87; }
+body.dark .uc-reveal-wordbox {
+  background: rgba(21, 27, 32, 0.9);
+  border-color: rgba(120, 150, 140, 0.4);
+}
+body.dark .uc-reveal-wordtag { color: #8f9b94; }
+body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
+
+/* ====== 谁是卧底：开局发词前的“甄选词条”预热面板 ====== */
+.uc-preheat {
+  width: min(360px, 92vw);
+  padding: 34px 28px 30px;
+  border-radius: 18px;
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--border, #d9dedd);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.28);
+  color: var(--text, #1f2328);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.uc-preheat[hidden] { display: none; }
+.uc-preheat-spinner {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 4px solid var(--border, #d9dedd);
+  border-top-color: var(--green, #215c45);
+  animation: ucSpin 0.9s linear infinite;
+}
+@keyframes ucSpin { to { transform: rotate(360deg); } }
+.uc-preheat-title { font-size: 20px; font-weight: 800; }
+.uc-preheat-sub { font-size: 13px; color: var(--muted, #69716c); line-height: 1.5; }
+.uc-preheat-sec { font-size: 12px; color: var(--muted, #69716c); letter-spacing: 1px; }
 
 .score-panel { display: grid; grid-template-columns: repeat(3, 1fr); padding: 10px; }
 .score-panel div { text-align: center; border-right: 1px solid var(--border); }
@@ -1993,7 +2031,7 @@ body.dark .uc-speech-box textarea:focus {
 /* ====== 谁是卧底：发言轮醒目全屏弹出 ====== */
 .speech-turn-notification {
   position: fixed;
-  top: 50%;
+  top: 15%;
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 120;
@@ -2024,6 +2062,20 @@ body.dark .uc-speech-box textarea:focus {
   color: #fff;
   text-shadow: 0 3px 0 rgba(0, 0, 0, 0.18), 0 0 24px rgba(255, 255, 255, 0.6);
 }
+/* 弹出动画结束后，逐渐缩小收缩到棋盘顶部“发言倒计时”处持续显示倒计时 */
+.speech-turn-notification.is-dock {
+  top: 112px;
+  min-width: 0;
+  padding: 8px 18px;
+  border-radius: 999px;
+  gap: 0 10px;
+  flex-direction: row;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35);
+  animation: ucSpeechBannerDock 0.6s cubic-bezier(0.2, 0.9, 0.25, 1.1) forwards;
+}
+.speech-turn-notification.is-dock span { font-size: 14px; font-weight: 700; }
+.speech-turn-notification.is-dock strong { font-size: 20px; }
+.speech-turn-notification .speech-sec { font-size: 13px; font-weight: 700; opacity: 0.95; }
 .speech-turn-notification.is-out {
   animation: ucSpeechBannerOut 0.7s ease forwards;
 }
@@ -2033,6 +2085,10 @@ body.dark .uc-speech-box textarea:focus {
   32% { transform: translate(-50%, -50%) scale(1) rotate(0deg); }
   78% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   100% { opacity: 0; transform: translate(-50%, -50%) scale(1.06); }
+}
+@keyframes ucSpeechBannerDock {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(1.4); }
+  100% { transform: translate(-50%, -50%) scale(1); }
 }
 @keyframes ucSpeechBannerOut {
   from { opacity: 1; transform: translate(-50%, -50%) scale(1); }
@@ -2061,7 +2117,7 @@ body.dark .uc-speech-box textarea:focus {
 
 /* ====== 谁是卧底：一开场发放身份卡的“旋转放大”牌面动画 ====== */
 .uc-reveal-overlay {
-  background: color-mix(in srgb, var(--bg, #f5f7f8) 60%, rgba(0, 0, 0, 0.55));
+  background: color-mix(in srgb, var(--page-bg, #f5f7f8) 60%, rgba(0, 0, 0, 0.55));
 }
 .uc-reveal-card {
   width: min(400px, 94vw);
@@ -2091,7 +2147,7 @@ body.dark .uc-speech-box textarea:focus {
   align-items: center;
   justify-content: center;
   padding: 20px;
-  background: color-mix(in srgb, var(--bg, #f5f7f8) 45%, rgba(0, 0, 0, 0.62));
+  background: color-mix(in srgb, var(--page-bg, #f5f7f8) 45%, rgba(0, 0, 0, 0.62));
   backdrop-filter: blur(6px);
   animation: ucResultOverlayFade 0.45s ease both;
 }

@@ -786,13 +786,15 @@ class RoomManager:
                 ):
                     import uuid
                     extra = self.undercover_ai_fill_min_players - len(live_seats)
+                    # AI 编号全局递增：基于已存在的 AI 席位计数，避免多次补位都叫“AI1号”
+                    base_ai = sum(1 for s in room.multiplayer.seats if s.is_ai)
                     for idx in range(extra):
                         room.multiplayer.capacity = max(
                             room.multiplayer.capacity,
                             len(room.multiplayer.seats) + 1,
                         )
                         ai_token = f"ai-{uuid.uuid4().hex[:8]}"
-                        ai_display = f"花火·AI{idx+1}号"
+                        ai_display = f"花火·AI{base_ai + idx + 1}号"
                         ai_seat = PlayerSeat(
                             number=len(room.multiplayer.seats) + 1,
                             visitor_token=ai_token,
