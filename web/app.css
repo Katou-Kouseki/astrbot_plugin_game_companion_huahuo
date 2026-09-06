@@ -1642,8 +1642,11 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 }
 .uc-ready-area[hidden] { display: none; }
 .uc-ready-area .primary-action.is-ready { background: var(--green); }
-.uc-ready-area .primary-action .ready-progress {
-  font-size: 11px; font-weight: 600; opacity: .85; margin-left: auto; padding-left: .5rem;
+.uc-ready-progress {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  color: var(--muted);
 }
 /* 退出对局按钮：次级、弱化、独立一行 */
 .uc-ready-area .secondary-action {

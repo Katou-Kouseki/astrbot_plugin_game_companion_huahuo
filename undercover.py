@@ -480,9 +480,16 @@ class UndercoverGame:
                     break
         if self.finished:
             return True
-        # 推进到下一个发言者
+        # 成功发言后推进到下一个发言者（含出局跳过与发言结束转投票）
+        self.advance_speaker()
+        return True
+
+    def advance_speaker(self) -> None:
+        """推进发言指针到下一位（出局自动跳过），发言全部结束则转入投票；
+        首轮人数在阈值内时直接开启下一轮。超时自动跳过等场景复用，避免产生占位发言。"""
+        if self.phase not in ("speech", "pk") or self.pending_round is None:
+            return
         self.current_speaker_index += 1
-        # 所有待发言玩家发言完毕
         while (
             self.current_speaker_index < len(self.speaking_order)
             and any(
@@ -492,20 +499,16 @@ class UndercoverGame:
         ):
             self.current_speaker_index += 1
         if self.current_speaker_index >= len(self.speaking_order):
-            # PK 子轮或普通轮：发言结束 → 投票（但首轮人数阈值内跳过投票）
             rnd = self.pending_round
-            assert rnd is not None
             if (
                 rnd.round_number == 1
                 and self.phase == "speech"
                 and len(self._live_player_numbers()) <= self.first_round_non_voting
             ):
-                # 不投票，继续下一轮 speech
                 self._start_new_round()
                 self._check_winner()
             else:
                 self.phase = "voting"
-        return True
 
     # ---------------------- Voting ----------------------
 

@@ -64,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.3.9"
+PLUGIN_VERSION = "0.4.0"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -434,8 +434,9 @@ class _RecentPrivateGameResult:
 def _sanitize_uc_ai_speech(text: str) -> str:
     """把 AI 发言规整为「不超过 1 个逗号、总体 20 字以内」的短句，并去掉表情/提示词残留。"""
     text = str(text or "").strip().strip("“”\"'「」")
-    # 去掉 `&&happy&&` 这类表情/心情提示词 token（可能还带缩进、间距）
+    # 去掉 `&&happy&&` 这类表情/心情提示词 token，并清掉任何残留的 `&`（含孤立的 `&&`）
     text = re.sub(r"&{2,}.*?&{2,}", "", text)
+    text = text.replace("&", "")
     text = re.sub(r"\s+", " ", text).strip()
     # 最多保留 1 个逗号：按中文/英文逗号、顿号、分号切分，只保留前两句
     parts = re.split(r"[，,、；;]", text)
@@ -445,6 +446,25 @@ def _sanitize_uc_ai_speech(text: str) -> str:
     text = text[:20].strip()
     # 去掉可能残留的首尾标点
     return text.strip("，,、；;。！？!?")
+
+
+def _uc_eligible_vote_targets(game, voter_num: int) -> list[int]:
+    """返回某玩家当前可投的合法目标。
+
+    普通轮投任意存活非本人；PK 子轮只能投重新发言的平票候选人（否则服务端会拒绝，
+    导致供应商故障时 AI 兜底票永远失效而整局卡死）。
+    """
+    live = [p.number for p in game.players if not p.is_out]
+    pending = getattr(game, "pending_round", None)
+    if pending is not None and getattr(pending, "pk_reason", ""):
+        tgt = [
+            n
+            for n in pending.speech_player_numbers
+            if n in live and n != voter_num
+        ]
+        if tgt:
+            return tgt
+    return [n for n in live if n != voter_num]
 
 
 def _uc_ai_fallback(camp: str, round_no: int) -> str:
@@ -655,6 +675,9 @@ class GameCompanionPlugin(Star):
         # 去重窗口：记录 N 次抽取到的词条，避免短时间重复
         self._undercover_word_window: list[tuple[str, str]] = []
         self._undercover_word_window_max = 10
+        # 会话 -> {"bot": aiocqhttp bot, "group_id": int, "self_id": int}
+        # 用于违规/失败时直接调用群禁言（不依赖 LLM 工具），拿不到句柄则只记录而不阻断游戏
+        self._session_bot_ctx: dict[str, dict] = {}
         self.undercover_word_store = UndercoverWordStore(
             self.data_dir / "undercover_words.json"
         )
@@ -974,6 +997,7 @@ class GameCompanionPlugin(Star):
                 ),
                 confirm_abandon=self._value_bool(kwargs.get("confirm_abandon")),
             )
+            self._remember_bot_ctx(room, event)  # 缓存群禁言句柄（拿不到也不影响）
             url = self._room_url(room)
             link_delivered = await self._deliver_room_link(
                 room,
@@ -1769,6 +1793,14 @@ class GameCompanionPlugin(Star):
         if event_name == "undercover_speech_submitted":
             self._spawn(self._undercover_commentary_speech(room, payload))
             self._spawn(self._undercover_ai_step_if_needed(room))
+            # 说出词条违规 → 群里禁言该玩家
+            violated_qq = payload.get("violated_qq")
+            if violated_qq and self.undercover_violated_mute_seconds:
+                self._spawn(
+                    self._mute_room_qq(
+                        room, str(violated_qq), self.undercover_violated_mute_seconds, "说出词条违规"
+                    )
+                )
             return
         if event_name == "undercover_vote_submitted":
             self._spawn(self._undercover_commentary_vote(room, payload))
@@ -1886,6 +1918,28 @@ class GameCompanionPlugin(Star):
             self._queue_companion_round_event(room, payload)
             self._remember_private_game_result(room, payload)
             result = self._round_result_text(room, payload, reveal_answer=True)
+            # 谁是卧底失败方禁言：胜方外的存活/参与成员在群里禁言 failed_mute_seconds
+            if (
+                room.game_type == "undercover"
+                and isinstance(room.game, UndercoverGame)
+                and self.undercover_failed_mute_seconds
+                and room.game.winner_camp
+            ):
+                loser_qqs: list[str] = []
+                for seat in room.multiplayer.seats:
+                    if seat.is_ai or not seat.qq:
+                        continue
+                    pl = next(
+                        (p for p in room.game.players if p.number == seat.number), None
+                    )
+                    if pl is not None and (pl.camp or "") != room.game.winner_camp:
+                        loser_qqs.append(seat.qq)
+                for qq in sorted(set(loser_qqs)):
+                    self._spawn(
+                        self._mute_room_qq(
+                            room, qq, self.undercover_failed_mute_seconds, "失败方"
+                        )
+                    )
             self._spawn(
                 self._comment(
                     room,
@@ -3581,6 +3635,53 @@ class GameCompanionPlugin(Star):
         except Exception as exc:
             logger.debug("[GameCompanion] 回发游戏消息失败: %s", exc)
 
+    def _remember_bot_ctx(self, room: GameRoom, event) -> None:
+        """从 QQ 事件里缓存该会话的 aiocqhttp bot/群号/自身QQ，供后续群里禁言使用。"""
+        try:
+            bot = getattr(event, "bot", None)
+            gid = event.get_group_id() if hasattr(event, "get_group_id") else None
+            self_id = event.get_self_id() if hasattr(event, "get_self_id") else None
+            if bot is not None and gid is not None:
+                self._session_bot_ctx[room.session_id] = {
+                    "bot": bot,
+                    "group_id": int(gid),
+                    "self_id": None if self_id is None else int(self_id),
+                }
+        except Exception as exc:
+            logger.debug("[GameCompanion] 缓存会话群禁言句柄失败: %s", exc)
+
+    async def _mute_room_qq(self, room: GameRoom, qq: str, seconds: int, reason: str) -> bool:
+        """在房间对应群聊里把指定 QQ 禁言 seconds 秒（向 60 取整）。
+
+        采用与群管插件一致的 aiocqhttp `bot.set_group_ban`，不依赖 LLM 工具；
+        拿不到句柄或调用失败只记日志，绝不阻塞游戏主流程。
+        """
+        if not seconds or not qq:
+            return False
+        ctx = self._session_bot_ctx.get(room.session_id)
+        bot = ctx.get("bot") if ctx else None
+        group_id = ctx.get("group_id") if ctx else None
+        if bot is None or group_id is None:
+            logger.info("[GameCompanion] 未取到群禁言句柄，跳过禁言(%s: %s)", reason, qq)
+            return False
+        duration = (max(0, int(seconds)) // 60) * 60
+        if duration <= 0:
+            return False
+        try:
+            await bot.set_group_ban(
+                group_id=group_id,
+                user_id=int(qq),
+                duration=duration,
+                self_id=ctx.get("self_id") if ctx.get("self_id") else None,
+            )
+            logger.info("[GameCompanion] %s：已将 QQ %s 禁言 %s 秒", reason, qq, duration)
+            return True
+        except Exception as exc:
+            logger.error(
+                "[GameCompanion] 群禁言失败(%s: %s): %s", reason, qq, exc
+            )
+            return False
+
     async def _deliver_room_link(
         self,
         room: GameRoom,
@@ -4507,20 +4608,74 @@ class GameCompanionPlugin(Star):
             if seat is None:
                 return
             if getattr(seat, "is_ai", False):
-                await self._undercover_ai_step_if_needed(room)
+                # 发言超时且是 AI：供应商故障时不再等模型，直接提交本地兜底文案，保证轮次推进
+                await self._undercover_ai_speak_fallback(room, seat)
                 return
-            # 真人在限定时间内未发言：自动跳过并推进
-            try:
-                await self.manager.player_undercover_speech(
-                    room, seat.visitor_token, "（本回合发言超时，自动跳过）"
-                )
-            except Exception:
-                return
+            # 真人在限定时间内未发言：直接跳过（只推进指针，不生成占位发言，避免污染时间线与相似度池）
+            await self.manager.skip_undercover_speaker(room, seat.visitor_token)
             # 下一位可能是 AI，顺手驱动
             await self._undercover_ai_step_if_needed(room)
             return
         if game.phase == "voting":
-            await self._undercover_ai_step_if_needed(room)
+            # 投票轮超时应急兜底：别再依赖 AI 调模型，直接给所有未投玩家（含真人）补一次
+            # 合法的本地票，保证即使供应商故障（429/断连）本轮也能收敛、不会永久卡在“投票进行中”。
+            await self._undercover_force_all_votes(room)
+
+    async def _undercover_ai_speak_fallback(self, room: GameRoom, seat) -> None:
+        """AI 发言兜底：绕过模型，直接按轮次提交一句本地文案，保证发言轮在供应商故障时也能推进。"""
+        game = room.game
+        if not isinstance(game, UndercoverGame) or getattr(game, "phase", "") not in ("speech", "pk"):
+            return
+        if game.expected_speaker_number != seat.number:
+            return
+        ai_player = next(
+            (p for p in game.players if int(p.number) == int(seat.number)), None
+        )
+        camp = str(ai_player.camp or "") if ai_player else ""
+        if camp == "none":
+            camp = ""
+        round_no = max(1, int(game.current_round_number or 0))
+        try:
+            await self.manager.player_undercover_speech(
+                room, seat.visitor_token, _uc_ai_fallback(camp, round_no)
+            )
+        except Exception:
+            pass
+
+    async def _undercover_force_all_votes(self, room: GameRoom) -> None:
+        """为投票轮中所有尚未投票的玩家补投一张合法的本地兜底票。
+
+        选择目标优先看“当前得票最多的候选”（加速收敛），否则取第一个合法候选；
+        PK 子轮只会投平票候选人，避免投出无效票。
+        """
+        game = room.game
+        if not isinstance(game, UndercoverGame) or getattr(game, "phase", "") != "voting":
+            return
+        pending = getattr(game, "pending_round", None)
+        if pending is None:
+            return
+        seats_by_num = {
+            seat.number: seat
+            for seat in getattr(getattr(room, "multiplayer", None), "seats", []) or []
+        }
+        for voter_num in list(pending.vote_player_numbers):
+            if pending.has_voted(voter_num):
+                continue
+            seat = seats_by_num.get(voter_num)
+            if seat is None:
+                continue
+            eligible = _uc_eligible_vote_targets(game, voter_num)
+            if not eligible:
+                continue
+            tally = pending.votes_by_target()
+            target = max(eligible, key=lambda n: tally.get(n, 0))
+            try:
+                await self.manager.player_undercover_vote(
+                    room, seat.visitor_token, int(target)
+                )
+            except Exception:
+                # 最后一张票会让本轮进入下一轮/结束，后续 submit 自然失败，忽略即可
+                continue
 
     async def _undercover_ai_do_speech(
         self, room: GameRoom, seat
@@ -4600,7 +4755,7 @@ class GameCompanionPlugin(Star):
         try:
             content = await asyncio.wait_for(
                 self._generate_persona_text(room, prompt),
-                timeout=15,
+                timeout=8,  # 供应商故障时尽快落本地兜底，避免发言轮停滞
             )
             content = str(content or "").strip()
             # 规整为「≤1 逗号、≤20 字」的短句
@@ -4675,21 +4830,24 @@ class GameCompanionPlugin(Star):
             + f"\n请判断谁最可疑（最不像自己阵营的人），只返回一个整数（玩家编号 1-{max(live_nums)}），"
             "不要返回任何其他文字或说明。"
         )
+        # 合法目标（PK 轮只限平票候选人）
+        eligible = _uc_eligible_vote_targets(game, seat.number)
         target = None
         try:
             text = await asyncio.wait_for(
                 self._generate_persona_text(room, prompt),
-                timeout=15,
+                timeout=8,  # 供应商故障时尽快走本地兜底，避免投票轮长时间停滞
             )
             m = __import__("re").search(r"\d+", str(text or ""))
             if m:
                 n = int(m.group())
-                if n in live_nums and n != seat.number:
+                if n in eligible:
                     target = n
         except Exception:
             target = None
         if target is None:
-            candidates = [n for n in live_nums if n != seat.number]
+            # 本地兜底：稳定选一个合法目标（PK 只会选平票候选人）
+            candidates = eligible or [n for n in live_nums if n != seat.number]
             target = candidates[0] if candidates else None
         if target is not None:
             try:

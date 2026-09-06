@@ -655,7 +655,9 @@ class RoomManager:
                     room.status = "setup"
                 if first:
                     room.status = "setup"
-                self._reset_turn_deadline(room)
+                # 谁是卧底 setup 阶段用 match_seconds 倒计时自动开局，不要在这里被重置覆盖
+                if room.game_type != "undercover" or room.status != "setup":
+                    self._reset_turn_deadline(room)
                 room.touch()
             else:
                 room.player_token = visitor.token
@@ -3152,12 +3154,48 @@ class RoomManager:
                 "round": round_number,
                 "phase": phase,
                 "content": cleaned,
+                # 非白板发言被词条打码即视为“说出词条”违规（打码只会发生在非白板），携带其 QQ 供外层群禁言
+                "violated_qq": (
+                    seat.qq
+                    if getattr(room.game, "last_speech_masked", False) and seat.qq
+                    else None
+                ),
             },
         )
         # 白板发言说出词条会直接结束游戏：触发统一结算流程（发公告/更新战绩）
         if room.game.finished:
             await self._finish_game(room)
         return snapshot
+
+    async def skip_undercover_speaker(self, room: GameRoom, visitor_token: str) -> None:
+        """发言超时自动跳过当前发言者：只推进发言指针，不产生占位发言，
+        避免时间线残留虚假文案、不进入相似度比对池。"""
+        async with room.lock:
+            if room.status != "active" or not isinstance(room.game, UndercoverGame):
+                return
+            if room.game.phase not in ("speech", "pk"):
+                return
+            visitor = self._visitor(room, visitor_token)
+            if room.game.expected_speaker_number != visitor.number:
+                return
+            skipped = room.game.expected_speaker_number
+            room.game.advance_speaker()
+            round_number = room.game.current_round_number
+            self._reset_turn_deadline(room)
+            room.touch()
+            room.add_message(
+                "system",
+                f"{self._visitor_label(visitor)}发言超时，自动跳过本轮。",
+            )
+            # 推进后若直接进入投票，给出投票提示
+            if room.game.phase == "voting":
+                room.add_message(
+                    "system",
+                    f"第 {round_number} 轮发言全部完成，请各位存活玩家投票。",
+                )
+        await self._emit(
+            "undercover_speech_skipped", room, {"player_number": skipped}
+        )
 
     async def player_undercover_vote(
         self, room: GameRoom, visitor_token: str, target_number: int

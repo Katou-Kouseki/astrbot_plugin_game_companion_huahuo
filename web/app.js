@@ -1283,17 +1283,15 @@
       || null;
     const myReady = !!mySeat?.ready;
     btn.classList.toggle("is-ready", myReady);
-    // 准备进度（所有玩家可见的整体就绪情况）
-    const readyCount = seats.filter((s) => s.ready).length;
+    // 按钮保持图标+文字居中（不塞进度，避免偏移），进度单独显示在下方
     btn.innerHTML = myReady
       ? '<i data-lucide="check-check"></i><span>已准备</span>'
       : '<i data-lucide="check-check"></i><span>准备</span>';
-    const progress = document.createElement("small");
-    progress.className = "ready-progress";
-    progress.textContent = `${readyCount}/${seats.length}`;
-    btn.appendChild(progress);
     btn.dataset.ready = myReady ? "1" : "0";
+    const readyCount = seats.filter((s) => s.ready).length;
     btn.setAttribute("data-progress", `${readyCount}/${seats.length}`);
+    const progEl = document.getElementById("ucReadyProgress");
+    if (progEl) progEl.textContent = `${readyCount}/${seats.length} 人已准备`;
     icons();
   }
 
@@ -3482,6 +3480,21 @@
         try { await loadState(); render(); } catch (_syncError) { /* 轮询会重试 */ }
       } finally {
         ucSpeechSubmit.disabled = false;
+      }
+    });
+  }
+  // 发言框：仅在自己发言回合按回车提交（Shift+回车换行），其余情况保持默认
+  const ucSpeechInputEl = document.getElementById("ucSpeechInput");
+  if (ucSpeechInputEl) {
+    ucSpeechInputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        const submit = document.getElementById("ucSpeechSubmit");
+        const my = (room?.game?.my) || {};
+        const expected = room?.game?.expected_speaker_number;
+        const isMyTurn = my.is_player && my.player_number && expected && Number(my.player_number) === Number(expected);
+        const canSpeak = room?.game && ["speech", "pk"].includes(room.game.phase) && isMyTurn;
+        if (canSpeak && submit && !submit.disabled) submit.click();
       }
     });
   }
