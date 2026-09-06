@@ -198,6 +198,9 @@ class UndercoverGame:
         self.speaking_order: list[int] = []
         self.current_speaker_index: int = 0
         self.pending_round: UCRound | None = None
+        # 开局一次性随机、此后全程固定的发言顺序基准；PK 子轮不会改写它，
+        # 避免 PK 后普通轮的发言列表被缩减成只剩 PK 参与者的个数。
+        self._base_speaking_order: list[int] = []
         # 每次游戏过程中为玩家分配稳定的 player_id（投票列表展示 1..N 用）
         self._next_player_id: int = 1
 
@@ -231,8 +234,9 @@ class UndercoverGame:
         self.undercover_word = uc_word
         pools = self.players[:]
         random.shuffle(pools)
-        # 一次性随机排序，作为本局固定发言顺序（后续各轮沿用，仅剔除出局者）
+        # 一次性随机排序，作为本局固定发言顺序基准（后续普通轮沿用，仅剔除出局者；PK 子轮不动它）
         self.speaking_order = [p.number for p in pools]
+        self._base_speaking_order = self.speaking_order[:]
         # 前两名玩家不能是白板：白板从随机顺序的第 3 位起分配
         top_two = set(self.speaking_order[:2])
         non_top_two = [p for p in pools if p.number not in top_two]
@@ -334,11 +338,12 @@ class UndercoverGame:
         live = self._live_player_numbers()
         round_number = len(self.rounds) + 1
         if pk_from_targets is None:
-            if not self.speaking_order:
-                # 兜底：无既定顺序时（如直接调用本方法），一次性随机排序
-                self.speaking_order = random.sample(live, len(live))
-            # 固定随机顺序发言：每轮仅剔除出局者，顺序保持不变
-            speech = [n for n in self.speaking_order if n in live]
+            # 普通轮：始终从固定发言顺序基准推导，仅剔除出局者；确保 PK 后不会被缩减发言人数
+            base = self._base_speaking_order or self.speaking_order or random.sample(live, len(live))
+            speech = [n for n in base if n in live]
+            if not speech:
+                # 极端兜底：基准全出局则按存活者重排，避免整局卡死在“无人发言”
+                speech = live[:]
             vote = live[:]
             rnd = UCRound(round_number, speech, vote)
             self.rounds.append(rnd)
@@ -353,7 +358,7 @@ class UndercoverGame:
             self.speaking_order = speech[:]
             self.current_speaker_index = 0
         else:
-            # PK 子轮：只允许平票玩家发言 + 所有存活玩家（含平票玩家）投
+            # PK 子轮：只允许平票玩家发言；所有存活玩家都可投，但只能投平票玩家（见 submit_vote）
             speech = pk_from_targets[:]
             random.shuffle(speech)
             vote = live[:]
@@ -361,6 +366,7 @@ class UndercoverGame:
             self.rounds.append(rnd)
             self.pending_round = rnd
             self.phase = "pk"
+            # PK 子轮的发言顺序只作用于本轮，不写回 _base_speaking_order
             self.speaking_order = speech[:]
             self.current_speaker_index = 0
 
@@ -530,6 +536,9 @@ class UndercoverGame:
             return {"ok": False, "reason": "cannot_vote_self"}
         if voter.number not in self.pending_round.vote_player_numbers:
             return {"ok": False, "reason": "not_vote_eligible"}
+        # PK 子轮：只能投平票的候选人（重新发言的那几位），不能投其他人
+        if self.pending_round.pk_reason and target_number not in self.pending_round.speech_player_numbers:
+            return {"ok": False, "reason": "pk_only_tied_targets"}
         if self.pending_round.has_voted(voter.number):
             return {"ok": False, "reason": "already_voted"}
         self.pending_round.votes.append(
@@ -737,6 +746,7 @@ class UndercoverGame:
         if visitor is not None:
             my_info["is_player"] = True
             my_info["player_number"] = visitor.number
+            my_info["is_out"] = bool(visitor.is_out)
             if visitor.camp != "none":
                 # 词条始终告知；关闭“告知身份”时平民/卧底只给词条不标身份，白板始终正常告知
                 my_info["word"] = visitor.word or ""

@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import math
+import random
 import re
 import secrets
 import time
@@ -44,6 +45,25 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 logger = logging.getLogger("astrbot_plugin_game_companion")
+
+# AI 玩家的性格形容词池（2 字），用于生成「火花·调皮(AI)」这类名称，并作为其答题人设
+_UC_AI_ADJECTIVES: tuple[str, ...] = (
+    "调皮", "沉静", "机敏", "憨厚", "狡黠", "急性", "慢热", "嘴硬",
+    "心细", "迷糊", "大胆", "谨慎", "乐天", "腹黑", "直球", "闷骚",
+    "严肃", "活泼", "文静", "高冷", "温柔", "率直", "稳重", "爱闹",
+)
+_UC_AI_USED: set[str] = set()  # 本进程已用过的形容词，避免同房重复
+
+
+def _uc_ai_name(avoid: set[str] | None = None) -> tuple[str, str]:
+    """生成 (显示名「火花·调皮(AI)」, 性格形容词「调皮」)。"""
+    pool = [a for a in _UC_AI_ADJECTIVES if a not in _UC_AI_USED and (not avoid or a not in avoid)]
+    if not pool:
+        _UC_AI_USED.clear()
+        pool = [a for a in _UC_AI_ADJECTIVES if not avoid or a not in avoid] or list(_UC_AI_ADJECTIVES)
+    adj = random.choice(pool)
+    _UC_AI_USED.add(adj)
+    return f"火花·{adj}(AI)", adj
 
 RoomCallback = Callable[[str, GameRoom, dict[str, Any]], Awaitable[None]]
 
@@ -194,18 +214,25 @@ class RoomManager:
         self.UC_ALL_READY_CONFIRM_SECONDS = 2.0
 
     def global_leaderboard(self, limit: int = 50) -> list[dict[str, object]]:
-        """返回跨房间全局胜场榜（按胜场降序）。"""
+        """返回跨房间全局胜场榜（按胜场降序）。
+
+        AI 座位的 qq 是每次对局新建的随机 token，会导致同一个 AI 名（如「花火·调皮(AI)」）
+        被记成多条。这里按「名字」合并累计，使同名 AI 只显示一条、胜场累加。
+        """
+        merged: dict[str, dict[str, object]] = {}
+        for _qq, info in self.global_player_wins.items():
+            name = str(info.get("name") or "未知玩家").strip() or "未知玩家"
+            merged.setdefault(name, {"name": name, "wins": 0})
+            merged[name]["wins"] = int(merged[name]["wins"] or 0) + int(
+                info.get("wins") or 0
+            )
         return [
-            {
-                "name": str(info.get("name") or "未知玩家"),
-                "wins": int(info.get("wins") or 0),
-            }
-            for qq, info in sorted(
-                self.global_player_wins.items(),
-                key=lambda item: int(item[1].get("wins") or 0),
+            {"name": str(info["name"]), "wins": int(info["wins"] or 0)}
+            for info in sorted(
+                merged.values(),
+                key=lambda info: int(info.get("wins") or 0),
                 reverse=True,
             )
-            if not str(qq or "").lower().startswith("ai-")  # 过滤 AI 玩家
         ][:max(0, int(limit))]
 
     def _load_global_stats(self) -> dict[str, dict[str, object]]:
@@ -222,9 +249,6 @@ class RoomManager:
         cleaned: dict[str, dict[str, object]] = {}
         for qq, info in raw.items():
             if not isinstance(qq, str) or not qq.strip() or not isinstance(info, dict):
-                continue
-            # 清理历史遗留的 AI 玩家条目（AI 席位使用 ai-* 伪 QQ）
-            if str(qq).lower().startswith("ai-"):
                 continue
             cleaned[qq.strip()] = {
                 "name": str(info.get("name") or ""),
@@ -788,7 +812,7 @@ class RoomManager:
                     len(room.multiplayer.seats) + 1,
                 )
                 ai_token = f"ai-{uuid.uuid4().hex[:8]}"
-                ai_display = f"花火·AI{base_ai + idx + 1}号"
+                ai_display, _ = _uc_ai_name()  # 例如「火花·调皮(AI)」
                 ai_seat = PlayerSeat(
                     number=len(room.multiplayer.seats) + 1,
                     visitor_token=ai_token,
@@ -2331,9 +2355,9 @@ class RoomManager:
                             or uc_player.display_name.strip()
                             or f"{uc_player.number}号"
                         )
-                        # 全局胜场榜：仅累计已绑定 QQ 的真人玩家（排除 AI），跨房间汇总
+                        # 全局胜场榜：累计已绑定 QQ 的玩家（含 AI）跨房间汇总；AI 重复名由排行榜按名字合并展示
                         qq = (seat.qq or "").strip()
-                        if not seat.is_ai and seat.identity_confirmed and qq:
+                        if seat.identity_confirmed and qq:
                             global_entry = self.global_player_wins.setdefault(
                                 qq, {"name": "", "wins": 0}
                             )
@@ -3348,10 +3372,8 @@ class RoomManager:
                 raise ValueError(
                     f"玩家席已满（{len(room.multiplayer.seats)}/{capacity}），无法再追加 AI 玩家"
                 )
-            # AI 编号统计：有几个现成的 AI 了
-            existing_ai_count = sum(1 for s in room.multiplayer.seats if s.is_ai)
             ai_token = f"ai-{uuid.uuid4().hex[:8]}"
-            display_name = f"花火·AI{existing_ai_count + 1}号"
+            display_name, _ = _uc_ai_name()  # 例如「火花·调皮(AI)」
             ai_seat = PlayerSeat(
                 number=0,  # 稍后统一编号
                 visitor_token=ai_token,

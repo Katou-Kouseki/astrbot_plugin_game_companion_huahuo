@@ -206,9 +206,9 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "config_key": "draw_guess.vision_provider_id",
                 "label": "视觉模型 Provider ID",
                 "type": "string",
-                "default": "",
+                "default": "agnes-ai/agnes-image-2.5-flash",
                 "maximum_length": 200,
-                "hint": "留空时使用当前会话模型。",
+                "hint": "你画我猜使用的视觉 Provider ID；留空时使用当前会话模型。",
             },
             {
                 "key": "duration_seconds",
@@ -431,6 +431,19 @@ class _RecentPrivateGameResult:
     expires_at: float = 0.0
 
 
+def _sanitize_uc_ai_speech(text: str) -> str:
+    """把 AI 发言规整为「不超过 1 个逗号、总体 20 字以内」的短句。"""
+    text = str(text or "").strip().strip("“”\"'「」")
+    # 最多保留 1 个逗号：按中文/英文逗号、顿号、分号切分，只保留前两句
+    parts = re.split(r"[，,、；;]", text)
+    if len(parts) > 2:
+        text = (parts[0].strip() + "，" + parts[1].strip()) if parts[1].strip() else parts[0].strip()
+    # 总体不超过 20 字
+    text = text[:20].strip()
+    # 去掉可能残留的首尾标点
+    return text.strip("，,、；;。！？!?")
+
+
 def _uc_ai_fallback(camp: str, round_no: int) -> str:
     """谁是卧底 AI 发言的本地兜底文案：按轮次轮换，避免整局复读同一句，且尽量不露馅。"""
     index = max(0, (round_no - 1) % 4)
@@ -572,7 +585,7 @@ class GameCompanionPlugin(Star):
             "turtle_soup.max_players", 6
         )
         self.draw_guess_vision_provider_id = self._cfg_str(
-            "draw_guess.vision_provider_id", ""
+            "draw_guess.vision_provider_id", "agnes-ai/agnes-image-2.5-flash"
         )
         self.draw_guess_max_guesses = self._cfg_int(
             "draw_guess.max_guesses", 5, minimum=1, maximum=10
@@ -4189,7 +4202,7 @@ class GameCompanionPlugin(Star):
             maximum=600,
         )
         self.draw_guess_vision_provider_id = self._cfg_str(
-            "draw_guess.vision_provider_id", ""
+            "draw_guess.vision_provider_id", "agnes-ai/agnes-image-2.5-flash"
         )
         self.draw_guess_duration_seconds = self._cfg_int(
             "draw_guess.duration_seconds", 120, minimum=10, maximum=600
@@ -4569,18 +4582,26 @@ class GameCompanionPlugin(Star):
             )
         else:
             return
+        # 注入性格人设（出自「火花·调皮(AI)」中的形容词）+ 阶段性措辞 + 长度约束
+        m = re.search(r"·([^·()（）]+)\(AI\)", seat.display_name or "")
+        persona = f"你的性格是【{m.group(1)}】，用词和口吻要贴合这个性格。" if m else ""
+        if round_no <= 1:
+            stage_hint = "现在是第1轮，大家还很模糊，尽量笼统一带而过，别展开具体细节。"
+        elif round_no <= 3:
+            stage_hint = f"现在是第{round_no}轮，可以稍微具体一点点，但仍要合群委婉，别点明词条。"
+        else:
+            stage_hint = f"现在是第{round_no}轮，可以适当说具体些争取信任，但仍绝不能点明词条。"
+        prompt += persona + stage_hint + "整句务必控制在20字以内、最多1个逗号，越简短利落越好。"
         try:
             content = await asyncio.wait_for(
                 self._generate_persona_text(room, prompt),
                 timeout=15,
             )
             content = str(content or "").strip()
-            # 去掉首尾多余的引号
-            content = content.strip("“”\"'「」")
+            # 规整为「≤1 逗号、≤20 字」的短句
+            content = _sanitize_uc_ai_speech(content)
             if len(content) < 4:
                 content = _uc_ai_fallback(camp, round_no)
-            if len(content) > 80:
-                content = content[:80]
             # 白板 AI 兜底：一旦模型说出的内容泄露了任一词条（含「刷牙」之于「牙刷」这类），
             # 立即换成安全的兜底文案，避免 AI 因“白板说词直接获胜”而莫名其妙结束整局。
             if camp == "whiteboard" and game.leaks_word(content):

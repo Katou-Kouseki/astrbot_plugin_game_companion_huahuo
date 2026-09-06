@@ -1273,6 +1273,15 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 .uc-identity-card.uc-identity-reveal {
   animation: ucIdentityFly .55s cubic-bezier(.22, .85, .3, 1.15) both;
 }
+/* 本人被淘汰：身份卡播一次红色闪屏 + 变灰过渡 */
+.uc-identity-card.uc-identity-eliminated {
+  animation: ucIdentityEliminated 1s ease forwards;
+}
+@keyframes ucIdentityEliminated {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--red) 55%, transparent); }
+  35%  { box-shadow: 0 0 0 10px color-mix(in srgb, var(--red) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 rgba(0,0,0,0); }
+}
 @keyframes ucIdentityFly {
   0% { transform: translateY(-22px) scale(.94); opacity: .1; box-shadow: 0 18px 40px rgba(0, 0, 0, .28); }
   60% { opacity: 1; }
@@ -1318,6 +1327,8 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   /* 双列平铺：第1轮左、第2轮右，第3轮左下、第4轮右下，依自然列流左右交替 */
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  grid-auto-rows: min-content;
   gap: 1rem;
   padding: 0;
   margin: 0;
@@ -1510,7 +1521,7 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   color: var(--muted);
   background: var(--surface-alt);
 }
-.uc-speech-box:has(textarea:enabled) .uc-speech-tools span { color: var(--green); }
+.uc-speech-box:has(textarea:enabled) .uc-speech-tools > span { color: var(--green); }
 .uc-speech-box textarea:enabled::placeholder { color: var(--muted); }
 .uc-speech-tools {
   display: flex;

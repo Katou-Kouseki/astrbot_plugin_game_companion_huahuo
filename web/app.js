@@ -14,6 +14,7 @@
   let ucLastRoundCount = 0;          // 上一帧时间线已渲染的轮次数（用于新轮高亮）
   let ucVoteFlipTimeout = null;       // 票数「？」→数字翻拍的延时句柄
   let ucLastHostScalesKey = "";        // 上次渲染的房主阵营比例键（用于仅在校验变化时回填输入框）
+  let ucPrevMyOut = false;             // 上一帧本机是否已出局（用于触发出局提示）
   const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
@@ -620,20 +621,33 @@
     });
   }
 
-  // 时间线票数揭晓：稍后让数字从上方“下落砸走问号”，错峰依次揭晓
+  // 时间线票数揭晓：先让数字滚动翻转，再下落砸走问号、错峰停到最终值，节奏放缓
   function scheduleUcVoteFlip(roundNumber) {
     window.clearTimeout(ucVoteFlipTimeout);
     ucVoteFlipTimeout = window.setTimeout(() => {
       const block = document.querySelector(`.uc-votes-block[data-round-reveal="${roundNumber}"]`);
       if (!block) return;
-      block.querySelectorAll(".uc-vote-count.is-question").forEach((cell) => {
-        const count = cell.dataset.count || "0";
-        cell.textContent = `${count} 票`;
-        cell.classList.remove("is-question");
-        cell.classList.add("is-flipped", count === "0" ? "is-zero" : "");
+      const cells = block.querySelectorAll(".uc-vote-count.is-question");
+      cells.forEach((cell) => {
+        const finalVal = cell.dataset.count || "0";
+        const delay = Number(cell.style.getPropertyValue("--d")) || 0;
+        window.setTimeout(() => {
+          // 前置滚动：数字 0-9 快速翻转约 4 拍，制造“抽盲盒”感
+          let ticks = 0;
+          const rollTimer = window.setInterval(() => {
+            cell.textContent = String(Math.floor(Math.random() * 10));
+            ticks++;
+            if (ticks >= 4) {
+              window.clearInterval(rollTimer);
+              cell.textContent = finalVal;
+              cell.classList.remove("is-question", "is-rolling");
+              cell.classList.add("is-flipped", finalVal === "0" ? "is-zero" : "");
+            }
+          }, 90);
+        }, delay);
       });
       ucVoteFlipTimeout = null;
-    }, 520);
+    }, 320);
   }
 
   /**
@@ -1882,6 +1896,7 @@
       ucPrevMyTurn = false;
       ucPrevExpectedSpeaker = null;
       ucLastRoundCount = 0;
+      ucPrevMyOut = false;
       window.clearTimeout(ucVoteFlipTimeout);
       ucVoteFlipTimeout = null;
     }
@@ -2152,6 +2167,17 @@
 
     // 3. 我的身份卡（只有本人能看到 camp/word）
     const my = snap.my || {};
+    const idCardEl = document.getElementById("ucIdentityCard");
+    // 本机刚被淘汰：给出鼓励提示，并让本局身份卡播放入场/变暗过渡
+    if (!!my.is_out && !ucPrevMyOut && room.status === "active") {
+      showToast("很遗憾，你被票出局了。尽力了，剩下的交给你的队友吧。", 3600);
+      if (idCardEl) {
+        idCardEl.classList.remove("uc-identity-eliminated");
+        void idCardEl.offsetWidth;
+        idCardEl.classList.add("uc-identity-eliminated");
+      }
+    }
+    ucPrevMyOut = !!my.is_out;
     const campEl = document.getElementById("ucMyCamp");
     const wordEl = document.getElementById("ucMyWord");
     const hintEl = document.getElementById("ucCampHint");
@@ -2160,6 +2186,13 @@
       campEl.textContent = "观众席";
       wordEl.textContent = "—";
       hintEl.textContent = "仅玩家能看到身份词条；请先绑定并加入玩家席。";
+    } else if (my.is_out && my.camp) {
+      // 已出局：身份卡变灰并提示离场
+      campEl.classList.add("is-word-only");
+      const campName = ucCampText(my.camp);
+      campEl.textContent = `${campName} · 已出局`;
+      wordEl.textContent = my.word || "—";
+      hintEl.textContent = "你已被淘汰，接下来只能观战聆听，为队友加油吧。";
     } else if (my.camp === "whiteboard") {
       campEl.classList.add("is-whiteboard");
       campEl.textContent = "白板";
@@ -2343,7 +2376,7 @@
               num.textContent = "？";
             } else {
               num.className = "uc-vote-count" + (count === 0 ? " is-zero" : "");
-              num.textContent = `${count} 票`;
+              num.textContent = `${count}`;
             }
             row.appendChild(who);
             row.appendChild(num);
@@ -2433,7 +2466,7 @@
       showSpeechTurnNotification(expectedSpeaker, isMyTurn);
     }
     ucPrevExpectedSpeaker = expectedSpeaker || null;
-    speechBox.hidden = !["speech", "pk", "preparing"].includes(snap.phase);
+    speechBox.hidden = !["speech", "pk", "preparing"].includes(snap.phase) || !!my.is_out;
     speechBtn.disabled = !canSpeak || input.value.trim().length < 1;
     input.disabled = !canSpeak;
     input.placeholder = canSpeak
@@ -2441,8 +2474,8 @@
       : "当前不是你的发言轮次。";
     counter.textContent = `${(input.value || "").length}/500`;
 
-    // 投票卡
-    voteBox.hidden = snap.phase !== "voting" || !my.is_player;
+    // 投票卡（已被淘汰的玩家不能再投）
+    voteBox.hidden = snap.phase !== "voting" || !my.is_player || !!my.is_out;
     const voteGrid = document.getElementById("ucVoteGrid");
     voteGrid.innerHTML = "";
     if (!voteBox.hidden && my.is_player) {
@@ -2454,9 +2487,12 @@
         my.camp !== "whiteboard"
           ? true
           : !alreadyVoted; // 所有人都能投（包括白板），Theresa3rd 允许白板投票
+      // PK 子轮的投票：只能投重新发言的平票候选人
+      const pkOnlyTargets = (snap.pending_pk_targets || []).map((n) => Number(n));
       players.forEach((p) => {
         if (Number(p.player_number) === Number(my.player_number)) return; // 不能投自己
         if (p.is_out) return; // 不能投已出局
+        if (pkOnlyTargets.length && !pkOnlyTargets.includes(Number(p.player_number))) return; // PK 只投平票者
         const card = document.createElement("button");
         card.type = "button";
         card.className = "uc-vote-card";
@@ -2467,7 +2503,7 @@
         const revealed = !!snap.voting_all_voted;
         card.classList.toggle("uc-vote-revealed", revealed);
         const numCls = revealed ? "uc-vote-num" : "uc-vote-num is-placeholder";
-        const numText = revealed ? `${votedCount} 票` : "？";
+        const numText = revealed ? `${votedCount}` : "？";
         if (!revealed && votedCount > 0) card.classList.add("has-votes");
         card.innerHTML = `<strong>${p.player_number}号</strong><span>${sanitizeDisplayText(p.display_name || "")}</span><em class="${numCls}">${numText}</em>`;
         voteGrid.appendChild(card);
