@@ -467,15 +467,18 @@ def _uc_eligible_vote_targets(game, voter_num: int) -> list[int]:
     return [n for n in live if n != voter_num]
 
 
-def _uc_ai_fallback(camp: str, round_no: int) -> str:
-    """谁是卧底 AI 发言的本地兜底文案：按轮次轮换，避免整局复读同一句，且尽量不露馅。"""
-    index = max(0, (round_no - 1) % 4)
+def _uc_ai_fallback(camp: str, round_no: int, seed: int = 0) -> str:
+    """谁是卧底 AI 发言的本地兜底文案：按轮次 + 座号偏移轮换，避免同轮多名 AI 复读同一句，且尽量不露馅。"""
     if camp == "whiteboard":
         pool = [
             "刚看到它的时候我还愣了一下，好像之前在哪见过。",
             "怎么说呢，它给我的第一印象就是挺顺手、挺实用的。",
             "反正最近家里一直在用，我媳妇还念叨来着。",
             "这个嘛，跟别的比起来没什么好挑的，习惯了就好。",
+            "它在我这儿的存在感一直挺高的，几乎天天见。",
+            "说起来也不贵，但用着用着就觉得离不开它了。",
+            "反正我第一个想到的就是它，没别的想法。",
+            "奇奇怪怪的，我怎么越看越觉得它眼熟。",
         ]
     else:
         pool = [
@@ -483,7 +486,12 @@ def _uc_ai_fallback(camp: str, round_no: int) -> str:
             "我倒是觉得它挺经用的，家里那个用了好几年也没坏。",
             "反正吧，它在我这儿的存在感挺高的，一天不落。",
             "这东西说不上稀罕，但少了它还真有点不方便。",
+            "我印象里这玩意儿还挺常见的，走哪都能碰上。",
+            "它对我来说就是顺手两个字，没什么好纠结的。",
+            "对了，上次它还帮了我一把，一直印象很深。",
+            "别的不好说，反正它挺对我的胃口。",
         ]
+    index = max(0, (round_no + int(seed or 0) - 1) % len(pool))
     return pool[index]
 
 
@@ -4651,7 +4659,7 @@ class GameCompanionPlugin(Star):
         round_no = max(1, int(game.current_round_number or 0))
         try:
             await self.manager.player_undercover_speech(
-                room, seat.visitor_token, _uc_ai_fallback(camp, round_no)
+                room, seat.visitor_token, _uc_ai_fallback(camp, round_no, seat.number)
             )
         except Exception as exc:
             # 本地兜底提交仍失败（相似度命中 / 座椅 token 失效等）：至少推进发言指针，
@@ -4785,11 +4793,11 @@ class GameCompanionPlugin(Star):
             # 规整为「≤1 逗号、≤20 字」的短句
             content = _sanitize_uc_ai_speech(content)
             if len(content) < 4:
-                content = _uc_ai_fallback(camp, round_no)
+                content = _uc_ai_fallback(camp, round_no, seat.number)
             # 白板 AI 兜底：一旦模型说出的内容泄露了任一词条（含「刷牙」之于「牙刷」这类），
             # 立即换成安全的兜底文案，避免 AI 因“白板说词直接获胜”而莫名其妙结束整局。
             if camp == "whiteboard" and game.leaks_word(content):
-                content = _uc_ai_fallback(camp, round_no)
+                content = _uc_ai_fallback(camp, round_no, seat.number)
             await self.manager.player_undercover_speech(
                 room, seat.visitor_token, content
             )
@@ -4798,7 +4806,7 @@ class GameCompanionPlugin(Star):
                 "[GameCompanion] AI 发言生成失败，改用本地兜底：%s", exc
             )
             # 失败时用一句本地兜底文案（按轮次轮换，避免整局一句复读），避免卡住整轮
-            fallback = _uc_ai_fallback(camp, round_no)
+            fallback = _uc_ai_fallback(camp, round_no, seat.number)
             try:
                 await self.manager.player_undercover_speech(
                     room, seat.visitor_token, fallback

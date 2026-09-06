@@ -407,7 +407,7 @@ class UndercoverGame:
             return None
         return self.speaking_order[self.current_speaker_index]
 
-    def submit_speech(self, player_number: int, content: str) -> bool:
+    def submit_speech(self, player_number: int, content: str, *, skip_similarity: bool = False) -> bool:
         if self.phase not in ("speech", "pk"):
             return False
         self.last_speech_reject_reason = None
@@ -438,7 +438,9 @@ class UndercoverGame:
         # 1) 与同轮其他玩家已发言内容高度相似 → 直接驳回本次发言（不回弹对方发言、不要求任何人重讲），
         #    恶意重复相同发言只会一直被拒，无法挤掉其他玩家已有的发言。
         # 2) 与任意玩家任意轮次（含自己之前发言）雷同 → 驳回。
-        if self.similarity > 0:
+        # AI 玩家的发言豁免相似度拦截（skip_similarity=True）：AI 无法恶意刷屏，且本地兜底文案
+        # 模板有限，若不豁免会因互相雷同被拒而卡死流程（例如最后一轮只剩几名 AI 时）。
+        if self.similarity > 0 and not skip_similarity:
             threshold = self.similarity / 100.0
             # 1) 本轮冲突：与同轮其他玩家已发言内容高度相似 → 仅拒绝本次发言
             for s in self.pending_round.speeches:

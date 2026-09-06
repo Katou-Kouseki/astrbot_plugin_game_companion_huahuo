@@ -3164,7 +3164,10 @@ class RoomManager:
             if seat is None:
                 raise PermissionError("只有已入座玩家可以发言")
             player_number = seat.number
-            accepted = room.game.submit_speech(player_number, cleaned)
+            # AI 玩家的发言豁免相似度拦截：避免最后一轮只剩几名 AI 时本地兜底文案互相雷同被拒而卡死
+            accepted = room.game.submit_speech(
+                player_number, cleaned, skip_similarity=bool(getattr(seat, "is_ai", False))
+            )
             if not accepted:
                 reason = getattr(room.game, "last_speech_reject_reason", None)
                 if not reason:
@@ -3213,10 +3216,14 @@ class RoomManager:
                 "round": round_number,
                 "phase": phase,
                 "content": cleaned,
-                # 非白板发言被词条打码即视为“说出词条”违规（打码只会发生在非白板），携带其 QQ 供外层群禁言
+                # 非白板发言被词条打码即视为“说出词条”违规（打码只会发生在非白板），携带其 QQ 供外层群禁言。
+                # AI 座位的 qq 是内部随机 token（如 ai-xxx），并非真实数字 QQ，跳过禁言。
                 "violated_qq": (
                     seat.qq
-                    if getattr(room.game, "last_speech_masked", False) and seat.qq
+                    if getattr(room.game, "last_speech_masked", False)
+                    and seat.qq
+                    and not getattr(seat, "is_ai", False)
+                    and str(seat.qq or "").isdigit()
                     else None
                 ),
             },
