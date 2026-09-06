@@ -3411,6 +3411,64 @@ class RoomManager:
                 pass
         await self._emit("seats_changed", room, {"ready": bool(ready)})
 
+    async def leave_player_seat(self, room: GameRoom, visitor_token: str) -> None:
+        """玩家主动从玩家席退到观众席（仅本人可操作，不销毁房间）。
+
+        复用 _remove_multiplayer_seat 的席位清理逻辑；黑杰克会处理该玩家手牌 surrender。
+        若玩家席清空，房间回到 waiting（供重新有人入座开始新对局）。
+        """
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if not room.multiplayer.enabled:
+                if room.player_token == visitor.token:
+                    self._clear_primary_player(room)
+                    room.player_empty_since = time.time()
+                    if room.admin_room:
+                        room.player_seat_locked = True
+                    room.game = None
+                    room.status = "waiting"
+                    room.touch()
+                    room.add_message(
+                        "system",
+                        f"{self._visitor_label(visitor)}退出玩家席，已回到观众席。",
+                    )
+                    return
+                raise PermissionError("您当前不在玩家席")
+            seat = room.multiplayer.seat_for_token(visitor.token)
+            if seat is None:
+                raise PermissionError("您当前不在玩家席（观众无需退出）")
+            # 谁是卧底进行中退席：标记为该玩家离场，不再参与本轮发言/投票
+            if (
+                room.game_type == "undercover"
+                and room.game is not None
+                and getattr(room.game, "players", None)
+            ):
+                p = next(
+                    (x for x in room.game.players if x.number == seat.number),
+                    None,
+                )
+                if p is not None:
+                    p.is_out = True
+            # _remove_multiplayer_seat 自带黑杰克手牌 surrender 与席位轮转清理
+            self._remove_multiplayer_seat(room, visitor.token)
+            if room.multiplayer.seats:
+                self._sync_primary_player(room)
+                if room.status != "active":
+                    self._reset_turn_deadline(room)
+                room.player_empty_since = None
+            else:
+                self._clear_primary_player(room)
+                room.player_empty_since = time.time()
+                room.game = None
+                room.status = "waiting"
+                room.multiplayer.turn_deadline = 0.0
+            room.touch()
+            room.add_message(
+                "system",
+                f"{self._visitor_label(visitor)}退出玩家席，已回到观众席。",
+            )
+        await self._emit("seats_changed", room, {"left": visitor_token})
+
     async def set_undercover_reveal_identity(
         self, room: GameRoom, visitor_token: str, reveal_identity: bool
     ) -> bool:

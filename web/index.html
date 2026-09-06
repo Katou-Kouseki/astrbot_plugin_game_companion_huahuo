@@ -196,6 +196,12 @@
         </section>
 
         <footer class="uc-op-area">
+          <!-- 非发言/投票/PK 时的状态引导（idle/setup/finished），避免操作区整块空白 -->
+          <div id="ucOpGuide" class="uc-op-guide" hidden>
+            <div id="ucOpGuideBadge" class="uc-op-guide-badge">🌀</div>
+            <strong id="ucOpGuideTitle"></strong>
+            <p id="ucOpGuideText"></p>
+          </div>
           <div id="ucSpeechBox" class="uc-speech-box">
             <textarea
               id="ucSpeechInput"
@@ -349,7 +355,7 @@
           <div id="trustedIdentityStatus" class="trusted-identity-status" hidden>
             <i data-lucide="shield-check"></i>
             <span id="trustedIdentityText"></span>
-            <button id="forgetIdentity" type="button" class="unbind-btn" title="解绑玩家" aria-label="解绑玩家"><i data-lucide="log-out"></i><span>解绑玩家</span></button>
+            <button id="forgetIdentity" type="button" class="unbind-btn" title="解绑玩家，回到绑定引导界面" aria-label="解绑玩家"><i data-lucide="log-out"></i><span>解绑玩家</span></button>
           </div>
           <div class="side-choice" id="sideChoice" role="group" aria-label="选择先后手">
             <button type="button" data-side="human_black" class="is-active">我先手</button>
@@ -363,6 +369,9 @@
           <div id="ucReadyArea" class="uc-ready-area" hidden>
             <button id="ucReadyButton" type="button" class="primary-action">
               <i data-lucide="check-check"></i><span>准备</span>
+            </button>
+            <button id="ucLeaveSeatButton" type="button" class="secondary-action">
+              <i data-lucide="log-out"></i><span>退出对局（回到观众席）</span>
             </button>
             <div id="ucStartCountdown" class="uc-start-countdown" hidden></div>
           </div>

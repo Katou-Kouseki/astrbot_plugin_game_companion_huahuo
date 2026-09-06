@@ -148,6 +148,7 @@ class GameRoomServer:
         app.router.add_post(
             "/api/room/{access_token}/seat/swap/respond", self._seat_swap_respond
         )
+        app.router.add_post("/api/room/{access_token}/seat/leave", self._seat_leave)
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
         app.router.add_post("/api/room/{access_token}/chat", self._chat)
         app.router.add_post("/api/room/{access_token}/leave", self._leave)
@@ -571,6 +572,21 @@ class GameRoomServer:
         ready = payload.get("ready") is True
         try:
             await self.manager.set_player_ready(room, visitor_token, ready)
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=400,
+            )
+        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard())})
+
+    async def _seat_leave(self, request: web.Request) -> web.Response:
+        """玩家主动从玩家席退到观众席（仅本人可操作）。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        try:
+            await self.manager.leave_player_seat(room, visitor_token)
         except (ValueError, PermissionError) as exc:
             return web.json_response(
                 {"status": "error", "message": str(exc)},

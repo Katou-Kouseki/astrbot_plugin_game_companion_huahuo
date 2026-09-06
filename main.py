@@ -64,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.3.5"
+PLUGIN_VERSION = "0.3.6"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (

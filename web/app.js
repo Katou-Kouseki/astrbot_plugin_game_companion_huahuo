@@ -8,11 +8,11 @@
   let ucPrevMyTurn = false;         // 上一帧本机是否处于发言轮，用于“轮到你了”提醒
   let ucPrevExpectedSpeaker = null; // 上一帧当前发言者，用于发言轮切换的醒目标语
   let ucResultShownKey = "";         // 已展示过结算动画的本局标识（防重复弹出）
-  let ucVoteRevealRound = -1;        // 已完成“全员已投”翻转动画的轮次（防重复动画）
-  let ucVoteAnimPending = false;      // 本轮“待播放”投票揭晓动画（本轮集齐票的首帧置位，帧末消费）
-  let ucShownOutPlayer = null;       // 已播放淘汰动画的玩家编号
+  let ucVoteRevealSet = new Set();   // 已播放票数揭晓动画的轮次号（防重复）
+  let ucShownOutSet = new Set();      // 已播放淘汰动画的玩家编号（防重复，按局重置）
   let ucLastGameUid = "";             // 上一帧对局 uid（用于新一局重置动画/提示状态）
   let ucLastRoundCount = 0;          // 上一帧时间线已渲染的轮次数（用于新轮高亮）
+  let ucVoteFlipTimeout = null;       // 票数「？」→数字翻拍的延时句柄
   const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
@@ -617,6 +617,21 @@
       el.appendChild(wins);
       board.appendChild(el);
     });
+  }
+
+  // 时间线票数揭晓：稍后把本轮投票块里的「？」错峰翻成真实数字
+  function scheduleUcVoteFlip(roundNumber) {
+    window.clearTimeout(ucVoteFlipTimeout);
+    ucVoteFlipTimeout = window.setTimeout(() => {
+      const block = document.querySelector(`.uc-votes-block[data-round-reveal="${roundNumber}"]`);
+      if (!block) return;
+      block.querySelectorAll(".uc-vote-count.is-question").forEach((cell) => {
+        cell.textContent = `${cell.dataset.count || 0} 票`;
+        cell.classList.remove("is-question");
+        cell.classList.add("is-flipped");
+      });
+      ucVoteFlipTimeout = null;
+    }, 520);
   }
 
   /**
@@ -1369,6 +1384,24 @@
     }
   }
 
+  // 玩家主动从玩家席退到观众席
+  async function leavePlayerSeat() {
+    if (busy || !room?.is_player) return;
+    busy = true;
+    try {
+      const data = await request("POST", "seat/leave", {
+        visitor_token: visitorToken,
+      });
+      setRoom(data.room);
+      showToast("已退出对局，回到观众席");
+    } catch (error) {
+      showToast(error?.message || "退出失败");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   async function forgetTrustedIdentity() {
     if (busy || !room?.trusted_browser_active) return;
     busy = true;
@@ -1828,12 +1861,13 @@
     // 新一局开始（game_uid 变化）：重置“上一帧”状态，保证淘汰动画、发言提示按新对局重新触发
     if (snap.game_uid && ucLastGameUid !== snap.game_uid) {
       ucLastGameUid = snap.game_uid;
-      ucShownOutPlayer = null;
+      ucShownOutSet.clear();
+      ucVoteRevealSet.clear();
       ucPrevMyTurn = false;
       ucPrevExpectedSpeaker = null;
-      ucVoteRevealRound = -1;
-      ucVoteAnimPending = false;
       ucLastRoundCount = 0;
+      window.clearTimeout(ucVoteFlipTimeout);
+      ucVoteFlipTimeout = null;
     }
 
     // 1. 顶部 round label + 阵营统计
@@ -2037,12 +2071,10 @@
       if ((snap.last_pk_targets || []).includes(p.player_number)) {
         card.classList.add("is-pk");
       }
-      // 刚被淘汰的玩家卡片：播放叉掉动画（仅对局进行中、且首次出现该淘汰者时）
-      if (p.is_out && room.status === "active" && ucShownOutPlayer !== p.player_number) {
+      // 刚被淘汰的玩家卡片：播放叉掉动画（仅对局进行中、且该玩家头一次以出局状态出现，保证只播一次）
+      if (p.is_out && room.status === "active" && !ucShownOutSet.has(p.player_number)) {
         card.classList.add("is-just-out");
-        if (p.player_number === (snap.rounds_public || []).slice(-1)[0]?.out_player_number) {
-          ucShownOutPlayer = p.player_number;
-        }
+        ucShownOutSet.add(p.player_number);
       }
       const nameLine = document.createElement("strong");
       nameLine.className = "uc-pn-name";
@@ -2153,12 +2185,6 @@
     timeline.innerHTML = "";
     const rounds = snap.rounds_public || [];
     const currentRoundIdx = rounds.length ? rounds.length - 1 : -1;
-    // 投票揭晓动画：仅在「本轮刚集齐全部票」的那一帧触发一次（放大→票数翻转）
-    const allVotedNow = snap.phase === "voting" && !!snap.voting_all_voted;
-    if (allVotedNow && currentRoundIdx !== ucVoteRevealRound) {
-      ucVoteRevealRound = currentRoundIdx;
-      ucVoteAnimPending = true;
-    }
     rounds.forEach((r, roundIdx) => {
       const header = document.createElement("header");
       header.className = "uc-round-header";
@@ -2201,18 +2227,47 @@
       const voteHeaderLi = document.createElement("li");
       voteHeaderLi.className = "uc-round-votes";
       const vh = document.createElement("strong");
-      const allVoted = votes.length >= (r.speech_order || []).length;
+      // 完成态依据「该轮应投票的人数」而非 phase：投票是实时写入 r.votes 的，phase 在最后一票后立刻推进，
+      // 因此不能用 phase/voting_all_voted 判断，否则揭晓动画永不触发。
+      const expectedVoters = (r.vote_player_numbers || []).length;
+      const votesComplete = expectedVoters > 0 && votes.length >= expectedVoters;
+      const isLatestRound = roundIdx === currentRoundIdx;
+      // 正在投票：仅当前轮、仍在投票阶段、票未集齐时展示（不暴露任何数字）
+      const stillVoting = isLatestRound && snap.phase === "voting" && !votesComplete && expectedVoters > 0;
       // 统一格式化「X号·昵称」
       const fmtPn = (n) => {
         const p = players.find((x) => Number(x.player_number) === Number(n));
         const label = p ? p.display_name || "" : "";
         return `${n}号${label && label !== `${n}号` ? " · " + label : ""}`;
       };
-      if (allVoted && votes.length) {
+      if (stillVoting) {
+        // 投票进行中：只显示「正在投票」，不提前暴露任何票数数字
+        vh.textContent = "投票进行中…";
+        const votingBlock = document.createElement("div");
+        votingBlock.className = "uc-votes-block is-voting";
+        const line = document.createElement("div");
+        line.className = "uc-vote-row is-tally";
+        const who = document.createElement("span");
+        who.className = "uc-target";
+        who.textContent = "正在投票中";
+        const num = document.createElement("em");
+        num.className = "uc-vote-count is-placeholder";
+        num.textContent = "…";
+        line.appendChild(who);
+        line.appendChild(num);
+        votingBlock.appendChild(line);
+        voteHeaderLi.appendChild(vh);
+        voteHeaderLi.appendChild(votingBlock);
+      } else if (votesComplete && votes.length) {
+        // 这一轮刚集齐票：给投票块播放「放大→票数从？翻成数字」的揭晓动画（每轮只播一次）
+        const justRevealed = !ucVoteRevealSet.has(r.round_number);
+        if (justRevealed) ucVoteRevealSet.add(r.round_number);
+        const popCls = justRevealed ? " uc-reveal-pop" : "";
         if (snap.show_voters) {
           vh.textContent = "投票结果（含投票人）";
           const voteBlock = document.createElement("div");
-          voteBlock.className = "uc-votes-block";
+          voteBlock.className = "uc-votes-block" + popCls;
+          if (justRevealed) voteBlock.dataset.roundReveal = String(r.round_number);
           votes.forEach((v) => {
             const row = document.createElement("div");
             row.className = "uc-vote-row is-flow";
@@ -2235,11 +2290,13 @@
         } else {
           vh.textContent = "投票结果（票数统计）";
           const voteBlock = document.createElement("div");
-          voteBlock.className = "uc-votes-block";
+          voteBlock.className = "uc-votes-block" + popCls;
+          if (justRevealed) voteBlock.dataset.roundReveal = String(r.round_number);
           const tally = {};
           votes.forEach((v) => {
             tally[v.target_number] = (tally[v.target_number] || 0) + 1;
           });
+          let tallyIdx = 0;
           Object.entries(tally).forEach(([target, count]) => {
             const row = document.createElement("div");
             row.className = "uc-vote-row is-tally";
@@ -2247,61 +2304,24 @@
             who.className = "uc-target";
             who.textContent = fmtPn(Number(target));
             const num = document.createElement("em");
-            num.className = "uc-vote-count";
-            num.textContent = `${count} 票`;
+            if (justRevealed) {
+              // 揭晓帧：先以「？」占位，稍后错峰翻成数字
+              num.className = "uc-vote-count is-question";
+              num.dataset.count = String(count);
+              num.style.setProperty("--d", `${tallyIdx * 130}ms`);
+              num.textContent = "？";
+            } else {
+              num.className = "uc-vote-count";
+              num.textContent = `${count} 票`;
+            }
             row.appendChild(who);
             row.appendChild(num);
             voteBlock.appendChild(row);
+            tallyIdx++;
           });
           voteHeaderLi.appendChild(vh);
           voteHeaderLi.appendChild(voteBlock);
-        }
-      } else if (
-        snap.phase === "voting" &&
-        !snap.voting_all_voted
-      ) {
-        // 投票进行中：只显示「正在投票」，不提前暴露任何票数数字
-        vh.textContent = "投票进行中…";
-        const votingBlock = document.createElement("div");
-        votingBlock.className = "uc-votes-block is-voting";
-        const line = document.createElement("div");
-        line.className = "uc-vote-row is-tally";
-        const who = document.createElement("span");
-        who.className = "uc-target";
-        who.textContent = "正在投票中";
-        const num = document.createElement("em");
-        num.className = "uc-vote-count is-placeholder";
-        num.textContent = "…";
-        line.appendChild(who);
-        line.appendChild(num);
-        votingBlock.appendChild(line);
-        voteHeaderLi.appendChild(vh);
-        voteHeaderLi.appendChild(votingBlock);
-      } else if (snap.vote_tally_live && Object.keys(snap.vote_tally_live).length) {
-        vh.textContent = "投票结果（票数统计）";
-        const voteBlock = document.createElement("div");
-        voteBlock.className = "uc-votes-block";
-        // 刚完成全员投票：播放放大→票数揭晓动画（仅本轮集齐票的首帧触发一次，避免轮询闪烁）
-        if (snap.phase === "voting" && snap.voting_all_voted && currentRoundIdx === ucVoteRevealRound && ucVoteAnimPending) {
-          voteBlock.classList.add("uc-reveal-pop");
-        }
-        Object.entries(snap.vote_tally_live).forEach(([target, count]) => {
-          if (!Number(count)) return;
-          const row = document.createElement("div");
-          row.className = "uc-vote-row is-tally";
-          const who = document.createElement("span");
-          who.className = "uc-target";
-          who.textContent = fmtPn(Number(target));
-          const num = document.createElement("em");
-          num.className = "uc-vote-count";
-          num.textContent = `${Number(count)} 票`;
-          row.appendChild(who);
-          row.appendChild(num);
-          voteBlock.appendChild(row);
-        });
-        if (voteBlock.childNodes.length) {
-          voteHeaderLi.appendChild(vh);
-          voteHeaderLi.appendChild(voteBlock);
+          if (justRevealed) scheduleUcVoteFlip(r.round_number);
         }
       }
       if (voteHeaderLi.childNodes.length > 0) ul.appendChild(voteHeaderLi);
@@ -2312,9 +2332,8 @@
       timeline.appendChild(ul);
     });
 
-    // 记录本轮时间线轮次数（供新轮淡入动画判断）；并消费掉投票揭晓动画的“待播放”标记
+    // 记录本轮时间线轮次数（供新轮淡入动画判断）
     ucLastRoundCount = rounds.length;
-    ucVoteAnimPending = false;
 
     // 5. 操作区：发言 / 投票 / PK banner
     document.getElementById("ucPhase").textContent = phaseText;
@@ -2439,6 +2458,44 @@
       pkBanner.textContent = `平票！${pkTargets.map((n) => n + "号").join("、")} 需要补充发言 PK，稍后重新投票。`;
     } else {
       pkBanner.hidden = true;
+    }
+
+    // 操作区状态引导：当发言框 / 投票卡 / PK 横幅全部收起时，用一个引导块填补空白（idle/setup/voting观众/finished）
+    const opGuide = document.getElementById("ucOpGuide");
+    if (opGuide) {
+      const opGuidesAllHidden = speechBox.hidden && voteBox.hidden && pkBanner.hidden;
+      opGuide.hidden = !opGuidesAllHidden;
+      if (!opGuide.hidden) {
+        const badgeEl = document.getElementById("ucOpGuideBadge");
+        const titleEl = document.getElementById("ucOpGuideTitle");
+        const textEl = document.getElementById("ucOpGuideText");
+        const winner = snap.winner || {};
+        const seatsArr = Array.isArray(room.player_seats) ? room.player_seats : [];
+        // 已入座人数：AI 恒计入；真人按是否已绑定身份计入（简化口径，仅用于引导提示）
+        const liveSeats = seatsArr.filter((s) => s.is_ai || s.identity_confirmed).length;
+        let badge = "🌀", title = "", text = "";
+        if (room.status === "finished" || snap.phase === "finished") {
+          badge = "🏆";
+          title = "本局已结束";
+          text = sanitizeDisplayText(winner.message || "胜负已分，可申请再来一局或退出对局。");
+        } else if (snap.phase === "voting") {
+          badge = "🗳️";
+          title = "玩家正在投票";
+          text = "票数结果将在全员投出后揭晓，稍安勿躁。";
+        } else if (room.status === "setup") {
+          const capacity = Number(room.player_capacity || 0);
+          badge = "⏳";
+          title = "集结中 · 等待开局";
+          text = `已入座 ${liveSeats}/${capacity || "不限"} 人 · 点击「准备」参与本局，全员就绪或倒计时结束自动开局。`;
+        } else {
+          badge = "🌀";
+          title = "等待玩家入座";
+          text = "绑定 QQ 并加入玩家席后，即可开始一局谁是卧底。";
+        }
+        if (badgeEl) badgeEl.textContent = badge;
+        if (titleEl) titleEl.textContent = title;
+        if (textEl) textEl.textContent = text;
+      }
     }
 
     // 战绩排行（每次刷新轻量重绘）
@@ -3393,6 +3450,11 @@
         ucReadyButton.disabled = false;
       }
     });
+  }
+  // 玩家退出对局（回到观众席）
+  const ucLeaveSeatButton = document.getElementById("ucLeaveSeatButton");
+  if (ucLeaveSeatButton) {
+    ucLeaveSeatButton.addEventListener("click", leavePlayerSeat);
   }
   // 投票（事件委托）
   const ucVoteGrid = document.getElementById("ucVoteGrid");

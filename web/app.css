@@ -631,6 +631,8 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .trusted-identity-status button { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 4px; background: #edf1ee; color: #4f5b54; }
 .trusted-identity-status button[hidden] { display: none; }
 .trusted-identity-status button svg { width: 15px; height: 15px; }
+/* 解绑按钮：改为纯图标，文字仅通过 title 悬停提示展示 */
+.trusted-identity-status button span { display: none; }
 .section-head { justify-content: space-between; gap: 12px; }
 .section-head > svg { width: 18px; color: #6a746e; }
 .seat-badge { padding: 4px 7px; border-radius: 4px; background: #eceeed; color: #555e58; font-size: 12px; }
@@ -1405,6 +1407,27 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   border-radius: 1rem;
   padding: 1rem 1.1rem;
 }
+/* 操作区状态引导：填补非发言/投票阶段的空白 */
+.uc-op-guide {
+  display: grid;
+  place-items: center;
+  gap: .35rem;
+  text-align: center;
+  padding: 1.4rem 1rem;
+  color: var(--muted);
+}
+.uc-op-guide[hidden] { display: none; }
+.uc-op-guide-badge { font-size: 34px; line-height: 1; margin-bottom: .2rem; }
+.uc-op-guide strong {
+  color: var(--text-strong);
+  font-size: 1.05rem;
+}
+.uc-op-guide p {
+  margin: 0;
+  max-width: 30rem;
+  font-size: .88rem;
+  line-height: 1.55;
+}
 .uc-phase-readout {
   display: inline-flex;
   flex-wrap: wrap;
@@ -1513,8 +1536,13 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   animation: ucVotePop .75s cubic-bezier(.2,.9,.25,1.1);
   transform-origin: center center;
 }
-.uc-votes-block.uc-reveal-pop .uc-vote-row.is-tally .uc-vote-count {
-  animation: ucVoteNumFlip .55s .18s cubic-bezier(.2,.9,.3,1.4) both;
+/* 揭晓帧：票数先显示「？」占位，随后错峰翻成数字 */
+.uc-votes-block.uc-reveal-pop .uc-vote-count.is-question { color: var(--muted); }
+.uc-votes-block.uc-reveal-pop .uc-vote-count.is-flipped {
+  color: var(--red);
+  display: inline-block;
+  transform-origin: center center;
+  animation: ucVoteNumFlip .55s var(--d, 0ms) cubic-bezier(.2,.9,.3,1.4) both;
 }
 @keyframes ucVotePop {
   0%   { transform: scale(1); }
@@ -1531,11 +1559,28 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   to   { opacity: 1; transform: translateY(0); }
 }
 /* 集结阶段：准备按钮的已就绪高亮 + 进度点 */
-.uc-ready-area { display: grid; gap: .5rem; }
+.uc-ready-area {
+  display: grid;
+  gap: .55rem;
+  margin-top: .9rem;
+  padding-top: .85rem;
+  border-top: 1px dashed var(--border);
+}
 .uc-ready-area[hidden] { display: none; }
 .uc-ready-area .primary-action.is-ready { background: var(--green); }
 .uc-ready-area .primary-action .ready-progress {
   font-size: 11px; font-weight: 600; opacity: .85; margin-left: auto; padding-left: .5rem;
+}
+/* 退出对局按钮：次级、弱化、独立一行 */
+.uc-ready-area .secondary-action {
+  min-height: 36px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+.uc-ready-area .secondary-action:hover:not(:disabled) {
+  border-color: var(--red);
+  color: var(--red);
 }
 .chip-ready { color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, transparent); background: color-mix(in srgb, var(--green) 12%, transparent); }
 .chip-not-ready { color: var(--muted); }
