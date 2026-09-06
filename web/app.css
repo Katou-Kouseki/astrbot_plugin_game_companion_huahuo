@@ -1777,6 +1777,9 @@ body.room-undercover .uc-identity-card { order: 1; }
 body.room-undercover .uc-room-panel { order: 2; }
 body.room-undercover .seat-panel { order: 3; }
 body.room-undercover .people-panel { order: 4; }
+/* 规则 / 战绩面板对所有玩法都显示，并按当前游戏展示对应内容；阶段进度条只属于卧底 */
+.uc-phase-readout { display: none; }
+body.room-undercover .uc-phase-readout { display: grid; }
 /* 规则 / 战绩说明嵌入右侧面板后，去掉多余的自带卡片描边 */
 .uc-room-panel .uc-info-card { background: transparent; border: 0; padding: 0; }
 .uc-room-panel .uc-info-body { margin-top: .3rem; }

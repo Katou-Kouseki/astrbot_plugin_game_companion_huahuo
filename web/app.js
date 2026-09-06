@@ -617,9 +617,77 @@
   }
 
   /**
-   * 渲染全局胜场榜（跨房间汇总已绑定玩家数据，按胜场降序，最多展示前 10 名）。
+   * 按游戏类型展示的规则与标题：右侧通用「游戏规则 + 全局战绩」面板按当前游戏显示对应内容。
    */
-  function renderUndercoverLeaderboard(room) {
+  const UC_GAME_META = {
+    gomoku: {
+      name: "五子棋",
+      rules: [
+        "黑白双方轮流落子于 15×15 棋盘交叉点。",
+        "任意方向率先连成五子的一方获胜。",
+        "落子后不可悔棋（与花火对弈时由棋力决定强弱）。",
+      ],
+    },
+    xiangqi: {
+      name: "中国象棋",
+      rules: [
+        "按中国象棋标准规则，红黑双方轮流走子。",
+        "将死或困毙对方「将/帅」即获胜；提前认输或超时判负。",
+        "由独立 Pikafish 引擎与你对弈。",
+      ],
+    },
+    tictactoe: {
+      name: "井字棋",
+      rules: [
+        "3×3 网格上双方轮流落子。",
+        "任意一行、一列或一条对角线率先集满三子的一方获胜。",
+      ],
+    },
+    turtle_soup: {
+      name: "海龟汤",
+      rules: [
+        "主持人给出一个神秘汤面，你通过提问还原背后真相。",
+        "只有能回答「是 / 否 / 无关」的问题才会被揭晓。",
+        "可用提示、猜关键事实来逐步逼近完整汤底。",
+      ],
+    },
+    pig_dice: {
+      name: "贪心骰子",
+      rules: [
+        "轮流掷骰：只要不出「1」就把本轮点数累加，可随时「收手」稳拿积分。",
+        "一旦掷出「1」，本轮累计点数全部作废。",
+        "先达到目标分、或轮次结束时积分最高者获胜。",
+      ],
+    },
+    draw_guess: {
+      name: "你画我猜",
+      rules: [
+        "玩家按题目作画，花火根据画面猜答案。",
+        "每次作答消耗一次猜测机会，限次内猜中即算合作成功。",
+      ],
+    },
+    blackjack: {
+      name: "二十一点",
+      rules: [
+        "目标：手牌点数尽量接近 21 且不超过 21（爆牌即输）。",
+        "A 可作 1 或 11，J/Q/K 记为 10。",
+        "你决定「要牌」或「停牌」，再与庄家（花火）比大小。",
+      ],
+    },
+    undercover: {
+      name: "谁是卧底",
+      rules: [
+        "每人抽到平民或卧底词条，白板没有词条。",
+        "按坐次轮流用一句话描述词条，不能说词条本身。",
+        "每轮投票淘汰最可疑的人；平民找出卧底获胜，卧底坚持到只剩自己的人获胜。",
+      ],
+    },
+  };
+
+  /**
+   * 渲染全局胜场榜（跨房间汇总当前游戏类型数据，按胜场降序，最多前 10 名）。
+   */
+  function renderLeaderboard(room) {
     const board = document.getElementById("ucLeaderboard");
     if (!board) return;
     const list = Array.isArray(room.leaderboard) ? room.leaderboard : [];
@@ -649,6 +717,33 @@
       el.appendChild(wins);
       board.appendChild(el);
     });
+  }
+
+  /**
+   * 按当前游戏类型刷新右栏「游戏规则 + 全局战绩」的内容（规则文案、标题、排行榜）。
+   */
+  function renderGameInfoPanel(room) {
+    const meta = UC_GAME_META[(room && room.game_type) || ""] || UC_GAME_META.undercover;
+    const rulesBody = document.getElementById("ucRulesBody");
+    if (rulesBody) {
+      rulesBody.innerHTML = "";
+      meta.rules.forEach((t) => {
+        const p = document.createElement("p");
+        p.textContent = t;
+        rulesBody.appendChild(p);
+      });
+    }
+    const rulesToggle = document.getElementById("ucRulesToggle");
+    const boardToggle = document.getElementById("ucBoardToggle");
+    if (rulesToggle) {
+      const span = rulesToggle.querySelector("span");
+      if (span) span.textContent = `📜 ${meta.name}游戏规则`;
+    }
+    if (boardToggle) {
+      const span = boardToggle.querySelector("span");
+      if (span) span.textContent = `🏆 ${meta.name}全局战绩`;
+    }
+    renderLeaderboard(room);
   }
 
   // 时间线票数揭晓：先让数字滚动翻转，再下落砸走问号、错峰停到最终值，节奏放缓
@@ -1147,6 +1242,8 @@
     if (!room) return;
     // 谁是卧底房间：隐藏通用「玩家/平局/花火」比分（多人语音局不适用），右侧由战绩榜与阶段条接管
     document.body.classList.toggle("room-undercover", room.game_type === "undercover");
+    // 右栏「游戏规则 + 全局战绩」面板：按当前游戏类型动态展示对应内容
+    renderGameInfoPanel(room);
     // 本局身份卡只属于谁是卧底，其它玩法的右侧面板不显示它
     const ucIdCard = document.getElementById("ucIdentityCard");
     if (ucIdCard) ucIdCard.hidden = room.game_type !== "undercover";
@@ -1323,7 +1420,6 @@
     btn.setAttribute("data-progress", `${readyCount}/${seats.length}`);
     const progEl = document.getElementById("ucReadyProgress");
     if (progEl) progEl.textContent = `${readyCount}/${seats.length} 人已准备`;
-    icons();
   }
 
   // 随机英文名：未绑定 QQ 的成员显示“观众-<英文>”，根据成员号稳定生成，避免每次重绘变化
@@ -2663,9 +2759,6 @@
         if (textEl) textEl.textContent = text;
       }
     }
-
-    // 战绩排行（每次刷新轻量重绘）
-    renderUndercoverLeaderboard(room);
 
     // 游戏结束结算动画：进入 finished 时每局只弹出一次，新对局开始后重置
     const resultOverlay = document.getElementById("ucResultOverlay");

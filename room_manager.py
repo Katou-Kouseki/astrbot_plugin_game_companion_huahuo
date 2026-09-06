@@ -54,6 +54,11 @@ _UC_AI_ADJECTIVES: tuple[str, ...] = (
 )
 _UC_AI_USED: set[str] = set()  # 本进程已用过的形容词，避免同房重复
 
+# 全部游戏类型：用于按游戏分桶全局战绩、以及旧扁平数据迁移识别
+_UC_GAME_TYPES: frozenset[str] = frozenset(
+    {"gomoku", "xiangqi", "tictactoe", "turtle_soup", "pig_dice", "draw_guess", "blackjack", "undercover"}
+)
+
 
 def _uc_ai_name(avoid: set[str] | None = None) -> tuple[str, str]:
     """生成 (显示名「火花·调皮(AI)」, 性格形容词「调皮」)。"""
@@ -203,9 +208,10 @@ class RoomManager:
         self._access_index: dict[str, str] = {}
         self._closed_access: dict[str, tuple[str, float]] = {}
         self._lock = asyncio.Lock()
-        # 全局胜场榜：仅统计已绑定 QQ 的玩家，跨房间汇总；qq -> {"name": str, "wins": int}
+        # 全局胜场榜：按游戏类型分桶，game_type -> {已绑定 QQ -> {"name","wins"}}，跨房间汇总。
+        # 这样右侧面板可按当前游戏展示「该玩法的全局战绩排行」。
         self.global_stats_path = Path(global_stats_path) if global_stats_path else None
-        self.global_player_wins: dict[str, dict[str, object]] = (
+        self.global_player_wins: dict[str, dict[str, dict[str, object]]] = (
             self._load_global_stats() if self.global_stats_path else {}
         )
         # 卧底集结：全员就绪的时间戳（room_id -> now）。给玩家留出确认窗口，避免一键瞬间开局
@@ -213,14 +219,15 @@ class RoomManager:
         # 全员就绪 -> 自动开局前的确认等待秒数（期间可取消准备）
         self.UC_ALL_READY_CONFIRM_SECONDS = 2.0
 
-    def global_leaderboard(self, limit: int = 50) -> list[dict[str, object]]:
-        """返回跨房间全局胜场榜（按胜场降序）。
+    def global_leaderboard(self, game_type: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+        """返回指定游戏类型下的跨房间全局胜场榜（按胜场降序）。
 
         AI 座位的 qq 是每次对局新建的随机 token，会导致同一个 AI 名（如「花火·调皮(AI)」）
         被记成多条。这里按「名字」合并累计，使同名 AI 只显示一条、胜场累加。
         """
+        bucket = self.global_player_wins.get(game_type or "") or {}
         merged: dict[str, dict[str, object]] = {}
-        for _qq, info in self.global_player_wins.items():
+        for _qq, info in bucket.items():
             name = str(info.get("name") or "未知玩家").strip() or "未知玩家"
             merged.setdefault(name, {"name": name, "wins": 0})
             merged[name]["wins"] = int(merged[name]["wins"] or 0) + int(
@@ -235,8 +242,16 @@ class RoomManager:
             )
         ][:max(0, int(limit))]
 
-    def _load_global_stats(self) -> dict[str, dict[str, object]]:
-        """从磁盘加载全局胜场数据；文件缺失或损坏时回退为空。"""
+    @staticmethod
+    def _is_known_game_type(key: str) -> bool:
+        return key in _UC_GAME_TYPES
+
+    def _load_global_stats(self) -> dict[str, dict[str, dict[str, object]]]:
+        """从磁盘加载全局胜场数据；文件缺失或损坏时回退为空。
+
+        兼容旧版扁平结构（qq -> {"name","wins"}，仅统计过卧底）：若顶层出现非游戏类型的键，
+        视为旧数据，整体纳入「undercover」分桶。
+        """
         if self.global_stats_path is None or not self.global_stats_path.is_file():
             return {}
         try:
@@ -246,14 +261,21 @@ class RoomManager:
             return {}
         if not isinstance(raw, dict):
             return {}
-        cleaned: dict[str, dict[str, object]] = {}
-        for qq, info in raw.items():
-            if not isinstance(qq, str) or not qq.strip() or not isinstance(info, dict):
+        # 旧版扁平结构迁移：顶层全是非游戏类型键（即 qq 键）→ 归为 undercover
+        if raw and not any(self._is_known_game_type(k) for k in raw):
+            raw = {"undercover": raw}
+        cleaned: dict[str, dict[str, dict[str, object]]] = {}
+        for gtype, players in raw.items():
+            if not isinstance(gtype, str) or not isinstance(players, dict):
                 continue
-            cleaned[qq.strip()] = {
-                "name": str(info.get("name") or ""),
-                "wins": max(0, int(info.get("wins") or 0)),
-            }
+            cleaned[gtype] = {}
+            for qq, info in players.items():
+                if not isinstance(qq, str) or not qq.strip() or not isinstance(info, dict):
+                    continue
+                cleaned[gtype][qq.strip()] = {
+                    "name": str(info.get("name") or ""),
+                    "wins": max(0, int(info.get("wins") or 0)),
+                }
         return cleaned
 
     def _save_global_stats(self) -> None:
@@ -2358,10 +2380,11 @@ class RoomManager:
                             or uc_player.display_name.strip()
                             or f"{uc_player.number}号"
                         )
-                        # 全局胜场榜：累计已绑定 QQ 的玩家（含 AI）跨房间汇总；AI 重复名由排行榜按名字合并展示
+                        # 全局胜场榜：按「undercover」分桶累计已绑定 QQ 玩家（含 AI），同名由排行榜合并展示
                         qq = (seat.qq or "").strip()
                         if seat.identity_confirmed and qq:
-                            global_entry = self.global_player_wins.setdefault(
+                            bucket = self.global_player_wins.setdefault("undercover", {})
+                            global_entry = bucket.setdefault(
                                 qq, {"name": "", "wins": 0}
                             )
                             global_entry["wins"] = (
@@ -2379,8 +2402,44 @@ class RoomManager:
             else:
                 room.bot_wins += 1
                 result = "bot_win"
+            # 非卧底游戏：全局战绩按当前游戏类型分桶；获胜方为已绑定玩家时 +1（AI 无绑定不记）
+            if result in {"human_win", "cooperative_success"} and room.game_type != "undercover":
+                self._credit_human_global_wins(room)
             room.touch()
         await self._emit("game_finished", room, {"result": result})
+
+    def _credit_human_global_wins(self, room: GameRoom) -> None:
+        """非卧底游戏获胜时，把当前已绑定玩家按「本局游戏类型」计入全局胜场榜。
+
+        多人座位玩法累计已入座的绑定玩家；单人对局（无多人座位）则累计已绑定身份的主玩家。
+        """
+        bucket = self.global_player_wins.setdefault(room.game_type, {})
+        awarded: dict[str, str] = {}
+        # 多人座位：已绑定身份的入座玩家
+        for seat in room.multiplayer.seats:
+            qq = (seat.qq or "").strip()
+            if not seat.identity_confirmed or not qq:
+                continue
+            awarded.setdefault(qq, (seat.display_name or "").strip() or qq)
+        # 单人对局（无多人座位）：给已绑定身份的主玩家 +1
+        if not room.multiplayer.enabled:
+            qq = (room.player_qq or "").strip()
+            if qq and room.player_identity_confirmed:
+                name = ""
+                v = room.visitors.get(room.player_token or "")
+                if v and v.display_name:
+                    name = v.display_name.strip()
+                awarded.setdefault(qq, name or qq)
+        if not awarded:
+            return
+        for qq, name in awarded.items():
+            if not qq:
+                continue
+            global_entry = bucket.setdefault(qq, {"name": "", "wins": 0})
+            global_entry["wins"] = int(global_entry.get("wins") or 0) + 1
+            if name:
+                global_entry["name"] = name
+        self._save_global_stats()
 
     async def _emit(self, event: str, room: GameRoom, payload: dict[str, Any]) -> None:
         if self.event_callback is not None:
