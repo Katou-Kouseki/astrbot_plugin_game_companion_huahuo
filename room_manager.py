@@ -295,7 +295,7 @@ class RoomManager:
             room_id = secrets.token_hex(4)
             while room_id in self.rooms:
                 room_id = secrets.token_hex(4)
-            access_token = secrets.token_urlsafe(32)
+            access_token = secrets.token_urlsafe(10)
             room = GameRoom(
                 room_id=room_id,
                 access_token=access_token,

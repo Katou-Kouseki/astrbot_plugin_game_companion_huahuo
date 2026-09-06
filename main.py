@@ -64,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.4.1"
+PLUGIN_VERSION = "0.4.2"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -690,6 +690,12 @@ class GameCompanionPlugin(Star):
         self.swap_request_expiry = self._cfg_int(
             "multiplayer.swap_request_expiry_seconds", 20, minimum=1, maximum=600
         )
+
+        # 谁是卧底 AI 动作节流：同一房间同一时刻只允许一个 AI 动作（发言/投票）在途，
+        # 避免大量 AI 玩家连续触发时对模型供应商并发/高频请求导致限流（429）而卡局。
+        # key = room_id -> asyncio.Lock；同时记录“当前在途 AI 动作”的座位号与动作类型，防止同座重复驱动。
+        self._uc_ai_lock: dict[str, asyncio.Lock] = {}
+        self._uc_ai_inflight: dict[str, tuple[int, str]] = {}
 
         self.xiangqi_engine = PikafishService(
             data_dir=self.data_dir,
@@ -4558,36 +4564,44 @@ class GameCompanionPlugin(Star):
         if room.game.finished:
             return
         game = room.game
-        try:
-            # 1) 发言阶段：当前是 AI 玩家就自动发言
-            if game.phase in ("speech", "pk"):
-                exp = game.expected_speaker_number
-                seat = next(
-                    (s for s in room.multiplayer.seats if s.number == exp), None
-                )
-                if seat is not None and getattr(seat, "is_ai", False):
+        # 同房间同一时刻只允许一个 AI 动作在途：大幅避免 AI 玩家较多时对模型供应商
+        # 并发/高频请求被限流（429），也是“最后一名 AI 一直卡住”的兜底之一。
+        lock = self._uc_ai_lock.setdefault(room.room_id, asyncio.Lock())
+        async with lock:
+            try:
+                # 1) 发言阶段：当前是 AI 玩家就自动发言
+                if game.phase in ("speech", "pk"):
+                    exp = game.expected_speaker_number
+                    seat = next(
+                        (s for s in room.multiplayer.seats if s.number == exp), None
+                    )
+                    if seat is None or not getattr(seat, "is_ai", False):
+                        return
                     # 小延时避免栈过深
                     await asyncio.sleep(0.6)
                     await self._undercover_ai_do_speech(room, seat)
                     return
-            # 2) 投票阶段：还有 AI 没投就自动投（只要有任何一个没投的 AI 就投一次，递归继续直到全投完）
-            if game.phase == "voting":
-                all_live_nums = sorted([
-                    p.number for p in game.players if not p.is_out
-                ])
-                voted = set(game.snapshot(None).get("voted_this_round_player_numbers") or [])
-                for n in all_live_nums:
-                    if n in voted: continue
-                    seat = next((s for s in room.multiplayer.seats if s.number == n), None)
-                    if seat and getattr(seat, "is_ai", False):
-                        await asyncio.sleep(0.5)
-                        await self._undercover_ai_do_vote(room, seat)
-                        # 递归推进（可能下一个还是 AI）
-                        self._spawn(self._undercover_ai_step_if_needed(room))
-                        return
-        except Exception:
-            # AI 出错不影响真人玩家流程
-            return
+                # 2) 投票阶段：还有 AI 没投就自动投（串行逐个推进，直到全投完）
+                if game.phase == "voting":
+                    all_live_nums = sorted([
+                        p.number for p in game.players if not p.is_out
+                    ])
+                    voted = set(game.snapshot(None).get("voted_this_round_player_numbers") or [])
+                    for n in all_live_nums:
+                        if n in voted: continue
+                        seat = next((s for s in room.multiplayer.seats if s.number == n), None)
+                        if seat and getattr(seat, "is_ai", False):
+                            await asyncio.sleep(0.5)
+                            await self._undercover_ai_do_vote(room, seat)
+                            # 递归推进（可能下一个还是 AI）：新任务会等本任务释放锁后再串行执行
+                            self._spawn(self._undercover_ai_step_if_needed(room))
+                            return
+            except Exception as exc:
+                # AI 出错不影响真人玩家流程，但记录日志便于排查“AI 卡住”问题
+                logger.warning(
+                    "[GameCompanion] 谁是卧底 AI 自动驱动异常（已忽略，不影响真人）：%s",
+                    exc,
+                )
 
     async def _undercover_turn_timeout(self, room: GameRoom) -> None:
         """发言/投票回合超时后的兜底驱动，防止整局卡死在“该谁发言”。
@@ -4639,8 +4653,18 @@ class GameCompanionPlugin(Star):
             await self.manager.player_undercover_speech(
                 room, seat.visitor_token, _uc_ai_fallback(camp, round_no)
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            # 本地兜底提交仍失败（相似度命中 / 座椅 token 失效等）：至少推进发言指针，
+            # 避免“最后一名 AI 发言卡住整局”的问题
+            logger.warning(
+                "[GameCompanion] AI 发言本地兜底提交失败（将尝试跳过该玩家）：%s", exc
+            )
+            try:
+                await self.manager.skip_undercover_speaker(room, seat.visitor_token)
+            except Exception as exc2:
+                logger.warning(
+                    "[GameCompanion] AI 发言超时后跳过也失败：%s", exc2
+                )
 
     async def _undercover_force_all_votes(self, room: GameRoom) -> None:
         """为投票轮中所有尚未投票的玩家补投一张合法的本地兜底票。
@@ -4769,15 +4793,26 @@ class GameCompanionPlugin(Star):
             await self.manager.player_undercover_speech(
                 room, seat.visitor_token, content
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "[GameCompanion] AI 发言生成失败，改用本地兜底：%s", exc
+            )
             # 失败时用一句本地兜底文案（按轮次轮换，避免整局一句复读），避免卡住整轮
             fallback = _uc_ai_fallback(camp, round_no)
             try:
                 await self.manager.player_undercover_speech(
                     room, seat.visitor_token, fallback
                 )
-            except Exception:
-                pass
+            except Exception as exc2:
+                logger.warning(
+                    "[GameCompanion] AI 本地兜底发言提交也失败（将跳过，防卡局）：%s", exc2
+                )
+                try:
+                    await self.manager.skip_undercover_speaker(room, seat.visitor_token)
+                except Exception as exc3:
+                    logger.warning(
+                        "[GameCompanion] AI 发言失败后跳过也失败：%s", exc3
+                    )
 
     async def _undercover_ai_do_vote(
         self, room: GameRoom, seat

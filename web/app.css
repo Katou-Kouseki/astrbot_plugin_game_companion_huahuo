@@ -1460,6 +1460,43 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   font-style: italic;
   opacity: .8;
 }
+/* 当前正在发言的玩家：高亮整条 + “思考中”状态提示 */
+.uc-round-speech.is-now {
+  background: color-mix(in srgb, var(--green) 12%, var(--surface-alt));
+  border: 1px solid color-mix(in srgb, var(--green) 32%, transparent);
+}
+.uc-speech-content.is-thinking {
+  color: var(--muted);
+  font-style: italic;
+  animation: ucThinking 1.1s ease-in-out infinite;
+}
+.uc-speech-content.is-thinking::after {
+  content: "";
+  display: inline-block;
+  width: .55em;
+  height: .55em;
+  margin-left: .45em;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--green);
+  animation: ucThinkingDot 1.1s ease-in-out infinite;
+}
+@keyframes ucThinkingDot {
+  0%, 100% { opacity: .25; transform: scale(.75); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+@keyframes ucThinking {
+  0%, 100% { opacity: .6; }
+  50% { opacity: 1; }
+}
+/* 发言文字“逐字加速打出”：光标式插入效果 */
+.uc-speech-typing::after {
+  content: "▌";
+  color: var(--green);
+  margin-left: 1px;
+  animation: ucTypingBlink .7s steps(1) infinite;
+}
+@keyframes ucTypingBlink { 50% { opacity: 0; } }
 .uc-round-votes {
   margin-top: .5rem;
   padding: .5rem .65rem;
@@ -2383,13 +2420,18 @@ body.dark .uc-speech-box textarea:focus {
 .speech-turn-notification.is-dock span { font-size: 14px; font-weight: 700; }
 .speech-turn-notification.is-dock strong { font-size: 20px; }
 .speech-turn-notification .speech-sec { font-size: 13px; font-weight: 700; opacity: 0.95; }
-/* 倒计时剩余 ≤20 秒时：加剧波动，催促屏幕前的玩家发言 */
+/* 倒计时剩余 ≤30 秒时：横幅先放大以醒目，再加入红圈脉冲和轻微缩放，催促屏幕前的玩家发言 */
 .speech-turn-notification.is-dock.is-urgent {
-  animation: ucSpeechUrgent 0.55s ease-in-out infinite;
+  padding: 14px 28px;
+  animation: ucSpeechUrgent 0.8s ease-in-out infinite;
 }
+.speech-turn-notification.is-dock.is-urgent span { font-size: 17px; }
+.speech-turn-notification.is-dock.is-urgent strong { font-size: 30px; }
+.speech-turn-notification.is-dock.is-urgent .speech-sec { font-size: 15px; }
 @keyframes ucSpeechUrgent {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 120, 90, 0.75), 0 6px 22px rgba(0, 0, 0, 0.35); transform: translate(-50%, -50%) scale(0.6); }
-  50% { box-shadow: 0 0 0 12px rgba(255, 120, 90, 0), 0 6px 22px rgba(0, 0, 0, 0.4); transform: translate(-50%, -50%) scale(0.68); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 90, 60, 0.75), 0 8px 26px rgba(0, 0, 0, 0.4); transform: translate(-50%, -50%) scale(1.02); }
+  50% { box-shadow: 0 0 0 22px rgba(255, 90, 60, 0), 0 8px 26px rgba(0, 0, 0, 0.46); transform: translate(-50%, -50%) scale(1.12); }
+  /* 首帧已放大，红圈脉冲围绕放大后的尺寸展开，避免显得过小 */
 }
 .speech-turn-notification.is-out {
   animation: ucSpeechBannerOut 0.7s ease forwards;

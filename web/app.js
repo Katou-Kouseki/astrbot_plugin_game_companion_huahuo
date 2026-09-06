@@ -1,12 +1,14 @@
 (() => {
   "use strict";
 
-  const match = window.location.pathname.match(/\/room\/([A-Za-z0-9_-]{24,80})\/?$/);
+  const match = window.location.pathname.match(/\/room\/([A-Za-z0-9_-]{8,80})\/?$/);
   const accessToken = match ? match[1] : "";
   const storageKey = `game-companion:${accessToken}:visitor`;
   const rememberIdentityKey = "game-companion:remember-identity";
   let ucPrevMyTurn = false;         // 上一帧本机是否处于发言轮，用于“轮到你了”提醒
-  let ucPrevExpectedSpeaker = null; // 上一帧当前发言者，用于发言轮切换的醒目标语
+  let ucTurnBannerDone = new Set();  // 已弹出“轮到 X号 发言”提示的 `${轮次}:${玩家号}`（按局重置），被“花火选词”遮罩延迟时也能补弹
+  const ucSpeechTyping = {};         // key `${gameUid}:${round}:${pn}` -> {text,node,idx,started,done}，发言文字“逐字加速打出”动画
+  let ucSpeechTypingRaf = null;
   let ucResultShownKey = "";         // 已展示过结算动画的本局标识（防重复弹出）
   let ucVoteRevealSet = new Set();   // 已播放票数揭晓动画的轮次号（防重复）
   let ucShownOutSet = new Set();      // 已播放淘汰动画的玩家编号（防重复，按局重置）
@@ -16,6 +18,33 @@
   let ucLastHostScalesKey = "";        // 上次渲染的房主阵营比例键（用于仅在校验变化时回填输入框）
   let ucPrevMyOut = false;             // 上一帧本机是否已出局（用于触发出局提示）
   const ucRevealNodeCache = {};        // key `${gameUid}:${round}` -> {node, at}，让票数揭晓动画跨轮询存活
+
+  // 发言文字“逐字加速打出”：驱动所有在播的发言节点按“先慢后快”的进度曲线逐字展示。
+  // 时间线每次轮询会重建 DOM，因此这里缓存节点并在重建时重新挂载，保证动画跨轮询连续。
+  function ucDriveSpeechTyping() {
+    const now = performance.now();
+    let active = false;
+    for (const k in ucSpeechTyping) {
+      const t = ucSpeechTyping[k];
+      if (!t.text || !t.node || !t.node.isConnected) { t.done = true; t.node = null; continue; }
+      if (t.done) continue;
+      const duration = Math.min(2400, 360 + t.text.length * 55); // 越短越快，一两秒内打完
+      const p = Math.min(1, (now - t.started) / duration);
+      const revealed = Math.floor(Math.pow(p, 1.7) * t.text.length); // 先慢后快 = 逐字加速
+      if (revealed !== t.idx) { t.idx = revealed; t.node.textContent = t.text.slice(0, revealed); }
+      if (p < 1) { active = true; }
+      else { t.done = true; t.node.textContent = t.text; t.node = null; }
+    }
+    if (active) { ucSpeechTypingRaf = requestAnimationFrame(ucDriveSpeechTyping); }
+    else { ucSpeechTypingRaf = null; }
+  }
+  function ucStartSpeechTyping(key, text, container) {
+    const span = document.createElement("span");
+    span.className = "uc-speech-typing";
+    container.appendChild(span);
+    ucSpeechTyping[key] = { text, node: span, idx: 0, started: performance.now(), done: false };
+    if (ucSpeechTypingRaf == null) ucSpeechTypingRaf = requestAnimationFrame(ucDriveSpeechTyping);
+  }
   const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
@@ -868,8 +897,8 @@
       } else {
         const secEl = dock.querySelector(".speech-sec");
         if (secEl) secEl.textContent = timerActive ? `⏳ ${remain}s` : "不限时";
-        // 倒计时 ≤20 秒：加剧横幅波动以催促玩家发言
-        dock.classList.toggle("is-urgent", timerActive && remain > 0 && remain <= 20);
+        // 倒计时 ≤30 秒：加剧横幅波动以催促玩家发言
+        dock.classList.toggle("is-urgent", timerActive && remain > 0 && remain <= 30);
       }
     }
   }, 1000);
@@ -1895,10 +1924,11 @@
       ucShownOutSet.clear();
       ucVoteRevealSet.clear();
       ucPrevMyTurn = false;
-      ucPrevExpectedSpeaker = null;
+      ucTurnBannerDone.clear();
       ucLastRoundCount = 0;
       ucPrevMyOut = false;
       for (const k of Object.keys(ucRevealNodeCache)) delete ucRevealNodeCache[k];
+      for (const k of Object.keys(ucSpeechTyping)) delete ucSpeechTyping[k];
       window.clearTimeout(ucVoteFlipTimeout);
       ucVoteFlipTimeout = null;
     }
@@ -2283,10 +2313,29 @@
         head.textContent = `${pn}号`;
         const content = document.createElement("div");
         content.className = "uc-speech-content" + ((r.skipped_player_numbers || []).includes(Number(pn)) ? " is-skipped" : "");
+        const skipped = (r.skipped_player_numbers || []).includes(Number(pn));
         if (sp) {
-          content.textContent = sanitizeDisplayText(sp.content);
-        } else if ((r.skipped_player_numbers || []).includes(Number(pn))) {
+          // 已发言：文字“逐字加速打出”（先慢后快），跨轮询复用节点保持动画连续
+          const typeText = sanitizeDisplayText(sp.content);
+          const typeKey = `${snap.game_uid}:${r.round_number}:${Number(pn)}`;
+          const cached = ucSpeechTyping[typeKey];
+          if (cached && cached.text === typeText) {
+            if (cached.done) { content.textContent = typeText; }
+            else if (cached.node) { content.appendChild(cached.node); }
+          } else {
+            ucStartSpeechTyping(typeKey, typeText, content);
+          }
+        } else if (skipped) {
           content.textContent = "（发言超时，已跳过）";
+        } else if (
+          roundIdx === currentRoundIdx &&
+          Number(pn) === Number(expectedSpeaker) &&
+          ["speech", "pk"].includes(snap.phase)
+        ) {
+          // 当前正在发言的玩家：展示“思考中”状态
+          content.classList.add("is-thinking");
+          content.textContent = "我正在思考中…";
+          li.classList.add("is-now");
         } else {
           content.textContent = "（尚未发言）";
         }
@@ -2498,17 +2547,19 @@
       );
     }
     ucPrevMyTurn = canSpeak && !revealOverlayOpen;
-    // 发言切换的醒目全屏提示（当前发言者变化则给所有玩家/观众弹出；选词遮罩开启时先不弹，
-    // 待玩家关闭身份卡后再提示当前发言者，避免两个弹窗叠加）
+    // 发言切换的醒目全屏提示：每位发言者在本轮只弹一次；若被“花火选词”遮罩延迟，
+    // 会在遮罩关闭后的下一帧补弹（不再因遮罩期间已“见过”该玩家而永久吞掉首个发言横幅）。
     if (
       ["speech", "pk"].includes(snap.phase) &&
       !revealOverlayOpen &&
-      ucPrevExpectedSpeaker !== (expectedSpeaker || null) &&
       expectedSpeaker
     ) {
-      showSpeechTurnNotification(expectedSpeaker, isMyTurn);
+      const turnKey = `${roundNumber}:${expectedSpeaker}`;
+      if (!ucTurnBannerDone.has(turnKey)) {
+        ucTurnBannerDone.add(turnKey);
+        showSpeechTurnNotification(expectedSpeaker, isMyTurn);
+      }
     }
-    ucPrevExpectedSpeaker = expectedSpeaker || null;
     speechBox.hidden = !["speech", "pk", "preparing"].includes(snap.phase) || !!my.is_out;
     speechBtn.disabled = !canSpeak || input.value.trim().length < 1;
     input.disabled = !canSpeak;
