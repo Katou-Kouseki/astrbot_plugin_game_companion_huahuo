@@ -1340,20 +1340,21 @@ class RoomManager:
         self.require_game_enabled(room.game_type)
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
-            expected = (
-                room.multiplayer.current_token
-                if room.multiplayer.enabled
-                else room.player_token
-            )
-            if visitor.token != expected:
-                raise PermissionError("只有当前玩家能申请再来一局")
+            # 多人玩家席中的任意玩家（或单人的当前玩家）都能申请再来一局，不限于房主/当前回合
+            if room.multiplayer.enabled:
+                is_player = room.multiplayer.seat_for_token(visitor.token) is not None
+            else:
+                is_player = bool(room.player_token and visitor.token == room.player_token)
+            if not is_player:
+                raise PermissionError("只有玩家才能申请再来一局")
             if room.status != "finished":
                 raise ValueError("当前还不能申请再来一局")
             room.status = "rematch_pending"
             room.touch()
             if record_message:
                 room.add_message(
-                    "user", "想再来一局。", visitor=visitor, message_type="control"
+                    "user", f"{self._visitor_label(visitor)}想再来一局。",
+                    visitor=visitor, message_type="control",
                 )
         await self._emit(
             "rematch_requested",

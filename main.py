@@ -64,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.3.8"
+PLUGIN_VERSION = "0.3.9"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -432,8 +432,11 @@ class _RecentPrivateGameResult:
 
 
 def _sanitize_uc_ai_speech(text: str) -> str:
-    """把 AI 发言规整为「不超过 1 个逗号、总体 20 字以内」的短句。"""
+    """把 AI 发言规整为「不超过 1 个逗号、总体 20 字以内」的短句，并去掉表情/提示词残留。"""
     text = str(text or "").strip().strip("“”\"'「」")
+    # 去掉 `&&happy&&` 这类表情/心情提示词 token（可能还带缩进、间距）
+    text = re.sub(r"&{2,}.*?&{2,}", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
     # 最多保留 1 个逗号：按中文/英文逗号、顿号、分号切分，只保留前两句
     parts = re.split(r"[，,、；;]", text)
     if len(parts) > 2:
@@ -4586,12 +4589,14 @@ class GameCompanionPlugin(Star):
         m = re.search(r"·([^·()（）]+)\(AI\)", seat.display_name or "")
         persona = f"你的性格是【{m.group(1)}】，用词和口吻要贴合这个性格。" if m else ""
         if round_no <= 1:
-            stage_hint = "现在是第1轮，大家还很模糊，尽量笼统一带而过，别展开具体细节。"
-        elif round_no <= 3:
-            stage_hint = f"现在是第{round_no}轮，可以稍微具体一点点，但仍要合群委婉，别点明词条。"
+            stage_hint = "现在是第1轮：所有人都还在试探。你的描述必须非常非常笼统、抽象，让谁都听不出、也联想不到具体是什么东西（不要提任何形状、颜色、用途、场景、气味、触感）。只说一句放之四海皆可、谁都能认同的泛泛感受即可。"
+        elif round_no <= 2:
+            stage_hint = "现在是第2轮：仍然要很含蓄。最多只能给出一个非常模糊、无法指向特定物件的侧面，绝不能让卧底或白板据此联想到物品本身。"
+        elif round_no <= 4:
+            stage_hint = f"现在是第{round_no}轮：可以稍微具体一点点了，但仍要委婉合群，别把特征说得太实在，别点名词条。"
         else:
-            stage_hint = f"现在是第{round_no}轮，可以适当说具体些争取信任，但仍绝不能点明词条。"
-        prompt += persona + stage_hint + "整句务必控制在20字以内、最多1个逗号，越简短利落越好。"
+            stage_hint = f"现在是第{round_no}轮：局势拉开，可以适当说具体些争取信任，但仍绝不能点名词条。"
+        prompt += persona + stage_hint + "整句务必控制在20字以内、最多1个逗号，越简短利落越好。不要输出任何表情代码、括号提示或说明。"
         try:
             content = await asyncio.wait_for(
                 self._generate_persona_text(room, prompt),

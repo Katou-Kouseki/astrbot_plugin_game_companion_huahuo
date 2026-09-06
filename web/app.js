@@ -15,6 +15,7 @@
   let ucVoteFlipTimeout = null;       // 票数「？」→数字翻拍的延时句柄
   let ucLastHostScalesKey = "";        // 上次渲染的房主阵营比例键（用于仅在校验变化时回填输入框）
   let ucPrevMyOut = false;             // 上一帧本机是否已出局（用于触发出局提示）
+  const ucRevealNodeCache = {};        // key `${gameUid}:${round}` -> {node, at}，让票数揭晓动画跨轮询存活
   const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
@@ -1897,6 +1898,7 @@
       ucPrevExpectedSpeaker = null;
       ucLastRoundCount = 0;
       ucPrevMyOut = false;
+      for (const k of Object.keys(ucRevealNodeCache)) delete ucRevealNodeCache[k];
       window.clearTimeout(ucVoteFlipTimeout);
       ucVoteFlipTimeout = null;
     }
@@ -2318,14 +2320,15 @@
         voteHeaderLi.appendChild(votingBlock);
       } else if (votesComplete && votes.length) {
         // 这一轮刚集齐票：给投票块播放「放大→票数从？翻成数字」的揭晓动画（每轮只播一次）
-        const justRevealed = !ucVoteRevealSet.has(r.round_number);
-        if (justRevealed) ucVoteRevealSet.add(r.round_number);
-        const popCls = justRevealed ? " uc-reveal-pop" : "";
+        // 注意：此处只读 justRevealed 用于 show_voters 分支；集齐标记的写入在各自分支内完成，
+        // 避免在进入票数统计分支前就提前把标记置为“已揭晓”而导致下图动画被跳过。
+        const preclude = !ucVoteRevealSet.has(r.round_number);
         if (snap.show_voters) {
+          if (preclude) ucVoteRevealSet.add(r.round_number);
           vh.textContent = "投票结果（含投票人）";
           const voteBlock = document.createElement("div");
-          voteBlock.className = "uc-votes-block" + popCls;
-          if (justRevealed) voteBlock.dataset.roundReveal = String(r.round_number);
+          voteBlock.className = "uc-votes-block" + (preclude ? " uc-reveal-pop" : "");
+          if (preclude) voteBlock.dataset.roundReveal = String(r.round_number);
           votes.forEach((v) => {
             const row = document.createElement("div");
             row.className = "uc-vote-row is-flow";
@@ -2347,45 +2350,73 @@
           voteHeaderLi.appendChild(voteBlock);
         } else {
           vh.textContent = "投票结果（票数统计）";
-          const voteBlock = document.createElement("div");
-          voteBlock.className = "uc-votes-block" + popCls;
-          if (justRevealed) voteBlock.dataset.roundReveal = String(r.round_number);
           const tally = {};
           votes.forEach((v) => {
             tally[v.target_number] = (tally[v.target_number] || 0) + 1;
           });
-          // 揭晓帧：先展示「所有應投票玩家 + ？」，再让数字从上方下落砸走问号；未得票的显示 0
           const voterNums = (r.vote_player_numbers || []).slice();
           if (!voterNums.length) {
             Object.keys(tally).forEach((k) => voterNums.push(Number(k)));
           }
-          let tallyIdx = 0;
-          voterNums.forEach((n) => {
-            const count = Number(tally[n] || 0);
-            const row = document.createElement("div");
-            row.className = "uc-vote-row is-tally";
-            const who = document.createElement("span");
-            who.className = "uc-target";
-            who.textContent = fmtPn(Number(n));
-            const num = document.createElement("em");
-            if (justRevealed) {
-              // 揭晓帧：先以「？」占位，稍后错峰让数字下落砸走问号
+          // 揭晓帧缓存：时间线每轮询会清空重建，若直接重建会立刻杀死正在播放的动画。
+          // 这里把刚集齐票的投票块缓存起来，在揭晓进行期间复用同一个 DOM 节点（动画不中断）。
+          const cacheKey = `${snap.game_uid}:${r.round_number}`;
+          const REVEAL_TTL = 2000;
+          const cached = ucRevealNodeCache[cacheKey];
+          const justRevealed = !ucVoteRevealSet.has(r.round_number);
+          const nowMs = Date.now();
+          let voteBlock;
+          if (justRevealed) {
+            ucVoteRevealSet.add(r.round_number);
+            voteBlock = document.createElement("div");
+            voteBlock.className = "uc-votes-block uc-reveal-pop";
+            voteBlock.dataset.roundReveal = String(r.round_number);
+            let tallyIdx = 0;
+            voterNums.forEach((n) => {
+              const count = Number(tally[n] || 0);
+              const row = document.createElement("div");
+              row.className = "uc-vote-row is-tally";
+              const who = document.createElement("span");
+              who.className = "uc-target";
+              who.textContent = fmtPn(Number(n));
+              const num = document.createElement("em");
               num.className = "uc-vote-count is-question";
               num.dataset.count = String(count);
               num.style.setProperty("--d", `${tallyIdx * 130}ms`);
               num.textContent = "？";
-            } else {
+              row.appendChild(who);
+              row.appendChild(num);
+              voteBlock.appendChild(row);
+              tallyIdx++;
+            });
+            ucRevealNodeCache[cacheKey] = { node: voteBlock, at: nowMs };
+            scheduleUcVoteFlip(r.round_number);
+          } else if (cached && nowMs - cached.at < REVEAL_TTL) {
+            // 揭晓动画仍在进行：复用缓存的节点，保持动画连续
+            voteBlock = cached.node;
+          } else {
+            if (cached) delete ucRevealNodeCache[cacheKey];
+            voteBlock = document.createElement("div");
+            voteBlock.className = "uc-votes-block";
+            let tallyIdx = 0;
+            voterNums.forEach((n) => {
+              const count = Number(tally[n] || 0);
+              const row = document.createElement("div");
+              row.className = "uc-vote-row is-tally";
+              const who = document.createElement("span");
+              who.className = "uc-target";
+              who.textContent = fmtPn(Number(n));
+              const num = document.createElement("em");
               num.className = "uc-vote-count" + (count === 0 ? " is-zero" : "");
               num.textContent = `${count}`;
-            }
-            row.appendChild(who);
-            row.appendChild(num);
-            voteBlock.appendChild(row);
-            tallyIdx++;
-          });
+              row.appendChild(who);
+              row.appendChild(num);
+              voteBlock.appendChild(row);
+              tallyIdx++;
+            });
+          }
           voteHeaderLi.appendChild(vh);
           voteHeaderLi.appendChild(voteBlock);
-          if (justRevealed) scheduleUcVoteFlip(r.round_number);
         }
       }
       if (voteHeaderLi.childNodes.length > 0) ul.appendChild(voteHeaderLi);

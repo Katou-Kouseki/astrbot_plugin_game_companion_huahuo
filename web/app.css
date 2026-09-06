@@ -143,7 +143,13 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 }
 .icon-btn:hover { background: var(--green-soft); color: var(--green); border-color: var(--green); }
 .icon-btn:active { transform: scale(0.96); }
-.icon-btn svg { width: 18px; }
+.icon-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block; /* 避免行内 svg 带来的基线偏移，图标在按钮内严格居中 */
+  margin: 0;
+  flex-shrink: 0;
+}
 .connection-dot { width: 8px; height: 8px; border-radius: 50%; background: #a2aaa5; }
 .connection-dot.online { background: #2b8a5b; }
 .connection-dot.error { background: #b54a40; }
