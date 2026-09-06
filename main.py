@@ -64,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.3.7"
+PLUGIN_VERSION = "0.3.8"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -4581,6 +4581,10 @@ class GameCompanionPlugin(Star):
                 content = _uc_ai_fallback(camp, round_no)
             if len(content) > 80:
                 content = content[:80]
+            # 白板 AI 兜底：一旦模型说出的内容泄露了任一词条（含「刷牙」之于「牙刷」这类），
+            # 立即换成安全的兜底文案，避免 AI 因“白板说词直接获胜”而莫名其妙结束整局。
+            if camp == "whiteboard" and game.leaks_word(content):
+                content = _uc_ai_fallback(camp, round_no)
             await self.manager.player_undercover_speech(
                 room, seat.visitor_token, content
             )

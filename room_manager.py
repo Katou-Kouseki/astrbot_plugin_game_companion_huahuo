@@ -188,6 +188,10 @@ class RoomManager:
         self.global_player_wins: dict[str, dict[str, object]] = (
             self._load_global_stats() if self.global_stats_path else {}
         )
+        # 卧底集结：全员就绪的时间戳（room_id -> now）。给玩家留出确认窗口，避免一键瞬间开局
+        self._undercover_all_ready_at: dict[str, float] = {}
+        # 全员就绪 -> 自动开局前的确认等待秒数（期间可取消准备）
+        self.UC_ALL_READY_CONFIRM_SECONDS = 2.0
 
     def global_leaderboard(self, limit: int = 50) -> list[dict[str, object]]:
         """返回跨房间全局胜场榜（按胜场降序）。"""
@@ -196,11 +200,12 @@ class RoomManager:
                 "name": str(info.get("name") or "未知玩家"),
                 "wins": int(info.get("wins") or 0),
             }
-            for info in sorted(
-                self.global_player_wins.values(),
-                key=lambda info: int(info.get("wins") or 0),
+            for qq, info in sorted(
+                self.global_player_wins.items(),
+                key=lambda item: int(item[1].get("wins") or 0),
                 reverse=True,
             )
+            if not str(qq or "").lower().startswith("ai-")  # 过滤 AI 玩家
         ][:max(0, int(limit))]
 
     def _load_global_stats(self) -> dict[str, dict[str, object]]:
@@ -217,6 +222,9 @@ class RoomManager:
         cleaned: dict[str, dict[str, object]] = {}
         for qq, info in raw.items():
             if not isinstance(qq, str) or not qq.strip() or not isinstance(info, dict):
+                continue
+            # 清理历史遗留的 AI 玩家条目（AI 席位使用 ai-* 伪 QQ）
+            if str(qq).lower().startswith("ai-"):
                 continue
             cleaned[qq.strip()] = {
                 "name": str(info.get("name") or ""),
@@ -2102,6 +2110,7 @@ class RoomManager:
             if room is None:
                 return None
             self._access_index.pop(room.access_token, None)
+            self._undercover_all_ready_at.pop(str(room_id or ""), None)
             room.status = "closed"
             room.close_reason = str(reason or "房间已结束")[:200]
             self._closed_access[room.access_token] = (
@@ -2322,9 +2331,9 @@ class RoomManager:
                             or uc_player.display_name.strip()
                             or f"{uc_player.number}号"
                         )
-                        # 全局胜场榜：仅累计已绑定 QQ 的玩家，跨房间汇总
+                        # 全局胜场榜：仅累计已绑定 QQ 的真人玩家（排除 AI），跨房间汇总
                         qq = (seat.qq or "").strip()
-                        if seat.identity_confirmed and qq:
+                        if not seat.is_ai and seat.identity_confirmed and qq:
                             global_entry = self.global_player_wins.setdefault(
                                 qq, {"name": "", "wins": 0}
                             )
@@ -2387,7 +2396,22 @@ class RoomManager:
                     and all(s.ready for s in live_seats)
                 )
                 timed_out = bool(now >= state.turn_deadline)
-                if (full or timed_out or all_ready) and live_count >= self.undercover_min_players:
+                # 全员就绪：先记录确认窗口起点，等待 2 秒（玩家可取消）再开局，避免秒开。
+                all_ready_confirm = False
+                if all_ready:
+                    ready_at = self._undercover_all_ready_at.get(room.room_id)
+                    if ready_at is None:
+                        self._undercover_all_ready_at[room.room_id] = now
+                        ready_at = now
+                        room.add_message(
+                            "system",
+                            f"所有玩家均已准备，{int(self.UC_ALL_READY_CONFIRM_SECONDS)} 秒后自动开始（可取消准备）。",
+                        )
+                        room.touch()
+                    all_ready_confirm = (now - ready_at) >= self.UC_ALL_READY_CONFIRM_SECONDS
+                else:
+                    self._undercover_all_ready_at.pop(room.room_id, None)
+                if (full or timed_out or all_ready_confirm) and live_count >= self.undercover_min_players:
                     target = next(
                         (
                             s.visitor_token
@@ -2398,6 +2422,7 @@ class RoomManager:
                     if target:
                         # 先把 turn_deadline 清零，避免重入
                         state.turn_deadline = 0.0
+                        self._undercover_all_ready_at.pop(room.room_id, None)
                         need_start_undercover = (room, target)
             elif (
                 room.game_type == "undercover"
@@ -3374,9 +3399,8 @@ class RoomManager:
     ) -> None:
         """玩家在谁是卧底集结阶段点击「准备」/「取消准备」。
 
-        全员就绪时立即自动开局；否则等待倒计时强制开局。
+        全员就绪后先给出确认窗口再自动开局；否则等待倒计时强制开局。
         """
-        need_start: tuple[GameRoom, str] | None = None
         async with room.lock:
             if (
                 room.game_type != "undercover"
@@ -3396,19 +3420,19 @@ class RoomManager:
                 if s.visitor_token
                 and (s.is_ai or s.visitor_token in room.visitors)
             ]
-            if (
+            all_ready = (
                 len(live_seats) >= int(self.undercover_min_players or 2)
                 and all(s.ready for s in live_seats)
-            ):
-                need_start = (
-                    room,
-                    next((s.visitor_token for s in live_seats), ""),
-                )
-        if need_start is not None:
-            try:
-                await self.start_game(need_start[0], need_start[1], "")
-            except (ValueError, PermissionError, RuntimeError):
-                pass
+            )
+            if all_ready:
+                # 全员就绪：记录确认窗口起点（避免重复提示）；真正开局交给 housekeeping 延时触发
+                if self._undercover_all_ready_at.get(room.room_id) is None:
+                    self._undercover_all_ready_at[room.room_id] = time.time()
+                    room.add_message(
+                        "system", "所有玩家均已准备，2 秒后自动开始（可取消准备）。"
+                    )
+            else:
+                self._undercover_all_ready_at.pop(room.room_id, None)
         await self._emit("seats_changed", room, {"ready": bool(ready)})
 
     async def leave_player_seat(self, room: GameRoom, visitor_token: str) -> None:

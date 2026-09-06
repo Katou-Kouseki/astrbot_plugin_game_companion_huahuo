@@ -620,16 +620,17 @@
     });
   }
 
-  // 时间线票数揭晓：稍后把本轮投票块里的「？」错峰翻成真实数字
+  // 时间线票数揭晓：稍后让数字从上方“下落砸走问号”，错峰依次揭晓
   function scheduleUcVoteFlip(roundNumber) {
     window.clearTimeout(ucVoteFlipTimeout);
     ucVoteFlipTimeout = window.setTimeout(() => {
       const block = document.querySelector(`.uc-votes-block[data-round-reveal="${roundNumber}"]`);
       if (!block) return;
       block.querySelectorAll(".uc-vote-count.is-question").forEach((cell) => {
-        cell.textContent = `${cell.dataset.count || 0} 票`;
+        const count = cell.dataset.count || "0";
+        cell.textContent = `${count} 票`;
         cell.classList.remove("is-question");
-        cell.classList.add("is-flipped");
+        cell.classList.add("is-flipped", count === "0" ? "is-zero" : "");
       });
       ucVoteFlipTimeout = null;
     }, 520);
@@ -787,12 +788,23 @@
     const nowServer = serverBase + ((Date.now() / 1000) - takenAt);
     const remain = deadline ? Math.max(0, Math.ceil(deadline - nowServer)) : 0;
     const capacityText = capacity > 0 ? `${current}/${capacity}` : `${current}`;
-    const remainingText = deadline && remain > 0
-      ? (capacity > 0 && current >= capacity ? "人满，即将开局" : `${remain} 秒后自动开局`)
-      : "等待更多玩家加入...";
+    // 全员就绪：进入确认窗口，提示“马上开始”
+    const seats = Array.isArray(room.player_seats) ? room.player_seats : [];
+    const liveSeats = seats.filter((s) => s.is_ai || s.identity_confirmed);
+    const allReady = liveSeats.length >= Number(room.undercover_min_players || 2)
+      && liveSeats.every((s) => s.ready);
+    const remainingText = allReady
+      ? "玩家均已准备，马上开始…"
+      : (deadline && remain > 0
+        ? (capacity > 0 && current >= capacity ? "人满，即将开局" : `${remain} 秒后自动开局`)
+        : "等待更多玩家加入...");
     if (big) {
-      const mainNum = capacity > 0 && current >= capacity ? "准备开局" : (deadline && remain > 0 ? `${remain}` : "--");
-      big.innerHTML = `开始倒计时 · <strong>${mainNum}</strong> ${(capacity > 0 && current >= capacity) || !(deadline && remain > 0) ? "" : "秒"}`;
+      const mainNum = allReady
+        ? "准备开局"
+        : (capacity > 0 && current >= capacity ? "准备开局" : (deadline && remain > 0 ? `${remain}` : "--"));
+      big.innerHTML = allReady
+        ? `所有玩家均已准备 · <strong>马上开始</strong>`
+        : `开始倒计时 · <strong>${mainNum}</strong> ${(capacity > 0 && current >= capacity) || !(deadline && remain > 0) ? "" : "秒"}`;
       big.setAttribute("data-detail", `已入座 ${capacityText} 人 · ${remainingText}`);
     }
   }, 1000);
@@ -2196,6 +2208,9 @@
     const rounds = snap.rounds_public || [];
     const currentRoundIdx = rounds.length ? rounds.length - 1 : -1;
     rounds.forEach((r, roundIdx) => {
+      // 每一轮包进统一条目，便于双列平铺布局（第1轮左、第2轮右，依自然列流左右交替）
+      const roundBox = document.createElement("div");
+      roundBox.className = "uc-round";
       const header = document.createElement("header");
       header.className = "uc-round-header";
       const title = document.createElement("h4");
@@ -2215,7 +2230,7 @@
         pkBadge.textContent = "平票 → PK";
         header.appendChild(pkBadge);
       }
-      timeline.appendChild(header);
+      roundBox.appendChild(header);
       const ul = document.createElement("ul");
       ul.className = "uc-round-list";
       // 发言列表（按 speaking_order 顺序）
@@ -2306,22 +2321,28 @@
           votes.forEach((v) => {
             tally[v.target_number] = (tally[v.target_number] || 0) + 1;
           });
+          // 揭晓帧：先展示「所有應投票玩家 + ？」，再让数字从上方下落砸走问号；未得票的显示 0
+          const voterNums = (r.vote_player_numbers || []).slice();
+          if (!voterNums.length) {
+            Object.keys(tally).forEach((k) => voterNums.push(Number(k)));
+          }
           let tallyIdx = 0;
-          Object.entries(tally).forEach(([target, count]) => {
+          voterNums.forEach((n) => {
+            const count = Number(tally[n] || 0);
             const row = document.createElement("div");
             row.className = "uc-vote-row is-tally";
             const who = document.createElement("span");
             who.className = "uc-target";
-            who.textContent = fmtPn(Number(target));
+            who.textContent = fmtPn(Number(n));
             const num = document.createElement("em");
             if (justRevealed) {
-              // 揭晓帧：先以「？」占位，稍后错峰翻成数字
+              // 揭晓帧：先以「？」占位，稍后错峰让数字下落砸走问号
               num.className = "uc-vote-count is-question";
               num.dataset.count = String(count);
               num.style.setProperty("--d", `${tallyIdx * 130}ms`);
               num.textContent = "？";
             } else {
-              num.className = "uc-vote-count";
+              num.className = "uc-vote-count" + (count === 0 ? " is-zero" : "");
               num.textContent = `${count} 票`;
             }
             row.appendChild(who);
@@ -2335,11 +2356,12 @@
         }
       }
       if (voteHeaderLi.childNodes.length > 0) ul.appendChild(voteHeaderLi);
+      roundBox.appendChild(ul);
       // 新进入的一轮：给整轮时间线淡入动画（仅轮次新增时触发一次，避免每次轮询闪烁）
       if (rounds.length && r.is_pk === false && roundIdx === rounds.length - 1 && rounds.length > ucLastRoundCount) {
-        ul.classList.add("uc-round-new");
+        roundBox.classList.add("uc-round-new");
       }
-      timeline.appendChild(ul);
+      timeline.appendChild(roundBox);
     });
 
     // 记录本轮时间线轮次数（供新轮淡入动画判断）

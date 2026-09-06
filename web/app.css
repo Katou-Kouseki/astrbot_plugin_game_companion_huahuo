@@ -1315,8 +1315,9 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   color: var(--text-strong);
 }
 .uc-timeline-list {
-  display: flex;
-  flex-direction: column;
+  /* 双列平铺：第1轮左、第2轮右，第3轮左下、第4轮右下，依自然列流左右交替 */
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
   padding: 0;
   margin: 0;
@@ -1327,16 +1328,45 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   max-height: 55vh;
   overflow: auto;
 }
+/* 窄屏（手机）时间线恢复单列，避免双列太挤 */
+@media (max-width: 600px) {
+  .uc-timeline-list { grid-template-columns: 1fr; }
+}
+.uc-round {
+  display: block;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: .8rem;
+  padding: .6rem .7rem;
+  align-self: start;
+}
+.uc-round > .uc-round-list {
+  margin-top: .45rem;
+}
 .uc-round-header {
   display: flex;
   align-items: center;
   gap: .5rem;
   flex-wrap: wrap;
+  margin-bottom: .35rem;
 }
 .uc-round-header h4 {
   margin: 0;
   color: var(--text-strong);
   font-size: .95rem;
+}
+/* 轮次淘汰提示：更醒目的红色徽标（带动画强调刚发生的淘汰） */
+.uc-round-header .chip-out {
+  font-weight: 800;
+  padding: .22rem .7rem;
+  font-size: .82rem;
+  color: var(--red);
+  border-color: color-mix(in srgb, var(--red) 55%, transparent);
+  background: color-mix(in srgb, var(--red) 16%, transparent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--red) 12%, transparent);
+}
+.uc-round-new .uc-round-header .chip-out {
+  animation: ucOutStamp .6s .15s ease-out both;
 }
 .uc-round-list {
   list-style: none;
@@ -1549,13 +1579,27 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   animation: ucVotePop .75s cubic-bezier(.2,.9,.25,1.1);
   transform-origin: center center;
 }
-/* 揭晓帧：票数先显示「？」占位，随后错峰翻成数字 */
-.uc-votes-block.uc-reveal-pop .uc-vote-count.is-question { color: var(--muted); }
+/* 揭晓帧：票数先显示「？」占位，随后数字从上方下落砸走问号 */
+.uc-votes-block.uc-reveal-pop .uc-vote-count.is-question { color: var(--muted); animation: ucQShake .5s ease-in-out infinite; }
 .uc-votes-block.uc-reveal-pop .uc-vote-count.is-flipped {
   color: var(--red);
   display: inline-block;
   transform-origin: center center;
-  animation: ucVoteNumFlip .55s var(--d, 0ms) cubic-bezier(.2,.9,.3,1.4) both;
+  animation: ucNumberDrop .55s var(--d, 0ms) cubic-bezier(.2, .85, .35, 1.05) both;
+}
+.uc-votes-block.uc-reveal-pop .uc-vote-count.is-flipped.is-zero {
+  color: var(--muted);
+}
+@keyframes ucQShake {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-2px) rotate(-4deg); }
+}
+/* 数字下落：从头顶砸下来，把问号挤掉 */
+@keyframes ucNumberDrop {
+  0%   { transform: translateY(-26px) scale(1.5); opacity: 0; }
+  60%  { transform: translateY(0) scale(1); opacity: 1; }
+  75%  { transform: translateY(-3px) scale(1.08); }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
 }
 @keyframes ucVotePop {
   0%   { transform: scale(1); }
@@ -1623,6 +1667,12 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 .uc-host-reveal-toggle input { width: 16px; height: 16px; accent-color: var(--green); }
 /* 谁是卧底房间隐藏通用「玩家/平局/花火」比分（比分不适用于多人语音局，改为右上角战绩榜） */
 body.room-undercover .score-panel { display: none; }
+/* 卧底房间不用「当前回合」（turn-panel），身份卡与房主操作面板上移 */
+body.room-undercover .turn-panel { display: none; }
+body.room-undercover .uc-identity-card { order: 1; }
+body.room-undercover .uc-room-panel { order: 2; }
+body.room-undercover .seat-panel { order: 3; }
+body.room-undercover .people-panel { order: 4; }
 /* 规则 / 战绩说明嵌入右侧面板后，去掉多余的自带卡片描边 */
 .uc-room-panel .uc-info-card { background: transparent; border: 0; padding: 0; }
 .uc-room-panel .uc-info-body { margin-top: .3rem; }
@@ -1643,14 +1693,11 @@ body.room-undercover .score-panel { display: none; }
 }
 
 @media (min-width: 768px) {
-  .uc-stage { grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr); }
+  /* 身份卡已移入右侧 game-panel，卧底舞台改回单列；发言时间线全宽双列平铺 */
+  .uc-stage { grid-template-columns: minmax(0, 1fr); }
   .uc-camp-summary { grid-column: 1 / -1; }
   .uc-players-grid { grid-column: 1 / -1; }
-  .uc-identity-card { grid-column: 1; }
-  /* 规则/战绩面板放进左列身份卡下方，填补空白 */
-  .uc-info-panels { grid-column: 1; }
-  /* 时间线独占右列并跨两行，解除限高滚动，充分利用页面高度 */
-  .uc-speech-timeline { grid-column: 2; grid-row: span 2; max-height: none; }
+  .uc-speech-timeline { grid-column: 1 / -1; max-height: none; }
   .uc-timeline-list { max-height: none; overflow: visible; }
   .uc-op-area { grid-column: 1 / -1; }
 }

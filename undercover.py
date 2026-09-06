@@ -21,6 +21,48 @@ def _text_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
+def _word_leaked(content: str, word: str) -> bool:
+    """判断发言是否“泄露”词条：包含词条本身、其倒序，或包含该词条的全部字符。
+
+    例如词条为「牙刷」时，发言「刷牙」同样视为泄露并需屏蔽/触发白板胜，
+    避免玩家用词条字符的不同组合或倒序规避打码。
+    """
+    if not word or not content:
+        return False
+    if word in content or (word[::-1] in content and word[::-1] != word):
+        return True
+    return all(ch in content for ch in word)
+
+
+def _mask_leak(content: str, word: str) -> str:
+    """把发言中泄露词条的最短片段替换为「***」。
+
+    优先替换词条本身或其倒序；都没直接命中时，取能覆盖该词条全部字符的最短连续窗口打码。
+    """
+    if word in content:
+        return content.replace(word, "***")
+    rev = word[::-1]
+    if rev in content and rev != word:
+        return content.replace(rev, "***")
+    chars = set(word)
+    # 查找能覆盖 word 全部字符的最短连续窗口
+    best = None
+    for start in range(len(content)):
+        seen: set[str] = set()
+        for end in range(start, len(content)):
+            if content[end] in chars:
+                seen.add(content[end])
+                if seen == chars:
+                    best = (start, end)
+                    break
+        if best:
+            break
+    if best:
+        start, end = best
+        return content[:start] + "***" + content[end + 1 :]
+    return content
+
+
 DEFAULT_SEED_WORDS: list[tuple[str, str]] = [
     ("牛奶", "豆浆"),
     ("苹果", "雪梨"),
@@ -377,12 +419,12 @@ class UndercoverGame:
         player = next(
             (p for p in self.players if p.number == int(player_number)), None
         )
-        # 词条打码：非白板玩家发言中出现任一当前词条（平民词/卧底词）时，
-        # 自动把词条屏蔽为「***」再发言，防止 AI/真人说漏嘴把词条暴露到公屏；白板不受限
+        # 词条打码：非白板玩家发言中出现任一当前词条（含其倒序/字符组合，如「刷牙」之于「牙刷」）时，
+        # 自动把泄露片段屏蔽为「***」再发言，防止 AI/真人说漏嘴把词条暴露到公屏；白板不受限
         if player is not None and player.camp != "whiteboard":
             for word in (self.civilian_word, self.undercover_word):
-                if word and word in content:
-                    content = content.replace(word, "***")
+                if word and _word_leaked(content, word):
+                    content = _mask_leak(content, word)
                     self.last_speech_masked = True
         # 相似度拦截：发言时即判定。
         # 1) 与同轮其他玩家已发言内容高度相似 → 直接驳回本次发言（不回弹对方发言、不要求任何人重讲），
@@ -415,10 +457,10 @@ class UndercoverGame:
                 at=time.time(),
             )
         )
-        # 白板说词条：直接获胜（规则：白板发言内容中包含任一词条即白板获胜）
+        # 白板说词条：直接获胜（规则：白板发言内容中泄露任一当前词条即白板获胜）
         if player is not None and player.camp == "whiteboard" and not self.finished:
             for w in (self.civilian_word, self.undercover_word):
-                if w and w in content:
+                if w and _word_leaked(content, w):
                     self.finished = True
                     self.phase = "finished"
                     self.winner_camp = "whiteboard"
@@ -593,6 +635,16 @@ class UndercoverGame:
         """返回 {civilian, undercover, whiteboard} 的存活/总数分布字典。
         提供给 main.py _live_game_state 等外部调用方。"""
         return self._camp_count_live() if live_only else self._camp_count_all()
+
+    def leaks_word(self, content: str) -> bool:
+        """判断某段文本是否泄露了任一当前词条（含倒序/字符组合）。
+
+        main.py 用来兜底：防止白板 AI 一不小心说出词条而直接结束游戏。
+        """
+        return any(
+            w and _word_leaked(content, w)
+            for w in (self.civilian_word, self.undercover_word)
+        )
 
     def snapshot(self, visitor_player_number: int | None = None) -> dict[str, Any]:
         visitor = next(
