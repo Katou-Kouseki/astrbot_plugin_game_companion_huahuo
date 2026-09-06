@@ -3434,6 +3434,9 @@ class RoomManager:
                     )
                     return
                 raise PermissionError("您当前不在玩家席")
+            # 对局进行中不允许退席（会在中途破坏发言/投票状态），请等本局结束
+            if room.status == "active":
+                raise PermissionError("本局游戏已开始，请稍后再试吧。")
             seat = room.multiplayer.seat_for_token(visitor.token)
             if seat is None:
                 raise PermissionError("您当前不在玩家席（观众无需退出）")

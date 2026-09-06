@@ -1255,15 +1255,28 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 .chip-pk { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
 
 .uc-identity-card {
-  background: var(--surface-solid);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 1rem;
   padding: 1rem 1.1rem;
+  color: var(--text);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .05);
 }
+.uc-identity-card[hidden] { display: none; }
 .uc-identity-card h3 {
   margin: 0 0 .6rem;
   color: var(--text-strong);
   font-size: 1rem;
+}
+/* 发放身份卡收起后，「本局身份卡」的飞入过渡动画 */
+.uc-identity-card.uc-identity-reveal {
+  animation: ucIdentityFly .55s cubic-bezier(.22, .85, .3, 1.15) both;
+}
+@keyframes ucIdentityFly {
+  0% { transform: translateY(-22px) scale(.94); opacity: .1; box-shadow: 0 18px 40px rgba(0, 0, 0, .28); }
+  60% { opacity: 1; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
 }
 .uc-id-row {
   display: inline-flex;

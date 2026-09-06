@@ -184,17 +184,6 @@
           <div id="ucTimeline" class="uc-timeline-list"></div>
         </section>
 
-        <section id="ucIdentityCard" class="uc-identity-card" aria-live="polite">
-          <h3>我的身份卡</h3>
-          <div class="uc-id-row">
-            <span class="uc-id-camp" id="ucMyCamp">未绑定</span>
-            <span class="uc-id-word" id="ucMyWord">—</span>
-          </div>
-          <p class="uc-id-note" id="ucCampHint">
-            绑定并加入玩家席后，这里会显示你的阵营和词条。
-          </p>
-        </section>
-
         <footer class="uc-op-area">
           <!-- 非发言/投票/PK 时的状态引导（idle/setup/finished），避免操作区整块空白 -->
           <div id="ucOpGuide" class="uc-op-guide" hidden>
@@ -328,6 +317,18 @@
             <strong id="turnLabel">等待开局</strong>
           </div>
           <span class="difficulty" id="difficulty">普通</span>
+        </section>
+
+        <!-- 本局身份卡：位于当前回合下方；发放身份时由弹出卡自然飞入该面板 -->
+        <section id="ucIdentityCard" class="uc-identity-card" aria-live="polite" aria-label="本局身份卡">
+          <h3>本局身份卡</h3>
+          <div class="uc-id-row">
+            <span class="uc-id-camp" id="ucMyCamp">未绑定</span>
+            <span class="uc-id-word" id="ucMyWord">—</span>
+          </div>
+          <p class="uc-id-note" id="ucCampHint">
+            绑定并加入玩家席后，这里会显示你的阵营和词条。
+          </p>
         </section>
 
         <section class="seat-panel">

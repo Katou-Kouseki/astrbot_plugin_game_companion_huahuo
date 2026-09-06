@@ -13,6 +13,7 @@
   let ucLastGameUid = "";             // 上一帧对局 uid（用于新一局重置动画/提示状态）
   let ucLastRoundCount = 0;          // 上一帧时间线已渲染的轮次数（用于新轮高亮）
   let ucVoteFlipTimeout = null;       // 票数「？」→数字翻拍的延时句柄
+  let ucLastHostScalesKey = "";        // 上次渲染的房主阵营比例键（用于仅在校验变化时回填输入框）
   const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
@@ -1088,6 +1089,9 @@
     if (!room) return;
     // 谁是卧底房间：隐藏通用「玩家/平局/花火」比分（多人语音局不适用），右侧由战绩榜与阶段条接管
     document.body.classList.toggle("room-undercover", room.game_type === "undercover");
+    // 本局身份卡只属于谁是卧底，其它玩法的右侧面板不显示它
+    const ucIdCard = document.getElementById("ucIdentityCard");
+    if (ucIdCard) ucIdCard.hidden = room.game_type !== "undercover";
     renderPeekGate();
     document.getElementById("roomId").textContent = room.room_id || "";
     document.getElementById("roomStatus").textContent = statusLabel(room.status);
@@ -1924,9 +1928,15 @@
         const defaultScales = (room.undercover_host_camp_scales || "4 1 0")
           .split(/[\s:：,，]+/).map((x) => Number(x) || 0);
         if (defaultScales.length < 3) defaultScales.push(0, 0, 0);
-        if (document.activeElement !== civ) civ.value = String(defaultScales[0] || 4);
-        if (document.activeElement !== uc) uc.value = String(defaultScales[1] || 1);
-        if (document.activeElement !== wb) wb.value = String(defaultScales[2] || 0);
+        // 只在「房主已保存的比例」发生变化时才回填输入框；否则不做任何覆盖。
+        // 这样玩家在中途编辑（哪怕已失焦还没点保存）时，数字不会因每次轮询被重置回默认。
+        const scalesKey = String(room.undercover_host_camp_scales || "4 1 0").trim();
+        if (ucLastHostScalesKey !== scalesKey) {
+          ucLastHostScalesKey = scalesKey;
+          civ.value = String(defaultScales[0] || 4);
+          uc.value = String(defaultScales[1] || 1);
+          wb.value = String(defaultScales[2] || 0);
+        }
         if (hostHint) hostHint.textContent = `当前比例：${civ.value} 民 ${uc.value} 卧 ${wb.value} 白（按实际人数按比例折算）`;
         const capacity = Number(room.player_capacity || 0);
         const current = seats.length;
@@ -3398,6 +3408,13 @@
       if (preheat) preheat.hidden = true;
       const card = document.getElementById("ucRevealCard");
       if (card) card.hidden = false;
+      // 发放身份卡收起后，让「本局身份卡」播放一次飞入动画（信息自然过渡到右侧面板）
+      const idCard = document.getElementById("ucIdentityCard");
+      if (idCard) {
+        idCard.classList.remove("uc-identity-reveal");
+        void idCard.offsetWidth; // 强制重排以重放动画
+        idCard.classList.add("uc-identity-reveal");
+      }
     });
   }
   // 结算卡关闭

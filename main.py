@@ -64,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.3.6"
+PLUGIN_VERSION = "0.3.7"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -382,7 +382,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "config_key": "undercover.failed_mute_seconds",
                 "label": "失败方禁言时长",
                 "type": "int",
-                "default": 0,
+                "default": 60,
                 "minimum": 0,
                 "maximum": 3600,
                 "unit": "秒",
@@ -393,7 +393,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "config_key": "undercover.violated_mute_seconds",
                 "label": "违规（说出词条）禁言时长",
                 "type": "int",
-                "default": 0,
+                "default": 300,
                 "minimum": 0,
                 "maximum": 3600,
                 "unit": "秒",
@@ -623,12 +623,12 @@ class GameCompanionPlugin(Star):
         self.undercover_similarity = self._cfg_int(
             "undercover.similarity", 80, minimum=0, maximum=100
         )
-        # 失败禁言 / 违规禁言（单位：秒，0 表示不禁言）
+        # 失败禁言 / 违规禁言（单位：秒，0 表示不禁言；默认 60 / 300）
         self.undercover_failed_mute_seconds = self._cfg_int(
-            "undercover.failed_mute_seconds", 0, minimum=0, maximum=3600
+            "undercover.failed_mute_seconds", 60, minimum=0, maximum=3600
         )
         self.undercover_violated_mute_seconds = self._cfg_int(
-            "undercover.violated_mute_seconds", 0, minimum=0, maximum=3600
+            "undercover.violated_mute_seconds", 300, minimum=0, maximum=3600
         )
         self.undercover_ai_fill_enabled = self._cfg_bool(
             "undercover.ai_fill_enabled", True
@@ -970,6 +970,8 @@ class GameCompanionPlugin(Star):
         return json.dumps(
             {
                 "ok": True,
+                # room_id 仅为内部标识，供多房间会话下后续 control/status 工具引用；
+                # 对用户没有意义，切勿在聊天里复述或解释它。
                 "room_id": room.room_id,
                 "room_url": "" if link_delivered else url,
                 "link_delivered": link_delivered,
@@ -982,7 +984,7 @@ class GameCompanionPlugin(Star):
                 "entry_timeout_seconds": self.manager.empty_player_timeout,
                 "instruction": (
                     "房间链接已由插件作为独立纯文字消息发送；正常延续人格聊天，"
-                    "不要复述、改写或重新生成链接。"
+                    "不要复述、改写或重新生成链接，也不要提起内部房间编号 room_id。"
                     if link_delivered
                     else "已复用当前会话的原房间，不得关闭它或创建新房间；完整保留 room_url。"
                     if reused
@@ -4509,9 +4511,13 @@ class GameCompanionPlugin(Star):
     ) -> None:
         game: UndercoverGame = room.game  # type: ignore[assignment]
         snap = game.snapshot(seat.number)
-        my = snap.get("my") or {}
-        camp = str(my.get("camp") or "")
-        word = str(my.get("word") or "")
+        # 注意：不能用快照里的 my.camp/my.word——「告知身份」关闭时快照会隐去阵营，
+        # AI 必须直接从游戏内部拿到自己的真实阵营与词条，否则会因 camp 为空而沉默卡局。
+        ai_player = next(
+            (p for p in game.players if int(p.number) == int(seat.number)), None
+        )
+        camp = str(ai_player.camp or "") if ai_player else ""
+        word = str(ai_player.word or "") if ai_player else ""
         # 收集本轮已经说完的玩家发言
         rounds = snap.get("rounds_public") or []
         prev_speeches: list[str] = []
@@ -4617,6 +4623,13 @@ class GameCompanionPlugin(Star):
             return
         my_camp = str((my_snap.get("my") or {}).get("camp") or "")
         my_word = str((my_snap.get("my") or {}).get("word") or "")
+        # 同上：AI 投票也需用真实阵营/词条，避免「告知身份」关闭时拿到被隐去的空值
+        ai_vp = next(
+            (p for p in game.players if int(p.number) == int(seat.number)), None
+        )
+        if ai_vp is not None:
+            my_camp = str(ai_vp.camp or "")
+            my_word = str(ai_vp.word or "")
         hint = (
             f"你是白板，你不知道任何词条。"
             if my_camp == "whiteboard"
