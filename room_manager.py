@@ -3179,7 +3179,7 @@ class RoomManager:
             if room.game.expected_speaker_number != visitor.number:
                 return
             skipped = room.game.expected_speaker_number
-            room.game.advance_speaker()
+            room.game.skip_current_speaker()
             round_number = room.game.current_round_number
             self._reset_turn_deadline(room)
             room.touch()

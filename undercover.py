@@ -139,6 +139,8 @@ class UCRound:
     votes: list[UCVote] = field(default_factory=list)
     out_player_number: int | None = None
     pk_reason: str = ""
+    # 本轮因超时被跳过发言的玩家编号（时间线据此显示“发言超时”，不产生占位发言）
+    skipped_player_numbers: list[int] = field(default_factory=list)
 
     def has_spoken(self, player_number: int) -> bool:
         return any(s.player_number == player_number for s in self.speeches)
@@ -510,6 +512,15 @@ class UndercoverGame:
             else:
                 self.phase = "voting"
 
+    def skip_current_speaker(self) -> None:
+        """跳过当前发言者（超时未发言）：记录为“发言超时”供时间线展示，并推进发言指针。"""
+        if self.phase not in ("speech", "pk") or self.pending_round is None:
+            return
+        exp = self.expected_speaker_number
+        if exp is not None and exp not in self.pending_round.skipped_player_numbers:
+            self.pending_round.skipped_player_numbers.append(exp)
+        self.advance_speaker()
+
     # ---------------------- Voting ----------------------
 
     def vote_tally_view(self) -> dict[int, int]:
@@ -726,6 +737,7 @@ class UndercoverGame:
                     "out_player_number": rnd.out_player_number,
                     "speech_order": list(rnd.speech_player_numbers),
                     "vote_player_numbers": list(rnd.vote_player_numbers),
+                    "skipped_player_numbers": list(rnd.skipped_player_numbers),
                     "speeches": speeches,
                     "votes": [
                         {

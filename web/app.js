@@ -868,6 +868,8 @@
       } else {
         const secEl = dock.querySelector(".speech-sec");
         if (secEl) secEl.textContent = timerActive ? `⏳ ${remain}s` : "不限时";
+        // 倒计时 ≤20 秒：加剧横幅波动以催促玩家发言
+        dock.classList.toggle("is-urgent", timerActive && remain > 0 && remain <= 20);
       }
     }
   }, 1000);
@@ -2168,13 +2170,19 @@
     // 3. 我的身份卡（只有本人能看到 camp/word）
     const my = snap.my || {};
     const idCardEl = document.getElementById("ucIdentityCard");
-    // 本机刚被淘汰：给出鼓励提示，并让本局身份卡播放入场/变暗过渡
+    // 本机刚被淘汰：弹出居中的离场提示（过渡到本局身份卡收尾交给关闭按钮处理）
     if (!!my.is_out && !ucPrevMyOut && room.status === "active") {
-      showToast("很遗憾，你被票出局了。尽力了，剩下的交给你的队友吧。", 3600);
-      if (idCardEl) {
-        idCardEl.classList.remove("uc-identity-eliminated");
-        void idCardEl.offsetWidth;
-        idCardEl.classList.add("uc-identity-eliminated");
+      const outOverlay = document.getElementById("ucOutOverlay");
+      if (outOverlay) {
+        const card = document.getElementById("ucOutCard");
+        if (card) {
+          card.style.animation = "none";
+          void card.offsetWidth;
+          card.style.animation = "";
+        }
+        outOverlay.hidden = false;
+      } else {
+        showToast("很遗憾，你被票出局了。剩下的交给队友吧。", 3600);
       }
     }
     ucPrevMyOut = !!my.is_out;
@@ -2274,8 +2282,14 @@
         const head = document.createElement("strong");
         head.textContent = `${pn}号`;
         const content = document.createElement("div");
-        content.className = "uc-speech-content";
-        content.textContent = sp ? sanitizeDisplayText(sp.content) : "（尚未发言）";
+        content.className = "uc-speech-content" + ((r.skipped_player_numbers || []).includes(Number(pn)) ? " is-skipped" : "");
+        if (sp) {
+          content.textContent = sanitizeDisplayText(sp.content);
+        } else if ((r.skipped_player_numbers || []).includes(Number(pn))) {
+          content.textContent = "（发言超时，已跳过）";
+        } else {
+          content.textContent = "（尚未发言）";
+        }
         li.appendChild(head);
         li.appendChild(content);
         ul.appendChild(li);
@@ -2575,6 +2589,10 @@
           badge = "🏆";
           title = "本局已结束";
           text = sanitizeDisplayText(winner.message || "胜负已分，可申请再来一局或退出对局。");
+        } else if (my.is_out && my.is_player) {
+          badge = "👀";
+          title = "已出局 · 观战中";
+          text = "你已被淘汰，正在观战，为仍在场的队友加油吧。";
         } else if (snap.phase === "voting") {
           badge = "🗳️";
           title = "玩家正在投票";
@@ -3525,6 +3543,20 @@
     ucResultClose.addEventListener("click", () => {
       const overlay = document.getElementById("ucResultOverlay");
       if (overlay) overlay.hidden = true;
+    });
+  }
+  // 离场提示关闭：收起后让本局身份卡播放一段变暗过渡
+  const ucOutClose = document.getElementById("ucOutClose");
+  if (ucOutClose) {
+    ucOutClose.addEventListener("click", () => {
+      const overlay = document.getElementById("ucOutOverlay");
+      if (overlay) overlay.hidden = true;
+      const idCard = document.getElementById("ucIdentityCard");
+      if (idCard) {
+        idCard.classList.remove("uc-identity-eliminated");
+        void idCard.offsetWidth;
+        idCard.classList.add("uc-identity-eliminated");
+      }
     });
   }
   // 规则说明 / 战绩排行折叠面板

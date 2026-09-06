@@ -272,6 +272,23 @@
         </div>
       </section>
 
+      <!-- 玩家被淘汰时居中的离场提示 → 关闭后过渡到本局身份卡 -->
+      <div
+        id="ucOutOverlay"
+        class="uc-out-overlay"
+        hidden
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ucOutTitle"
+      >
+        <div class="uc-out-card" id="ucOutCard">
+          <div class="uc-out-badge">🕯️</div>
+          <div class="uc-out-title" id="ucOutTitle">你被淘汰了</div>
+          <p class="uc-out-message" id="ucOutMessage">很遗憾，你尽力了，剩下的交给你的队友吧。</p>
+          <button id="ucOutClose" class="primary-action" type="button">知道了，继续观战</button>
+        </div>
+      </div>
+
       <section id="drawStage" class="draw-stage" hidden aria-label="你画我猜">
         <header class="draw-header">
           <div>
