@@ -64,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.3.4"
+PLUGIN_VERSION = "0.3.5"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -1737,9 +1737,12 @@ class GameCompanionPlugin(Star):
                 payload["word_pair"] = pair
             return
         if event_name == "undercover_game_started":
-            if self.undercover_send_identity_in_card and isinstance(
-                room.game, UndercoverGame
-            ):
+            send_card = (
+                room.undercover_reveal_identity
+                if room.undercover_reveal_identity is not None
+                else self.undercover_send_identity_in_card
+            )
+            if send_card and isinstance(room.game, UndercoverGame):
                 self._spawn(self._deliver_undercover_identities(room, room.game))
             if isinstance(room.game, UndercoverGame):
                 # 开局后轮到第一位玩家发言，如果第一位是 AI，立即驱动
@@ -4314,28 +4317,38 @@ class GameCompanionPlugin(Star):
     async def _deliver_undercover_identities(
         self, room: GameRoom, game: UndercoverGame
     ) -> None:
-        """通过 AstrBot 私聊把身份词条发给每个玩家；失败或未绑定 QQ 时仅依赖 WebUI 身份卡。"""
-        for player in game.players_all:
+        """通过 AstrBot 私聊把身份词条发给每个玩家；失败或未绑定 QQ 时仅依赖 WebUI 身份卡。
+
+        关闭「告知身份」时（game.reveal_identity=False），平民/卧底只发词条不告知身份，
+        白板始终正常告知。
+        """
+        for player in game.players:
             try:
                 snap = game.snapshot(player.player_number)
                 mine = snap.get("my") or {}
-                camp_label = {
-                    "civilian": "平民",
-                    "undercover": "卧底",
-                    "whiteboard": "白板",
-                }.get(str(mine.get("camp") or ""), str(mine.get("camp") or "平民"))
+                camp = str(mine.get("camp") or "")
                 word = str(mine.get("word") or "")
                 qq = str(player.qq or "")
                 if not qq:
                     continue
                 name = player.display_name or f"{player.player_number}号玩家"
-                text = (
-                    f"【花火陪你玩·谁是卧底】{name} 你是：{camp_label}。"
-                )
-                if camp_label == "白板":
-                    text += "白板没有词条，你的目标是在不暴露的情况下，模仿他人描述坚持到卧底被淘汰。"
+                if camp == "whiteboard":
+                    text = (
+                        f"【花火陪你玩·谁是卧底】{name} 你是：白板。"
+                        "白板没有词条，你的目标是在不暴露的情况下，模仿他人描述坚持到卧底被淘汰。"
+                    )
+                elif camp:
+                    camp_label = {
+                        "civilian": "平民",
+                        "undercover": "卧底",
+                    }.get(camp, camp)
+                    text = (
+                        f"【花火陪你玩·谁是卧底】{name} 你是：{camp_label}。"
+                        f"你的词条是：「{word}」。"
+                    )
                 else:
-                    text += f"你的词条是：「{word}」。"
+                    # 未告知身份：仅发放词条
+                    text = f"【花火陪你玩·谁是卧底】{name} 你的词条是：「{word}」。"
                 text += "请勿向其他人泄露；更多细节请在 WebUI 身份卡查看。"
                 # AstrBot 的私聊接口：如果 fail 直接吞掉
                 try:

@@ -686,8 +686,10 @@ class UndercoverGame:
             my_info["is_player"] = True
             my_info["player_number"] = visitor.number
             if visitor.camp != "none":
-                my_info["camp"] = visitor.camp
+                # 词条始终告知；关闭“告知身份”时平民/卧底只给词条不标身份，白板始终正常告知
                 my_info["word"] = visitor.word or ""
+                if self.reveal_identity or visitor.camp == "whiteboard":
+                    my_info["camp"] = visitor.camp
         winner_info: dict[str, Any] | None = None
         if self.phase == "finished" and self.winner_camp:
             winner_info = {

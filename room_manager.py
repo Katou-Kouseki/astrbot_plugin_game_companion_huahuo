@@ -788,6 +788,7 @@ class RoomManager:
                     display_name=ai_display,
                     identity_confirmed=True,
                     is_ai=True,
+                    ready=True,  # AI 自动算作已准备
                 )
                 # 注册 AI 到 visitors，保持玩家可见性一致
                 ai_v = Visitor(
@@ -823,7 +824,11 @@ class RoomManager:
             camp_scales=camp_scales,
             first_round_non_voting=self.undercover_first_round_non_voting,
             similarity=self.undercover_similarity,
-            reveal_identity=self.undercover_send_identity_in_card,
+            reveal_identity=(
+                room.undercover_reveal_identity
+                if room.undercover_reveal_identity is not None
+                else self.undercover_send_identity_in_card
+            ),
             show_voters=self.undercover_show_voters,
         )
         room.game.attach_players(
@@ -1421,7 +1426,26 @@ class RoomManager:
                 room.multiplayer.current_turn_index = 0
                 side_label = ""
             elif isinstance(room.game, UndercoverGame):
-                side_label = await self._setup_undercover_game(room)
+                # 再来一局：不直接开局，回到玩家集结阶段。
+                # 房主可重新调整卧底/平民/白板数量；玩家点击「准备」，
+                # 全员就绪或倒计时结束会自动开局。
+                room.game = None
+                room.status = "setup"
+                for seat in room.multiplayer.seats:
+                    # 真人重置为未准备；AI 始终保持已准备，不影响“全员就绪自动开局”
+                    if not seat.is_ai:
+                        seat.ready = False
+                duration = max(10, int(self.undercover_match_seconds or 60))
+                state = room.multiplayer
+                state.turn_timeout_seconds = duration
+                state.turn_deadline = time.time() + duration
+                room.add_message(
+                    "system",
+                    "房主发起了再来一局。玩家点击「准备」后，全员就绪或倒计时结束将自动开局；"
+                    "房主可在开局前调整卧底/平民/白板数量。",
+                )
+                room.touch()
+                return
             else:
                 raise ValueError("当前游戏状态无法重新开始")
             room.status = "active"
@@ -2344,27 +2368,30 @@ class RoomManager:
                 and room.status == "setup"
                 and game is None
             ):
-                # 谁是卧底等待匹配阶段：人满或倒计时到了就自动开始
+                # 谁是卧底等待匹配阶段：全员就绪、人满或倒计时到了就自动开始
                 if not state.turn_deadline:
                     # 兜底：若之前没设置倒计时，则设置一个
                     duration = max(10, int(self.undercover_match_seconds or 60))
                     state.turn_timeout_seconds = duration
                     state.turn_deadline = now + duration
-                live_count = sum(
-                    1
+                live_seats = [
+                    s
                     for s in state.seats
                     if s.visitor_token
                     and (s.is_ai or s.visitor_token in room.visitors)
-                )
+                ]
+                live_count = len(live_seats)
                 full = state.capacity > 0 and live_count >= state.capacity
+                all_ready = (
+                    live_count >= self.undercover_min_players
+                    and all(s.ready for s in live_seats)
+                )
                 timed_out = bool(now >= state.turn_deadline)
-                if (full or timed_out) and live_count >= self.undercover_min_players:
+                if (full or timed_out or all_ready) and live_count >= self.undercover_min_players:
                     target = next(
                         (
                             s.visitor_token
-                            for s in state.seats
-                            if s.visitor_token
-                            and (s.is_ai or s.visitor_token in room.visitors)
+                            for s in live_seats
                         ),
                         None,
                     )
@@ -3307,6 +3334,7 @@ class RoomManager:
                 display_name=display_name,
                 identity_confirmed=True,
                 is_ai=True,
+                ready=True,  # AI 自动算作已准备
             )
             # 注册 AI 到 visitors，让玩家列表/玩家标签/聊天名单可见
             ai_v = Visitor(
@@ -3340,3 +3368,99 @@ class RoomManager:
                 "live_count": live_count,
                 "capacity": capacity,
             }
+
+    async def set_player_ready(
+        self, room: GameRoom, visitor_token: str, ready: bool
+    ) -> None:
+        """玩家在谁是卧底集结阶段点击「准备」/「取消准备」。
+
+        全员就绪时立即自动开局；否则等待倒计时强制开局。
+        """
+        need_start: tuple[GameRoom, str] | None = None
+        async with room.lock:
+            if (
+                room.game_type != "undercover"
+                or room.status != "setup"
+                or room.game is not None
+            ):
+                raise ValueError("当前不是谁是卧底的集结阶段")
+            visitor = self._visitor(room, visitor_token)
+            seat = room.multiplayer.seat_for_token(visitor.token)
+            if seat is None:
+                raise PermissionError("您还没有加入玩家席")
+            seat.ready = bool(ready)
+            room.touch()
+            live_seats = [
+                s
+                for s in room.multiplayer.seats
+                if s.visitor_token
+                and (s.is_ai or s.visitor_token in room.visitors)
+            ]
+            if (
+                len(live_seats) >= int(self.undercover_min_players or 2)
+                and all(s.ready for s in live_seats)
+            ):
+                need_start = (
+                    room,
+                    next((s.visitor_token for s in live_seats), ""),
+                )
+        if need_start is not None:
+            try:
+                await self.start_game(need_start[0], need_start[1], "")
+            except (ValueError, PermissionError, RuntimeError):
+                pass
+        await self._emit("seats_changed", room, {"ready": bool(ready)})
+
+    async def set_undercover_reveal_identity(
+        self, room: GameRoom, visitor_token: str, reveal_identity: bool
+    ) -> bool:
+        """房主在集结阶段调整「告知身份」开关，本局生效。"""
+        async with room.lock:
+            if room.game_type != "undercover":
+                raise PermissionError("仅谁是卧底房间支持本设置")
+            if room.status not in ("waiting", "setup"):
+                raise PermissionError("对局已开始，不能再修改身份告知设置")
+            host_seat = type(self)._undercover_host_seat(room)
+            requester = self._visitor(room, visitor_token)
+            if host_seat is None:
+                raise PermissionError(
+                    "房间内暂无已绑定QQ身份的玩家，暂无法作为房主修改房间设置"
+                )
+            if host_seat.visitor_token != requester.token:
+                raise PermissionError(
+                    f"只有房主（{host_seat.display_name or f'{host_seat.number}号'}）"
+                    f"才能修改身份告知设置"
+                )
+            room.undercover_reveal_identity = bool(reveal_identity)
+            room.add_message(
+                "system",
+                (
+                    "房主已开启「告知身份」：开场会同时发放身份与词条卡。"
+                    if reveal_identity
+                    else "房主已关闭「告知身份」：开场只发放词条，不告知平民/卧底身份。"
+                ),
+            )
+            room.touch()
+            return room.undercover_reveal_identity
+
+    async def unbind_identity(self, room: GameRoom, visitor_token: str) -> None:
+        """解绑当前访客的 QQ 身份：清空座位绑定，回到绑定引导界面。"""
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            old_qq = visitor.qq or ""
+            visitor.identity_confirmed = False
+            visitor.qq = ""
+            visitor.binding_token = ""
+            visitor.binding_expires_at = 0.0
+            if room.multiplayer.enabled:
+                seat = room.multiplayer.seat_for_token(visitor.token)
+                if seat is not None:
+                    seat.identity_confirmed = False
+                    seat.qq = ""
+            else:
+                if room.player_token == visitor.token:
+                    room.player_identity_confirmed = False
+                    room.player_qq = ""
+            if old_qq and old_qq in room.confirmed_participant_qqs:
+                room.confirmed_participant_qqs.discard(old_qq)
+            room.touch()

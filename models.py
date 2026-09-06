@@ -52,6 +52,7 @@ class PlayerSeat:
     identity_confirmed: bool = False
     seated_at: float = field(default_factory=time.time)
     is_ai: bool = False
+    ready: bool = False
 
 
 @dataclass(slots=True)
@@ -172,6 +173,7 @@ class GameRoom:
     undercover_ai_fill_enabled: bool = False
     undercover_min_players: int = 2
     undercover_allow_host_customize_camp_scales: bool = True
+    undercover_reveal_identity: bool | None = None
     created_at: float = field(default_factory=time.time)
     last_activity_at: float = field(default_factory=time.time)
     player_empty_since: float | None = field(default_factory=time.time)
@@ -446,6 +448,7 @@ class GameRoom:
             "undercover_allow_host_customize_camp_scales": (
                 self.undercover_allow_host_customize_camp_scales
             ),
+            "undercover_reveal_identity": self.undercover_reveal_identity,
             "player_seats": [
                 {
                     "number": seat.number,
@@ -454,6 +457,7 @@ class GameRoom:
                     "identity_confirmed": bool(seat.identity_confirmed),
                     "is_ai": bool(seat.is_ai),
                     "seated_at": seat.seated_at,
+                    "ready": bool(seat.ready),
                 }
                 for seat in (multiplayer.seats if multiplayer.enabled else [])
             ],

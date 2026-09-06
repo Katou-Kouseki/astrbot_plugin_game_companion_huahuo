@@ -130,6 +130,11 @@ class GameRoomServer:
             self._undercover_set_camp_scales,
         )
         app.router.add_post(
+            "/api/room/{access_token}/undercover/reveal",
+            self._undercover_set_reveal_identity,
+        )
+        app.router.add_post("/api/room/{access_token}/ready", self._ready)
+        app.router.add_post(
             "/api/room/{access_token}/undercover/add_ai",
             self._undercover_add_ai_seat,
         )
@@ -225,6 +230,9 @@ class GameRoomServer:
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.heartbeat(room, visitor_token)
+        if payload.get("unbind") is True:
+            # 解绑玩家：清空 QQ 身份绑定，回到绑定引导界面
+            await self.manager.unbind_identity(room, visitor_token)
         raw_token = str(request.cookies.get(self.TRUSTED_BROWSER_COOKIE) or "")
         store = getattr(self.plugin, "trusted_identity_store", None)
         if store is not None and raw_token:
@@ -528,6 +536,47 @@ class GameRoomServer:
                 "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard()),
             }
         )
+
+    async def _undercover_set_reveal_identity(
+        self, request: web.Request
+    ) -> web.Response:
+        """房主在集结阶段切换「告知身份」开关。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        reveal_identity = payload.get("reveal_identity") is True
+        try:
+            await self.manager.set_undercover_reveal_identity(
+                room, visitor_token, reveal_identity
+            )
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=400,
+            )
+        return self._response(
+            {
+                "reveal_identity": room.undercover_reveal_identity,
+                "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard()),
+            }
+        )
+
+    async def _ready(self, request: web.Request) -> web.Response:
+        """谁是卧底集结阶段：玩家点击准备/取消准备。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        ready = payload.get("ready") is True
+        try:
+            await self.manager.set_player_ready(room, visitor_token, ready)
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=400,
+            )
+        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard())})
 
     async def _undercover_add_ai_seat(self, request: web.Request) -> web.Response:
         """房主/管理员手动追加一位 AI 玩家（计入总数，不可超容量）。"""

@@ -166,9 +166,23 @@
               当前 0/0 人
             </small>
           </div>
+          <div class="uc-host-camp-row">
+            <label class="uc-host-reveal-toggle">
+              <input id="ucHostRevealCheck" type="checkbox" checked />
+              <span>🎴 告知身份（开场发放身份/词条卡）</span>
+            </label>
+            <small id="ucHostRevealHint" class="muted">
+              开启：发放身份 + 词条；关闭：只发词条、不告知平民/卧底身份（白板不受影响）
+            </small>
+          </div>
         </section>
 
         <div id="ucPlayersGrid" class="uc-players-grid" aria-label="玩家列表"></div>
+
+        <section class="uc-speech-timeline" aria-label="历史发言">
+          <h3>发言与投票时间线</h3>
+          <div id="ucTimeline" class="uc-timeline-list"></div>
+        </section>
 
         <section id="ucIdentityCard" class="uc-identity-card" aria-live="polite">
           <h3>我的身份卡</h3>
@@ -181,52 +195,7 @@
           </p>
         </section>
 
-        <div class="uc-info-panels">
-          <section class="uc-info-card">
-            <button
-              id="ucRulesToggle"
-              class="uc-info-toggle"
-              type="button"
-              aria-expanded="false"
-            >
-              <span>📜 游戏规则</span>
-              <i class="uc-info-arrow" aria-hidden="true"></i>
-            </button>
-            <div id="ucRulesBody" class="uc-info-body" hidden>
-              <p><strong>【平民】</strong>找出混在玩家中所有的卧底和白板</p>
-              <p><strong>【卧底】</strong>隐藏自己，直到所有平民出局，或者存活至仅剩2人为止</p>
-              <p><strong>【白板】</strong>没有词条，根据其他玩家的发言推测词条，找出卧底或者存活到仅剩2人为止，白板不会出现在前两名发言玩家当中</p>
-              <p><strong>【词条】</strong>除了白板以外，其他玩家的发言中不允许出现词条本身，否则游戏自动结束。当白板的发言内容中包含任意一个词条时，白板获胜</p>
-              <p class="uc-rules-tip">如无法收到私聊词条，请添加花火为好友。</p>
-            </div>
-          </section>
-          <section class="uc-info-card">
-            <button
-              id="ucBoardToggle"
-              class="uc-info-toggle"
-              type="button"
-              aria-expanded="false"
-            >
-              <span>🏆 全局战绩排行</span>
-              <i class="uc-info-arrow" aria-hidden="true"></i>
-            </button>
-            <div id="ucBoardBody" class="uc-info-body" hidden>
-              <div id="ucLeaderboard" class="uc-leaderboard"></div>
-            </div>
-          </section>
-        </div>
-
-        <section class="uc-speech-timeline" aria-label="历史发言">
-          <h3>发言与投票时间线</h3>
-          <div id="ucTimeline" class="uc-timeline-list"></div>
-        </section>
-
         <footer class="uc-op-area">
-          <div class="uc-phase-readout" id="ucPhaseReadout">
-            <span>阶段：<strong id="ucPhase">等待开始</strong></span>
-            <span id="ucExpectedSpeaker"></span>
-            <span id="ucTurnTimer"></span>
-          </div>
           <div id="ucSpeechBox" class="uc-speech-box">
             <textarea
               id="ucSpeechInput"
@@ -380,7 +349,7 @@
           <div id="trustedIdentityStatus" class="trusted-identity-status" hidden>
             <i data-lucide="shield-check"></i>
             <span id="trustedIdentityText"></span>
-            <button id="forgetIdentity" type="button" title="不再信任此浏览器" aria-label="不再信任此浏览器"><i data-lucide="log-out"></i></button>
+            <button id="forgetIdentity" type="button" class="unbind-btn" title="解绑玩家" aria-label="解绑玩家"><i data-lucide="log-out"></i><span>解绑玩家</span></button>
           </div>
           <div class="side-choice" id="sideChoice" role="group" aria-label="选择先后手">
             <button type="button" data-side="human_black" class="is-active">我先手</button>
@@ -391,7 +360,52 @@
             <i data-lucide="log-in"></i><span>加入对局</span>
           </button>
           <p id="seatNote" class="seat-note"></p>
-          <div id="ucStartCountdown" class="uc-start-countdown" hidden></div>
+          <div id="ucReadyArea" class="uc-ready-area" hidden>
+            <button id="ucReadyButton" type="button" class="primary-action">
+              <i data-lucide="check-check"></i><span>准备</span>
+            </button>
+            <div id="ucStartCountdown" class="uc-start-countdown" hidden></div>
+          </div>
+        </section>
+
+        <section class="uc-room-panel">
+          <div class="uc-phase-readout" id="ucPhaseReadout">
+            <span>阶段：<strong id="ucPhase">等待开始</strong></span>
+            <span id="ucExpectedSpeaker"></span>
+            <span id="ucTurnTimer"></span>
+          </div>
+          <section class="uc-info-card">
+            <button
+              id="ucRulesToggle"
+              class="uc-info-toggle"
+              type="button"
+              aria-expanded="false"
+            >
+              <span>📜 游戏规则</span>
+              <i class="uc-info-arrow" aria-hidden="true"></i>
+            </button>
+            <div id="ucRulesBody" class="uc-info-body" hidden>
+              <p><strong>【平民】</strong>找出混在玩家中所有的卧底和白板</p>
+              <p><strong>【卧底】</strong>隐藏自己，直到所有平民出局，或者存活至仅剩2人为止</p>
+              <p><strong>【白板】</strong>没有词条，根据其他玩家的发言推测词条，找出卧底或者存活到仅剩2人为止，白板不会出现在前两名发言玩家当中</p>
+              <p><strong>【词条】</strong>除了白板以外，其他玩家的发言中不允许出现词条本身，否则游戏自动结束。当白板的发言内容中包含任意一个词条时，白板获胜</p>
+              <p class="uc-rules-tip">如无法收到私聊词条，请添加花火为好友。</p>
+            </div>
+          </section>
+          <section class="uc-info-card">
+            <button
+              id="ucBoardToggle"
+              class="uc-info-toggle"
+              type="button"
+              aria-expanded="false"
+            >
+              <span>🏆 全局战绩排行</span>
+              <i class="uc-info-arrow" aria-hidden="true"></i>
+            </button>
+            <div id="ucBoardBody" class="uc-info-body" hidden>
+              <div id="ucLeaderboard" class="uc-leaderboard"></div>
+            </div>
+          </section>
         </section>
 
         <section class="score-panel" aria-label="房间比分">
@@ -434,16 +448,15 @@
     </section>
   </main>
 
-  <!-- 防窥屏：未绑定 QQ 的访客看不到对局内容，仅展示绑定引导 -->
-  <section id="peekGate" class="peek-gate" hidden aria-label="绑定 QQ 后查看对局">
+  <!-- 绑定引导：未绑定 QQ 的访客整页遮挡，仅展示绑定入口 -->
+  <section id="peekGate" class="peek-gate" hidden aria-label="绑定 QQ 后加入对局">
     <div class="peek-card">
       <header class="peek-header">
-        <i data-lucide="eye-off"></i>
-        <h2>绑定 QQ 后查看对局</h2>
+        <i data-lucide="user-plus"></i>
+        <h2>绑定 QQ 加入对局</h2>
       </header>
       <p class="peek-desc">
-        为防止利用多个浏览器窥屏，未绑定 QQ 的访客暂不能查看对局内容。
-        绑定成功后将以观众身份进入，可以看到对局情况。
+        请先绑定你的 QQ 身份，绑定成功后即可进入房间查看对局。
       </p>
       <div id="peekChallenge" class="identity-challenge">
         <span class="label">QQ 绑定码</span>

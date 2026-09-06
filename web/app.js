@@ -8,6 +8,11 @@
   let ucPrevMyTurn = false;         // 上一帧本机是否处于发言轮，用于“轮到你了”提醒
   let ucPrevExpectedSpeaker = null; // 上一帧当前发言者，用于发言轮切换的醒目标语
   let ucResultShownKey = "";         // 已展示过结算动画的本局标识（防重复弹出）
+  let ucVoteRevealRound = -1;        // 已完成“全员已投”翻转动画的轮次（防重复动画）
+  let ucVoteAnimPending = false;      // 本轮“待播放”投票揭晓动画（本轮集齐票的首帧置位，帧末消费）
+  let ucShownOutPlayer = null;       // 已播放淘汰动画的玩家编号
+  let ucLastGameUid = "";             // 上一帧对局 uid（用于新一局重置动画/提示状态）
+  let ucLastRoundCount = 0;          // 上一帧时间线已渲染的轮次数（用于新轮高亮）
   const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
@@ -504,28 +509,40 @@
 
   function showUcIdentityReveal(my) {
     const overlay = document.getElementById("ucRevealOverlay");
-    if (!overlay || !my || !my.camp) return;
+    if (!overlay || !my || (!my.camp && !my.word)) return;
     // 结束预热，展示正式身份牌
     const preheat = document.getElementById("ucPreheat");
     if (preheat) preheat.hidden = true;
     const cardEl = document.getElementById("ucRevealCard");
     if (cardEl) cardEl.hidden = false;
-    const campMap = {
-      civilian: ["平民", "is-civilian", "你是平民：你的词条和大多数玩家一致。找到卧底，把卧底投票出局即可获胜。"],
-      undercover: ["卧底", "is-undercover", "你是卧底：你的词条与多数人不同。隐藏好自己，把平民投票出局即可获胜。"],
-      whiteboard: ["白板", "is-whiteboard", "你是白板：你没有词条。先模仿别人混入，等卧底全部出局后你就赢了。"],
-    };
-    const [campName, cls, hint] = campMap[my.camp] || [ucCampText(my.camp), "", "请妥善保管自己的词条，不要向其他玩家透露。"];
+    const decktop = document.querySelector(".uc-reveal-decktop");
     const campEl = document.getElementById("ucRevealCamp");
-    campEl.textContent = my.camp === "whiteboard" ? "白板" : `${campName}`;
-    campEl.className = `uc-reveal-camp ${cls || ""}`;
     const wordEl = document.getElementById("ucRevealWord");
-    if (my.camp === "whiteboard") {
-      wordEl.textContent = "无词条 · 靠猜";
+    const hintEl = document.getElementById("ucRevealHint");
+    if (my.camp) {
+      const campMap = {
+        civilian: ["平民", "is-civilian", "你是平民：你的词条和大多数玩家一致。找到卧底，把卧底投票出局即可获胜。"],
+        undercover: ["卧底", "is-undercover", "你是卧底：你的词条与多数人不同。隐藏好自己，把平民投票出局即可获胜。"],
+        whiteboard: ["白板", "is-whiteboard", "你是白板：你没有词条。先模仿别人混入，等卧底全部出局后你就赢了。"],
+      };
+      const [campName, cls, hint] = campMap[my.camp] || [ucCampText(my.camp), "", "请妥善保管自己的词条，不要向其他玩家透露。"];
+      if (decktop) decktop.textContent = "你的身份是";
+      campEl.textContent = my.camp === "whiteboard" ? "白板" : campName;
+      campEl.className = `uc-reveal-camp ${cls || ""}`;
+      if (my.camp === "whiteboard") {
+        wordEl.textContent = "无词条 · 靠猜";
+      } else {
+        wordEl.textContent = my.word || "—";
+      }
+      hintEl.textContent = hint;
     } else {
+      // 关闭「告知身份」：只展示词条，不显示身份
+      if (decktop) decktop.textContent = "本局你的词条";
+      campEl.textContent = "词条已发放";
+      campEl.className = "uc-reveal-camp is-word-only";
       wordEl.textContent = my.word || "—";
+      hintEl.textContent = "本局未告知身份，请凭词条谨慎发言，不要向其他玩家透露。";
     }
-    document.getElementById("ucRevealHint").textContent = hint;
     const card = document.getElementById("ucRevealCard");
     // 重新触发入场动画
     card.style.animation = "none";
@@ -551,7 +568,7 @@
     ucPreheatCounter = window.setInterval(tick, 500);
   }
   function revealUcIdentity(my) {
-    if (!my || !my.camp) return;
+    if (!my || (!my.camp && !my.word)) return;
     const overlay = document.getElementById("ucRevealOverlay");
     if (!overlay) return;
     const cardEl = document.getElementById("ucRevealCard");
@@ -1054,6 +1071,8 @@
 
   function render() {
     if (!room) return;
+    // 谁是卧底房间：隐藏通用「玩家/平局/花火」比分（多人语音局不适用），右侧由战绩榜与阶段条接管
+    document.body.classList.toggle("room-undercover", room.game_type === "undercover");
     renderPeekGate();
     document.getElementById("roomId").textContent = room.room_id || "";
     document.getElementById("roomStatus").textContent = statusLabel(room.status);
@@ -1090,6 +1109,7 @@
     document.getElementById("botScoreLabel").textContent = drawGuess ? "未猜中" : turtleSoup ? (playerHostedSoup ? "花火 猜中" : "放弃") : "花火";
     if (turtleSoup || pigDice || drawGuess) document.getElementById("drawScore").textContent = room.score?.games ?? 0;
     renderSeat();
+    renderUcReady();
     renderPeople();
     renderMessages();
     renderTurtleSoup();
@@ -1201,6 +1221,34 @@
       action.hidden = true;
       note.textContent = room.player_confirmed ? "身份已确认。" : "请先在 QQ 中绑定页面令牌。";
     }
+  }
+
+  // 谁是卧底集结阶段：玩家准备按钮（默认未准备；全员就绪自动开局，倒计时为强制开启兜底）
+  function renderUcReady() {
+    const area = document.getElementById("ucReadyArea");
+    const btn = document.getElementById("ucReadyButton");
+    if (!area || !btn) return;
+    const inSetup = room.game_type === "undercover" && room.status === "setup";
+    area.hidden = !(inSetup && room.is_player);
+    if (!inSetup || !room.is_player) return;
+    const seats = Array.isArray(room.player_seats) ? room.player_seats : [];
+    const mySeat = seats.find((s) => s.visitor_token === visitorToken)
+      || seats.find((s) => Number(s.number) === Number(room.visitor_number))
+      || null;
+    const myReady = !!mySeat?.ready;
+    btn.classList.toggle("is-ready", myReady);
+    // 准备进度（所有玩家可见的整体就绪情况）
+    const readyCount = seats.filter((s) => s.ready).length;
+    btn.innerHTML = myReady
+      ? '<i data-lucide="check-check"></i><span>已准备</span>'
+      : '<i data-lucide="check-check"></i><span>准备</span>';
+    const progress = document.createElement("small");
+    progress.className = "ready-progress";
+    progress.textContent = `${readyCount}/${seats.length}`;
+    btn.appendChild(progress);
+    btn.dataset.ready = myReady ? "1" : "0";
+    btn.setAttribute("data-progress", `${readyCount}/${seats.length}`);
+    icons();
   }
 
   // 随机英文名：未绑定 QQ 的成员显示“观众-<英文>”，根据成员号稳定生成，避免每次重绘变化
@@ -1327,12 +1375,13 @@
     try {
       const data = await request("POST", "identity/forget", {
         visitor_token: visitorToken,
+        unbind: true,
       });
       setRoom(data.room);
       window.localStorage.setItem(rememberIdentityKey, "0");
-      showToast("此浏览器已不再记住身份");
+      showToast("已解绑玩家，请重新绑定 QQ 身份");
     } catch (error) {
-      showToast(error?.message || "无法取消浏览器信任");
+      showToast(error?.message || "解绑失败");
     } finally {
       busy = false;
       render();
@@ -1776,6 +1825,17 @@
     const stage = document.getElementById("undercoverStage");
     if (stage.hidden) return;
 
+    // 新一局开始（game_uid 变化）：重置“上一帧”状态，保证淘汰动画、发言提示按新对局重新触发
+    if (snap.game_uid && ucLastGameUid !== snap.game_uid) {
+      ucLastGameUid = snap.game_uid;
+      ucShownOutPlayer = null;
+      ucPrevMyTurn = false;
+      ucPrevExpectedSpeaker = null;
+      ucVoteRevealRound = -1;
+      ucVoteAnimPending = false;
+      ucLastRoundCount = 0;
+    }
+
     // 1. 顶部 round label + 阵营统计
     const roundNumber = Number(snap.current_round_number || 0);
     const phaseText = {
@@ -1839,6 +1899,48 @@
         if (seatCount) seatCount.textContent = capacity > 0
           ? `当前 ${current}/${capacity} 人 · 至少 ${Number(room.undercover_min_players || 2)} 人开局`
           : `当前 ${current} 人 · 至少 ${Number(room.undercover_min_players || 2)} 人开局`;
+        // —— 房主「告知身份」开关：本局生效，开局前可随时更改
+        const revealCheck = document.getElementById("ucHostRevealCheck");
+        const revealHint = document.getElementById("ucHostRevealHint");
+        if (revealCheck) {
+          const revealOn = room.undercover_reveal_identity !== false;
+          if (document.activeElement !== revealCheck) revealCheck.checked = revealOn;
+          if (revealHint) revealHint.textContent = revealOn
+            ? "开启：发放身份 + 词条；关闭：只发词条、不告知平民/卧底身份（白板不受影响）"
+            : "当前已关闭：开场只发放词条，不告知平民/卧底身份（白板不受影响）。";
+          if (!revealCheck.dataset.bound) {
+            revealCheck.dataset.bound = "1";
+            revealCheck.addEventListener("change", async () => {
+              if (!accessToken || !visitorToken) {
+                showToast("请先进入玩家席");
+                revealCheck.checked = !revealCheck.checked;
+                return;
+              }
+              const next = revealCheck.checked;
+              try {
+                revealCheck.disabled = true;
+                const res = await request(
+                  "POST",
+                  "undercover/reveal",
+                  { visitor_token: visitorToken, reveal_identity: next }
+                );
+                if (res?.room) {
+                  setRoom(res.room);
+                  render();
+                  showToast(next ? "已开启「告知身份」：开场发放身份 + 词条" : "已关闭「告知身份」：开场只发放词条");
+                } else if (res?.error) {
+                  showToast(res.error);
+                  revealCheck.checked = !next;
+                }
+              } catch (err) {
+                showToast(err?.message || "设置失败");
+                revealCheck.checked = !next;
+              } finally {
+                revealCheck.disabled = false;
+              }
+            });
+          }
+        }
         // —— 保存房间设置
         if (save && !save.dataset.bound) {
           save.dataset.bound = "1";
@@ -1915,6 +2017,14 @@
     const players = snap.players_public || [];
     const expectedSpeaker = snap.expected_speaker_number;
     const voterNumber = snap.voter_player_number;
+    // 座位准备状态（按座位号映射，集结阶段展示）
+    const seatReadyMap = new Map(
+      (Array.isArray(room.player_seats) ? room.player_seats : []).map((s) => [
+        Number(s.number),
+        !!s.ready,
+      ])
+    );
+    const inAssembly = room.status === "setup" && (!snap.phase || snap.phase === "idle");
     players.forEach((p) => {
       const card = document.createElement("article");
       card.className = "uc-player-card";
@@ -1926,6 +2036,13 @@
       // 是否本轮被投最高（平票）
       if ((snap.last_pk_targets || []).includes(p.player_number)) {
         card.classList.add("is-pk");
+      }
+      // 刚被淘汰的玩家卡片：播放叉掉动画（仅对局进行中、且首次出现该淘汰者时）
+      if (p.is_out && room.status === "active" && ucShownOutPlayer !== p.player_number) {
+        card.classList.add("is-just-out");
+        if (p.player_number === (snap.rounds_public || []).slice(-1)[0]?.out_player_number) {
+          ucShownOutPlayer = p.player_number;
+        }
       }
       const nameLine = document.createElement("strong");
       nameLine.className = "uc-pn-name";
@@ -1941,6 +2058,14 @@
       statusChip.className = p.is_out ? "chip chip-out" : "chip chip-live";
       statusChip.textContent = p.is_out ? "已出局" : "存活";
       meta.appendChild(statusChip);
+      if (inAssembly && seatReadyMap.has(Number(p.player_number))) {
+        const readyChip = document.createElement("span");
+        readyChip.className = seatReadyMap.get(Number(p.player_number))
+          ? "chip chip-ready"
+          : "chip chip-not-ready";
+        readyChip.textContent = seatReadyMap.get(Number(p.player_number)) ? "已准备" : "未准备";
+        meta.appendChild(readyChip);
+      }
       if (p.camp && room?.status === "finished") {
         const campSpan = document.createElement("span");
         campSpan.className = "chip chip-camp";
@@ -1953,8 +2078,12 @@
         wordSpan.textContent = `词条「${p.word}」`;
         meta.appendChild(wordSpan);
       }
-      // 被投票数（进行中只在投票阶段显示各目标得票，不显示投手）
-      if (snap.vote_tally_live && snap.phase === "voting") {
+      // 被投票数（进行中只在投票阶段显示各目标得票，不显示投手；全员投完后才揭晓数字）
+      if (
+        snap.vote_tally_live &&
+        snap.phase === "voting" &&
+        snap.voting_all_voted
+      ) {
         const votes = Number(snap.vote_tally_live[p.player_number] || 0);
         if (votes > 0) {
           const v = document.createElement("span");
@@ -1977,6 +2106,11 @@
       campEl.textContent = "观众席";
       wordEl.textContent = "—";
       hintEl.textContent = "仅玩家能看到身份词条；请先绑定并加入玩家席。";
+    } else if (my.camp === "whiteboard") {
+      campEl.classList.add("is-whiteboard");
+      campEl.textContent = "白板";
+      wordEl.textContent = "无词条 · 靠猜";
+      hintEl.textContent = "你是白板：你没有词条；先模仿他人描述混入，等卧底全出局后你就赢了。";
     } else if (my.camp && my.word) {
       const campName = ucCampText(my.camp);
       campEl.classList.add(`is-${my.camp}`);
@@ -1988,15 +2122,21 @@
         whiteboard: "你是白板：你没有词条；先模仿他人描述混入，等卧底全出局后你就赢了。",
       };
       hintEl.textContent = map[my.camp] || "请妥善保管自己的词条，不要向其他玩家透露。";
+    } else if (my.word && !my.camp) {
+      // 关闭「告知身份」：只展示词条，不显示身份
+      campEl.classList.add("is-word-only");
+      campEl.textContent = "词条已发放";
+      wordEl.textContent = my.word;
+      hintEl.textContent = "本局未告知身份，请凭词条谨慎发言，不要向其他玩家透露。";
     } else {
       // 开局抽选身份词条时的提示
       const dealing =
         my.is_player &&
         room.status === "active" &&
-        snap.reveal_identity !== false &&
         roundNumber >= 1 &&
         ["speech", "pk", "preparing"].includes(snap.phase) &&
-        !my.camp;
+        !my.camp &&
+        !my.word;
       if (dealing) {
         campEl.textContent = "抽选中";
         wordEl.textContent = "…";
@@ -2012,7 +2152,14 @@
     const timeline = document.getElementById("ucTimeline");
     timeline.innerHTML = "";
     const rounds = snap.rounds_public || [];
-    rounds.forEach((r) => {
+    const currentRoundIdx = rounds.length ? rounds.length - 1 : -1;
+    // 投票揭晓动画：仅在「本轮刚集齐全部票」的那一帧触发一次（放大→票数翻转）
+    const allVotedNow = snap.phase === "voting" && !!snap.voting_all_voted;
+    if (allVotedNow && currentRoundIdx !== ucVoteRevealRound) {
+      ucVoteRevealRound = currentRoundIdx;
+      ucVoteAnimPending = true;
+    }
+    rounds.forEach((r, roundIdx) => {
       const header = document.createElement("header");
       header.className = "uc-round-header";
       const title = document.createElement("h4");
@@ -2109,10 +2256,35 @@
           voteHeaderLi.appendChild(vh);
           voteHeaderLi.appendChild(voteBlock);
         }
+      } else if (
+        snap.phase === "voting" &&
+        !snap.voting_all_voted
+      ) {
+        // 投票进行中：只显示「正在投票」，不提前暴露任何票数数字
+        vh.textContent = "投票进行中…";
+        const votingBlock = document.createElement("div");
+        votingBlock.className = "uc-votes-block is-voting";
+        const line = document.createElement("div");
+        line.className = "uc-vote-row is-tally";
+        const who = document.createElement("span");
+        who.className = "uc-target";
+        who.textContent = "正在投票中";
+        const num = document.createElement("em");
+        num.className = "uc-vote-count is-placeholder";
+        num.textContent = "…";
+        line.appendChild(who);
+        line.appendChild(num);
+        votingBlock.appendChild(line);
+        voteHeaderLi.appendChild(vh);
+        voteHeaderLi.appendChild(votingBlock);
       } else if (snap.vote_tally_live && Object.keys(snap.vote_tally_live).length) {
-        vh.textContent = "当前投票数（不显示投手）";
+        vh.textContent = "投票结果（票数统计）";
         const voteBlock = document.createElement("div");
         voteBlock.className = "uc-votes-block";
+        // 刚完成全员投票：播放放大→票数揭晓动画（仅本轮集齐票的首帧触发一次，避免轮询闪烁）
+        if (snap.phase === "voting" && snap.voting_all_voted && currentRoundIdx === ucVoteRevealRound && ucVoteAnimPending) {
+          voteBlock.classList.add("uc-reveal-pop");
+        }
         Object.entries(snap.vote_tally_live).forEach(([target, count]) => {
           if (!Number(count)) return;
           const row = document.createElement("div");
@@ -2133,8 +2305,16 @@
         }
       }
       if (voteHeaderLi.childNodes.length > 0) ul.appendChild(voteHeaderLi);
+      // 新进入的一轮：给整轮时间线淡入动画（仅轮次新增时触发一次，避免每次轮询闪烁）
+      if (rounds.length && r.is_pk === false && roundIdx === rounds.length - 1 && rounds.length > ucLastRoundCount) {
+        ul.classList.add("uc-round-new");
+      }
       timeline.appendChild(ul);
     });
+
+    // 记录本轮时间线轮次数（供新轮淡入动画判断）；并消费掉投票揭晓动画的“待播放”标记
+    ucLastRoundCount = rounds.length;
+    ucVoteAnimPending = false;
 
     // 5. 操作区：发言 / 投票 / PK banner
     document.getElementById("ucPhase").textContent = phaseText;
@@ -2146,13 +2326,13 @@
     if (
       snap.phase === "speech" &&
       roundNumber === 1 &&
-      my.is_player && my.camp &&
-      (my.camp === "whiteboard" || my.word) &&
-      snap.reveal_identity !== false &&
+      my.is_player &&
+      (my.camp || my.word) &&
       room.status !== "finished"
     ) {
       // 身份卡只在本局首次发放时弹出一次；标记写入 localStorage（键含房间令牌 + 本局 uid），
       // 刷新页面 / 重新打开链接后不会重复弹出，新一局 uid 变化会再次弹出。
+      // 关闭「告知身份」时，card 只展示词条（revealUcIdentity 内部处理）。
       const revealKey = `uc:revealed:${accessToken}:${snap.game_uid || ""}`;
       let alreadyRevealed = false;
       try {
@@ -2179,18 +2359,23 @@
     const counter = document.getElementById("ucSpeechCount");
     const isMyTurn = my.is_player && my.player_number && expectedSpeaker && Number(my.player_number) === Number(expectedSpeaker);
     const canSpeak = ["speech", "pk"].includes(snap.phase) && isMyTurn;
+    // 开场身份卡/“花火选词”遮罩是否仍打开：发词期间不叠加“轮到谁发言”的提示，
+    // 避免刚开局时“花火选词”转圈和发言提示同时弹出来。
+    const revealOverlayOpen = !(document.getElementById("ucRevealOverlay")?.hidden ?? true);
     // 轮到你发言时的提醒（进入发言轮才提示，避免每次 render 都弹）
-    if (canSpeak && !ucPrevMyTurn) {
+    if (canSpeak && !revealOverlayOpen && !ucPrevMyTurn) {
       const myCampName = my.camp ? ucCampText(my.camp) : "";
       showToast(
         `本轮轮到你发言${myCampName ? "（你是" + myCampName + "）" : ""}！请在下方描述你的词条。`,
         3400
       );
     }
-    ucPrevMyTurn = canSpeak;
-    // 发言切换的醒目全屏提示（当前发言者变化则给所有玩家/观众弹出）
+    ucPrevMyTurn = canSpeak && !revealOverlayOpen;
+    // 发言切换的醒目全屏提示（当前发言者变化则给所有玩家/观众弹出；选词遮罩开启时先不弹，
+    // 待玩家关闭身份卡后再提示当前发言者，避免两个弹窗叠加）
     if (
-      snap.phase !== "finished" &&
+      ["speech", "pk"].includes(snap.phase) &&
+      !revealOverlayOpen &&
       ucPrevExpectedSpeaker !== (expectedSpeaker || null) &&
       expectedSpeaker
     ) {
@@ -2226,16 +2411,23 @@
         card.className = "uc-vote-card";
         card.dataset.target_number = String(p.player_number);
         card.disabled = !canVote;
-        if (snap.vote_tally_live && Number(snap.vote_tally_live[p.player_number] || 0) > 0) {
-          card.classList.add("has-votes");
-        }
-        card.innerHTML = `<strong>${p.player_number}号</strong><span>${sanitizeDisplayText(p.display_name || "")}</span><em>${Number(snap.vote_tally_live?.[p.player_number] || 0)} 票</em>`;
+        const votedCount = Number(snap.vote_tally_live?.[p.player_number] || 0);
+        // 投票进行中不暴露票数（显示「？」），全员投完后才揭晓真实票数
+        const revealed = !!snap.voting_all_voted;
+        card.classList.toggle("uc-vote-revealed", revealed);
+        const numCls = revealed ? "uc-vote-num" : "uc-vote-num is-placeholder";
+        const numText = revealed ? `${votedCount} 票` : "？";
+        if (!revealed && votedCount > 0) card.classList.add("has-votes");
+        card.innerHTML = `<strong>${p.player_number}号</strong><span>${sanitizeDisplayText(p.display_name || "")}</span><em class="${numCls}">${numText}</em>`;
         voteGrid.appendChild(card);
       });
       if (alreadyVoted) {
         const tip = document.createElement("p");
         tip.className = "uc-vote-tip";
-        tip.textContent = "你已完成本轮投票，等待其他玩家投票即可。";
+        // 全员投完前仅提示等待；投完后给出「投票结束」提示
+        tip.textContent = snap.voting_all_voted
+          ? "本轮投票已结束，正在揭晓结果…"
+          : "你已完成本轮投票，正在等待其他玩家投票…";
         voteGrid.appendChild(tip);
       }
     }
@@ -3173,6 +3365,35 @@
   };
   bindUcInfoToggle("ucRulesToggle", "ucRulesBody");
   bindUcInfoToggle("ucBoardToggle", "ucBoardBody");
+  // 集结阶段：玩家点击「准备」/「取消准备」，全员就绪自动开局
+  const ucReadyButton = document.getElementById("ucReadyButton");
+  if (ucReadyButton) {
+    ucReadyButton.addEventListener("click", async () => {
+      if (!visitorToken || !accessToken) {
+        showToast("请先进入玩家席");
+        return;
+      }
+      const next = ucReadyButton.dataset.ready !== "1";
+      ucReadyButton.disabled = true;
+      try {
+        const res = await request("POST", "ready", {
+          visitor_token: visitorToken,
+          ready: next,
+        });
+        if (res?.room) {
+          setRoom(res.room);
+          render();
+          showToast(next ? "你已准备，等待其他玩家…" : "已取消准备");
+        } else if (res?.error) {
+          showToast(res.error);
+        }
+      } catch (error) {
+        showToast(error?.message || "操作失败", 3200);
+      } finally {
+        ucReadyButton.disabled = false;
+      }
+    });
+  }
   // 投票（事件委托）
   const ucVoteGrid = document.getElementById("ucVoteGrid");
   if (ucVoteGrid) {
