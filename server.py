@@ -18,7 +18,7 @@ class GameRoomServer:
     """Serve the mobile game UI without sharing AstrBot's dashboard port."""
 
     ASSETS = {"index.html", "app.css", "app.js", "lucide.min.js", "background.webp"}
-    TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{24,80}")
+    TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{8,80}")
     TRUSTED_BROWSER_COOKIE = "game_companion_device"
 
     def __init__(
