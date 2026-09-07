@@ -1316,6 +1316,16 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 }
 .uc-avatar-text { letter-spacing: 0; }
 .uc-avatar-fallback-num { font-weight: 800; }
+/* AI/首字占位头像配色：AI 用 6 档专属底色+白色文字保证对比度；未绑定真人保持强对比文字 */
+.uc-avatar-tone-neutral { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text-strong); }
+.uc-avatar-hue-0 { background: #e05d5d; color: #fff; }
+.uc-avatar-hue-1 { background: #e08a3c; color: #fff; }
+.uc-avatar-hue-2 { background: #3ca05c; color: #fff; }
+.uc-avatar-hue-3 { background: #2e9aa8; color: #fff; }
+.uc-avatar-hue-4 { background: #5b7cd6; color: #fff; }
+.uc-avatar-hue-5 { background: #9a63c9; color: #fff; }
+/* 深色模式下未绑定人的中性底色文字用主题强色，避免发黑看不清 */
+body.dark .uc-avatar-tone-neutral { color: var(--text-strong, #f0f0f0); }
 /* seat-panel 顶部“我的身份”头像行 */
 .section-head-main {
   display: flex;

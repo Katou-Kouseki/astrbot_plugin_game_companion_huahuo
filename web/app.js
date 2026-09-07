@@ -872,6 +872,15 @@
    * @param {boolean} [isMine] 是否本人（强调高亮）
    * @returns {string} 头像 HTML 片段
    */
+  // 首字占位头像的稳定底色：用名字+座号做哈希，让每个 AI 玩家有自己专属的底色区分
+  function ucAvatarHueClass(name, number, isAi) {
+    if (!isAi) return "uc-avatar-tone-neutral"; // 未绑定真人：中性底色 + 强对比文字
+    const seed = String(name || "") + ":" + String(number);
+    let hash = 0;
+    for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+    return `uc-avatar-hue-${hash % 6}`;
+  }
+
   function ucSeatAvatarHtml(number, size = "medium", isMine = false) {
     const seats = Array.isArray(room?.player_seats) ? room.player_seats : [];
     const seat = seats.find((s) => Number(s.number) === Number(number));
@@ -883,9 +892,10 @@
     if (url) {
       return `<span class="${cls.join(" ")}"><img src="${url}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`;
     }
-    // AI / 未绑定：首字占位
+    // AI / 未绑定：首字占位，AI 用专属底色区分
     const letter = (name || (Number(number) >= 0 ? `${number}` : "？")).trim().charAt(0) || "？";
-    return `<span class="${cls.join(" ")} uc-avatar-text">${letter}</span>`;
+    cls.push("uc-avatar-text", ucAvatarHueClass(name, number, isAi));
+    return `<span class="${cls.join(" ")}">${letter}</span>`;
   }
 
   /**
