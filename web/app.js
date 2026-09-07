@@ -1138,6 +1138,9 @@
       text = timerActive
         ? `已投 ${voted}/${voters || "-"} · 剩余 ${remain} 秒`
         : `已投 ${voted}/${voters || "-"}`;
+    } else if (phase === "preparing") {
+      // 发词准备缓冲期：显示倒计时，让玩家有时间看身份/词条卡
+      text = timerActive ? `发词倒计时 · 剩余 ${remain} 秒` : "发词准备中";
     } else if (phase === "finished") {
       text = "";
     } else {
@@ -1164,6 +1167,8 @@
         dock.classList.toggle("is-urgent", timerActive && remain > 0 && remain <= 30);
       }
     }
+    // 时间线自动跟随：贴底时持续钉在最新消息（新发言/揭晓动画/新轮次增长都会触发）
+    ucAutoFollowTimeline(document.getElementById("ucTimeline"));
   }, 1000);
 
   async function request(method, action, payload = {}) {
@@ -2884,7 +2889,11 @@
     ucLastRoundCount = rounds.length;
 
     // 新信息出现时自动跟随到底部（仅贴底时滚动，向上翻看历史时保持不动）
-    if (ucWasNearBottom) timeline.scrollTop = timeline.scrollHeight;
+    if (ucWasNearBottom) {
+      timeline.scrollTop = timeline.scrollHeight;
+      // 布局稳定后再补滚一帧，防止移动端滚动锚定/淡入动画把位置拉回
+      window.requestAnimationFrame(() => ucAutoFollowTimeline(timeline));
+    }
 
     // 5. 操作区：发言 / 投票 / PK banner
     document.getElementById("ucPhase").textContent = phaseText;
@@ -2894,7 +2903,7 @@
       document.getElementById("ucPhase").textContent = "发词中… 花火正在抽选你的身份词条卡";
     }
     if (
-      snap.phase === "speech" &&
+      ["speech", "preparing"].includes(snap.phase) &&
       roundNumber === 1 &&
       my.is_player &&
       (my.camp || my.word) &&
@@ -4105,17 +4114,20 @@
     posterPreviewShare.addEventListener("click", async () => {
       const ctx = posterPreviewCtx;
       if (!ctx) return;
-      if (typeof navigator !== "undefined" && navigator.canShare && navigator.share) {
-        try {
+      // 先提示，避免部分 WebView（安卓 X5）share 静默无反应时用户不知所措
+      showToast("正在唤起系统分享…如无反应可长按图片保存");
+      let shared = false;
+      try {
+        if (typeof navigator !== "undefined" && navigator.share && navigator.canShare) {
           const blob = dataUrlToBlob(ctx.dataUrl);
           const file = new File([blob], ctx.filename, { type: "image/png" });
           if (navigator.canShare({ files: [file] })) {
             await navigator.share({ files: [file], title: "谁是卧底战报" });
-            return;
+            shared = true;
           }
-        } catch (_shareError) { /* 用户取消或环境不支持，保持预览供长按保存 */ }
-      }
-      showToast("当前环境不支持系统分享，可长按图片保存");
+        }
+      } catch (_shareError) { shared = false; }
+      if (!shared) showToast("当前环境不支持系统分享，请长按图片保存");
     });
   }
   // 花火复盘：同局缓存，点击后展示，不重复请求 LLM

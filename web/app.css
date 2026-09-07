@@ -2629,7 +2629,13 @@ body.dark .uc-speech-box textarea:focus {
   justify-content: space-between;
   gap: 10px;
   color: var(--muted);
-  font-size: 12px;
+}
+/* 长按提示要醒目，一眼看到 */
+.poster-preview-head span {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  color: var(--gold, #c9a227);
 }
 .poster-preview-card img {
   width: 100%;
@@ -2642,10 +2648,19 @@ body.dark .uc-speech-box textarea:focus {
   /* 保持移动端长按菜单可用（保存图片 / 分享） */
   -webkit-touch-callout: default;
 }
+/* 系统分享优先、两个按钮等大等高 */
 .poster-preview-actions {
   display: flex;
-  justify-content: flex-end;
+  justify-content: stretch;
   gap: 8px;
+}
+.poster-preview-actions button {
+  flex: 1 1 0;
+  min-height: 44px;
+}
+/* 移动端「请投票」主字号缩小，避免过大占屏 */
+@media (max-width: 600px) {
+  .vote-turn-notification .stn-text strong { font-size: 26px; }
 }
 
 /* ====== 房间成员：玩家/观众分组 ====== */

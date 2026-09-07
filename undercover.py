@@ -273,8 +273,15 @@ class UndercoverGame:
             pick.camp = "civilian"
             pick.word = civ_word
             civ_players.append(pick)
+        # 进入「发词准备」阶段：先不开始第一轮，让玩家有时间查看身份/词条卡；
+        # 由 room_manager 在 prepare_seconds 倒计时结束后调用 begin_first_round()。
+        # prepare_seconds = 0 时开局即调用 begin_first_round()，等同旧行为直接开第一轮。
         self.phase = "preparing"
-        self._start_new_round()
+
+    def begin_first_round(self) -> None:
+        """发词准备阶段结束：开始第一轮（幂等，仅当仍处于 preparing 时生效）。"""
+        if self.phase == "preparing" and not self.rounds:
+            self._start_new_round()
 
     def _calculate_real_counts(self, total: int) -> tuple[int, int, int]:
         """按 camp_scales 的比例把 total 人分成（平民,卧底,白板）。平民至少 1 人，卧底至少 1 人。"""

@@ -326,7 +326,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "minimum": 0,
                 "maximum": 600,
                 "unit": "秒",
-                "hint": "默认 160 秒；设为 0 表示由前端自动跳过当前玩家（本轮不做超时强跳）。",
+                "hint": "默认 160 秒；设为 0 表示不限时：后端不设超时、不强跳发言玩家，由玩家自行发言推进（前端显示「不限时」）。",
             },
             {
                 "key": "voting_seconds",
@@ -5006,6 +5006,10 @@ class GameCompanionPlugin(Star):
         """
         game = room.game
         if not isinstance(game, UndercoverGame) or game.finished:
+            return
+        if game.phase == "preparing":
+            # 发词准备倒计时结束：直接进入第一轮发言，避免缓冲期把局卡在“发词中”
+            await self.manager.begin_undercover_first_round(room)
             return
         if game.phase in ("speech", "pk"):
             exp = game.expected_speaker_number
