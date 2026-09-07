@@ -5148,10 +5148,16 @@ class GameCompanionPlugin(Star):
         live_players = my_snap.get("players_public") or []
         live_nums = [int(p["player_number"]) for p in live_players if not p.get("is_out")]
         if not rounds:
-            # 没有发言记录，随便投一个非自己的
-            targets = [n for n in live_nums if n != seat.number]
-            if not targets: return
-            await self.manager.player_undercover_vote(room, seat.visitor_token, targets[0])
+            # 没有发言记录：只从合法目标里选（PK 轮只能投平票候选人），避免非法票被拒导致 AI 卡投
+            eligible = _uc_eligible_vote_targets(game, seat.number) or [
+                n for n in live_nums if n != seat.number
+            ]
+            if not eligible:
+                return
+            try:
+                await self.manager.player_undercover_vote(room, seat.visitor_token, eligible[0])
+            except Exception:
+                return
             return
         last = rounds[-1]
         round_speeches = last.get("speeches") or []
@@ -5162,9 +5168,15 @@ class GameCompanionPlugin(Star):
             if pn in live_nums and pn != seat.number:
                 lines.append(f"{pn}号玩家说：{s.get('content') or ''}")
         if not lines:
-            targets = [n for n in live_nums if n != seat.number]
-            if targets:
-                await self.manager.player_undercover_vote(room, seat.visitor_token, targets[0])
+            eligible = _uc_eligible_vote_targets(game, seat.number) or [
+                n for n in live_nums if n != seat.number
+            ]
+            if not eligible:
+                return
+            try:
+                await self.manager.player_undercover_vote(room, seat.visitor_token, eligible[0])
+            except Exception:
+                return
             return
         my_camp = str((my_snap.get("my") or {}).get("camp") or "")
         my_word = str((my_snap.get("my") or {}).get("word") or "")

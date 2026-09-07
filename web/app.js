@@ -866,6 +866,11 @@
     card.style.animation = "";
     overlay.hidden = false;
     // 记下本局结果，供「分享战报」按钮生成 PNG 卡片
+    const seatsMap = {};
+    (Array.isArray(room?.player_seats) ? room.player_seats : []).forEach((s) => {
+      seatsMap[Number(s.number)] = s;
+    });
+    const myNumber = Number(room.visitor_number || 0);
     ucLastResult = {
       title,
       icon,
@@ -873,7 +878,25 @@
       message: winner.message || "",
       civilian_word: winner.civilian_word || "",
       undercover_word: winner.undercover_word || "",
-      players: (Array.isArray(players) ? players : []).slice(),
+      players: (Array.isArray(players) ? players : []).map((p) => {
+        const n = Number(p.player_number);
+        const seat = seatsMap[n] || {};
+        return {
+          player_number: n,
+          display_name: p.display_name || seat.display_name || "",
+          camp: p.camp || "",
+          is_out: !!p.is_out,
+          avatar_url: seat.avatar_url || "",
+          is_me: n === myNumber,
+        };
+      }),
+      // 屏幕前这位玩家的信息：座位号、名字、身份（用于“以我视角”的分享文案）
+      me: {
+        number: myNumber,
+        name: seatsMap[myNumber]?.display_name || "",
+        camp: (Array.isArray(players) ? players : [])
+          .find((p) => Number(p.player_number) === myNumber)?.camp || "",
+      },
     };
     const shareBtn = document.getElementById("ucResultShare");
     const recapBtn = document.getElementById("ucResultRecapBtn");
@@ -891,7 +914,6 @@
       if (recapBox && uid && ucRecapCache[uid]) {
         recapBox.textContent = ucRecapCache[uid];
         recapBox.hidden = false;
-        if (recapBtn) recapBtn.textContent = "✨ 查看/刷新复盘";
       }
       if (announceBtn && !uid) announceBtn.hidden = true;
     }
@@ -2432,16 +2454,17 @@
         wordSpan.textContent = `词条「${p.word}」`;
         meta.appendChild(wordSpan);
       }
-      // 藏品/护身符徽章：从 room.player_seats 按座号取 badges（平民/卧底/白板各有风格）
+      // 藏品/护身符徽章：历代战绩积累，正常展示（压缩成单个徽章数，悬停展开全部，避免占满玩家卡）
       if (room?.game_type === "undercover" && Array.isArray(room.player_seats)) {
         const seatBadges = (room.player_seats.find((s) => Number(s.number) === Number(p.player_number)) || {}).badges;
-        (Array.isArray(seatBadges) ? seatBadges : []).forEach((badge) => {
+        const badges = Array.isArray(seatBadges) ? seatBadges : [];
+        if (badges.length) {
           const b = document.createElement("span");
-          b.className = `chip uc-badge uc-badge-${badge.tone || ""}`;
-          b.textContent = `${badge.emoji || "🏅"} ${badge.label || ""}`;
-          b.title = badge.wins ? `该阵营已胜利 ${badge.wins} 局` : "藏品徽章";
+          b.className = "chip uc-badge uc-badge-list";
+          b.textContent = `🎖 徽章 ×${badges.length}`;
+          b.title = badges.map((bg) => `${bg.emoji || "🏅"} ${bg.label || ""}`).join("、");
           meta.appendChild(b);
-        });
+        }
       }
       // 被投票数（进行中只在投票阶段显示各目标得票，不显示投手；全员投完后才揭晓数字）
       if (
@@ -3860,15 +3883,20 @@
   // 分享战报：把本局结果画成 PNG 卡片并下载
   const ucResultShare = document.getElementById("ucResultShare");
   if (ucResultShare) {
-    ucResultShare.addEventListener("click", () => {
+    ucResultShare.addEventListener("click", async () => {
+      const btn = ucResultShare;
+      btn.disabled = true;
       try {
-        const url = undercoverSharePosterUrl(ucLastResult);
+        const url = await undercoverSharePosterUrl(ucLastResult);
+        if (!url) throw new Error("empty");
         const a = document.createElement("a");
         a.href = url;
         a.download = `谁是卧底战报_${new Date().toISOString().slice(0, 10)}.png`;
         a.click();
       } catch (error) {
         showToast("生成战报失败：请稍后重试");
+      } finally {
+        btn.disabled = false;
       }
     });
   }
@@ -3881,7 +3909,6 @@
       const uid = ucShownResultUid || "";
       if (uid && ucRecapCache[uid]) {
         if (recapBox) { recapBox.textContent = ucRecapCache[uid]; recapBox.hidden = false; }
-        btn.textContent = "✨ 查看/刷新复盘";
         return;
       }
       btn.disabled = true;
@@ -3891,12 +3918,11 @@
         const text = String(data?.recap || "").trim() || "暂未生成复盘，稍后再试试。";
         if (uid) ucRecapCache[uid] = text;
         if (recapBox) { recapBox.textContent = text; recapBox.hidden = false; }
-        btn.textContent = "✨ 查看/刷新复盘";
       } catch (error) {
         showToast(error?.message || "复盘生成失败");
-        btn.textContent = "✨ 花火复盘";
       } finally {
         btn.disabled = false;
+        btn.textContent = "✨ 花火复盘";
       }
     });
   }
@@ -3925,54 +3951,197 @@
   }
 
   // 单局「谁是卧底战报」PNG 卡片（纯前端 Canvas 绘制）
-  function undercoverSharePosterUrl(result) {
+  async function undercoverSharePosterUrl(result) {
     if (!result) return "";
-    const W = 640;
+    const W = 640, M = 24, rowH = 54, padTop = 252, headerH = 44, footerH = 72;
     const players = result.players || [];
-    const headerH = 150, rowH = 44, footerH = 64, padTop = 96;
     const H = padTop + headerH + players.length * rowH + footerH;
-    const canvas = document.createElement("canvas");
-    canvas.width = W; canvas.height = H;
-    const ctx = canvas.getContext("2d");
-    const bg = ctx.createLinearGradient(0, 0, W, H);
-    bg.addColorStop(0, "#243b53"); bg.addColorStop(1, "#16212e");
-    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
-    const label = (text, y, size, color, bold) => {
-      ctx.font = `${bold ? "bold " : ""}${size}px 'PingFang SC','Microsoft YaHei',sans-serif`;
-      ctx.fillStyle = color; ctx.textAlign = "left";
-      ctx.fillText(text, 28, y);
+    // 预载诸位玩家的 QQ 头像：CORS 允许则绘制；否则回退到首字圆标（避免 canvas 被污染）
+    const avatars = await loadPosterAvatars(
+      players.filter((p) => p.avatar_url).map((p) => ({ number: p.player_number, url: p.avatar_url }))
+    );
+    const cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const c = cv.getContext("2d");
+    const font = (bold, px) => `${bold ? "bold " : ""}${px}px 'PingFang SC','Microsoft YaHei',sans-serif`;
+    const rr = (x, y, w, h, r) => {
+      c.beginPath(); c.moveTo(x + r, y);
+      c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+      c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
     };
-    label("🕵️ 谁是卧底 · 本局战报", padTop + 30, 30, "#ffffff", true);
-    label(result.message || result.title || "本局结束", padTop + 64, 16, "#9fb3c8", false);
-    const campWord = result.civilian_word ? `平民/卧底词条：${result.civilian_word} / ${result.undercover_word}` : "";
-    if (campWord) label(campWord, padTop + 88, 15, "#7d8fa3", false);
-    // 表头
-    const yHeader = padTop + headerH;
-    ctx.fillStyle = "rgba(255,255,255,.07)"; ctx.fillRect(0, yHeader, W, headerH);
-    ctx.strokeStyle = "rgba(255,255,255,.16)"; ctx.strokeRect(0, yHeader, W, headerH);
-    ["#", "玩家", "身份", "状态"].forEach((t, i) => {
-      const x = i === 0 ? 28 : i === 1 ? 90 : i === 2 ? 350 : 540;
-      label(t, yHeader + 26, 15, "#9fb3c8", true);
+    const campCol = { civilian: "#34d399", undercover: "#c084fc", whiteboard: "#60a5fa" }[result.camp] || "#fbbf24";
+    const campCn = { civilian: "平民", undercover: "卧底", whiteboard: "白板" }[result.camp] || result.title || "本局";
+
+    // 背景
+    const g = c.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, "#17344f"); g.addColorStop(1, "#101d2a");
+    c.fillStyle = g; c.fillRect(0, 0, W, H);
+
+    // 顶部横幅
+    const hg = c.createLinearGradient(0, 0, W, padTop);
+    hg.addColorStop(0, "#1d4f86"); hg.addColorStop(1, "#14355a");
+    c.fillStyle = hg; c.fillRect(0, 0, W, padTop);
+    c.fillStyle = campCol; c.fillRect(0, padTop - 4, W, 4); // 主题色强调线
+    c.globalAlpha = 0.08; c.font = font(true, 120); c.textAlign = "right";
+    c.fillStyle = "#ffffff"; c.fillText(result.icon || "🕵️", W - 26, padTop - 28);
+    c.globalAlpha = 1;
+    c.textAlign = "left";
+    c.font = font(false, 20); c.fillStyle = "#9fc4ec"; c.fillText("🕵️ 谁是卧底 · 单局战报", M, 42);
+    // 以“我”的视角生成一句有趣文案（随机多款）
+    const headlineLines = wrapPosterLines(c, ucShareHeadline(result), W - 2 * M, font(true, 21), 2);
+    headlineLines.forEach((line, li) => {
+      c.fillStyle = "#ffffff"; c.font = font(true, 21);
+      c.fillText(line, M, 86 + li * 30);
+    });
+    c.fillStyle = "#ffd9a0"; c.font = font(true, 16);
+    c.fillText(`本局结果：${campCn} 获胜`, M, 156);
+    c.font = font(false, 13); c.fillStyle = "#9fc4ec";
+    c.fillText(truncatePosterText(c, result.message || result.title || "", W - 2 * M), M, 180);
+    // 词条药丸
+    const pill = (text, x, y, w, col, fg) => {
+      rr(x, y, w, 30, 15); c.fillStyle = col; c.fill();
+      c.font = font(true, 14); c.fillStyle = fg; c.textAlign = "center"; c.textBaseline = "middle";
+      c.fillText(text, x + w / 2, y + 15);
+      c.textBaseline = "alphabetic";
+    };
+    if (result.civilian_word && result.undercover_word) {
+      const cw = result.civilian_word, uw = result.undercover_word;
+      const cwt = truncatePosterText(c, `🛡️ ${cw}`, 230);
+      pill(cwt, M, padTop - 40, c.measureText(cwt).width + 28, "rgba(52,211,153,.18)", "#8ef0c2");
+      const uwt = truncatePosterText(c, `🕵️ ${uw}`, 230);
+      pill(uwt, M + 300, padTop - 40, c.measureText(uwt).width + 28, "rgba(192,132,252,.20)", "#e6d5ff");
+    }
+
+    // 表头（玩家列带头像空格）
+    const yHeader = padTop;
+    c.fillStyle = "rgba(255,255,255,.07)"; c.fillRect(0, yHeader, W, headerH);
+    c.fillStyle = "#8fa8c4"; c.font = font(true, 14); c.textAlign = "left";
+    ["玩家", "身份", "状态"].forEach((t, i) => {
+      c.fillText(t, forShareCol(i + 1), yHeader + 27);
     });
     // 数据行
     players.forEach((p, i) => {
-      const y = yHeader + (i + 1) * rowH;
-      ctx.fillStyle = i % 2 === 0 ? "rgba(255,255,255,.05)" : "rgba(255,255,255,.02)";
-      ctx.fillRect(0, y, W, rowH);
-      ctx.strokeStyle = "rgba(255,255,255,.05)"; ctx.strokeRect(0, y, W, rowH);
-      ctx.fillStyle = "#ffd166"; ctx.fillText(String(i + 1), 28, y + 30);
-      ctx.fillStyle = "#e8eef5";
+      const y = yHeader + i * rowH;
+      if (i % 2 === 0) { c.fillStyle = "rgba(255,255,255,.028)"; c.fillRect(0, y, W, rowH); }
+      // 头像圆标：优先 QQ 头像，回退首字；本人生成高亮金边
+      const ax = forShareCol(0) + 19, ay = y + 27, r = 19;
+      const img = avatars.get(p.player_number);
+      if (img) {
+        c.save();
+        c.beginPath(); c.arc(ax, ay, r, 0, Math.PI * 2); c.clip();
+        c.drawImage(img, ax - r, ay - r, r * 2, r * 2);
+        c.restore();
+        c.beginPath(); c.arc(ax, ay, r, 0, Math.PI * 2);
+        c.strokeStyle = p.is_me ? "#ffd166" : "rgba(255,255,255,.32)"; c.lineWidth = p.is_me ? 2.5 : 1.5; c.stroke();
+      } else {
+        c.fillStyle = p.is_me ? "#f0c050" : i < 3 ? "#f0c050" : "rgba(255,255,255,.14)";
+        c.beginPath(); c.arc(ax, ay, r, 0, Math.PI * 2); c.fill();
+        c.fillStyle = "#14304a"; c.textAlign = "center"; c.fillStyle = p.is_me ? "#1c1c1c" : "#e8eef5";
+        c.font = font(true, 16);
+        const fc = (p.display_name || `${p.player_number}号`).trim().charAt(0) || "?";
+        c.fillText(fc, ax, ay + 6);
+      }
+      // 名字（随头像列缩进）
       const nm = `${p.player_number}号${p.display_name ? " " + p.display_name : ""}`;
-      ctx.fillText(truncatePosterText(ctx, nm, 240), 90, y + 30);
-      const campText = p.camp === "civilian" ? "平民" : p.camp === "undercover" ? "卧底" : p.camp === "whiteboard" ? "白板" : (p.camp || "—");
-      ctx.fillStyle = p.camp === "undercover" ? "#ff8a8a" : p.camp === "whiteboard" ? "#c7d2fe" : "#9fe3b2";
-      ctx.fillText(campText, 350, y + 30);
-      ctx.fillStyle = p.is_out ? "#7d8fa3" : "#ffd166";
-      ctx.fillText(p.is_out ? "已出局" : "存活", 540, y + 30);
+      c.fillStyle = "#e8eef5"; c.font = font(false, 15); c.textAlign = "left";
+      c.fillText(truncatePosterText(c, nm, 170), forShareCol(1), y + 33);
+      // 身份
+      const campT = p.camp === "civilian" ? "平民" : p.camp === "undercover" ? "卧底" : p.camp === "whiteboard" ? "白板" : (p.camp || "—");
+      c.fillStyle = { civilian: "#8ef0c2", undercover: "#e6d5ff", whiteboard: "#b9dcff" }[p.camp] || "#8fa8c4";
+      c.font = font(true, 15); c.fillText(campT, forShareCol(2), y + 33);
+      // 状态
+      c.fillStyle = p.is_out ? "#7d8fa3" : "#ffd166";
+      c.font = font(false, 14);
+      c.fillText(p.is_out ? "✖ 已出局" : "● 存活", forShareCol(3), y + 33);
     });
-    ctx.fillStyle = "#7d8fa3"; ctx.font = "14px 'PingFang SC','Microsoft YaHei',sans-serif";
-    ctx.textAlign = "right"; ctx.fillText("由 花火陪你玩 生成", W - 28, H - 24);
-    return canvas.toDataURL("image/png");
+    // 底部
+    // 右下角水印
+    c.textAlign = "right";
+    c.font = font(false, 14); c.fillStyle = "rgba(140,160,185,.65)";
+    c.fillText("由 花火 监督生成", W - M, H - 22);
+    return cv.toDataURL("image/png");
+  }
+
+  function forShareCol(i) { return [24, 92, 360, 500][i]; }
+
+  // 生成一句「以屏幕前玩家视角」的有趣分享文案（多款随机，丰富多样性）
+  function ucShareHeadline(r) {
+    const me = r.me || {};
+    const ps = r.players || [];
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, "0");
+    const mm = String(now.getMinutes()).padStart(2, "0");
+    const t = `${hh}:${mm}`;
+    const campCn = (c) => (c === "civilian" ? "平民" : c === "undercover" ? "卧底" : c === "whiteboard" ? "白板" : c || "?");
+    const meName = me.name || `${me.number}号玩家`;
+    const win = r.camp;
+    const meWin = me.camp === win;
+    const allies = ps
+      .filter((p) => p.camp === win && p.camp !== me.camp && Number(p.player_number) !== me.number && !p.is_out)
+      .map((p) => p.display_name || `${p.player_number}号`);
+    const ally = allies[0];
+    const pool = [];
+    if (meWin) {
+      if (win === "undercover") {
+        pool.push(`在${t}的对局中，${meName}以卧底身份舌战群雄，凭一手演技瞒过全场、赢下本局！`);
+        pool.push(`${t}，${meName}化身卧底，在细节与谎言间游走，笑到了最后！`);
+      } else if (win === "civilian") {
+        pool.push(ally
+          ? `在${t}的对局中，${meName}以平民身份与「${ally}」并肩，成功揪出了卧底！`
+          : `在${t}的对局中，${meName}以平民身份冷静判案，送卧底出局！`);
+      } else {
+        pool.push(`在${t}的对局中，${meName}以白板身份深藏不露，顶住压力存活到最后一刻，拿下这场难得的胜利！`);
+        pool.push(`${t}，${meName}凭一腔白板身份稳到最后，这局赢得很有含金量！`);
+      }
+    } else {
+      pool.push(`在${t}的对局中，${meName}憾负于${campCn(win)}，技不如人，下次再战！`);
+      pool.push(`${t}，${meName}惜败给${campCn(win)}，看来水还是很深，认栽了。`);
+    }
+    return pool[Math.floor(Math.random() * pool.length)];
+  }
+
+  // 按最大宽度把长句折成若干行（最多 maxLines 行，超出补省略号）
+  function wrapPosterLines(c, text, maxW, font, maxLines) {
+    c.font = font;
+    const out = [];
+    let cur = "";
+    for (const ch of String(text || "")) {
+      const next = cur + ch;
+      if (cur && c.measureText(next).width > maxW) { out.push(cur); cur = ch; }
+      else cur = next;
+    }
+    if (cur) out.push(cur);
+    if (out.length > maxLines) {
+      out.splice(maxLines);
+      out[maxLines - 1] = ((out[maxLines - 1] || "") + "…");
+    }
+    return out;
+  }
+
+  // 预载分享战报里的 QQ 头像：CORS 允许才返回可绘制图片，否则返回 null
+  // （qlogo 未带 Access-Control-Allow-Origin 时会触发 onerror，从而避免污染 canvas）
+  function loadPosterAvatars(items, timeoutMs = 5000) {
+    return Promise.all(
+      (items || []).map(({ number, url }) => loadPosterImage(url, number, timeoutMs))
+    ).then((list) => {
+      const map = new Map();
+      list.forEach(({ number, img }) => map.set(number, img));
+      return map;
+    });
+  }
+  function loadPosterImage(url, number, timeoutMs) {
+    return new Promise((resolve) => {
+      if (!url) return resolve({ number, img: null });
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      let settled = false;
+      const done = (value) => { if (!settled) { settled = true; resolve(value); } };
+      img.onload = () => done({ number, img });
+      img.onerror = () => done({ number, img: null });
+      img.referrerPolicy = "no-referrer";
+      img.src = url;
+      window.setTimeout(() => done({ number, img: null }), timeoutMs);
+    });
   }
 
   function truncatePosterText(ctx, text, max) {

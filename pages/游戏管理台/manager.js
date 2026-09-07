@@ -1165,50 +1165,67 @@
 
   // 用 Canvas 把战绩绘制成一张 PNG 海报（不依赖后端）
   function statsPosterDataUrl(entries) {
-    const cardW = 720, rowH = 40, headerH = 96, cellPad = 28, cols = 5, footerH = 56;
+    const W = 720, M = 28, rowH = 46, padTop = 150, headerH = 44, footerH = 66;
     const nRows = Math.min(entries.length, 200);
-    const height = headerH + nRows * rowH + footerH;
-    const canvas = document.createElement("canvas");
-    canvas.width = cardW; canvas.height = height;
-    const ctx = canvas.getContext("2d");
+    const height = padTop + headerH + nRows * rowH + footerH;
+    const cv = document.createElement("canvas");
+    cv.width = W; cv.height = height;
+    const c = cv.getContext("2d");
+    const font = (bold, px) => `${bold ? "bold " : ""}${px}px 'PingFang SC','Microsoft YaHei',sans-serif`;
     // 背景
-    const bg = ctx.createLinearGradient(0, 0, cardW, height);
-    bg.addColorStop(0, "#1f2b3a"); bg.addColorStop(1, "#14202c");
-    ctx.fillStyle = bg; ctx.fillRect(0, 0, cardW, height);
-    // 标题
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 30px 'PingFang SC', 'Microsoft YaHei', sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillText("🏆 花火 · 游戏战绩排行榜", 28, 56);
-    ctx.font = "15px 'PingFang SC', 'Microsoft YaHei', sans-serif";
-    ctx.fillStyle = "#9fb3c8";
-    ctx.fillText(`导出时间：${new Date().toLocaleString()}`, 28, 82);
+    const bg = c.createLinearGradient(0, 0, W, height);
+    bg.addColorStop(0, "#1e2c3f"); bg.addColorStop(1, "#121d29");
+    c.fillStyle = bg; c.fillRect(0, 0, W, height);
+    // 顶部金色横幅
+    const hg = c.createLinearGradient(0, 0, W, padTop);
+    hg.addColorStop(0, "#3a2f18"); hg.addColorStop(1, "#241d0f");
+    c.fillStyle = hg; c.fillRect(0, 0, W, padTop);
+    c.fillStyle = "#f0c050"; c.fillRect(0, padTop - 4, W, 4);
+    c.textAlign = "left";
+    c.font = font(false, 20); c.fillStyle = "#e8c56d"; c.fillText("🏆 花火陪你玩 · 战绩榜", M, 46);
+    c.font = font(true, 34); c.fillStyle = "#ffffff";
+    c.fillText("游戏战绩排行榜", M, 96);
+    c.font = font(false, 15); c.fillStyle = "#b8a878";
+    c.fillText(`导出时间：${new Date().toLocaleString()}`, M, 124);
     // 表头
-    ctx.strokeStyle = "rgba(255,255,255,.18)";
-    drawPosterRow(ctx, 0, headerH, ["排名", "玩家", "玩法", "胜场", ""], headerH, { name: 28 });
+    c.fillStyle = "rgba(255,255,255,.08)"; c.fillRect(0, padTop, W, headerH);
+    c.fillStyle = "#8fa8c4"; c.font = font(true, 15); c.textAlign = "left";
+    ["排名", "玩家", "玩法", "胜场"].forEach((t, i) => {
+      const x = i === 0 ? rankCol() : i === 1 ? nameCol() : i === 2 ? gameCol() : winsCol();
+      c.fillText(t, x, padTop + 28);
+    });
     // 数据行
     const list = entries.slice(0, nRows);
     list.forEach((entry, i) => {
-      const y = headerH + (i + 1) * rowH;
-      const bgRow = i % 2 === 0 ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.02)";
-      ctx.fillStyle = bgRow; ctx.fillRect(0, y, cardW, rowH);
-      ctx.strokeStyle = "rgba(255,255,255,.06)";
-      ctx.strokeRect(0, y, cardW, rowH);
-      ctx.fillStyle = (i < 3) ? "#ffd166" : "#e8eef5";
-      ctx.fillText(String(i + 1), cellPad, y + 28);
-      ctx.fillStyle = "#e8eef5";
-      ctx.fillText(truncatePosterText(ctx, entry.name, 300), cellPad + 90, y + 28);
-      ctx.fillText(gameLabel(entry.game_type), cellPad + 90 + 320, y + 28);
-      ctx.fillStyle = "#ffd166";
-      ctx.fillText(`${entry.wins} 胜`, cellPad + 90 + 320 + 130, y + 28);
+      const y = padTop + i * rowH;
+      if (i % 2 === 0) { c.fillStyle = "rgba(255,255,255,.03)"; c.fillRect(0, y, W, rowH); }
+      // 排名徽章
+      const isTop = i < 3;
+      c.fillStyle = isTop ? "#f0c050" : "rgba(255,255,255,.12)";
+      c.beginPath(); c.arc(rankCol() + 15, y + 23, 16, 0, Math.PI * 2); c.fill();
+      c.fillStyle = isTop ? "#1c1c1c" : "#dfe9f5";
+      c.textAlign = "center"; c.font = font(true, 15);
+      c.fillText(isTop ? ["🥇","🥈","🥉"][i] : String(i + 1), rankCol() + 15, y + 28);
+      c.textAlign = "left";
+      // 玩家名
+      c.fillStyle = "#e8eef5"; c.font = font(false, 16);
+      c.fillText(truncatePosterText(c, entry.name, 260), nameCol(), y + 30);
+      // 玩法
+      c.fillStyle = "#9fc4ec"; c.font = font(false, 14);
+      c.fillText(gameLabel(entry.game_type), gameCol(), y + 30);
+      // 胜场
+      c.fillStyle = "#ffd166"; c.font = font(true, 16);
+      c.fillText(`${entry.wins} 胜`, winsCol(), y + 30);
     });
-    // 页脚
-    ctx.fillStyle = "#7d8fa3";
-    ctx.font = "14px 'PingFang SC', 'Microsoft YaHei', sans-serif";
-    ctx.textAlign = "right";
-    ctx.fillText("由 花火陪你玩 生成", cardW - 28, height - 22);
-    return canvas.toDataURL("image/png");
+    c.fillStyle = "#6d85a3"; c.font = font(false, 14); c.textAlign = "center";
+    c.fillText("—— 由 花火陪你玩 生成 ——", W / 2, height - 30);
+    return cv.toDataURL("image/png");
   }
+
+  function rankCol() { return 32; }
+  function nameCol() { return 96; }
+  function gameCol() { return 400; }
+  function winsCol() { return 620; }
 
   function truncatePosterText(ctx, text, max) {
     if (ctx.measureText(text).width <= max) return text;
@@ -1216,21 +1233,6 @@
     while (t.length && ctx.measureText(t + "…").width > max) t = t.slice(0, -1);
     return t + "…";
   }
-
-  function drawPosterRow(ctx, topIndex, headerH, labels, _unused, _opts) {
-    ctx.fillStyle = "rgba(255,255,255,.08)";
-    ctx.fillRect(0, headerH, 720, headerH);
-    ctx.strokeStyle = "rgba(255,255,255,.18)";
-    ctx.strokeRect(0, headerH, 720, headerH);
-    ctx.fillStyle = "#9fb3c8";
-    ctx.font = "bold 15px 'PingFang SC', 'Microsoft YaHei', sans-serif";
-    ctx.textAlign = "left";
-    labels.forEach((text, i) => {
-      const x = i === 0 ? cellStaticCol(28) : i === 1 ? 90 + 28 : i === 2 ? 90 + 320 : 90 + 320 + 130;
-      ctx.fillText(text, x, headerH + 28);
-    });
-  }
-  function cellStaticCol(pad) { return pad; }
   // ===== 战绩管理 END =====
 
   document.getElementById("refreshAction").addEventListener("click", loadRooms);
