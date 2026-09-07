@@ -64,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.4.5"
+PLUGIN_VERSION = "0.5.0"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -378,28 +378,6 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "hint": "发言与历史发言相似度超过该阈值会被驳回并要求换说法，防止复读；0 表示不检测。",
             },
             {
-                "key": "failed_mute_seconds",
-                "config_key": "undercover.failed_mute_seconds",
-                "label": "失败方禁言时长",
-                "type": "int",
-                "default": 60,
-                "minimum": 0,
-                "maximum": 3600,
-                "unit": "秒",
-                "hint": "游戏失败阵营被禁言的秒数；0 表示不禁言。",
-            },
-            {
-                "key": "violated_mute_seconds",
-                "config_key": "undercover.violated_mute_seconds",
-                "label": "违规（说出词条）禁言时长",
-                "type": "int",
-                "default": 300,
-                "minimum": 0,
-                "maximum": 3600,
-                "unit": "秒",
-                "hint": "平民/卧底误说自己的词条后禁言秒数；0 表示不禁言。",
-            },
-            {
                 "key": "ai_fill_enabled",
                 "config_key": "undercover.ai_fill_enabled",
                 "label": "开启 AI 玩家自动补位（可作为人数不足的后备玩法）",
@@ -501,6 +479,44 @@ def _uc_ai_fallback(camp: str, round_no: int, seed: int = 0) -> str:
     "让 Bot 与用户通过可视化房间自然地一起玩游戏。",
     PLUGIN_VERSION,
 )
+def _undercover_title_text(game: Any) -> str:
+    """还原谁是卧底结局标题（平民/卧底/白板获胜）。"""
+    try:
+        camp = getattr(game, "winner_camp", None) or (
+            dict(getattr(game, "winner", {}) or {}).get("camp")
+        )
+        text = {
+            "civilian": "平民获胜", "undercover": "卧底获胜", "whiteboard": "白板获胜",
+        }.get(camp)
+        return text or "本局结束"
+    except Exception:
+        return "本局结束"
+
+
+def _undercover_game_summary(game: Any) -> str:
+    """把一局谁是卧底的关键信息拼成可读文本，供复盘/战报使用。"""
+    try:
+        parts = []
+        civ = getattr(game, "civilian_word", "") or ""
+        uc = getattr(game, "undercover_word", "") or ""
+        if civ or uc:
+            parts.append(f"平民词条「{civ}」/ 卧底词条「{uc}」")
+        players = getattr(game, "players", None) or []
+        for p in players:
+            camp = getattr(p, "camp", "") or ""
+            camp_cn = {
+                "civilian": "平民", "undercover": "卧底", "whiteboard": "白板",
+            }.get(camp, camp or "?")
+            out = "已出局" if getattr(p, "is_out", False) else "存活"
+            name = getattr(p, "display_name", "") or ""
+            parts.append(
+                f"{getattr(p, 'number', '?')}号{'·' + name if name else ''}({camp_cn},{out})"
+            )
+        return "；".join(parts)
+    except Exception:
+        return ""
+
+
 class GameCompanionPlugin(Star):
     """Game rooms that preserve AstrBot's normal conversation pipeline."""
 
@@ -679,6 +695,31 @@ class GameCompanionPlugin(Star):
         )
         self.undercover_ai_fill_min_players = self._cfg_int(
             "undercover.ai_fill_min_players", 3, minimum=2, maximum=8
+        )
+        # 群通报（本局胜负+惩罚发到开房游戏群）：总开关 + 是否自动播报；
+        # 关闭自动时由结算卡「通报到群」按钮手动触发。属插件配置，不在管理台展示。
+        self.group_announce_enabled = self._cfg_bool(
+            "undercover.group_announce_enabled", False
+        )
+        self.group_announce_auto = self._cfg_bool(
+            "undercover.group_announce_auto", False
+        )
+        # 谁是卧底战绩报表（配置项先行，定时触发后续）：白名单为空格/逗号分隔的 UMO 会话串，
+        # 例如 UMO:huahuo:GroupMessage:454366619。
+        self.undercover_report_enabled = self._cfg_bool(
+            "undercover.report_enabled", False
+        )
+        self.undercover_report_mode = self._cfg_str(
+            "undercover.report_mode", "daily"
+        ) or "daily"
+        self.undercover_report_groups = self._cfg(
+            "undercover.report_groups", ""
+        )
+        self.undercover_report_time = self._cfg_str(
+            "undercover.report_time", "09:00"
+        ) or "09:00"
+        self.undercover_report_weekday = self._cfg_int(
+            "undercover.report_weekday", 1, minimum=0, maximum=6
         )
         # 去重窗口：记录 N 次抽取到的词条，避免短时间重复
         self._undercover_word_window: list[tuple[str, str]] = []
@@ -951,6 +992,7 @@ class GameCompanionPlugin(Star):
         """Start only the in-memory watchdog; the port opens lazily on demand."""
         self._watchdog_task = asyncio.create_task(self._watchdog())
         self._register_companion_invite_ability()
+        self._register_report_scheduler()
         logger.info(
             "[GameCompanion] 花火陪你玩已加载；房间服务将在首次创建房间时按需启动"
         )
@@ -958,6 +1000,7 @@ class GameCompanionPlugin(Star):
     async def terminate(self) -> None:
         """Invalidate every room and stop only plugin-owned resources."""
         self._unregister_companion_invite_ability()
+        self._unregister_report_scheduler()
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             await asyncio.gather(self._watchdog_task, return_exceptions=True)
@@ -3649,6 +3692,173 @@ class GameCompanionPlugin(Star):
         except Exception as exc:
             logger.debug("[GameCompanion] 回发游戏消息失败: %s", exc)
 
+    async def undercover_recap(self, room: GameRoom) -> str:
+        """生成一局谁是卧底的短复盘摘要（结算卡「生成复盘」用，点击时才请求 LLM）。
+
+        依据房间内的本局结果（胜方、阵营、词条、出局情况）生成 2-3 句要点；
+        LLM 不可用或超时时返回本地兜底文案，保证始终有内容可展示。
+        """
+        game = room.game
+        gap = _undercover_game_summary(game)
+        title = _undercover_title_text(game)
+        if not gap and not title:
+            return self._undercover_fallback_recap()
+        prompt = (
+            "请为一局「谁是卧底」生成简短复盘（中文，2~4 句，口语化、不写感谢语）。\n"
+            f"结局：{title}\n对局情况：{gap or '（无额外明细）'}\n"
+            "要点：谁最早出局/发挥如何、是否存在明显可疑发言、胜利方为什么赢。"
+        )
+        text = await self._llm_gen_neutral(
+            prompt,
+            system_prompt="你是冷静的复盘叙述者，只输出复盘正文，不要标题、不要编号、不要 emoji。",
+        )
+        return (text or self._undercover_fallback_recap()).strip()
+
+    @staticmethod
+    def _undercover_fallback_recap() -> str:
+        return "本局已结束。建议复盘一下关键的几轮投票与发言，找出谁是破局的转折点。"
+
+    async def undercover_announce_result(self, room: GameRoom) -> str:
+        """把本局胜负与（若启用）惩罚发到开房群，返回已发送的文案。
+
+        仅在插件配置开启群通报（undercover.group_announce_enabled）时真正发送；
+        未开启时返回空串，由调用方提示。
+        """
+        if not getattr(self, "group_announce_enabled", False):
+            return ""
+        game = room.game
+        title = _undercover_title_text(game) or "本局已结束"
+        lines = [f"🕵️ 谁是卧底战报：{title}"]
+        winner = getattr(game, "winner", None)
+        if getattr(winner, "camp", None):
+            camp_text = {
+                "civilian": "平民", "undercover": "卧底", "whiteboard": "白板",
+            }.get(winner.camp, winner.camp)
+            lines.append(f"胜利方：{camp_text}")
+        cw = getattr(winner, "civilian_word", None) or ""
+        uw = getattr(winner, "undercover_word", None) or ""
+        if cw or uw:
+            lines.append(f"词条：平民「{cw}」/ 卧底「{uw}」")
+        # 失败方（非胜方阵营的存活/参与玩家）
+        camp = getattr(winner, "camp", None)
+        players = getattr(game, "players", None) or []
+        losers = [
+            p for p in players
+            if getattr(p, "camp", None) and p.camp != camp
+        ]
+        if losers:
+            names = "、".join(
+                f"{getattr(p, 'number', '?')}号{getattr(p, 'display_name', '') or ''}"
+                for p in losers
+            )
+            lines.append(f"失败方：{names}")
+        # 惩罚（插件配置命中才附上）
+        muted = [
+            (label, seconds)
+            for label, seconds in (
+                ("失败方禁言", getattr(self, "undercover_failed_mute_seconds", 0)),
+                ("违规禁言", getattr(self, "undercover_violated_mute_seconds", 0)),
+            )
+            if seconds
+        ]
+        if muted:
+            lines.append(
+                "惩罚：" + "；".join(f"{label} {s}秒" for label, s in muted)
+            )
+        await self._send_to_origin(room, "\n".join(lines))
+        return "\n".join(lines)
+
+    def _register_report_scheduler(self) -> None:
+        """用 AstrBot 自带的 APScheduler（context.cron_manager.scheduler）注册卧底日报/周报定时任务。
+
+        参考社区插件做法：用 CronTrigger 注册到 cron_manager，由框架调度，插件无需自建轮询。
+        开关关闭或白名单为空时则不注册。
+        """
+        self._unregister_report_scheduler()
+        if not getattr(self, "undercover_report_enabled", False):
+            return
+        groups = [g.strip() for g in re.split(r"[\s,，;；]+", str(getattr(self, "undercover_report_groups", "") or "")) if g.strip()]
+        if not groups:
+            return
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+
+            scheduler = getattr(getattr(self.context, "cron_manager", None), "scheduler", None)
+            if scheduler is None or not callable(getattr(scheduler, "add_job", None)):
+                logger.warning("[GameCompanion] AstrBot 未提供 cron_manager，日报/周报定时不可用")
+                return
+            hour, minute = self._parse_report_time()
+            mode = (getattr(self, "undercover_report_mode", "daily") or "daily").lower()
+            weekday = max(0, min(6, int(getattr(self, "undercover_report_weekday", 1) or 1)))
+            trigger = (
+                CronTrigger(hour=hour, minute=minute)
+                if mode != "weekly"
+                else CronTrigger(day_of_week=weekday, hour=hour, minute=minute)
+            )
+            scheduler.add_job(
+                self._run_scheduled_report,
+                trigger=trigger,
+                id="astrbot_plugin_game_companion_undercover_report",
+                replace_existing=True,
+                misfire_grace_time=120,
+            )
+            logger.info(
+                "[GameCompanion] 已注册卧底报表定时任务（%s %02d:%02d，白名单 %d 个）",
+                "周" if mode != "daily" else "日", hour, minute, len(groups),
+            )
+        except Exception as exc:
+            logger.warning("[GameCompanion] 注册卧底报表定时任务失败: %s", exc)
+
+    def _unregister_report_scheduler(self) -> None:
+        try:
+            scheduler = getattr(getattr(self.context, "cron_manager", None), "scheduler", None)
+            if scheduler is not None and callable(getattr(scheduler, "get_job", None)):
+                job_id = "astrbot_plugin_game_companion_undercover_report"
+                if scheduler.get_job(job_id):
+                    scheduler.remove_job(job_id)
+        except Exception:
+            pass
+
+    def _parse_report_time(self) -> tuple[int, int]:
+        try:
+            h, m = str(getattr(self, "undercover_report_time", "09:00") or "09:00").split(":")
+            return max(0, min(23, int(h))), max(0, min(59, int(m)))
+        except Exception:
+            return 9, 0
+
+    async def _run_scheduled_report(self) -> None:
+        """APScheduler 定时触发：把卧底战绩报告发到白名单群。"""
+        if not getattr(self, "undercover_report_enabled", False):
+            return
+        groups = [g.strip() for g in re.split(r"[\s,，;；]+", str(getattr(self, "undercover_report_groups", "") or "")) if g.strip()]
+        if not groups:
+            return
+        text = self._build_undercover_report()
+        for umoid in groups:
+            self._spawn(self._send_report_piece(umoid, text))
+        logger.info("[GameCompanion] 已触发卧底战绩报表推送")
+
+    async def _send_report_piece(self, umoid: str, text: str) -> None:
+        try:
+            await self.context.send_message(umoid, MessageChain([Plain(text)]))
+        except Exception as exc:
+            logger.warning("[GameCompanion] 战绩报表发送失败(%s): %s", umoid, exc)
+
+    def _build_undercover_report(self) -> str:
+        """拼一份谁是卧底战绩日报/周报文本（取自全局胜场榜，按名合并）。"""
+        rows = self.manager.global_leaderboard("undercover", limit=20)
+        lines = ["📊 谁是卧底 · 战绩报告", "——————"]
+        if not rows:
+            lines.append("当前暂无卧底战绩记录。")
+            return "\n".join(lines)
+        medals = ["🥇", "🥈", "🥉"]
+        for i, row in enumerate(rows):
+            rank = medals[i] if i < 3 else f"#{i + 1}"
+            lines.append(f"{rank} {row['name']}：{int(row['wins'] or 0)} 胜")
+        lines.append("——————")
+        lines.append("数据来自跨房间全局战绩榜。")
+        return "\n".join(lines)
+
     def _remember_bot_ctx(self, room: GameRoom, event) -> None:
         """从 QQ 事件里缓存该会话的 aiocqhttp bot/群号/自身QQ，供后续群里禁言使用。"""
         try:
@@ -3864,6 +4074,24 @@ class GameCompanionPlugin(Star):
             self.page_clear_leaderboard,
             ["POST"],
             "Clear global leaderboard",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/leaderboard",
+            self.page_leaderboard,
+            ["POST"],
+            "Read global leaderboard",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/leaderboard/set_wins",
+            self.page_set_wins,
+            ["POST"],
+            "Edit a player's win count",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/operation_log",
+            self.page_operation_log,
+            ["POST"],
+            "Read management operation log",
         )
         register_api(
             f"{PAGE_API_PREFIX}/settings",
@@ -4096,18 +4324,27 @@ class GameCompanionPlugin(Star):
         action = str(payload.get("action") or "").strip().lower()
         try:
             if action == "assign":
+                visitor_number = int(payload.get("visitor_number") or 0)
                 await self.manager.assign_player(
                     room,
-                    int(payload.get("visitor_number") or 0),
+                    visitor_number,
                     str(payload.get("player_qq") or ""),
                 )
+                self.manager.record_operation(
+                    "assign",
+                    f"房间 {room.room_id}：将 {visitor_number} 号安排为玩家",
+                )
             elif action == "demote":
-                await self.manager.remove_player(
-                    room, int(payload.get("visitor_number") or 0)
+                visitor_number = int(payload.get("visitor_number") or 0)
+                await self.manager.remove_player(room, visitor_number)
+                self.manager.record_operation(
+                    "demote", f"房间 {room.room_id}：将 {visitor_number} 号移回观众席"
                 )
             elif action == "kick":
-                await self.manager.kick_visitor(
-                    room, int(payload.get("visitor_number") or 0)
+                visitor_number = int(payload.get("visitor_number") or 0)
+                await self.manager.kick_visitor(room, visitor_number)
+                self.manager.record_operation(
+                    "kick", f"房间 {room.room_id}：将 {visitor_number} 号踢出房间"
                 )
             elif action == "pause":
                 await self.manager.pause(room)
@@ -4119,8 +4356,15 @@ class GameCompanionPlugin(Star):
                     self._game_type(payload.get("game_type")),
                     force=self._value_bool(payload.get("confirm_abandon")),
                 )
+                self.manager.record_operation(
+                    "switch_game",
+                    f"房间 {room.room_id}：切换为《{payload.get('game_type')}」",
+                )
             elif action == "close":
                 await self.manager.destroy(room.room_id, "管理员关闭了房间")
+                self.manager.record_operation(
+                    "close_room", f"关闭房间 {room.room_id}"
+                )
             else:
                 raise ValueError("不支持的管理操作")
         except (ValueError, RuntimeError, PermissionError) as exc:
@@ -4134,11 +4378,55 @@ class GameCompanionPlugin(Star):
         if game_type and game_type not in self.manager.global_player_wins:
             game_type = None  # 指定类型不存在则视为清空全部，避免卡在“找不到该类型”
         cleared = self.manager.clear_global_stats(game_type)
+        if cleared:
+            self.manager.record_operation(
+                "clear_leaderboard",
+                f"清空全局战绩排行榜（{'全部玩法' if not game_type else game_type}）",
+            )
         return {
             "status": "ok" if cleared else "error",
             "message": "" if cleared else "没有可清空的排行榜数据（持久化未启用或为空）",
             "data": {"cleared": bool(cleared)},
         }
+
+    async def page_set_wins(self) -> dict[str, Any]:
+        """手动修正某玩家胜场。payload: {"game_type","name","wins"}。"""
+        payload = await request.json(default={}) or {}
+        try:
+            changed = self.manager.set_global_wins(
+                str(payload.get("game_type") or ""),
+                str(payload.get("name") or ""),
+                int(payload.get("wins") or 0),
+            )
+        except (ValueError, TypeError) as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
+        if not changed:
+            return {"status": "error", "message": "未找到该玩家在对应玩法的记录", "data": {}}
+        return {"status": "ok", "data": {"changed": changed}}
+
+    async def page_operation_log(self) -> dict[str, Any]:
+        """返回最近的操作日志。payload: {"limit": int}。"""
+        payload = await request.json(default={}) or {}
+        limit = int(payload.get("limit") or 200)
+        return {"status": "ok", "data": {"rows": self.manager.operation_log(limit)}}
+
+    async def page_leaderboard(self) -> dict[str, Any]:
+        """返回各玩法全局战绩排行（用于管理台导出海报/浏览）。
+
+        payload 可选 {"game_type": "undercover"}；不传则返回全部玩法。每个玩法最多 limit 条。
+        """
+        payload = await request.json(default={}) or {}
+        target = str(payload.get("game_type") or "").strip() or None
+        limit = max(0, int(payload.get("limit") or 100))
+        game_types = (
+            [target] if target and target in SUPPORTED_GAMES else list(SUPPORTED_GAMES)
+        )
+        result: dict[str, object] = {}
+        for gtype in game_types:
+            rows = self.manager.global_leaderboard(gtype, limit=limit)
+            if rows:
+                result[gtype] = rows
+        return {"status": "ok", "data": {"leaderboard": result}}
 
     async def page_xiangqi_install(self) -> dict[str, Any]:
         try:

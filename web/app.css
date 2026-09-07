@@ -1363,6 +1363,16 @@ body.dark .uc-avatar-tone-neutral { color: var(--text-strong, #f0f0f0); }
 .chip-word { color: var(--gold); }
 .chip-votes { color: var(--red); }
 .chip-pk { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, transparent); }
+/* 藏品/护身符徽章：平民/卧底/白板各有专属风格 */
+.uc-badge { font-size: .68rem; font-weight: 700; }
+.uc-badge-civ { color: #2e9a5c; border-color: color-mix(in srgb, #2e9a5c 35%, transparent); background: color-mix(in srgb, #2e9a5c 12%, transparent); }
+.uc-badge-uc { color: #8a5cd6; border-color: color-mix(in srgb, #8a5cd6 35%, transparent); background: color-mix(in srgb, #8a5cd6 12%, transparent); }
+.uc-badge-wb { color: #3c8fd0; border-color: color-mix(in srgb, #3c8fd0 35%, transparent); background: color-mix(in srgb, #3c8fd0 12%, transparent); }
+.uc-badge-gold { color: #b8860b; border-color: color-mix(in srgb, #d4a017 45%, transparent); background: color-mix(in srgb, #f5d576 18%, transparent); }
+body.dark .uc-badge-civ { color: #6fdca2; }
+body.dark .uc-badge-uc { color: #c39af0; }
+body.dark .uc-badge-wb { color: #7fc4ee; }
+body.dark .uc-badge-gold { color: #f0c957; }
 
 .uc-identity-card {
   background: var(--surface);
@@ -2731,6 +2741,42 @@ body.dark .uc-speech-box textarea:focus {
   8%   { opacity: 1; }
   100% { transform: translate3d(var(--cf-drift, 0), 110vh, 0) rotate(720deg); opacity: 0.9; }
 }
+
+/* 结算卡：操作行与复盘摘要 */
+.uc-result-recap {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--surface-alt);
+  color: var(--text);
+  font-size: 13.5px;
+  line-height: 1.65;
+  text-align: left;
+}
+.uc-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+.uc-result-actions .primary-action,
+.uc-result-actions .secondary-action {
+  flex: 1 1 calc(50% - 5px);
+}
+.uc-result-actions .secondary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-weight: 650;
+}
+.uc-result-actions .secondary-action:hover { border-color: var(--green); color: var(--green); }
+.uc-result-actions .secondary-action svg { width: 17px; }
 
 /* ====== 谁是卧底：规则说明 & 战绩排行面板 ====== */
 .uc-info-panels {

@@ -53,6 +53,8 @@ class PlayerSeat:
     seated_at: float = field(default_factory=time.time)
     is_ai: bool = False
     ready: bool = False
+    # 谁是卧底「藏品/护身符」徽章缓存（若 room.camp_wins_store 存在则以实时计算为准）
+    undercover_badges: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -111,6 +113,87 @@ def _qq_avatar_url(qq: str) -> str:
     if not qq.isdigit() or len(qq) < 5:
         return ""
     return f"https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
+
+
+def _seat_badges(seat: "PlayerSeat", room: "GameRoom") -> list[dict[str, object]]:
+    """按玩家分阵营胜场即时计算「藏品/护身符」徽章。
+
+    若房间持有阵营胜场存储（room._camp_wins_store，引用管理器同一 dict），
+    实时按名字计算；否则回退到游戏中缓存的 seat.undercover_badges。
+    """
+    name = (seat.display_name or "").strip()
+    store = getattr(room, "camp_wins_store", None)
+    if isinstance(store, dict) and name:
+        return _undercover_badges_for(name, store)
+    cached = getattr(seat, "undercover_badges", None)
+    return list(cached) if isinstance(cached, list) else []
+
+
+def _undercover_badges_for(
+    name: str, stats: dict[str, dict[str, int]]
+) -> list[dict[str, object]]:
+    """分阵营胜场的「藏品/护身符」徽章规则（与 room_manager 保持一致）。
+
+    卧底/平民/白板各有专属阶梯，胜场越多点亮越高阶；同时按总胜场点亮一枚荣誉段位。
+    只返回「当前已达成的最高阶」每阵营一枚，避免玩家卡被徽章刷屏。
+    """
+    name = (name or "").strip()
+    entry = stats.get(name, {}) if isinstance(stats, dict) else {}
+    civ = int(entry.get("civilian", 0) or 0)
+    uc = int(entry.get("undercover", 0) or 0)
+    wb = int(entry.get("whiteboard", 0) or 0)
+    total = civ + uc + wb
+
+    def top(tiers, wins):
+        chosen = None
+        for threshold, label, emoji, tone in tiers:
+            if wins >= threshold:
+                chosen = {"id": f"{tone}_{threshold}", "label": label, "emoji": emoji, "tone": tone, "wins": wins}
+        return chosen
+
+    badges = []
+    # 总胜场的荣誉段位（金色，最靠前）
+    for threshold, label, emoji in (
+        (1, "入局新手", "🎮"),
+        (5, "常胜新人", "🟢"),
+        (12, "老练玩家", "🔱"),
+        (20, "高手玩家", "🏆"),
+        (35, "卧底传奇", "👑"),
+    ):
+        if total >= threshold:
+            badges.append({"id": f"gold_{threshold}", "label": label, "emoji": emoji, "tone": "gold", "wins": total})
+    # 三大阵营专属阶梯（每阵营只亮最高阶）
+    civ_badge = top(
+        (
+            (1, "平民见习", "🤝", "civ"),
+            (3, "平民守护者", "🛡️", "civ"),
+            (8, "平民核心", "⚔️", "civ"),
+            (15, "平民之神", "👑", "civ"),
+        ),
+        civ,
+    )
+    uc_badge = top(
+        (
+            (1, "卧底见习", "🕶️", "uc"),
+            (3, "卧底刺客", "🕵️", "uc"),
+            (7, "卧底大师", "🎩", "uc"),
+            (12, "卧底影帝", "🎭", "uc"),
+        ),
+        uc,
+    )
+    wb_badge = top(
+        (
+            (1, "白板见习", "🌀", "wb"),
+            (3, "白板棋士", "♟️", "wb"),
+            (6, "白板策士", "📋", "wb"),
+            (10, "白板幻影", "🫥", "wb"),
+        ),
+        wb,
+    )
+    for badge in (civ_badge, uc_badge, wb_badge):
+        if badge is not None:
+            badges.append(badge)
+    return badges
 
 
 @dataclass(slots=True)
@@ -186,6 +269,8 @@ class GameRoom:
     undercover_min_players: int = 2
     undercover_allow_host_customize_camp_scales: bool = True
     undercover_reveal_identity: bool | None = None
+    # 引用管理器「卧底分阵营胜场」同一 dict；存在时座位徽章按实时数据计算
+    camp_wins_store: dict[str, dict[str, int]] | None = None
     created_at: float = field(default_factory=time.time)
     last_activity_at: float = field(default_factory=time.time)
     player_empty_since: float | None = field(default_factory=time.time)
@@ -470,6 +555,8 @@ class GameRoom:
                     "is_ai": bool(seat.is_ai),
                     "seated_at": seat.seated_at,
                     "ready": bool(seat.ready),
+                    # 藏品/护身符徽章：优先按当前阵营胜场即时计算，回退到游戏中缓存的 seat 值
+                    "badges": _seat_badges(seat, self),
                     # QQ 头像：仅已确认身份的玩家下发头像地址；AI 座位前端回退显示首字
                     "avatar_url": (
                         _qq_avatar_url(seat.qq)

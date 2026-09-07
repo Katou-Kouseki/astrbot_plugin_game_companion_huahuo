@@ -35,6 +35,9 @@
       <button class="manager-tab" data-panel="settings" type="button" role="tab" aria-selected="false">
         <i data-lucide="sliders-horizontal"></i><span>游戏配置</span>
       </button>
+      <button class="manager-tab" data-panel="stats" type="button" role="tab" aria-selected="false">
+        <i data-lucide="bar-chart-3"></i><span>战绩管理</span>
+      </button>
     </nav>
 
     <div id="roomsPanel">
@@ -140,6 +143,81 @@
         </div>
       </header>
       <div id="gameSettingsGrid" class="game-settings-grid"></div>
+    </section>
+
+    <section id="statsPanel" class="settings-panel" hidden>
+      <header class="settings-header">
+        <div>
+          <span class="eyebrow">全局战绩与操作审计</span>
+          <h2>战绩管理</h2>
+          <p id="statsNotice">选择玩法查看战绩排行，可修正胜场、导出海报，并查看管理台操作日志。</p>
+        </div>
+        <div class="settings-actions">
+          <select id="statsGameSelect" class="stats-game-select" aria-label="选择玩法">
+            <option value="" selected>全部玩法</option>
+          </select>
+          <button id="posterAction" class="secondary-button" type="button">
+            <i data-lucide="image"></i><span>导出海报</span>
+          </button>
+          <button id="refreshStatsAction" class="secondary-button" type="button">
+            <i data-lucide="rotate-ccw"></i><span>刷新</span>
+          </button>
+        </div>
+      </header>
+
+      <div class="stats-grid">
+        <section class="stats-card">
+          <header class="section-header">
+            <div>
+              <h2>全局战绩排行</h2>
+              <span id="leaderboardSummary">尚未读取</span>
+            </div>
+          </header>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>玩家</th>
+                  <th>玩法</th>
+                  <th>胜场</th>
+                  <th class="actions-column">操作</th>
+                </tr>
+              </thead>
+              <tbody id="leaderboardBody"></tbody>
+            </table>
+            <div id="leaderboardEmpty" class="empty-state" hidden>
+              <i data-lucide="trophy"></i>
+              <strong>该玩法暂无战绩数据</strong>
+            </div>
+          </div>
+        </section>
+
+        <section class="stats-card">
+          <header class="section-header">
+            <div>
+              <h2>操作日志</h2>
+              <span id="logSummary">关键动作将被记录</span>
+            </div>
+          </header>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>动作</th>
+                  <th>详情</th>
+                </tr>
+              </thead>
+              <tbody id="operationLogBody"></tbody>
+            </table>
+            <div id="logEmpty" class="empty-state" hidden>
+              <i data-lucide="notebook-text"></i>
+              <strong>暂无操作日志</strong>
+            </div>
+          </div>
+        </section>
+      </div>
     </section>
   </main>
 

@@ -133,6 +133,14 @@ class GameRoomServer:
             "/api/room/{access_token}/undercover/reveal",
             self._undercover_set_reveal_identity,
         )
+        app.router.add_post(
+            "/api/room/{access_token}/undercover/recap",
+            self._undercover_recap,
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/undercover/announce",
+            self._undercover_announce,
+        )
         app.router.add_post("/api/room/{access_token}/ready", self._ready)
         app.router.add_post(
             "/api/room/{access_token}/undercover/add_ai",
@@ -578,6 +586,34 @@ class GameRoomServer:
                 status=400,
             )
         return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+
+    async def _undercover_recap(self, request: web.Request) -> web.Response:
+        """结算卡「生成复盘」：点击时才请求 LLM，返回一段复盘摘要。"""
+        self._require_origin(request)
+        room = self._room(request)
+        try:
+            recap = await self.plugin.undercover_recap(room)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 生成复盘失败: %s", exc)
+            recap = ""
+        return self._response({"recap": (recap or "").strip()})
+
+    async def _undercover_announce(self, request: web.Request) -> web.Response:
+        """结算卡「通报到群」：把本局胜负(与惩罚)发到开房群。
+
+        仅在插件配置开启群通报时才实际发送；否则返回 announced=False 由前端提示。
+        """
+        self._require_origin(request)
+        room = self._room(request)
+        await self._payload(request)  # 读取并丢弃 body，保持接口一致
+        try:
+            text = await self.plugin.undercover_announce_result(room)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 通报失败: %s", exc)
+            return web.json_response(
+                {"status": "error", "message": str(exc)}, status=400
+            )
+        return self._response({"announced": bool(text), "text": text})
 
     async def _seat_leave(self, request: web.Request) -> web.Response:
         """玩家主动从玩家席退到观众席（仅本人可操作）。"""

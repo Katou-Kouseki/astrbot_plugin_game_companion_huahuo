@@ -991,14 +991,225 @@
 
   function showPanel(panel) {
     const settings = panel === "settings";
-    document.getElementById("roomsPanel").hidden = settings;
+    const stats = panel === "stats";
+    document.getElementById("roomsPanel").hidden = settings || stats;
     document.getElementById("settingsPanel").hidden = !settings;
+    document.getElementById("statsPanel").hidden = !stats;
     document.querySelectorAll(".manager-tab").forEach((tab) => {
       tab.classList.toggle("active", tab.dataset.panel === panel);
       tab.setAttribute("aria-selected", String(tab.dataset.panel === panel));
     });
     if (settings) loadSettings();
+    if (stats) loadStats();
   }
+
+  // ===== 战绩管理 =====
+  let statsLeaderboard = {};   // game_type -> [{name,wins}]
+  let statsFilter = "";        // 当前玩法筛选
+
+  const GAME_LABELS = {
+    gomoku: "五子棋", xiangqi: "中国象棋", tictactoe: "井字棋",
+    turtle_soup: "海龟汤", pig_dice: "贪心骰子", draw_guess: "你画我猜",
+    blackjack: "二十一点", undercover: "谁是卧底",
+  };
+  function gameLabel(gtype) { return GAME_LABELS[gtype] || gtype || "未知玩法"; }
+
+  async function loadStats() {
+    const select = document.getElementById("statsGameSelect");
+    if (select.options.length === 1) {
+      // 首次进入：用已知玩法填充筛选下拉
+      Object.keys(GAME_LABELS).forEach((g) => {
+        const opt = document.createElement("option");
+        opt.value = g;
+        opt.textContent = gameLabel(g);
+        select.appendChild(opt);
+      });
+    }
+    select.value = statsFilter;
+    try {
+      const data = await endpoint("POST", "leaderboard", statsFilter ? { game_type: statsFilter } : {});
+      statsLeaderboard = data?.leaderboard || {};
+      renderStats();
+    } catch (error) {
+      showToast(error?.message || "无法读取战绩排行");
+    }
+    try {
+      document.getElementById("operationLogBody").replaceChildren();
+      const log = await endpoint("POST", "operation_log", { limit: 200 });
+      renderStatsLog(log?.rows || []);
+    } catch (error) {
+      showToast(error?.message || "无法读取操作日志");
+    }
+  }
+
+  function renderStats() {
+    const body = document.getElementById("leaderboardBody");
+    body.replaceChildren();
+    const rows = [];
+    Object.entries(statsLeaderboard).forEach(([gtype, list]) => {
+      (list || []).forEach((row, idx) => {
+        rows.push({ game_type: gtype, name: row.name, wins: Number(row.wins) || 0, rank: idx + 1 });
+      });
+    });
+    document.getElementById("leaderboardEmpty").hidden = rows.length > 0;
+    document.getElementById("leaderboardSummary").textContent = rows.length
+      ? `${rows.length} 条记录`
+      : "暂无战绩";
+    rows.slice(0, 200).forEach((row) => {
+      const tr = document.createElement("tr");
+      const rankTd = createText("td", String(row.rank));
+      rankTd.className = "rank-cell";
+      const nameTd = createText("td", row.name);
+      const gameTd = createText("td", gameLabel(row.game_type));
+      const winsTd = createText("td", `${row.wins} 胜`);
+      winsTd.className = "wins-cell";
+      const actTd = document.createElement("td");
+      actTd.className = "actions-column";
+      const editBtn = document.createElement("button");
+      editBtn.type = "button";
+      editBtn.className = "row-button";
+      editBtn.title = "修正胜场";
+      editBtn.innerHTML = '<i data-lucide="pen-line"></i>';
+      editBtn.addEventListener("click", () => editWins(row.game_type, row.name));
+      actTd.appendChild(editBtn);
+      tr.append(rankTd, nameTd, gameTd, winsTd, actTd);
+      body.appendChild(tr);
+    });
+    icons();
+  }
+
+  async function editWins(gameType, name) {
+    const value = await promptNumber(`修正「${name}」在《${gameLabel(gameType)}》的胜场数：`);
+    if (value === null) return;
+    try {
+      await endpoint("POST", "leaderboard/set_wins", { game_type: gameType, name, wins: value });
+      showToast("胜场已修正");
+      await loadStats();
+      await loadRooms();
+    } catch (error) {
+      showToast(error?.message || "修正失败");
+    }
+  }
+
+  function renderStatsLog(rows) {
+    const body = document.getElementById("operationLogBody");
+    body.replaceChildren();
+    document.getElementById("logEmpty").hidden = rows.length > 0;
+    document.getElementById("logSummary").textContent = rows.length ? `最近 ${rows.length} 条` : "暂无操作日志";
+    rows.forEach((row) => {
+      const tr = document.createElement("tr");
+      tr.appendChild(createText("td", row.time || ""));
+      tr.appendChild(createText("td", actionLabel(row.action || "")));
+      tr.appendChild(createText("td", row.detail || ""));
+      body.appendChild(tr);
+    });
+  }
+
+  function actionLabel(action) {
+    return {
+      clear_leaderboard: "清空排行榜", set_wins: "修正胜场", close_room: "关闭房间",
+      assign: "安排玩家", demote: "移出玩家", kick: "踢出", switch_game: "切换游戏",
+    }[action] || action || "未知";
+  }
+
+  async function promptNumber(message) {
+    const raw = window.prompt(message);
+    if (raw === null) return null;
+    const num = Number(String(raw).trim());
+    if (!Number.isFinite(num) || num < 0) {
+      showToast("请输入非负整数作为胜场数");
+      return promptNumber(message);
+    }
+    return Math.floor(num);
+  }
+
+  function exportPoster() {
+    const selected = statsFilter ? { [statsFilter]: statsLeaderboard[statsFilter] || [] } : statsLeaderboard;
+    const entries = [];
+    Object.entries(selected).forEach(([gtype, list]) => {
+      (list || []).forEach((r) => entries.push({ name: r.name, wins: Number(r.wins) || 0, game_type: gtype }));
+    });
+    if (!entries.length) { showToast("暂无战绩可导出"); return; }
+    try {
+      const url = statsPosterDataUrl(entries);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `战绩海报_${new Date().toISOString().slice(0, 10)}.png`;
+      a.click();
+    } catch (error) {
+      showToast(error?.message || "导出海报失败");
+    }
+  }
+
+  // 用 Canvas 把战绩绘制成一张 PNG 海报（不依赖后端）
+  function statsPosterDataUrl(entries) {
+    const cardW = 720, rowH = 40, headerH = 96, cellPad = 28, cols = 5, footerH = 56;
+    const nRows = Math.min(entries.length, 200);
+    const height = headerH + nRows * rowH + footerH;
+    const canvas = document.createElement("canvas");
+    canvas.width = cardW; canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    // 背景
+    const bg = ctx.createLinearGradient(0, 0, cardW, height);
+    bg.addColorStop(0, "#1f2b3a"); bg.addColorStop(1, "#14202c");
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, cardW, height);
+    // 标题
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "bold 30px 'PingFang SC', 'Microsoft YaHei', sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText("🏆 花火 · 游戏战绩排行榜", 28, 56);
+    ctx.font = "15px 'PingFang SC', 'Microsoft YaHei', sans-serif";
+    ctx.fillStyle = "#9fb3c8";
+    ctx.fillText(`导出时间：${new Date().toLocaleString()}`, 28, 82);
+    // 表头
+    ctx.strokeStyle = "rgba(255,255,255,.18)";
+    drawPosterRow(ctx, 0, headerH, ["排名", "玩家", "玩法", "胜场", ""], headerH, { name: 28 });
+    // 数据行
+    const list = entries.slice(0, nRows);
+    list.forEach((entry, i) => {
+      const y = headerH + (i + 1) * rowH;
+      const bgRow = i % 2 === 0 ? "rgba(255,255,255,.06)" : "rgba(255,255,255,.02)";
+      ctx.fillStyle = bgRow; ctx.fillRect(0, y, cardW, rowH);
+      ctx.strokeStyle = "rgba(255,255,255,.06)";
+      ctx.strokeRect(0, y, cardW, rowH);
+      ctx.fillStyle = (i < 3) ? "#ffd166" : "#e8eef5";
+      ctx.fillText(String(i + 1), cellPad, y + 28);
+      ctx.fillStyle = "#e8eef5";
+      ctx.fillText(truncatePosterText(ctx, entry.name, 300), cellPad + 90, y + 28);
+      ctx.fillText(gameLabel(entry.game_type), cellPad + 90 + 320, y + 28);
+      ctx.fillStyle = "#ffd166";
+      ctx.fillText(`${entry.wins} 胜`, cellPad + 90 + 320 + 130, y + 28);
+    });
+    // 页脚
+    ctx.fillStyle = "#7d8fa3";
+    ctx.font = "14px 'PingFang SC', 'Microsoft YaHei', sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText("由 花火陪你玩 生成", cardW - 28, height - 22);
+    return canvas.toDataURL("image/png");
+  }
+
+  function truncatePosterText(ctx, text, max) {
+    if (ctx.measureText(text).width <= max) return text;
+    let t = text;
+    while (t.length && ctx.measureText(t + "…").width > max) t = t.slice(0, -1);
+    return t + "…";
+  }
+
+  function drawPosterRow(ctx, topIndex, headerH, labels, _unused, _opts) {
+    ctx.fillStyle = "rgba(255,255,255,.08)";
+    ctx.fillRect(0, headerH, 720, headerH);
+    ctx.strokeStyle = "rgba(255,255,255,.18)";
+    ctx.strokeRect(0, headerH, 720, headerH);
+    ctx.fillStyle = "#9fb3c8";
+    ctx.font = "bold 15px 'PingFang SC', 'Microsoft YaHei', sans-serif";
+    ctx.textAlign = "left";
+    labels.forEach((text, i) => {
+      const x = i === 0 ? cellStaticCol(28) : i === 1 ? 90 + 28 : i === 2 ? 90 + 320 : 90 + 320 + 130;
+      ctx.fillText(text, x, headerH + 28);
+    });
+  }
+  function cellStaticCol(pad) { return pad; }
+  // ===== 战绩管理 END =====
 
   document.getElementById("refreshAction").addEventListener("click", loadRooms);
   document.getElementById("tunnelAction").addEventListener("click", toggleTunnel);
@@ -1007,6 +1218,12 @@
   document.getElementById("clearLeaderboardAction").addEventListener("click", clearLeaderboard);
   document.getElementById("saveSettingsAction").addEventListener("click", saveSettings);
   document.getElementById("reloadSettingsAction").addEventListener("click", loadSettings);
+  document.getElementById("posterAction").addEventListener("click", exportPoster);
+  document.getElementById("refreshStatsAction").addEventListener("click", loadStats);
+  document.getElementById("statsGameSelect").addEventListener("change", (e) => {
+    statsFilter = e.target.value;
+    loadStats();
+  });
   document.querySelectorAll(".manager-tab").forEach((tab) => {
     tab.addEventListener("click", () => showPanel(tab.dataset.panel));
   });

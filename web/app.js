@@ -16,6 +16,7 @@
   let ucLastRoundCount = 0;          // 上一帧时间线已渲染的轮次数（用于新轮高亮）
   let ucVoteFlipTimeout = null;       // 票数「？」→数字翻拍的延时句柄
   let ucLastHostScalesKey = "";        // 上次渲染的房主阵营比例键（用于仅在校验变化时回填输入框）
+  let ucLastResult = null;             // 本局结果快照，供「分享战报」canvas 生成 PNG
   let ucPrevMyOut = false;             // 上一帧本机是否已出局（用于触发出局提示）
   const ucRevealNodeCache = {};        // key `${gameUid}:${round}` -> {node, at}，让票数揭晓动画跨轮询存活
 
@@ -862,6 +863,27 @@
     void card.offsetWidth;
     card.style.animation = "";
     overlay.hidden = false;
+    // 记下本局结果，供「分享战报」按钮生成 PNG 卡片
+    ucLastResult = {
+      title,
+      icon,
+      camp,
+      message: winner.message || "",
+      civilian_word: winner.civilian_word || "",
+      undercover_word: winner.undercover_word || "",
+      players: (Array.isArray(players) ? players : []).slice(),
+    };
+    const shareBtn = document.getElementById("ucResultShare");
+    if (shareBtn) shareBtn.hidden = false;
+    const recapBtn = document.getElementById("ucResultRecapBtn");
+    if (recapBtn) { recapBtn.hidden = false; recapBtn.disabled = false; recapBtn.textContent = "✨ 生成复盘"; }
+    const recapBox = document.getElementById("ucResultRecap");
+    if (recapBox) { recapBox.hidden = true; recapBox.textContent = ""; }
+    const announceBtn = document.getElementById("ucResultAnnounce");
+    if (announceBtn) {
+      announceBtn.hidden = false;
+      announceBtn.disabled = false;
+    }
   }
 
   /**
@@ -2349,6 +2371,17 @@
         wordSpan.textContent = `词条「${p.word}」`;
         meta.appendChild(wordSpan);
       }
+      // 藏品/护身符徽章：从 room.player_seats 按座号取 badges（平民/卧底/白板各有风格）
+      if (room?.game_type === "undercover" && Array.isArray(room.player_seats)) {
+        const seatBadges = (room.player_seats.find((s) => Number(s.number) === Number(p.player_number)) || {}).badges;
+        (Array.isArray(seatBadges) ? seatBadges : []).forEach((badge) => {
+          const b = document.createElement("span");
+          b.className = `chip uc-badge uc-badge-${badge.tone || ""}`;
+          b.textContent = `${badge.emoji || "🏅"} ${badge.label || ""}`;
+          b.title = badge.wins ? `该阵营已胜利 ${badge.wins} 局` : "藏品徽章";
+          meta.appendChild(b);
+        });
+      }
       // 被投票数（进行中只在投票阶段显示各目标得票，不显示投手；全员投完后才揭晓数字）
       if (
         snap.vote_tally_live &&
@@ -3762,6 +3795,123 @@
       const overlay = document.getElementById("ucResultOverlay");
       if (overlay) overlay.hidden = true;
     });
+  }
+  // 分享战报：把本局结果画成 PNG 卡片并下载
+  const ucResultShare = document.getElementById("ucResultShare");
+  if (ucResultShare) {
+    ucResultShare.addEventListener("click", () => {
+      try {
+        const url = undercoverSharePosterUrl(ucLastResult);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `谁是卧底战报_${new Date().toISOString().slice(0, 10)}.png`;
+        a.click();
+      } catch (error) {
+        showToast("生成战报失败：请稍后重试");
+      }
+    });
+  }
+  // 生成复盘：点击时才请求 LLM，并展示在结算卡中
+  const ucResultRecapBtn = document.getElementById("ucResultRecapBtn");
+  if (ucResultRecapBtn) {
+    ucResultRecapBtn.addEventListener("click", async () => {
+      const btn = ucResultRecapBtn;
+      btn.disabled = true;
+      btn.textContent = "生成中…";
+      try {
+        const data = await request("POST", "undercover/recap", {});
+        const text = String(data?.recap || "").trim();
+        const recapBox = document.getElementById("ucResultRecap");
+        if (recapBox) {
+          recapBox.textContent = text || "暂未生成复盘，稍后再试试。";
+          recapBox.hidden = false;
+        }
+        btn.textContent = "✨ 重新生成";
+      } catch (error) {
+        showToast(error?.message || "复盘生成失败");
+        btn.textContent = "✨ 生成复盘";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+  // 通报到群：把本局胜负(与惩罚)发到开房群（需插件配置开启群通报）
+  const ucResultAnnounce = document.getElementById("ucResultAnnounce");
+  if (ucResultAnnounce) {
+    ucResultAnnounce.addEventListener("click", async () => {
+      const btn = ucResultAnnounce;
+      btn.disabled = true;
+      try {
+        const data = await request("POST", "undercover/announce", {});
+        if (data?.announced) {
+          showToast("已通报到群");
+        } else {
+          showToast("群通报未开启：请在插件配置开启 undercover.group_announce_enabled");
+        }
+      } catch (error) {
+        showToast(error?.message || "通报失败");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
+  // 单局「谁是卧底战报」PNG 卡片（纯前端 Canvas 绘制）
+  function undercoverSharePosterUrl(result) {
+    if (!result) return "";
+    const W = 640;
+    const players = result.players || [];
+    const headerH = 150, rowH = 44, footerH = 64, padTop = 96;
+    const H = padTop + headerH + players.length * rowH + footerH;
+    const canvas = document.createElement("canvas");
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    const bg = ctx.createLinearGradient(0, 0, W, H);
+    bg.addColorStop(0, "#243b53"); bg.addColorStop(1, "#16212e");
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+    const label = (text, y, size, color, bold) => {
+      ctx.font = `${bold ? "bold " : ""}${size}px 'PingFang SC','Microsoft YaHei',sans-serif`;
+      ctx.fillStyle = color; ctx.textAlign = "left";
+      ctx.fillText(text, 28, y);
+    };
+    label("🕵️ 谁是卧底 · 本局战报", padTop + 30, 30, "#ffffff", true);
+    label(result.message || result.title || "本局结束", padTop + 64, 16, "#9fb3c8", false);
+    const campWord = result.civilian_word ? `平民/卧底词条：${result.civilian_word} / ${result.undercover_word}` : "";
+    if (campWord) label(campWord, padTop + 88, 15, "#7d8fa3", false);
+    // 表头
+    const yHeader = padTop + headerH;
+    ctx.fillStyle = "rgba(255,255,255,.07)"; ctx.fillRect(0, yHeader, W, headerH);
+    ctx.strokeStyle = "rgba(255,255,255,.16)"; ctx.strokeRect(0, yHeader, W, headerH);
+    ["#", "玩家", "身份", "状态"].forEach((t, i) => {
+      const x = i === 0 ? 28 : i === 1 ? 90 : i === 2 ? 350 : 540;
+      label(t, yHeader + 26, 15, "#9fb3c8", true);
+    });
+    // 数据行
+    players.forEach((p, i) => {
+      const y = yHeader + (i + 1) * rowH;
+      ctx.fillStyle = i % 2 === 0 ? "rgba(255,255,255,.05)" : "rgba(255,255,255,.02)";
+      ctx.fillRect(0, y, W, rowH);
+      ctx.strokeStyle = "rgba(255,255,255,.05)"; ctx.strokeRect(0, y, W, rowH);
+      ctx.fillStyle = "#ffd166"; ctx.fillText(String(i + 1), 28, y + 30);
+      ctx.fillStyle = "#e8eef5";
+      const nm = `${p.player_number}号${p.display_name ? " " + p.display_name : ""}`;
+      ctx.fillText(truncatePosterText(ctx, nm, 240), 90, y + 30);
+      const campText = p.camp === "civilian" ? "平民" : p.camp === "undercover" ? "卧底" : p.camp === "whiteboard" ? "白板" : (p.camp || "—");
+      ctx.fillStyle = p.camp === "undercover" ? "#ff8a8a" : p.camp === "whiteboard" ? "#c7d2fe" : "#9fe3b2";
+      ctx.fillText(campText, 350, y + 30);
+      ctx.fillStyle = p.is_out ? "#7d8fa3" : "#ffd166";
+      ctx.fillText(p.is_out ? "已出局" : "存活", 540, y + 30);
+    });
+    ctx.fillStyle = "#7d8fa3"; ctx.font = "14px 'PingFang SC','Microsoft YaHei',sans-serif";
+    ctx.textAlign = "right"; ctx.fillText("由 花火陪你玩 生成", W - 28, H - 24);
+    return canvas.toDataURL("image/png");
+  }
+
+  function truncatePosterText(ctx, text, max) {
+    if (ctx.measureText(text).width <= max) return text;
+    let t = text;
+    while (t.length && ctx.measureText(t + "…").width > max) t = t.slice(0, -1);
+    return t + "…";
   }
   // 离场提示关闭：收起后让本局身份卡播放一段变暗过渡
   const ucOutClose = document.getElementById("ucOutClose");

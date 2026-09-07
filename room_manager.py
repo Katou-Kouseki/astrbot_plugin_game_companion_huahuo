@@ -24,6 +24,7 @@ from .models import (
     SeatSwapRequest,
     TurtleSoupMode,
     Visitor,
+    _undercover_badges_for,
 )
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
@@ -214,6 +215,23 @@ class RoomManager:
         self.global_player_wins: dict[str, dict[str, dict[str, object]]] = (
             self._load_global_stats() if self.global_stats_path else {}
         )
+        # 谁是卧底分阵营胜场（用于「藏品/护身符」徽章解锁）：name -> {"civilian","undercover","whiteboard"}
+        self.undercover_camp_wins_path: Path | None = None
+        if self.global_stats_path is not None:
+            self.undercover_camp_wins_path = self.global_stats_path.with_name(
+                "undercover_camp_wins.json"
+            )
+        self.undercover_camp_wins: dict[str, dict[str, int]] = (
+            self._load_undercover_camp_wins()
+            if self.undercover_camp_wins_path
+            else {}
+        )
+        # 操作日志：管理台关键动作（清空排行榜/修正胜场/关房/安排玩家等）落盘，便于审阅
+        self.operation_log_path: Path | None = None
+        if self.global_stats_path is not None:
+            self.operation_log_path = self.global_stats_path.with_name(
+                "operation_log.jsonl"
+            )
         # 卧底集结：全员就绪的时间戳（room_id -> now）。给玩家留出确认窗口，避免一键瞬间开局
         self._undercover_all_ready_at: dict[str, float] = {}
         # 全员就绪 -> 自动开局前的确认等待秒数（期间可取消准备）
@@ -306,6 +324,134 @@ class RoomManager:
         self._save_global_stats()
         return 1
 
+    def record_operation(
+        self, action: str, detail: str = "", operator: str = ""
+    ) -> None:
+        """把管理台关键动作写入操作日志（JSONL，每条独立成行，失败不抛出）。
+
+        Args:
+            action: 动作标识，如 clear_leaderboard / set_wins / close_room / assign。
+            detail: 人类可读的动作描述。
+            operator: 操作者身份（管理台访客未知，多为占位）。
+        """
+        if self.operation_log_path is None:
+            return
+        entry = {
+            "ts": time.time(),
+            "time": self._format_time(time.time()),
+            "action": str(action or ""),
+            "detail": str(detail or ""),
+            "operator": str(operator or ""),
+        }
+        try:
+            with self.operation_log_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            logger.warning("[GameCompanion] 操作日志写入失败。")
+
+    def operation_log(self, limit: int = 200) -> list[dict[str, object]]:
+        """返回最近的操作日志（倒序 limit 条）；无路径或读取失败返回空列表。"""
+        if self.operation_log_path is None or not self.operation_log_path.is_file():
+            return []
+        rows: list[dict[str, object]] = []
+        try:
+            with self.operation_log_path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except ValueError:
+                        continue
+        except OSError:
+            return []
+        rows.reverse()
+        return rows[: max(0, int(limit))]
+
+    def set_global_wins(self, game_type: str, name: str, wins: int) -> int:
+        """手动修正某玩家（按名字合并后）的全局胜场数。
+
+        存储按 QQ 分键、展示按名字合并。修正时把该名字下所有 QQ 条目的胜场清零，
+        再把新的总数写入第一条，使合并后的展示总数 == 期望值。
+        返回改动了多少条 QQ 记录（0 表示未命中任何玩家）。
+        """
+        name = str(name or "").strip()
+        if (
+            self.global_stats_path is None
+            or not name
+            or not self._is_known_game_type(str(game_type or ""))
+        ):
+            raise ValueError("请选择已启用的玩法并提供有效玩家名")
+        bucket = self.global_player_wins.get(str(game_type), {})
+        if not isinstance(bucket, dict):
+            bucket = {}
+        targets = [qq for qq, info in bucket.items() if str(info.get("name") or "").strip() == name]
+        if not targets:
+            return 0
+        wins = max(0, int(wins))
+        for i, qq in enumerate(targets):
+            bucket[qq]["wins"] = wins if i == 0 else 0
+        self.global_player_wins[str(game_type)] = bucket
+        self._save_global_stats()
+        self.record_operation(
+            "set_wins",
+            f"将「{name}」在《{game_type}》的胜场修正为 {wins}",
+        )
+        return len(targets)
+
+    @staticmethod
+    def _format_time(stamp: float) -> str:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp))
+
+    def _load_undercover_camp_wins(self) -> dict[str, dict[str, int]]:
+        if self.undercover_camp_wins_path is None or not self.undercover_camp_wins_path.is_file():
+            return {}
+        try:
+            raw = json.loads(self.undercover_camp_wins_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        cleaned: dict[str, dict[str, int]] = {}
+        valid = {"civilian", "undercover", "whiteboard"}
+        for name, camps in raw.items():
+            if not isinstance(name, str) or not isinstance(camps, dict):
+                continue
+            cleaned[name.strip()] = {
+                key: max(0, int(val or 0))
+                for key, val in camps.items()
+                if key in valid
+            }
+        return cleaned
+
+    def _save_undercover_camp_wins(self) -> None:
+        if self.undercover_camp_wins_path is None:
+            return
+        try:
+            self.undercover_camp_wins_path.write_text(
+                json.dumps(self.undercover_camp_wins, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.warning("[GameCompanion] 卧底分阵营胜场保存失败。")
+
+    def _credit_undercover_camp_wins(self, name: str, camp: str) -> None:
+        name = (name or "").strip()
+        if not name or camp not in {"civilian", "undercover", "whiteboard"}:
+            return
+        entry = self.undercover_camp_wins.setdefault(name, {})
+        entry[camp] = int(entry.get(camp, 0) or 0) + 1
+        self._save_undercover_camp_wins()
+
+    @staticmethod
+    def _undercover_badges(name: str, stats: dict[str, dict[str, int]]) -> list[dict[str, object]]:
+        """按分阵营胜场解锁「藏品/护身符」徽章（纯装饰，不影响对局）。
+
+        与 models._undercover_badges_for 共用同一套阶梯规则。
+        """
+        return _undercover_badges_for(name, stats)
+
     async def create_room(
         self,
         *,
@@ -349,6 +495,7 @@ class RoomManager:
                 turtle_soup_mode=turtle_soup_mode,
             )
             self._configure_multiplayer(room)
+            room.camp_wins_store = self.undercover_camp_wins  # 让座位徽章按实时阵营胜场计算
             self.rooms[room_id] = room
             self._access_index[access_token] = room_id
             return room
@@ -2408,6 +2555,11 @@ class RoomManager:
                             )
                             if entry["name"]:
                                 global_entry["name"] = entry["name"]
+                            # 分阵营胜场：用于解锁「藏品/护身符」徽章
+                            self._credit_undercover_camp_wins(entry["name"], camp)
+                            seat.undercover_badges = type(self)._undercover_badges(
+                                entry["name"], self.undercover_camp_wins
+                            )
                             self._save_global_stats()
             elif getattr(room.game, "draw", False):
                 room.draws += 1
