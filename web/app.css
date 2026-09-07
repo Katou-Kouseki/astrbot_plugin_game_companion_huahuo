@@ -1316,16 +1316,14 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 }
 .uc-avatar-text { letter-spacing: 0; }
 .uc-avatar-fallback-num { font-weight: 800; }
-/* AI/首字占位头像配色：AI 用 6 档专属底色+白色文字保证对比度；未绑定真人保持强对比文字 */
-.uc-avatar-tone-neutral { background: color-mix(in srgb, var(--text) 9%, transparent); color: var(--text-strong); }
+/* AI/首字占位头像配色：AI 用 6 档专属底色+白色文字保证对比度；未绑定真人中性底色统一白字 */
+.uc-avatar-tone-neutral { background: color-mix(in srgb, var(--text) 9%, transparent); color: #fff; }
 .uc-avatar-hue-0 { background: #e05d5d; color: #fff; }
 .uc-avatar-hue-1 { background: #e08a3c; color: #fff; }
 .uc-avatar-hue-2 { background: #3ca05c; color: #fff; }
 .uc-avatar-hue-3 { background: #2e9aa8; color: #fff; }
 .uc-avatar-hue-4 { background: #5b7cd6; color: #fff; }
 .uc-avatar-hue-5 { background: #9a63c9; color: #fff; }
-/* 深色模式下未绑定人的中性底色文字用主题强色，避免发黑看不清 */
-body.dark .uc-avatar-tone-neutral { color: var(--text-strong, #f0f0f0); }
 /* seat-panel 顶部“我的身份”头像行 */
 .section-head-main {
   display: flex;
@@ -2585,6 +2583,71 @@ body.dark .uc-speech-box textarea:focus {
   to { opacity: 0; transform: translate(-50%, -50%) scale(0.7); }
 }
 
+/* 投票环节提示：复用发言提示的布局与动效，仅换紫红主题以明显区别于发言（绿） */
+.vote-turn-notification {
+  background: linear-gradient(160deg, #8b5cf6, #5b21b6) !important;
+  box-shadow: 0 0 0 5px rgba(139, 92, 246, 0.28), 0 18px 48px rgba(0, 0, 0, 0.45) !important;
+}
+.vote-turn-notification.is-dock {
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.35) !important;
+}
+.vote-turn-notification.is-dock.is-urgent {
+  animation: ucVoteUrgent 0.8s ease-in-out infinite;
+}
+@keyframes ucVoteUrgent {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.75), 0 8px 26px rgba(0, 0, 0, 0.4); transform: translate(-50%, -50%) scale(1.02); }
+  50% { box-shadow: 0 0 0 22px rgba(167, 139, 250, 0), 0 8px 26px rgba(0, 0, 0, 0.46); transform: translate(-50%, -50%) scale(1.12); }
+}
+
+/* 战报图片预览：移动端长按保存/分享的兜底入口 */
+.poster-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(10, 14, 12, .78);
+  backdrop-filter: blur(4px);
+  padding: 18px;
+}
+.poster-preview[hidden] { display: none; }
+.poster-preview-card {
+  width: min(560px, 100%);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--surface-solid);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .5);
+}
+.poster-preview-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.poster-preview-card img {
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #10151d;
+  -webkit-user-select: none;
+  user-select: none;
+  /* 保持移动端长按菜单可用（保存图片 / 分享） */
+  -webkit-touch-callout: default;
+}
+.poster-preview-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* ====== 房间成员：玩家/观众分组 ====== */
 .people-group {
   display: flex;
@@ -2980,6 +3043,17 @@ body.dark .uc-speech-box textarea:focus {
   font-size: 13px;
   line-height: 1.7;
   color: var(--muted);
+}
+/* 绑定引导页里的“切换设备”提示卡 */
+.peek-device-hint {
+  margin: -6px 0 14px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 .peek-status {
   margin: 12px 0 0;

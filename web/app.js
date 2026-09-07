@@ -11,6 +11,7 @@
   let ucSpeechTypingRaf = null;
   let ucResultShownKey = "";         // 已展示过结算动画的本局标识（防重复弹出）
   let ucVoteRevealSet = new Set();   // 已播放票数揭晓动画的轮次号（防重复）
+  let ucVoteBannerDone = new Set();  // 已弹出“投票开始”提示的 `${轮次}${pk}`（按局重置）
   let ucShownOutSet = new Set();      // 已播放淘汰动画的玩家编号（防重复，按局重置）
   let ucLastGameUid = "";             // 上一帧对局 uid（用于新一局重置动画/提示状态）
   let ucLastRoundCount = 0;          // 上一帧时间线已渲染的轮次数（用于新轮高亮）
@@ -1024,6 +1025,25 @@
     }, 1800);
   }
 
+  /**
+   * 醒目弹出“投票开始”全屏动画通知（与发言提示同布局、紫红配色以明显区分）。
+   * 投票为全房间同时进行、不分先后：玩家提示“请投票”，观众/已淘汰提示“投票进行中”。
+   */
+  function showVoteTurnNotification(my) {
+    const old = document.querySelector(".speech-turn-notification");
+    if (old) old.remove();
+    const note = document.createElement("div");
+    note.className = "speech-turn-notification vote-turn-notification";
+    note.dataset.live = "1";
+    const canVote = !!(my && my.is_player && !my.is_out);
+    const title = canVote ? "请投票！" : "投票进行中";
+    note.innerHTML = `<div class="stn-text"><strong>🗳️ ${title}</strong><em class="speech-sec"></em></div>`;
+    document.body.appendChild(note);
+    window.setTimeout(() => {
+      if (note && document.contains(note)) note.classList.add("is-dock");
+    }, 1800);
+  }
+
   function rememberIdentity() {
     return window.localStorage.getItem(rememberIdentityKey) !== "0";
   }
@@ -1124,13 +1144,21 @@
       text = "";
     }
     timer.textContent = text;
-    // 同步顶部停靠的“轮到 X号”发言倒计时；离开发言/PK 阶段时自动收起
+    // 同步顶部停靠的“轮到 X号”发言 / “投票”倒计时；离开对应阶段时自动收起
     const dock = document.querySelector(".speech-turn-notification.is-dock");
     if (dock) {
-      if (!["speech", "pk"].includes(phase)) {
+      const secEl = dock.querySelector(".speech-sec");
+      if (dock.classList.contains("vote-turn-notification")) {
+        // 投票停靠条：只显示投票阶段倒计时，阶段切走即收起
+        if (phase !== "voting") {
+          dock.remove();
+        } else {
+          if (secEl) secEl.textContent = timerActive ? `⏳ 剩余 ${remain}s` : "不限时";
+          dock.classList.toggle("is-urgent", timerActive && remain > 0 && remain <= 30);
+        }
+      } else if (!["speech", "pk"].includes(phase)) {
         dock.remove();
       } else {
-        const secEl = dock.querySelector(".speech-sec");
         if (secEl) secEl.textContent = timerActive ? `⏳ ${remain}s` : "不限时";
         // 倒计时 ≤30 秒：加剧横幅波动以催促玩家发言
         dock.classList.toggle("is-urgent", timerActive && remain > 0 && remain <= 30);
@@ -1531,7 +1559,9 @@
       const full = capacity > 0 && (room.player_numbers || []).length >= capacity;
       action.disabled = busy || full || identityRequired;
       note.textContent = full
-        ? "玩家席已满，可向席内玩家申请交换。"
+        ? (room.game_type === "undercover"
+          ? "玩家席已满，请等待有玩家离席后再加入。"
+          : "玩家席已满，可向席内玩家申请交换。")
         : identityRequired
         ? "请先用页面令牌在 QQ 中绑定身份。"
         : room.multiplayer_enabled
@@ -1659,15 +1689,18 @@
         // 绑定了显示 QQ 昵称，未绑定显示“观众-<英文>”，不再显示座位号
         chip.textContent = memberName(visitor);
         if (room.multiplayer_enabled && !room.is_player && visitor.is_player) {
-          const request = document.createElement("button");
-          request.type = "button";
-          request.textContent = "申请交换";
-          const cooldown = Number(room.swap_cooldown_until || 0);
-          request.disabled = !room.player_confirmed || Boolean(room.outgoing_swap_request) || (cooldown && cooldown > (room.server_time || Date.now() / 1000));
-          request.addEventListener("click", () => requestSeatSwap(visitor.number));
-          chip.appendChild(request);
+          // 谁是卧底不提供席位交换（入座即按座位号发言/投票，交换无意义），隐藏入口
+          if (room.game_type !== "undercover") {
+            const request = document.createElement("button");
+            request.type = "button";
+            request.textContent = "申请交换";
+            const cooldown = Number(room.swap_cooldown_until || 0);
+            request.disabled = !room.player_confirmed || Boolean(room.outgoing_swap_request) || (cooldown && cooldown > (room.server_time || Date.now() / 1000));
+            request.addEventListener("click", () => requestSeatSwap(visitor.number));
+            chip.appendChild(request);
+          }
         }
-        if (room.multiplayer_enabled && visitor.number === room.visitor_number && room.is_player) {
+        if (room.multiplayer_enabled && room.game_type !== "undercover" && visitor.number === room.visitor_number && room.is_player) {
           (room.incoming_swap_requests || []).forEach((swap) => {
             const accept = document.createElement("button");
             accept.type = "button";
@@ -2206,6 +2239,7 @@
       ucLastGameUid = snap.game_uid;
       ucShownOutSet.clear();
       ucVoteRevealSet.clear();
+      ucVoteBannerDone.clear();
       ucPrevMyTurn = false;
       ucTurnBannerDone.clear();
       ucLastRoundCount = 0;
@@ -2918,6 +2952,14 @@
       if (!ucTurnBannerDone.has(turnKey)) {
         ucTurnBannerDone.add(turnKey);
         showSpeechTurnNotification(expectedSpeaker, isMyTurn);
+      }
+    }
+    // 投票环节开始的醒目提示：每轮只弹一次（与发言提示同布局、紫红配色区分）
+    if (snap.phase === "voting" && !revealOverlayOpen) {
+      const voteKey = `r${roundNumber}${snap.pending_pk_targets && snap.pending_pk_targets.length ? "pk" : ""}`;
+      if (!ucVoteBannerDone.has(voteKey)) {
+        ucVoteBannerDone.add(voteKey);
+        showVoteTurnNotification(my);
       }
     }
     speechBox.hidden = !["speech", "pk", "preparing"].includes(snap.phase) || !!my.is_out;
@@ -3972,45 +4014,31 @@
   }
 
   // 保存分享图：
-  // - 移动端（微信/TIM 内嵌 WebView）：优先系统分享面板，方便存相册/转发；退化为下载、再退化为新标签长按保存。
+  // - 移动端（微信/TIM 内嵌 WebView）：弹出大图预览，支持长按保存/分享，预览内提供「系统分享」「下载图片」按钮。
   // - PC：直接下载图片，并尽量把图片复制进剪贴板，玩家 Ctrl+V 即可粘贴到聊天窗口。
   function savePosterImage(dataUrl, filename) {
-    if (isMobileUA() && typeof navigator !== "undefined" && navigator.canShare && navigator.share) {
-      try {
-        const blob = dataUrlToBlob(dataUrl);
-        const file = new File([blob], filename, { type: "image/png" });
-        if (navigator.canShare({ files: [file] })) {
-          navigator.share({ files: [file], title: "谁是卧底战报" })
-            .catch(() => fallbackSavePoster(dataUrl, filename));
-          return;
-        }
-      } catch (_shareError) { /* 走兜底 */ }
-    }
-    if (!isMobileUA()) {
-      // PC：下载 + 复制剪贴板
-      downloadPosterFile(dataUrl, filename);
-      copyPosterToClipboard(dataUrl).then((copied) => {
-        showToast(copied ? "已下载并复制图片，Ctrl+V 即可粘贴" : "已下载战报图片");
-      });
+    if (isMobileUA()) {
+      openPosterPreview(dataUrl, filename);
       return;
     }
-    fallbackSavePoster(dataUrl, filename);
-  }
-  function fallbackSavePoster(dataUrl, filename) {
-    try {
-      downloadPosterFile(dataUrl, filename);
-    } catch (_dlError) {
-      // 极少数 WebView 不支持 a[download]：新标签打开，用户可长按保存
-      window.open(dataUrl, "_blank");
-    }
+    // PC：下载 + 复制剪贴板
+    downloadPosterFile(dataUrl, filename);
+    copyPosterToClipboard(dataUrl).then((copied) => {
+      showToast(copied ? "已下载并复制图片，Ctrl+V 即可粘贴" : "已下载战报图片");
+    });
   }
   function downloadPosterFile(dataUrl, filename) {
+    // 安卓 WebView（QQ/TIM X5）对 data URL 的 <a download> 支持较差，会跳去浏览器下载；
+    // 改用 Blob URL 触发下载，兼容性更好，下载完成后及时释放
+    const blob = dataUrlToBlob(dataUrl);
+    const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = dataUrl;
+    a.href = url;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 4000);
   }
   // 把 PNG 写入剪贴板（需安全上下文 + Chromium ClipboardItem）；失败静默返回 false
   function copyPosterToClipboard(dataUrl) {
@@ -4038,6 +4066,57 @@
     const arr = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
     return new Blob([arr], { type: mime });
+  }
+
+  // 战报图片预览：移动端弹出大图，可长按保存/分享，另提供系统分享与下载按钮
+  let posterPreviewCtx = null; // {dataUrl, filename}
+  function openPosterPreview(dataUrl, filename) {
+    posterPreviewCtx = { dataUrl, filename };
+    const img = document.getElementById("posterPreviewImg");
+    if (img) img.src = dataUrl;
+    const overlay = document.getElementById("posterPreview");
+    if (overlay) overlay.hidden = false;
+    icons();
+  }
+  function closePosterPreview() {
+    const overlay = document.getElementById("posterPreview");
+    if (overlay) overlay.hidden = true;
+    const img = document.getElementById("posterPreviewImg");
+    if (img) img.src = "";
+    posterPreviewCtx = null;
+  }
+  const posterPreviewClose = document.getElementById("posterPreviewClose");
+  const posterPreviewShare = document.getElementById("posterPreviewShare");
+  const posterPreviewDownload = document.getElementById("posterPreviewDownload");
+  if (posterPreviewClose) posterPreviewClose.addEventListener("click", closePosterPreview);
+  if (posterPreviewDownload) {
+    posterPreviewDownload.addEventListener("click", () => {
+      const ctx = posterPreviewCtx;
+      if (!ctx) return;
+      try {
+        downloadPosterFile(ctx.dataUrl, ctx.filename);
+        showToast("图片已开始下载，可在系统下载/相册中查看");
+      } catch (_dlError) {
+        window.open(ctx.dataUrl, "_blank");
+      }
+    });
+  }
+  if (posterPreviewShare) {
+    posterPreviewShare.addEventListener("click", async () => {
+      const ctx = posterPreviewCtx;
+      if (!ctx) return;
+      if (typeof navigator !== "undefined" && navigator.canShare && navigator.share) {
+        try {
+          const blob = dataUrlToBlob(ctx.dataUrl);
+          const file = new File([blob], ctx.filename, { type: "image/png" });
+          if (navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: "谁是卧底战报" });
+            return;
+          }
+        } catch (_shareError) { /* 用户取消或环境不支持，保持预览供长按保存 */ }
+      }
+      showToast("当前环境不支持系统分享，可长按图片保存");
+    });
   }
   // 花火复盘：同局缓存，点击后展示，不重复请求 LLM
   const ucResultRecapBtn = document.getElementById("ucResultRecapBtn");
@@ -4230,7 +4309,7 @@
   async function undercoverAnnouncePosterUrl(result) {
     if (!result) return "";
     const scale = 1.5; // 720 -> 1080 宽，群里也足够清晰，同时控制 base64 体积
-    const W = 720, H = 660, M = 46;
+    const W = 720, H = 720, M = 46;
     const players = result.players || [];
     const camp = result.camp;
     const campCn = { civilian: "平民", undercover: "卧底", whiteboard: "白板" }[camp] || "";
@@ -4278,9 +4357,9 @@
     c.textBaseline = "middle";
     c.lineJoin = "round";
     c.strokeStyle = "rgba(0,0,0,.5)"; c.lineWidth = 12;
-    c.strokeText(bigText, (W - bigW) / 2, 182);
+    c.strokeText(bigText, (W - bigW) / 2, 215);
     c.fillStyle = campCol;
-    c.fillText(bigText, (W - bigW) / 2, 182);
+    c.fillText(bigText, (W - bigW) / 2, 215);
     c.textBaseline = "alphabetic";
 
     // 获胜玩家名单（金色大号，可换行最多 3 行；与大标题拉开足够间距）
@@ -4293,11 +4372,11 @@
       const wLines = wrapPosterLines(c, wText, W - 2 * M, font(true, 26), 3);
       wLineCount = wLines.length;
       c.fillStyle = "#ffe3b0";
-      wLines.forEach((ln, i) => c.fillText(ln, (W - c.measureText(ln).width) / 2, 296 + i * 40));
+      wLines.forEach((ln, i) => c.fillText(ln, (W - c.measureText(ln).width) / 2, 330 + i * 40));
     }
 
     // 词条双药丸（比分享战报更大更醒目；位置随胜利方行数下移；过宽时缩小字号分两行）
-    const pillTop = 322 + Math.max(1, wLineCount) * 40;
+    const pillTop = 356 + Math.max(1, wLineCount) * 40;
     const pill = (text, x, y, w, col, fg, fs) => {
       rr(x, y, w, 46, 23); c.fillStyle = col; c.fill();
       c.font = font(true, fs); c.fillStyle = fg; c.textAlign = "center"; c.textBaseline = "middle";

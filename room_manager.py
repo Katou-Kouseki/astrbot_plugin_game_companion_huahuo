@@ -2687,8 +2687,7 @@ class RoomManager:
             )
             if not departed:
                 continue
-            label = self._visitor_label(visitor)
-            number = seat.number
+            label = self._visitor_label(visitor)  # 已含（X号）
             self._remove_multiplayer_seat(room, seat.visitor_token)
             if room.multiplayer.seats:
                 self._sync_primary_player(room)
@@ -2700,7 +2699,7 @@ class RoomManager:
                 room.multiplayer.turn_deadline = 0.0
             room.touch()
             room.add_message(
-                "system", f"{label}（{number}号）已离线，已移出玩家席。"
+                "system", f"{label} 已离线，已移出玩家席。"
             )
             if room.game_type == "undercover":
                 self._undercover_all_ready_at.pop(room.room_id, None)
@@ -4022,7 +4021,11 @@ class RoomManager:
             return room.undercover_reveal_identity
 
     async def unbind_identity(self, room: GameRoom, visitor_token: str) -> None:
-        """解绑当前访客的 QQ 身份：清空座位绑定，回到绑定引导界面。"""
+        """解绑当前访客的 QQ 身份：清空身份并把该访客直接移出房间。
+
+        解绑即视为放弃当前设备：移出玩家席（若入座）并从房间移除该访客，
+        防止“安卓解绑 → 电脑重绑”后旧设备占座残留（旧设备页面后续轮询会失效）。
+        """
         if room.status == "active":
             raise PermissionError("对局进行中，无法解绑玩家，请等本局结束后再操作")
         async with room.lock:
@@ -4033,19 +4036,26 @@ class RoomManager:
             previous_host_token = (
                 previous_host.visitor_token if previous_host else None
             )
-            visitor.identity_confirmed = False
-            visitor.qq = ""
-            visitor.binding_token = ""
-            visitor.binding_expires_at = 0.0
             if room.multiplayer.enabled:
-                seat = room.multiplayer.seat_for_token(visitor.token)
-                if seat is not None:
-                    seat.identity_confirmed = False
-                    seat.qq = ""
+                if room.multiplayer.seat_for_token(visitor.token) is not None:
+                    self._remove_multiplayer_seat(room, visitor.token)
+                    if room.multiplayer.seats:
+                        self._sync_primary_player(room)
+                    else:
+                        self._clear_primary_player(room)
+                        room.player_empty_since = time.time()
+                        room.game = None
+                        room.status = "waiting"
+                        room.multiplayer.turn_deadline = 0.0
             else:
                 if room.player_token == visitor.token:
-                    room.player_identity_confirmed = False
-                    room.player_qq = ""
+                    self._clear_primary_player(room)
+                    room.player_empty_since = time.time()
+                    room.game = None
+                    room.status = "waiting"
+            room.visitors.pop(visitor.token, None)
+            if room.game_type == "undercover":
+                self._undercover_all_ready_at.pop(room.room_id, None)
             if old_qq and old_qq in room.confirmed_participant_qqs:
                 room.confirmed_participant_qqs.discard(old_qq)
             self._announce_host_transfer(room, previous_host_token)

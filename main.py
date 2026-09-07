@@ -3815,18 +3815,21 @@ class GameCompanionPlugin(Star):
     async def _send_to_origin_image(
         self, room: GameRoom, text: str, image_data_url: str, recap: str = ""
     ) -> None:
-        """把文字（可选）、一张战报图与复盘（可选）发到开房群，复盘放在图片后面。"""
+        """把文字（可选）、一张战报图与复盘（可选）发到开房群，复盘放在图片后面。
+
+        图片上方空一行（文字末尾补空行）、下方也空一行再接复盘，视觉更透气。
+        """
         try:
             from astrbot.api.message_components import Image
 
             parts: list[Any] = []
             if text:
-                parts.append(Plain(text))
+                parts.append(Plain(text.rstrip() + "\n\n"))  # 失败方后空一行再接图片
             b64 = str(image_data_url or "").split(",", 1)[-1]
             if b64:
                 parts.append(Image(file=f"base64://{b64}"))
             if recap:
-                parts.append(Plain(f"\n📝 复盘：{recap}"))
+                parts.append(Plain(f"\n\n📝 复盘：{recap}"))  # 图片下方空一行再接复盘
             if parts:
                 await self.context.send_message(
                     room.session_id, MessageChain(parts)

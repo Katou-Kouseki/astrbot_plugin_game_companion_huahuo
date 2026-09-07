@@ -160,10 +160,10 @@
           </div>
           <div class="uc-host-camp-row">
             <button id="ucHostAddAi" type="button" class="secondary-action">
-              ➕ 添加一位 AI 玩家（计入总数，不超容量上限）
+              ➕ 添加一位 AI 玩家
             </button>
             <button id="ucHostRemoveAi" type="button" class="secondary-action">
-              ➖ 移除一位 AI 玩家（每次一个）
+              ➖ 移除一位 AI 玩家
             </button>
             <small id="ucHostSeatCount" class="muted">
               当前 0/0 人
@@ -301,6 +301,30 @@
           <div class="uc-out-title" id="ucOutTitle">你被淘汰了</div>
           <p class="uc-out-message" id="ucOutMessage">很遗憾，你尽力了，剩下的交给你的队友吧。</p>
           <button id="ucOutClose" class="primary-action" type="button">知道了，继续观战</button>
+        </div>
+      </div>
+
+      <!-- 战报图片预览：移动端长按保存/分享的兜底入口 -->
+      <div
+        id="posterPreview"
+        class="poster-preview"
+        hidden
+        role="dialog"
+        aria-modal="true"
+        aria-label="战报图片预览"
+      >
+        <div class="poster-preview-card">
+          <header class="poster-preview-head">
+            <span>长按图片可保存或分享</span>
+            <button id="posterPreviewClose" class="icon-btn" type="button" title="关闭" aria-label="关闭">
+              <i data-lucide="x"></i>
+            </button>
+          </header>
+          <img id="posterPreviewImg" alt="战报图片" />
+          <footer class="poster-preview-actions">
+            <button id="posterPreviewShare" class="secondary-action" type="button">系统分享</button>
+            <button id="posterPreviewDownload" class="primary-action" type="button">下载图片</button>
+          </footer>
         </div>
       </div>
 
@@ -502,6 +526,9 @@
       </header>
       <p class="peek-desc">
         请先绑定你的 QQ 身份，绑定成功后即可进入房间查看对局。
+      </p>
+      <p class="peek-device-hint">
+        📱💻 切换设备：先在旧设备点「解绑玩家」，再到新设备重新绑定即可，旧占座会自动清除，不会影响房间。
       </p>
       <div id="peekChallenge" class="identity-challenge">
         <span class="label">QQ 绑定码</span>
