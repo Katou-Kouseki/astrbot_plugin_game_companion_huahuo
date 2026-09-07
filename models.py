@@ -118,7 +118,7 @@ def _qq_avatar_url(qq: str) -> str:
 def _seat_badges(seat: "PlayerSeat", room: "GameRoom") -> list[dict[str, object]]:
     """按玩家分阵营胜场即时计算「藏品/护身符」徽章。
 
-    若房间持有阵营胜场存储（room._camp_wins_store，引用管理器同一 dict），
+    若房间持有阵营胜场存储（room.camp_wins_store，引用管理器同一 dict），
     实时按名字计算；否则回退到游戏中缓存的 seat.undercover_badges。
     """
     name = (seat.display_name or "").strip()

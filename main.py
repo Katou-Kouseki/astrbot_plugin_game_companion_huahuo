@@ -445,40 +445,6 @@ def _uc_eligible_vote_targets(game, voter_num: int) -> list[int]:
     return [n for n in live if n != voter_num]
 
 
-def _uc_ai_fallback(camp: str, round_no: int, seed: int = 0) -> str:
-    """谁是卧底 AI 发言的本地兜底文案：按轮次 + 座号偏移轮换，避免同轮多名 AI 复读同一句，且尽量不露馅。"""
-    if camp == "whiteboard":
-        pool = [
-            "刚看到它的时候我还愣了一下，好像之前在哪见过。",
-            "怎么说呢，它给我的第一印象就是挺顺手、挺实用的。",
-            "反正最近家里一直在用，我媳妇还念叨来着。",
-            "这个嘛，跟别的比起来没什么好挑的，习惯了就好。",
-            "它在我这儿的存在感一直挺高的，几乎天天见。",
-            "说起来也不贵，但用着用着就觉得离不开它了。",
-            "反正我第一个想到的就是它，没别的想法。",
-            "奇奇怪怪的，我怎么越看越觉得它眼熟。",
-        ]
-    else:
-        pool = [
-            "说起来昨天我还用到它了，当时就觉得挺顺手的。",
-            "我倒是觉得它挺经用的，家里那个用了好几年也没坏。",
-            "反正吧，它在我这儿的存在感挺高的，一天不落。",
-            "这东西说不上稀罕，但少了它还真有点不方便。",
-            "我印象里这玩意儿还挺常见的，走哪都能碰上。",
-            "它对我来说就是顺手两个字，没什么好纠结的。",
-            "对了，上次它还帮了我一把，一直印象很深。",
-            "别的不好说，反正它挺对我的胃口。",
-        ]
-    index = max(0, (round_no + int(seed or 0) - 1) % len(pool))
-    return pool[index]
-
-
-@register(
-    PLUGIN_NAME,
-    "Katou-Kouseki",
-    "让 Bot 与用户通过可视化房间自然地一起玩游戏。",
-    PLUGIN_VERSION,
-)
 def _undercover_title_text(game: Any) -> str:
     """还原谁是卧底结局标题（平民/卧底/白板获胜）。"""
     try:
@@ -517,6 +483,40 @@ def _undercover_game_summary(game: Any) -> str:
         return ""
 
 
+def _uc_ai_fallback(camp: str, round_no: int, seed: int = 0) -> str:
+    """谁是卧底 AI 发言的本地兜底文案：按轮次 + 座号偏移轮换，避免同轮多名 AI 复读同一句，且尽量不露馅。"""
+    if camp == "whiteboard":
+        pool = [
+            "刚看到它的时候我还愣了一下，好像之前在哪见过。",
+            "怎么说呢，它给我的第一印象就是挺顺手、挺实用的。",
+            "反正最近家里一直在用，我媳妇还念叨来着。",
+            "这个嘛，跟别的比起来没什么好挑的，习惯了就好。",
+            "它在我这儿的存在感一直挺高的，几乎天天见。",
+            "说起来也不贵，但用着用着就觉得离不开它了。",
+            "反正我第一个想到的就是它，没别的想法。",
+            "奇奇怪怪的，我怎么越看越觉得它眼熟。",
+        ]
+    else:
+        pool = [
+            "说起来昨天我还用到它了，当时就觉得挺顺手的。",
+            "我倒是觉得它挺经用的，家里那个用了好几年也没坏。",
+            "反正吧，它在我这儿的存在感挺高的，一天不落。",
+            "这东西说不上稀罕，但少了它还真有点不方便。",
+            "我印象里这玩意儿还挺常见的，走哪都能碰上。",
+            "它对我来说就是顺手两个字，没什么好纠结的。",
+            "对了，上次它还帮了我一把，一直印象很深。",
+            "别的不好说，反正它挺对我的胃口。",
+        ]
+    index = max(0, (round_no + int(seed or 0) - 1) % len(pool))
+    return pool[index]
+
+
+@register(
+    PLUGIN_NAME,
+    "Katou-Kouseki",
+    "让 Bot 与用户通过可视化房间自然地一起玩游戏。",
+    PLUGIN_VERSION,
+)
 class GameCompanionPlugin(Star):
     """Game rooms that preserve AstrBot's normal conversation pipeline."""
 
