@@ -3729,18 +3729,21 @@ class GameCompanionPlugin(Star):
         game = room.game
         title = _undercover_title_text(game) or "本局已结束"
         lines = [f"🕵️ 谁是卧底战报：{title}"]
-        winner = getattr(game, "winner", None)
-        if getattr(winner, "camp", None):
+        winner = getattr(game, "winner", None) or {}
+        winner_get = (
+            (lambda key, _d=None: winner.get(key, _d)) if isinstance(winner, dict) else (lambda key, _d=None: getattr(winner, key, _d))
+        )
+        camp = winner_get("camp")
+        if camp:
             camp_text = {
                 "civilian": "平民", "undercover": "卧底", "whiteboard": "白板",
-            }.get(winner.camp, winner.camp)
+            }.get(camp, camp)
             lines.append(f"胜利方：{camp_text}")
-        cw = getattr(winner, "civilian_word", None) or ""
-        uw = getattr(winner, "undercover_word", None) or ""
+        cw = winner_get("civilian_word") or ""
+        uw = winner_get("undercover_word") or ""
         if cw or uw:
             lines.append(f"词条：平民「{cw}」/ 卧底「{uw}」")
         # 失败方（非胜方阵营的存活/参与玩家）
-        camp = getattr(winner, "camp", None)
         players = getattr(game, "players", None) or []
         losers = [
             p for p in players
@@ -4358,7 +4361,7 @@ class GameCompanionPlugin(Star):
                 )
                 self.manager.record_operation(
                     "switch_game",
-                    f"房间 {room.room_id}：切换为《{payload.get('game_type')}」",
+                    f"房间 {room.room_id}：切换为《{payload.get('game_type')}》",
                 )
             elif action == "close":
                 await self.manager.destroy(room.room_id, "管理员关闭了房间")

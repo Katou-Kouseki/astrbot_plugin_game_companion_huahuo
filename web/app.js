@@ -17,6 +17,8 @@
   let ucVoteFlipTimeout = null;       // 票数「？」→数字翻拍的延时句柄
   let ucLastHostScalesKey = "";        // 上次渲染的房主阵营比例键（用于仅在校验变化时回填输入框）
   let ucLastResult = null;             // 本局结果快照，供「分享战报」canvas 生成 PNG
+  let ucShownResultUid = "";           // 当前结算卡已展示的游戏 uid（用于跨轮询只在换局时重置按钮状态）
+  let ucRecapCache = {};               // uid -> 复盘文案：同局缓存，不重复请求 LLM
   let ucPrevMyOut = false;             // 上一帧本机是否已出局（用于触发出局提示）
   const ucRevealNodeCache = {};        // key `${gameUid}:${round}` -> {node, at}，让票数揭晓动画跨轮询存活
 
@@ -874,15 +876,24 @@
       players: (Array.isArray(players) ? players : []).slice(),
     };
     const shareBtn = document.getElementById("ucResultShare");
-    if (shareBtn) shareBtn.hidden = false;
     const recapBtn = document.getElementById("ucResultRecapBtn");
-    if (recapBtn) { recapBtn.hidden = false; recapBtn.disabled = false; recapBtn.textContent = "✨ 生成复盘"; }
     const recapBox = document.getElementById("ucResultRecap");
-    if (recapBox) { recapBox.hidden = true; recapBox.textContent = ""; }
     const announceBtn = document.getElementById("ucResultAnnounce");
-    if (announceBtn) {
-      announceBtn.hidden = false;
-      announceBtn.disabled = false;
+    const uid = String((snap || {}).game_uid || "");
+    if (shareBtn) shareBtn.hidden = false;
+    // 换局时才重置按钮状态与复盘展示；同局（轮询重复渲染）保持现状，避免打断已展示内容
+    if (uid !== ucShownResultUid) {
+      ucShownResultUid = uid;
+      if (recapBtn) { recapBtn.hidden = false; recapBtn.disabled = false; recapBtn.textContent = "✨ 花火复盘"; }
+      if (recapBox) { recapBox.hidden = true; recapBox.textContent = ""; }
+      if (announceBtn) { announceBtn.hidden = false; announceBtn.disabled = false; announceBtn.textContent = "📢 通报到群"; }
+      // 本局已有缓存的复盘则直接展示
+      if (recapBox && uid && ucRecapCache[uid]) {
+        recapBox.textContent = ucRecapCache[uid];
+        recapBox.hidden = false;
+        if (recapBtn) recapBtn.textContent = "✨ 查看/刷新复盘";
+      }
+      if (announceBtn && !uid) announceBtn.hidden = true;
     }
   }
 
@@ -3811,31 +3822,35 @@
       }
     });
   }
-  // 生成复盘：点击时才请求 LLM，并展示在结算卡中
+  // 花火复盘：同局缓存，点击后展示，不重复请求 LLM
   const ucResultRecapBtn = document.getElementById("ucResultRecapBtn");
   if (ucResultRecapBtn) {
     ucResultRecapBtn.addEventListener("click", async () => {
       const btn = ucResultRecapBtn;
+      const recapBox = document.getElementById("ucResultRecap");
+      const uid = ucShownResultUid || "";
+      if (uid && ucRecapCache[uid]) {
+        if (recapBox) { recapBox.textContent = ucRecapCache[uid]; recapBox.hidden = false; }
+        btn.textContent = "✨ 查看/刷新复盘";
+        return;
+      }
       btn.disabled = true;
-      btn.textContent = "生成中…";
+      btn.textContent = "复盘生成中…";
       try {
         const data = await request("POST", "undercover/recap", {});
-        const text = String(data?.recap || "").trim();
-        const recapBox = document.getElementById("ucResultRecap");
-        if (recapBox) {
-          recapBox.textContent = text || "暂未生成复盘，稍后再试试。";
-          recapBox.hidden = false;
-        }
-        btn.textContent = "✨ 重新生成";
+        const text = String(data?.recap || "").trim() || "暂未生成复盘，稍后再试试。";
+        if (uid) ucRecapCache[uid] = text;
+        if (recapBox) { recapBox.textContent = text; recapBox.hidden = false; }
+        btn.textContent = "✨ 查看/刷新复盘";
       } catch (error) {
         showToast(error?.message || "复盘生成失败");
-        btn.textContent = "✨ 生成复盘";
+        btn.textContent = "✨ 花火复盘";
       } finally {
         btn.disabled = false;
       }
     });
   }
-  // 通报到群：把本局胜负(与惩罚)发到开房群（需插件配置开启群通报）
+  // 通报到群：本局一次性（后端按 game_uid 幂等），成功或已通报后禁用按钮
   const ucResultAnnounce = document.getElementById("ucResultAnnounce");
   if (ucResultAnnounce) {
     ucResultAnnounce.addEventListener("click", async () => {
@@ -3844,13 +3859,16 @@
       try {
         const data = await request("POST", "undercover/announce", {});
         if (data?.announced) {
-          showToast("已通报到群");
+          btn.textContent = "✅ 已通报（本局一次）";
+          showToast(data?.already ? "本局已通报过，未重复发送" : "已通报到群");
         } else {
+          btn.textContent = "📢 通报到群";
           showToast("群通报未开启：请在插件配置开启 undercover.group_announce_enabled");
+          btn.disabled = false;
         }
       } catch (error) {
         showToast(error?.message || "通报失败");
-      } finally {
+        btn.textContent = "📢 通报到群";
         btn.disabled = false;
       }
     });

@@ -588,24 +588,42 @@ class GameRoomServer:
         return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
 
     async def _undercover_recap(self, request: web.Request) -> web.Response:
-        """结算卡「生成复盘」：点击时才请求 LLM，返回一段复盘摘要。"""
+        """结算卡「花火复盘」：按局缓存，同局只请求一次 LLM，点击即取缓存。"""
         self._require_origin(request)
         room = self._room(request)
+        game = getattr(room, "game", None)
+        uid = str(getattr(game, "game_uid", "") or "") if game else ""
+        cache = room.recap_cache or {}
+        if uid and cache.get(uid):
+            return self._response({"recap": cache[uid], "cached": True})
         try:
             recap = await self.plugin.undercover_recap(room)
         except Exception as exc:
             logger.warning("[GameCompanion] 生成复盘失败: %s", exc)
             recap = ""
-        return self._response({"recap": (recap or "").strip()})
+        recap = (recap or "").strip()
+        if uid:
+            room.recap_cache[uid] = recap
+        return self._response({"recap": recap, "cached": False})
 
     async def _undercover_announce(self, request: web.Request) -> web.Response:
         """结算卡「通报到群」：把本局胜负(与惩罚)发到开房群。
 
-        仅在插件配置开启群通报时才实际发送；否则返回 announced=False 由前端提示。
+        同局只允许通报一次（按 game_uid），重复点击返回已通报文案而不重复发送。
+        仅在插件配置开启群通报时才会真正发送。
         """
         self._require_origin(request)
         room = self._room(request)
         await self._payload(request)  # 读取并丢弃 body，保持接口一致
+        game = getattr(room, "game", None)
+        uid = str(getattr(game, "game_uid", "") or "") if game else ""
+        if uid and room.last_announced_uid == uid:
+            # 本局已通报过 → 幂等返回，不重复发
+            return self._response({
+                "announced": bool(room.last_announced_text),
+                "already": True,
+                "text": room.last_announced_text,
+            })
         try:
             text = await self.plugin.undercover_announce_result(room)
         except Exception as exc:
@@ -613,7 +631,10 @@ class GameRoomServer:
             return web.json_response(
                 {"status": "error", "message": str(exc)}, status=400
             )
-        return self._response({"announced": bool(text), "text": text})
+        if uid and text:
+            room.last_announced_uid = uid
+            room.last_announced_text = text
+        return self._response({"announced": bool(text), "already": False, "text": text})
 
     async def _seat_leave(self, request: web.Request) -> web.Response:
         """玩家主动从玩家席退到观众席（仅本人可操作）。"""

@@ -152,7 +152,7 @@ def _undercover_badges_for(
         return chosen
 
     badges = []
-    # 总胜场的荣誉段位（金色，最靠前）
+    # 总胜场的荣誉段位（金色，只亮最高阶，最靠前）
     for threshold, label, emoji in (
         (1, "入局新手", "🎮"),
         (5, "常胜新人", "🟢"),
@@ -161,7 +161,7 @@ def _undercover_badges_for(
         (35, "卧底传奇", "👑"),
     ):
         if total >= threshold:
-            badges.append({"id": f"gold_{threshold}", "label": label, "emoji": emoji, "tone": "gold", "wins": total})
+            badges = [{"id": f"gold_{threshold}", "label": label, "emoji": emoji, "tone": "gold", "wins": total}]
     # 三大阵营专属阶梯（每阵营只亮最高阶）
     civ_badge = top(
         (
@@ -271,6 +271,10 @@ class GameRoom:
     undercover_reveal_identity: bool | None = None
     # 引用管理器「卧底分阵营胜场」同一 dict；存在时座位徽章按实时数据计算
     camp_wins_store: dict[str, dict[str, int]] | None = None
+    # 单局群通报与复盘缓存：按 game_uid 记录，保证「一局只通报一次」「复盘缓存不重复请求 LLM」
+    last_announced_uid: str = ""
+    last_announced_text: str = ""
+    recap_cache: dict[str, str] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     last_activity_at: float = field(default_factory=time.time)
     player_empty_since: float | None = field(default_factory=time.time)
