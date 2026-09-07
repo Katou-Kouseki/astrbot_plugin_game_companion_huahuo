@@ -364,90 +364,90 @@
     "type": "object",
     "hint": "对局参数、群操作与定时播报均在此设置；对局参数也可在游戏管理台「游戏配置」中调整。",
     "items": {
-      "启用谁是卧底": {
+      "enabled": {
         "description": "启用谁是卧底",
         "type": "bool",
         "default": true
       },
-      "最大玩家席": {
+      "max_players": {
         "description": "最大玩家席",
         "type": "int",
         "default": 10,
         "hint": "范围 2-20，默认 10 人；2 人即可开局（民 1 + 卧底 1）。"
       },
-      "最低开局人数": {
+      "min_players": {
         "description": "最低开局人数",
         "type": "int",
         "default": 2,
         "hint": "范围 2-10；低于该人数不会自动开局，手动开始也会拒绝。"
       },
-      "默认阵营比例": {
+      "camp_scales_default": {
         "description": "默认阵营比例（平民 卧底 白板）",
         "type": "string",
         "default": "4 1 0",
         "hint": "以空格或冒号分隔，如 4:1:0；实际会按参与人数按比例分配，保证卧底至少 1 人。"
       },
-      "允许房主自定义阵营比例": {
+      "allow_host_customize_camp_scales": {
         "description": "允许首位玩家（房主）自定义阵营比例",
         "type": "bool",
         "default": true,
         "hint": "开启后，第一个进入谁是卧底房间玩家席的玩家可以在 WebUI 调整默认的民/卧/白比例，无需进入管理台。"
       },
-      "匹配等待时长": {
+      "match_seconds": {
         "description": "匹配等待时长（秒）",
         "type": "int",
         "default": 180,
         "hint": "范围 10-600；达到上限时若仍未凑满最大席位，按当前已入座人数开局。"
       },
-      "发词准备时长": {
+      "prepare_seconds": {
         "description": "发词准备时长（秒）",
         "type": "int",
         "default": 10,
         "hint": "范围 0-120；开局身份卡上「确认」按钮按此时长锁定（倒计时结束后才可确认开局），期间可查看身份与词条；设为 0 则直接可确认。"
       },
-      "单人次发言时长上限": {
+      "speaking_seconds": {
         "description": "单人次发言时长上限（秒）",
         "type": "int",
         "default": 160,
         "hint": "范围 0-600，默认 160 秒；设为 0 表示不限时：后端不设超时、不强跳发言玩家，由玩家自行发言推进（前端显示「不限时」）。"
       },
-      "投票时长上限": {
+      "voting_seconds": {
         "description": "投票时长上限（秒）",
         "type": "int",
         "default": 120,
         "hint": "范围 0-600，默认 120 秒；超时未投票视为本轮弃权。"
       },
-      "首轮不投票的最低存活人数": {
+      "first_round_non_voting": {
         "description": "首轮不投票的最低存活人数",
         "type": "int",
         "default": 3,
         "hint": "范围 2-10；首轮存活人数 ≤ 该值时，第一轮发言后直接进入下一轮，不再投票。"
       },
-      "告知身份": {
+      "send_identity_in_card": {
         "description": "告知身份（开场发放身份/词条卡）",
         "type": "bool",
         "default": true,
         "hint": "开启后开场会以动画卡片告知玩家身份与词条；关闭则不展示身份卡。"
       },
-      "投票结算展示具体投票人": {
+      "show_voters": {
         "description": "投票结算展示具体投票人",
         "type": "bool",
         "default": false,
         "hint": "开启后，投票结果会展示每张票投给了谁（时间线与房间对话同步）；关闭则只显示各玩家得票数与被淘汰结果。"
       },
-      "发言相似度阈值": {
+      "similarity": {
         "description": "发言相似度阈值（%）",
         "type": "int",
         "default": 80,
         "hint": "范围 0-100；发言与历史发言相似度超过该阈值会被驳回并要求换说法，防止复读；0 表示不检测。"
       },
-      "开启AI玩家自动补位": {
+      "ai_fill_enabled": {
         "description": "开启 AI 玩家自动补位（可作为人数不足的后备玩法）",
         "type": "bool",
         "default": true,
         "hint": "开启后，如果人数少于最低开局人数，Bot 会自动以 AI 玩家身份补位。AI 玩家会自动发言描述和投票。"
       },
-      "AI补位后的最低总人数": {
+      "ai_fill_min_players": {
         "description": "AI 补位后的最低总人数",
         "type": "int",
         "default": 3,

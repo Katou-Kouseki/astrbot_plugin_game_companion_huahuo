@@ -256,12 +256,10 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
         "game_type": "undercover",
         "label": "谁是卧底",
         "description": "多人社交推理：每人随机词条，按轮次发言描述，投票淘汰可疑玩家。",
-        # 启用开关在 AstrBot 配置中的键名：对局参数键统一为中文键（历史英文键由 _migrate_undercover_config_keys 迁移）
-        "enabled_key": "undercover.启用谁是卧底",
         "fields": (
             {
                 "key": "max_players",
-                "config_key": "undercover.最大玩家席",
+                "config_key": "undercover.max_players",
                 "label": "最大玩家席",
                 "type": "int",
                 "default": 10,
@@ -272,7 +270,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "min_players",
-                "config_key": "undercover.最低开局人数",
+                "config_key": "undercover.min_players",
                 "label": "最低开局人数",
                 "type": "int",
                 "default": 2,
@@ -283,7 +281,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "camp_scales_default",
-                "config_key": "undercover.默认阵营比例",
+                "config_key": "undercover.camp_scales_default",
                 "label": "默认阵营比例（平民 卧底 白板）",
                 "type": "str",
                 "default": "4 1 0",
@@ -291,7 +289,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "allow_host_customize_camp_scales",
-                "config_key": "undercover.允许房主自定义阵营比例",
+                "config_key": "undercover.allow_host_customize_camp_scales",
                 "label": "允许首位玩家（房主）自定义阵营比例",
                 "type": "bool",
                 "default": True,
@@ -299,7 +297,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "match_seconds",
-                "config_key": "undercover.匹配等待时长",
+                "config_key": "undercover.match_seconds",
                 "label": "匹配等待时长",
                 "type": "int",
                 "default": 180,
@@ -310,7 +308,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "prepare_seconds",
-                "config_key": "undercover.发词准备时长",
+                "config_key": "undercover.prepare_seconds",
                 "label": "发词准备时长",
                 "type": "int",
                 "default": 10,
@@ -321,7 +319,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "speaking_seconds",
-                "config_key": "undercover.单人次发言时长上限",
+                "config_key": "undercover.speaking_seconds",
                 "label": "单人次发言时长上限",
                 "type": "int",
                 "default": 160,
@@ -332,7 +330,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "voting_seconds",
-                "config_key": "undercover.投票时长上限",
+                "config_key": "undercover.voting_seconds",
                 "label": "投票时长上限",
                 "type": "int",
                 "default": 120,
@@ -343,7 +341,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "first_round_non_voting",
-                "config_key": "undercover.首轮不投票的最低存活人数",
+                "config_key": "undercover.first_round_non_voting",
                 "label": "首轮不投票的最低存活人数",
                 "type": "int",
                 "default": 3,
@@ -354,7 +352,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "send_identity_in_card",
-                "config_key": "undercover.告知身份",
+                "config_key": "undercover.send_identity_in_card",
                 "label": "告知身份（开场发放身份/词条卡）",
                 "type": "bool",
                 "default": True,
@@ -362,7 +360,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "show_voters",
-                "config_key": "undercover.投票结算展示具体投票人",
+                "config_key": "undercover.show_voters",
                 "label": "投票结算展示具体投票人",
                 "type": "bool",
                 "default": False,
@@ -370,7 +368,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "similarity",
-                "config_key": "undercover.发言相似度阈值",
+                "config_key": "undercover.similarity",
                 "label": "发言相似度阈值",
                 "type": "int",
                 "default": 80,
@@ -381,7 +379,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "ai_fill_enabled",
-                "config_key": "undercover.开启AI玩家自动补位",
+                "config_key": "undercover.ai_fill_enabled",
                 "label": "开启 AI 玩家自动补位（可作为人数不足的后备玩法）",
                 "type": "bool",
                 "default": True,
@@ -389,7 +387,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "ai_fill_min_players",
-                "config_key": "undercover.AI补位后的最低总人数",
+                "config_key": "undercover.ai_fill_min_players",
                 "label": "AI 补位后的最低总人数",
                 "type": "int",
                 "default": 3,
@@ -403,37 +401,52 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
 )
 
 
-def _game_enabled_key(game_type: str) -> str:
-    """返回某游戏「启用开关」在 AstrBot 配置中的键名。
-
-    谁是卧底对局参数的历史英文键已统一迁移为中文键（见 _UNDERCOVER_LEGACY_CONFIG_KEYS）。
-    """
-    for definition in GAME_CATALOG:
-        if str(definition["game_type"]) == game_type:
-            return str(definition.get("enabled_key") or f"{game_type}.enabled")
-    return f"{game_type}.enabled"
-
-
-# 谁是卧底对局参数：旧英文配置键 → (中文键, 默认值)
-# 早期版本把游戏管理台保存的参数直接写进 AstrBot 配置，导致插件配置页出现一排英文键；
-# 现统一改为中文键，加载时自动迁移旧值并清理旧键。
-_UNDERCOVER_LEGACY_CONFIG_KEYS: dict[str, tuple[str, object]] = {
-    "undercover.enabled": ("undercover.启用谁是卧底", True),
-    "undercover.max_players": ("undercover.最大玩家席", 10),
-    "undercover.min_players": ("undercover.最低开局人数", 2),
-    "undercover.camp_scales_default": ("undercover.默认阵营比例", "4 1 0"),
-    "undercover.allow_host_customize_camp_scales": ("undercover.允许房主自定义阵营比例", True),
-    "undercover.match_seconds": ("undercover.匹配等待时长", 180),
-    "undercover.prepare_seconds": ("undercover.发词准备时长", 10),
-    "undercover.speaking_seconds": ("undercover.单人次发言时长上限", 160),
-    "undercover.voting_seconds": ("undercover.投票时长上限", 120),
-    "undercover.first_round_non_voting": ("undercover.首轮不投票的最低存活人数", 3),
-    "undercover.send_identity_in_card": ("undercover.告知身份", True),
-    "undercover.show_voters": ("undercover.投票结算展示具体投票人", False),
-    "undercover.similarity": ("undercover.发言相似度阈值", 80),
-    "undercover.ai_fill_enabled": ("undercover.开启AI玩家自动补位", True),
-    "undercover.ai_fill_min_players": ("undercover.AI补位后的最低总人数", 3),
+# 0.5.12 曾短暂把谁是卧底对局参数写成中文键；若插件已加载过该版本（配置里已有中文键），
+# 加载时回迁为英文键，保持与全插件其余配置一致的英文点分键风格。
+# 值为 (英文键, schema 默认值)：英文键只有默认值时同样会被中文键的真实值覆盖，避免丢参数。
+_UNDERCOVER_CN_TO_EN_KEYS: dict[str, tuple[str, object]] = {
+    "undercover.启用谁是卧底": ("undercover.enabled", True),
+    "undercover.最大玩家席": ("undercover.max_players", 10),
+    "undercover.最低开局人数": ("undercover.min_players", 2),
+    "undercover.默认阵营比例": ("undercover.camp_scales_default", "4 1 0"),
+    "undercover.允许房主自定义阵营比例": ("undercover.allow_host_customize_camp_scales", True),
+    "undercover.匹配等待时长": ("undercover.match_seconds", 180),
+    "undercover.发词准备时长": ("undercover.prepare_seconds", 10),
+    "undercover.单人次发言时长上限": ("undercover.speaking_seconds", 160),
+    "undercover.投票时长上限": ("undercover.voting_seconds", 120),
+    "undercover.首轮不投票的最低存活人数": ("undercover.first_round_non_voting", 3),
+    "undercover.告知身份": ("undercover.send_identity_in_card", True),
+    "undercover.投票结算展示具体投票人": ("undercover.show_voters", False),
+    "undercover.发言相似度阈值": ("undercover.similarity", 80),
+    "undercover.开启AI玩家自动补位": ("undercover.ai_fill_enabled", True),
+    "undercover.AI补位后的最低总人数": ("undercover.ai_fill_min_players", 3),
 }
+
+
+# 服务端「战况通知」海报：Pillow 无彩色 emoji 字体时会把 emoji 画成方框，绘制前统一剔除
+_POSTER_EMOJI_RE = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"   # 表情符号 Emoji
+    "\u2600-\u27BF"           # 杂项符号 / 装饰符
+    "\u2B00-\u2BFF"           # 箭头 / 星形等
+    "\uFE0F\u200D"            # 变体选择符 / 零宽连接符
+    "]"
+)
+# 常见中文字体候选（按平台探测，找到即用；找不到时自动播报回退纯文字）
+_POSTER_FONT_CANDIDATES: tuple[tuple[str, int], ...] = (
+    ("C:/Windows/Fonts/msyhbd.ttc", 0),   # 微软雅黑 Bold
+    ("C:/Windows/Fonts/msyh.ttc", 1),     # 微软雅黑（index 1 = Bold）
+    ("C:/Windows/Fonts/simhei.ttf", 0),   # 黑体
+    ("C:/Windows/Fonts/simsun.ttc", 0),   # 宋体
+    ("/System/Library/Fonts/PingFang.ttc", 0),
+    ("/System/Library/Fonts/Hiragino Sans GB.ttc", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 0),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 0),
+    ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+)
+_POSTER_FONT_PATH: dict[bool, tuple[str, int]] = {}  # 已探测到的字体路径（bold → (path, index)）
+_POSTER_FONT_CACHE: dict[tuple[bool, int], Any] = {}  # (bold, px) → ImageFont
 
 
 @dataclass(slots=True)
@@ -568,8 +581,8 @@ class GameCompanionPlugin(Star):
         self.plugin_root = Path(__file__).resolve().parent
         self.data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME))
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        # 历史遗留的英文对局参数键迁移为中文键（必须在任何 undercover 读取之前执行）
-        self._migrate_undercover_config_keys()
+        # 兼容 0.5.12 短暂使用的中文键：回迁为英文键（必须在任何 undercover 读取之前执行）
+        self._revert_undercover_chinese_config_keys()
 
         self.server_enabled = self._cfg_bool("server.enabled", True)
         self.server_host = self._cfg_str("server.host", "127.0.0.1") or "127.0.0.1"
@@ -656,7 +669,7 @@ class GameCompanionPlugin(Star):
             "game.commentary_cooldown_seconds", 45, minimum=10, maximum=600
         )
         self.enabled_games: dict[GameType, bool] = {
-            game_type: self._cfg_bool(_game_enabled_key(game_type), True)
+            game_type: self._cfg_bool(f"{game_type}.enabled", True)
             for game_type in SUPPORTED_GAMES
         }
         self.turtle_soup_max_hints = self._cfg_int(
@@ -683,42 +696,42 @@ class GameCompanionPlugin(Star):
         self.blackjack_max_players = self._cfg_int(
             "blackjack.max_players", 1, minimum=1, maximum=6
         )
-        # ------------------------ 谁是卧底配置（键名与插件配置页中文键一致） ------------------------
+        # ------------------------ 谁是卧底配置 ------------------------
         self.undercover_max_players = self._cfg_int(
-            "undercover.最大玩家席", 10, minimum=2, maximum=20
+            "undercover.max_players", 10, minimum=2, maximum=20
         )
         self.undercover_min_players = self._cfg_int(
-            "undercover.最低开局人数", 2, minimum=2, maximum=10
+            "undercover.min_players", 2, minimum=2, maximum=10
         )
         self.undercover_camp_scales_default = (
-            self._cfg_str("undercover.默认阵营比例", "4 1 0") or "4 1 0"
+            self._cfg_str("undercover.camp_scales_default", "4 1 0") or "4 1 0"
         )
         self.undercover_allow_host_customize_camp_scales = self._cfg_bool(
-            "undercover.允许房主自定义阵营比例", True
+            "undercover.allow_host_customize_camp_scales", True
         )
         self.undercover_match_seconds = self._cfg_int(
-            "undercover.匹配等待时长", 180, minimum=10, maximum=600
+            "undercover.match_seconds", 180, minimum=10, maximum=600
         )
         self.undercover_prepare_seconds = self._cfg_int(
-            "undercover.发词准备时长", 10, minimum=0, maximum=120
+            "undercover.prepare_seconds", 10, minimum=0, maximum=120
         )
         self.undercover_speaking_seconds = self._cfg_int(
-            "undercover.单人次发言时长上限", 160, minimum=0, maximum=600
+            "undercover.speaking_seconds", 160, minimum=0, maximum=600
         )
         self.undercover_voting_seconds = self._cfg_int(
-            "undercover.投票时长上限", 120, minimum=0, maximum=600
+            "undercover.voting_seconds", 120, minimum=0, maximum=600
         )
         self.undercover_first_round_non_voting = self._cfg_int(
-            "undercover.首轮不投票的最低存活人数", 3, minimum=2, maximum=10
+            "undercover.first_round_non_voting", 3, minimum=2, maximum=10
         )
         self.undercover_send_identity_in_card = self._cfg_bool(
-            "undercover.告知身份", True
+            "undercover.send_identity_in_card", True
         )
         self.undercover_show_voters = self._cfg_bool(
-            "undercover.投票结算展示具体投票人", False
+            "undercover.show_voters", False
         )
         self.undercover_similarity = self._cfg_int(
-            "undercover.发言相似度阈值", 80, minimum=0, maximum=100
+            "undercover.similarity", 80, minimum=0, maximum=100
         )
         # 失败禁言 / 违规禁言（单位：秒，0 表示不禁言；默认 60 / 300）
         self.undercover_failed_mute_seconds = self._cfg_int(
@@ -728,10 +741,10 @@ class GameCompanionPlugin(Star):
             "undercover.violated_mute_seconds", 300, minimum=0, maximum=3600
         )
         self.undercover_ai_fill_enabled = self._cfg_bool(
-            "undercover.开启AI玩家自动补位", True
+            "undercover.ai_fill_enabled", True
         )
         self.undercover_ai_fill_min_players = self._cfg_int(
-            "undercover.AI补位后的最低总人数", 3, minimum=2, maximum=8
+            "undercover.ai_fill_min_players", 3, minimum=2, maximum=8
         )
         # 群通报（本局胜负+惩罚发到开房游戏群）：总开关 + 是否自动播报；
         # 关闭自动时由结算卡「通报到群」按钮手动触发。属插件配置，不在管理台展示。
@@ -1265,6 +1278,47 @@ class GameCompanionPlugin(Star):
             )
         else:
             yield event.plain_result("当前 QQ 没有有效的受信任浏览器绑定。")
+
+    @game_commands.command("谁是卧底日报", alias={"卧底日报", "谁是卧底周报", "卧底周报"})
+    async def undercover_report_now(self, event: AstrMessageEvent):
+        """立即生成一份谁是卧底战绩日报/周报发到当前会话（样式测试/手动补发）。
+
+        内容与定时日报/周报相同（全局战绩榜前 20），不依赖 report_enabled 开关。
+        """
+        yield event.plain_result(self._build_undercover_report())
+
+    @game_commands.command("谁是卧底海报", alias={"卧底海报", "战况海报测试"})
+    async def undercover_poster_test(self, event: AstrMessageEvent, camp: str = ""):
+        """用示例数据生成一张「战况通知」海报（服务端渲染），用于测试海报样式。
+
+        可选参数：平民 / 卧底 / 白板（默认平民），例如「谁是卧底海报 卧底」。
+        需要服务端 Pillow 与中文字体；失败时提示回退纯文字。
+        """
+        room = self._undercover_sample_room(camp)
+        try:
+            image_data = self._undercover_announce_poster(room)
+        except Exception as exc:
+            yield event.plain_result(f"生成测试海报失败：{exc}（需要服务端 Pillow 与中文字体）")
+            return
+        try:
+            from astrbot.api.message_components import Image
+
+            yield event.chain_result(
+                MessageChain([Image(file=f"base64://{image_data}")])
+            )
+        except Exception as exc:
+            yield event.plain_result(f"海报已生成但发送失败：{exc}")
+
+    @game_commands.command("谁是卧底战报", alias={"卧底战报", "战报样式测试"})
+    async def undercover_report_test(self, event: AstrMessageEvent, camp: str = ""):
+        """用示例数据生成一条「群通报」战报文案，用于测试战报文字样式。
+
+        可选参数：平民 / 卧底 / 白板（默认平民）；复盘为示例占位，真实场景由 LLM 生成。
+        """
+        text = self._undercover_announce_text(
+            self._undercover_sample_room(camp).game
+        )
+        yield event.plain_result(text + "\n\n📝 复盘：示例复盘文案（真实场景由 AI 生成）。")
 
     async def _bind_game_player_text(
         self, event: AstrMessageEvent, identity_token: str
@@ -2041,6 +2095,13 @@ class GameCompanionPlugin(Star):
                             room, qq, self.undercover_failed_mute_seconds, "失败方"
                         )
                     )
+            # 自动播报：开启「自动播报」时局末自动发群通报（无需手动点按钮）
+            if (
+                room.game_type == "undercover"
+                and self.group_announce_enabled
+                and self.group_announce_auto
+            ):
+                self._spawn(self._auto_announce_undercover(room))
             self._spawn(
                 self._comment(
                     room,
@@ -3801,8 +3862,56 @@ class GameCompanionPlugin(Star):
         camp = winner_get("camp")
         cw = winner_get("civilian_word") or ""
         uw = winner_get("undercover_word") or ""
-        players = getattr(game, "players", None) or []
         # 文案：标题 → 词条 → 胜利方（列出玩家名）→ 失败方（不写惩罚）
+        text = self._undercover_announce_text(game)
+        # 结合「花火复盘」：共用同一局缓存；是否附带复盘由配置 group_announce_recap 控制
+        recap = ""
+        if getattr(self, "group_announce_recap", True):
+            try:
+                recap = await self.undercover_recap(room)
+            except Exception:
+                recap = ""
+        style = (getattr(self, "group_announce_style", "text") or "text").lower()
+        want_image = style in {"image", "both"}
+        want_text = style in {"text", "both"}
+        if not want_text and not want_image:
+            want_text = True  # 兜底：未知配置按仅文字
+        if style == "image":
+            if image_data:
+                # 纯图片模式：只发图（可选附带复盘）；附带复盘时图片前加一行标题，不发详情
+                title_line = f"🕵️ 谁是卧底战报：{title}" if recap else ""
+                await self._send_to_origin_image(room, title_line, image_data, recap)
+                # 未带复盘时也要返回非空标记：保证幂等判定与「已通知」提示正确
+                return title_line or "🖼️ 战报图已发送"
+            # 海报缺失/生成失败：回退纯文字，避免群里收不到通知
+            await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
+            return text
+        if want_image and image_data:
+            await self._send_to_origin_image(
+                room, text if want_text else "", image_data, recap if want_text else ""
+            )
+            return text
+        if want_text:
+            await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
+        return text
+
+    @staticmethod
+    def _undercover_announce_text(game: Any) -> str:
+        """纯文字战报（标题 → 词条 → 胜利方 → 失败方），供群通报与战报测试指令共用。
+
+        不写惩罚、不接复盘（复盘由调用方按配置追加）。
+        """
+        title = _undercover_title_text(game) or "本局已结束"
+        winner = getattr(game, "winner", None) or {}
+        winner_get = (
+            (lambda key, _d=None: winner.get(key, _d))
+            if isinstance(winner, dict)
+            else (lambda key, _d=None: getattr(winner, key, _d))
+        )
+        camp = winner_get("camp")
+        cw = winner_get("civilian_word") or ""
+        uw = winner_get("undercover_word") or ""
+        players = getattr(game, "players", None) or []
         lines = [f"🕵️ 谁是卧底战报：{title}"]
         if cw or uw:
             lines.append(f"📌 词条：平民「{cw}」/ 卧底「{uw}」")
@@ -3833,32 +3942,302 @@ class GameCompanionPlugin(Star):
                 for p in losers
             )
             lines.append(f"💔 失败方：{names}")
-        text = "\n".join(lines)
-        # 结合「花火复盘」：共用同一局缓存；是否附带复盘由配置 group_announce_recap 控制
-        recap = ""
-        if getattr(self, "group_announce_recap", True):
-            try:
-                recap = await self.undercover_recap(room)
-            except Exception:
-                recap = ""
-        style = (getattr(self, "group_announce_style", "text") or "text").lower()
-        want_image = style in {"image", "both"}
-        want_text = style in {"text", "both"}
-        if not want_text and not want_image:
-            want_text = True  # 兜底：未知配置按仅文字
-        if style == "image" and image_data:
-            # 纯图片模式：只发图（可选附带复盘）；附带复盘时图片前加一行标题，不发详情
-            title_line = f"🕵️ 谁是卧底战报：{title}" if recap else ""
-            await self._send_to_origin_image(room, title_line, image_data, recap)
-            return title_line
-        if want_image and image_data:
-            await self._send_to_origin_image(
-                room, text if want_text else "", image_data, recap if want_text else ""
+        return "\n".join(lines)
+
+    @staticmethod
+    def _undercover_sample_room(camp: str = "civilian") -> Any:
+        """构造一局示例「谁是卧底」结果（含词条与四名玩家），供海报/战报测试指令使用。
+
+        camp 支持 civilian/undercover/whiteboard，对应平民/卧底/白板获胜。
+        """
+        from types import SimpleNamespace
+
+        alias = {
+            "平民": "civilian", "civilian": "civilian",
+            "卧底": "undercover", "undercover": "undercover",
+            "白板": "whiteboard", "whiteboard": "whiteboard",
+        }
+        camp = alias.get((camp or "").strip().lower(), "civilian")
+        words = {
+            "civilian": ("苹果", "香蕉"),
+            "undercover": ("月亮", "太阳"),
+            "whiteboard": ("咖啡", "奶茶"),
+        }[camp]
+        players = [
+            SimpleNamespace(number=1, display_name="张三", camp="civilian"),
+            SimpleNamespace(number=2, display_name="李四", camp="civilian"),
+            SimpleNamespace(number=3, display_name="王五", camp="undercover"),
+            SimpleNamespace(number=4, display_name="赵六", camp="whiteboard"),
+        ]
+        game = SimpleNamespace(
+            winner={
+                "camp": camp,
+                "civilian_word": words[0],
+                "undercover_word": words[1],
+            },
+            players=players,
+        )
+        return SimpleNamespace(game=game, multiplayer=SimpleNamespace(seats=[]))
+
+    async def _auto_announce_undercover(self, room: GameRoom) -> None:
+        """局末自动播报（group_announce_auto）。
+
+        与「群通报发送方式」配置保持一致：仅文字 → 纯文字；仅图片/文字+图片 → 服务端
+        用 Pillow 生成「战况通知」海报随通报发送（无前端页面也能出图，缺 Pillow/中文字体
+        时回退纯文字）。发送成功后写入与手动通知一致的幂等标记，避免随后手动点「通知到群」
+        重复发送。
+        """
+        try:
+            style = (getattr(self, "group_announce_style", "text") or "text").lower()
+            image_data = ""
+            if style in {"image", "both"}:
+                try:
+                    image_data = await asyncio.to_thread(
+                        self._undercover_announce_poster, room
+                    )
+                except Exception as exc:
+                    logger.warning("[GameCompanion] 自动播报生成海报失败，回退纯文字: %s", exc)
+                    image_data = ""
+            announce_text = await self.undercover_announce_result(room, image_data)
+            game_obj = room.game
+            uid = str(getattr(game_obj, "game_uid", "") or "") if game_obj else ""
+            if uid and announce_text:
+                room.last_announced_uid = uid
+                room.last_announced_text = announce_text
+        except Exception as exc:
+            logger.warning("[GameCompanion] 谁是卧底自动播报失败: %s", exc)
+
+    def _undercover_announce_poster(self, room: GameRoom) -> str:
+        """服务端生成「战况通知」海报（与前端战况大字报同款设计），返回 base64 PNG。
+
+        仅文字/纯 ASCII 内容（无彩色 emoji，规避 Pillow 缺 emoji 字体时的方框）；缺 Pillow
+        或找不到中文字体时抛出异常，由调用方回退纯文字播报。
+        """
+        from PIL import Image, ImageDraw, ImageFont  # 可选依赖，缺失时回退纯文字
+
+        game = room.game
+        winner = getattr(game, "winner", None) or {}
+        winner_get = (
+            (lambda key, _d=None: winner.get(key, _d))
+            if isinstance(winner, dict)
+            else (lambda key, _d=None: getattr(winner, key, _d))
+        )
+        camp = winner_get("camp")
+        title = _undercover_title_text(game) or "本局已结束"
+        cw = winner_get("civilian_word") or ""
+        uw = winner_get("undercover_word") or ""
+        players = getattr(game, "players", None) or []
+        seats = getattr(room.multiplayer, "seats", None) or []
+        seat_names = {
+            int(s.number): str(getattr(s, "display_name", "") or "").strip()
+            for s in seats
+        }
+        names = [
+            (
+                int(getattr(p, "number", 0)),
+                str(getattr(p, "display_name", "") or "").strip()
+                or seat_names.get(int(getattr(p, "number", 0)), ""),
+                getattr(p, "camp", "") or "",
             )
-            return text if want_text else ""
-        if want_text:
-            await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
-        return text
+            for p in players
+        ]
+
+        camp_cn = {"civilian": "平民", "undercover": "卧底", "whiteboard": "白板"}.get(
+            camp, ""
+        )
+        camp_col = {
+            "civilian": (125, 255, 176),
+            "undercover": (221, 169, 255),
+            "whiteboard": (156, 203, 255),
+        }.get(camp, (255, 209, 102))
+
+        def font(bold: bool, px: int) -> Any:
+            key = (bold, px)
+            cached = _POSTER_FONT_CACHE.get(key)
+            if cached is not None:
+                return cached
+            resolved = _POSTER_FONT_PATH.get(bold)
+            if resolved is None:
+                for candidate, index in _POSTER_FONT_CANDIDATES:
+                    try:
+                        ImageFont.truetype(candidate, px, index=index)
+                        resolved = (candidate, index)
+                        _POSTER_FONT_PATH[bold] = resolved
+                        break
+                    except OSError:
+                        continue
+                if resolved is None:
+                    raise RuntimeError("未找到可用的中文字体")
+            f = ImageFont.truetype(resolved[0], px, index=resolved[1])
+            _POSTER_FONT_CACHE[key] = f
+            return f
+
+        def truncate(text: str, max_w: int, f: Any) -> str:
+            text = _POSTER_EMOJI_RE.sub("", str(text or ""))
+            if font_length(text, f) <= max_w:
+                return text
+            for index in range(len(text) - 1, 0, -1):
+                if font_length(text[:index] + "…", f) <= max_w:
+                    return text[:index] + "…"
+            return text[:1]
+
+        def font_length(text: str, f: Any) -> float:
+            return d.textlength(text, font=f)
+
+        def wrap(text: str, max_w: int, f: Any, max_lines: int) -> list[str]:
+            text = _POSTER_EMOJI_RE.sub("", str(text or ""))
+            out: list[str] = []
+            cur = ""
+            for ch in text:
+                nxt = cur + ch
+                if cur and font_length(nxt, f) > max_w:
+                    out.append(cur)
+                    cur = ch
+                else:
+                    cur = nxt
+            if cur:
+                out.append(cur)
+            if len(out) > max_lines:
+                out = out[:max_lines]
+                out[-1] = (out[-1] or "")[:-1] + "…"
+            return out or [""]
+
+        S = 1.5
+        W, H, M = int(720 * S), int(720 * S), int(46 * S)
+        img = Image.new("RGBA", (W, H), (32, 9, 7, 255))
+        d = ImageDraw.Draw(img, "RGBA")
+        # 背景渐变（深红「大字报」暖调，与分享战报的深蓝区分）
+        top = (90, 28, 22)
+        bottom = (32, 9, 7)
+        for y in range(H):
+            t = y / max(1, H - 1)
+            d.line(
+                [(0, y), (W, y)],
+                fill=(
+                    round(top[0] + (bottom[0] - top[0]) * t),
+                    round(top[1] + (bottom[1] - top[1]) * t),
+                    round(top[2] + (bottom[2] - top[2]) * t),
+                    255,
+                ),
+            )
+        # 斜纹装饰
+        for x in range(-H, W + H, int(36 * S)):
+            d.line([(x, 0), (x + H, H)], fill=(255, 255, 255, 12))
+        # 底部阵营色强调条
+        d.rectangle([0, H - int(10 * S), W, H], fill=camp_col + (255,))
+
+        # 顶部标题行
+        title_font = font(True, int(22 * S))
+        d.text((M, int(64 * S)), "谁是卧底 · 战况通知", font=title_font, fill=(255, 217, 160, 255))
+        right_font = font(False, int(16 * S))
+        d.text(
+            (W - M, int(64 * S)),
+            truncate(title, W - 2 * M - int(200 * S), right_font),
+            font=right_font,
+            fill=(255, 255, 255, 153),
+            anchor="rs",
+        )
+
+        # 中央大字：获胜阵营（描边 + 阵营色，大字报醒目感）
+        big_text = f"{camp_cn or '本局'} 获胜"
+        big_font = font(True, int(88 * S))
+        if font_length(big_text, big_font) > W - 2 * M:
+            big_font = font(True, int(72 * S))
+        big_y = int(215 * S)
+        d.text(
+            (W / 2, big_y),
+            big_text,
+            font=big_font,
+            fill=camp_col + (255,),
+            anchor="mm",
+            stroke_width=int(12 * S),
+            stroke_fill=(0, 0, 0, 128),
+        )
+
+        # 获胜玩家名单（金色，最多 3 行）
+        winners = [
+            f"{num}号{name}".strip() for num, name, p_camp in names if p_camp == camp
+        ]
+        w_line_count = 0
+        if winners:
+            w_font = font(True, int(26 * S))
+            lines = wrap("🎉 " + " · ".join(winners), W - 2 * M, w_font, 3)
+            w_line_count = len(lines)
+            for i, line in enumerate(lines):
+                d.text(
+                    (W / 2, int(330 * S) + i * int(40 * S)),
+                    line,
+                    font=w_font,
+                    fill=(255, 227, 176, 255),
+                    anchor="mm",
+                )
+
+        # 词条双药丸
+        def pill(text: str, x: int, y: int, w: int, fill_col: tuple[int, int, int, int], f: Any) -> None:
+            d.rounded_rectangle([x, y, x + w, y + int(46 * S)], radius=int(23 * S), fill=fill_col)
+            d.text(
+                (x + w / 2, y + int(23 * S)),
+                text,
+                font=f,
+                fill=(255, 255, 255, 255),
+                anchor="mm",
+            )
+
+        if cw or uw:
+            pill_top = int(356 * S) + max(1, w_line_count) * int(40 * S)
+            pill_font = font(True, int(20 * S))
+            cw_t = truncate(f"平民「{cw}」", int(300 * S), pill_font)
+            uw_t = truncate(f"卧底「{uw}」", int(300 * S), pill_font)
+            cw_w = int(font_length(cw_t, pill_font)) + int(34 * S)
+            uw_w = int(font_length(uw_t, pill_font)) + int(34 * S)
+            gap = int(20 * S)
+            x0 = int((W - (cw_w + gap + uw_w)) / 2)
+            if x0 >= M:
+                pill(cw_t, x0, pill_top, cw_w, (125, 255, 176, 41), pill_font)
+                pill(uw_t, x0 + cw_w + gap, pill_top, uw_w, (221, 169, 255, 41), pill_font)
+            else:
+                small = font(True, int(18 * S))
+                cw2 = truncate(f"平民「{cw}」", int(440 * S), small)
+                uw2 = truncate(f"卧底「{uw}」", int(440 * S), small)
+                w1 = int(font_length(cw2, small)) + int(34 * S)
+                w2 = int(font_length(uw2, small)) + int(34 * S)
+                pill(cw2, int((W - w1) / 2), pill_top, w1, (125, 255, 176, 41), small)
+                pill(uw2, int((W - w2) / 2), pill_top + int(56 * S), w2, (221, 169, 255, 41), small)
+
+        # 底部失败方
+        camp_cn_of = {"civilian": "平民", "undercover": "卧底", "whiteboard": "白板"}
+        losers = [
+            f"{num}号{name}".strip() + (f"（{camp_cn_of.get(p_camp, p_camp or '?')}）" if p_camp else "")
+            for num, name, p_camp in names
+            if p_camp and p_camp != camp
+        ]
+        if losers:
+            l_font = font(False, int(17 * S))
+            lines = wrap("败方：" + "、".join(losers), W - 2 * M - int(150 * S), l_font, 2)
+            for i, line in enumerate(lines):
+                d.text(
+                    (M, int(636 * S) + i * int(26 * S)),
+                    line,
+                    font=l_font,
+                    fill=(255, 255, 255, 140),
+                    anchor="ls",
+                )
+
+        # 右下角水印
+        d.text(
+            (W - M, H - int(32 * S)),
+            "由 花火 监督生成",
+            font=font(False, int(14 * S)),
+            fill=(255, 255, 255, 102),
+            anchor="rs",
+        )
+
+        import base64
+        import io
+
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
 
     async def _send_to_origin_image(
         self, room: GameRoom, text: str, image_data_url: str, recap: str = ""
@@ -4610,7 +4989,7 @@ class GameCompanionPlugin(Star):
                     "game_type": game_type,
                     "label": definition["label"],
                     "description": definition["description"],
-                    "enabled": self._cfg_bool(_game_enabled_key(game_type), True),
+                    "enabled": self._cfg_bool(f"{game_type}.enabled", True),
                     "fields": fields,
                 }
             )
@@ -4647,7 +5026,7 @@ class GameCompanionPlugin(Star):
             if "enabled" in submitted:
                 if not isinstance(submitted["enabled"], bool):
                     raise ValueError(f"{self._game_label(game_type)}开关必须是布尔值")
-                changes[_game_enabled_key(game_type)] = submitted["enabled"]
+                changes[f"{game_type}.enabled"] = submitted["enabled"]
             for key, value in submitted.items():
                 if key == "enabled":
                     continue
@@ -4724,50 +5103,50 @@ class GameCompanionPlugin(Star):
             return
         self.config.update(patch)
 
-    def _migrate_undercover_config_keys(self) -> None:
-        """把历史遗留的英文对局参数键迁移为中文键（插件配置页不再出现英文项）。
+    def _revert_undercover_chinese_config_keys(self) -> None:
+        """兼容 0.5.12 短暂使用的中文键：把已写入配置的中文键回迁为英文键。
 
-        早期版本把游戏管理台保存的参数直接写进 AstrBot 配置（如 undercover.max_players），
-        现统一为中文键（如 undercover.最大玩家席）。加载时把旧键的值搬进新键、删掉旧键，
-        保留用户已保存的对局参数；新键只有 schema 默认值时也会被旧值覆盖。
+        0.5.12 曾把谁是卧底对局参数写成中文键（undercover.最大玩家席 等）；
+        若插件加载过该版本，配置里已存在中文键，这里把值搬回英文键并删除中文键，
+        与全插件其余配置保持一致的英文点分键风格，已保存的参数不会丢失。
         """
         try:
             config = self.config
             if not isinstance(config, dict):
                 return
             changed = False
-            # 嵌套存储：config["undercover"] = {"max_players": ...}
+            # 嵌套存储：config["undercover"] = {"最大玩家席": ...}
             section = config.get("undercover")
             if isinstance(section, dict):
-                for legacy, (chinese, default) in _UNDERCOVER_LEGACY_CONFIG_KEYS.items():
-                    old_key = legacy.split(".", 1)[1]
-                    new_key = chinese.split(".", 1)[1]
-                    if old_key not in section:
+                for chinese, (english, default) in _UNDERCOVER_CN_TO_EN_KEYS.items():
+                    cn_key = chinese.split(".", 1)[1]
+                    en_key = english.split(".", 1)[1]
+                    if cn_key not in section:
                         continue
-                    current = section.get(new_key)
+                    current = section.get(en_key)
                     if current is None or current == default:
-                        section[new_key] = section[old_key]
-                    section.pop(old_key, None)
+                        section[en_key] = section[cn_key]
+                    section.pop(cn_key, None)
                     changed = True
-            # 平铺存储：config["undercover.max_players"] = ...
-            for legacy, (chinese, default) in _UNDERCOVER_LEGACY_CONFIG_KEYS.items():
-                if legacy not in config:
+            # 平铺存储：config["undercover.最大玩家席"] = ...
+            for chinese, (english, default) in _UNDERCOVER_CN_TO_EN_KEYS.items():
+                if chinese not in config:
                     continue
-                current = config.get(chinese)
+                current = config.get(english)
                 if current is None or current == default:
-                    config[chinese] = config[legacy]
-                config.pop(legacy, None)
+                    config[english] = config[chinese]
+                config.pop(chinese, None)
                 changed = True
             if changed:
                 save = getattr(config, "save_config", None)
                 if callable(save):
                     save()
         except Exception as exc:
-            logger.warning("[GameCompanion] 谁是卧底配置键迁移失败（不影响运行）: %s", exc)
+            logger.warning("[GameCompanion] 谁是卧底中文键回迁失败（不影响运行）: %s", exc)
 
     def _apply_game_settings_runtime(self) -> None:
         self.enabled_games = {
-            game_type: self._cfg_bool(_game_enabled_key(game_type), True)
+            game_type: self._cfg_bool(f"{game_type}.enabled", True)
             for game_type in SUPPORTED_GAMES
         }
         self.manager.enabled_games.update(self.enabled_games)

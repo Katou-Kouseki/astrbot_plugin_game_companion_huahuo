@@ -971,7 +971,7 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   color: var(--toast-text);
   font-size: 13px;
   box-shadow: var(--panel-shadow);
-  z-index: 20;
+  z-index: 300; /* 高于所有弹层（结算卡 130/战报预览 200 等），避免提示被遮罩挡住 */
   transition: background .3s, color .3s;
 }
 

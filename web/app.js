@@ -1024,6 +1024,8 @@
       let img;
       if (cached && cached.src === url) {
         img = cached.el; // 复用同一 img，避免重新下载
+        // 同一 img 不能同时挂在两处：若正被座位面板占用则克隆一份，避免元素被移走
+        if (img.isConnected) img = img.cloneNode(true);
       } else {
         img = document.createElement("img");
         img.src = url;
@@ -1519,8 +1521,11 @@
     const myAvatar = document.getElementById("mySeatAvatar");
     if (myAvatar) {
       const vNum = Number(room.visitor_number || 0);
-      const mySeat = (Array.isArray(room.player_seats) ? room.player_seats : [])
-        .find((s) => Number(s.number) === vNum);
+      const seats = Array.isArray(room.player_seats) ? room.player_seats : [];
+      // 优先按访客 token 匹配本人座位：观众/离席后 visitor_number 可能残留旧座位号，
+      // 若直接按号匹配，会把该座位上「别人」的头像当成自己的显示出来
+      const mySeat = seats.find((s) => s.visitor_token && s.visitor_token === visitorToken)
+        || (room.is_player ? seats.find((s) => Number(s.number) === vNum) : null);
       const vName = room.visitor_display_name || "";
       // 头像曾加载失败（本轮回退首字占位），避免反复请求破图/空白；刷新页面后重试
       const seatAvatarFailed = !!(mySeat && mySeat.avatar_url && ucAvatarImgFailed.has(Number(mySeat.number)));
@@ -1531,6 +1536,9 @@
         let img;
         if (cached && cached.src === mySeat.avatar_url) {
           img = cached.el;
+          // 缓存元素可能正挂在玩家网格的卡片上（同一 img 不能同时存在于两处）：
+          // 克隆一份放置，避免元素被网格「移动」走导致本面板头像空白
+          if (img.isConnected) img = img.cloneNode(true);
         } else {
           img = document.createElement("img");
           img.src = mySeat.avatar_url;
