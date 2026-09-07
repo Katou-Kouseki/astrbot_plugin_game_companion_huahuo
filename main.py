@@ -448,6 +448,158 @@ _POSTER_FONT_CANDIDATES: tuple[tuple[str, int], ...] = (
 _POSTER_FONT_PATH: dict[bool, tuple[str, int]] = {}  # 已探测到的字体路径（bold → (path, index)）
 _POSTER_FONT_CACHE: dict[tuple[bool, int], Any] = {}  # (bold, px) → ImageFont
 
+# Pillow 兜底海报的 emoji 字体：单色轮廓渲染（无彩色 emoji 也能出图，避免 tofu 方块）。
+# 找不到可用 emoji 字体时，回退为剥离 emoji（保持可读）。
+_POSTER_EMOJI_FONT_CANDIDATES: tuple[str, ...] = (
+    "C:/Windows/Fonts/seguiemj.ttf",           # Windows Segoe UI Emoji
+    "/System/Library/Fonts/Apple Symbols.ttf",  # macOS 符号字体
+    "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
+    "/usr/share/fonts/truetype/symbola/Symbola.ttf",
+    "/usr/share/fonts/opentype/noto/NotoEmoji-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoEmoji-Regular.ttf",
+)
+_POSTER_EMOJI_FONT_PATH: str = ""  # 已探测到的 emoji 字体路径（探测成功后缓存）
+
+# ---- Pillow 海报共用绘制助手（战况海报与排行榜海报共用；Pillow 为可选依赖） ----
+
+_EMOJI_SPLIT_RE = re.compile(
+    "([\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]+)"
+)
+
+
+def _pillow_font(bold: bool, px: int) -> Any:
+    """按 (粗体, 字号) 缓存中文字体；找不到可用字体时抛错，由调用方回退纯文字。"""
+    key = (bold, px)
+    cached = _POSTER_FONT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from PIL import ImageFont
+
+    resolved = _POSTER_FONT_PATH.get(bold)
+    if resolved is None:
+        for candidate, index in _POSTER_FONT_CANDIDATES:
+            try:
+                ImageFont.truetype(candidate, px, index=index)
+                resolved = (candidate, index)
+                _POSTER_FONT_PATH[bold] = resolved
+                break
+            except OSError:
+                continue
+        if resolved is None:
+            raise RuntimeError("未找到可用的中文字体")
+    f = ImageFont.truetype(resolved[0], px, index=resolved[1])
+    _POSTER_FONT_CACHE[key] = f
+    return f
+
+
+def _pillow_emoji_font(px: int) -> Any:
+    """按字号缓存 emoji 字体；找不到可用字体返回 None（调用方剥离 emoji）。"""
+    key = ("emoji", px)
+    cached = _POSTER_FONT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    from PIL import ImageFont
+
+    path = _POSTER_EMOJI_FONT_PATH
+    if not path:
+        for candidate in _POSTER_EMOJI_FONT_CANDIDATES:
+            try:
+                ImageFont.truetype(candidate, px)
+                path = candidate
+                globals()["_POSTER_EMOJI_FONT_PATH"] = candidate
+                break
+            except OSError:
+                continue
+        if not path:
+            return None
+    f = ImageFont.truetype(path, px)
+    _POSTER_FONT_CACHE[key] = f
+    return f
+
+
+def _pillow_segments(text: str, efont: Any) -> list[tuple[str, Any]]:
+    """把文本切成 (片段, 字体) 列表：emoji 片段用 emoji 字体，其余用常规字体。
+
+    没有可用 emoji 字体时直接剥离 emoji，避免渲染成 tofu 方块。
+    """
+    if efont is None:
+        text = _POSTER_EMOJI_RE.sub("", str(text or ""))
+        return [(text, None)] if text else []
+    out: list[tuple[str, Any]] = []
+    for seg in _EMOJI_SPLIT_RE.split(str(text or "")):
+        if not seg:
+            continue
+        out.append((seg, efont) if _EMOJI_SPLIT_RE.fullmatch(seg) else (seg, None))
+    return out
+
+
+def _pillow_font_length(d: Any, text: str, f: Any, efont: Any = None) -> float:
+    return sum(
+        d.textlength(seg, font=seg_font or f)
+        for seg, seg_font in _pillow_segments(text, efont)
+    )
+
+
+def _pillow_truncate(d: Any, text: str, max_w: int, f: Any, efont: Any = None) -> str:
+    text = str(text or "")
+    if _pillow_font_length(d, text, f, efont) <= max_w:
+        return text
+    for index in range(len(text) - 1, 0, -1):
+        if _pillow_font_length(d, text[:index] + "…", f, efont) <= max_w:
+            return text[:index] + "…"
+    return text[:1]
+
+
+def _pillow_wrap(
+    d: Any, text: str, max_w: int, f: Any, max_lines: int, efont: Any = None
+) -> list[str]:
+    out: list[str] = []
+    cur = ""
+    for ch in str(text or ""):
+        nxt = cur + ch
+        if cur and _pillow_font_length(d, nxt, f, efont) > max_w:
+            out.append(cur)
+            cur = ch
+        else:
+            cur = nxt
+    if cur:
+        out.append(cur)
+    if len(out) > max_lines:
+        out = out[:max_lines]
+        out[-1] = (out[-1] or "")[:-1] + "…"
+    return out or [""]
+
+
+def _pillow_draw_text(
+    d: Any,
+    x: int,
+    y: int,
+    text: str,
+    f: Any,
+    fill: Any,
+    *,
+    anchor: str = "ls",
+    efont: Any = None,
+) -> None:
+    """混合字体绘制：anchor 支持 ls/rs/mm/lm/rm；mm/rm/lm 时 y 为行中垂线（按字体尺寸换算到基线）。"""
+    segs = _pillow_segments(text, efont)
+    if not segs:
+        return
+    total = sum(d.textlength(seg, font=seg_font or f) for seg, seg_font in segs)
+    if anchor == "mm":
+        x = x - total / 2
+        y = y + int(getattr(f, "size", 0) or 0) * 0.32
+    elif anchor == "rm":
+        x = x - total
+        y = y + int(getattr(f, "size", 0) or 0) * 0.32
+    elif anchor == "lm":
+        y = y + int(getattr(f, "size", 0) or 0) * 0.32
+    elif anchor == "rs":
+        x = x - total
+    for seg, seg_font in segs:
+        d.text((x, y), seg, font=seg_font or f, fill=fill)
+        x += d.textlength(seg, font=seg_font or f)
+
 # 服务端「战况通知」海报的 HTML/Jinja2 模板（AstrBot t2i 渲染，样式与前端战况大字报一致）。
 # 由 t2i 服务端做 Jinja2 渲染，支持循环/条件；浏览器渲染天然支持 emoji/渐变/描边，效果优于 Pillow。
 _UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
@@ -493,6 +645,62 @@ _UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
   {% endif %}
   {% if losers %}<div class="losers">💔 败方：{{ losers|join('、') }}</div>{% endif %}
   <div class="wm">由 花火 监督生成</div>
+  <div class="bar"></div>
+</div>
+</body>
+</html>"""
+
+# 服务端「战绩日报/周报」排行榜海报的 HTML/Jinja2 模板（深蓝主题，前 3 名金银铜高亮）。
+_UNDERCOVER_REPORT_TMPL = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=720">
+<style>
+  html, body { margin: 0; padding: 0; }
+  .poster {
+    min-width: 720px; min-height: 520px; box-sizing: border-box;
+    padding: 40px 46px 34px; display: flex; flex-direction: column; position: relative;
+    background: linear-gradient(160deg, #16324d 0%, #0d1b28 100%);
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; color: #fff;
+  }
+  .poster::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.04) 0 2px, transparent 2px 40px);
+  }
+  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 8px; background: #ffd782; }
+  .head { display: flex; justify-content: space-between; align-items: center; position: relative; }
+  .head .t { font-size: 26px; font-weight: 800; color: #ffe096; }
+  .head .r { font-size: 16px; color: rgba(255,255,255,.6); }
+  .rule { margin-top: 22px; border-top: 1px solid rgba(255,255,255,.12); position: relative; }
+  .rows { margin-top: 18px; display: flex; flex-direction: column; gap: 12px; position: relative; }
+  .row { height: 50px; border-radius: 14px; padding: 0 16px; display: flex; align-items: center; gap: 14px; background: rgba(255,255,255,.05); }
+  .row.top { background: rgba(255,215,130,.16); }
+  .rank { width: 64px; font-size: 20px; font-weight: 700; color: rgba(255,255,255,.9); }
+  .name { flex: 1; min-width: 0; font-size: 20px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wins { font-size: 19px; font-weight: 700; color: #ffe096; }
+  .empty { margin-top: 30px; text-align: center; font-size: 20px; color: rgba(255,255,255,.55); position: relative; }
+  .foot { margin-top: auto; padding-top: 16px; display: flex; justify-content: space-between; font-size: 15px; color: rgba(255,255,255,.5); position: relative; }
+</style>
+</head>
+<body>
+<div class="poster">
+  <div class="head"><span class="t">📊 谁是卧底 · 战绩报告</span><span class="r">{{ subtitle }}</span></div>
+  <div class="rule"></div>
+  {% if rows %}
+  <div class="rows">
+  {% for row in rows %}
+    <div class="row {{ 'top' if loop.index0 < 3 else '' }}">
+      <span class="rank">{{ row.rank }}</span>
+      <span class="name">{{ row.name }}</span>
+      <span class="wins">{{ row.wins }} 胜</span>
+    </div>
+  {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">当前暂无卧底战绩记录。</div>
+  {% endif %}
+  <div class="foot"><span>数据来自跨房间全局战绩榜</span><span>由 花火 监督生成</span></div>
   <div class="bar"></div>
 </div>
 </body>
@@ -1331,12 +1539,29 @@ class GameCompanionPlugin(Star):
 
     @filter.command("谁是卧底日报", alias={"卧底日报", "谁是卧底周报", "卧底周报"})
     async def undercover_report_now(self, event: AstrMessageEvent):
-        """立即生成一份谁是卧底战绩日报/周报发到当前会话（样式测试/手动补发）。
+        """立即生成一份谁是卧底战绩日报/周报海报发到当前会话（样式测试/手动补发）。
 
         顶层指令：直接发送「谁是卧底日报 / 卧底日报」等即可触发（无需游戏指令组前缀）。
+        输出排行榜海报图（t2i 优先、Pillow 兜底）；都不可用时回退纯文字榜单。
         内容与定时日报/周报相同（全局战绩榜前 20），不依赖 report_enabled 开关。
         """
-        yield event.plain_result(self._build_undercover_report())
+        message = str(getattr(event, "message_str", "") or "")
+        subtitle = "周报" if ("周报" in message and "日报" not in message) else "日报"
+        data = self._undercover_report_data(subtitle=subtitle)
+        try:
+            image_data = await self._undercover_report_poster(data)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 生成战绩海报失败，回退纯文字: %s", exc)
+            yield event.plain_result(self._build_undercover_report())
+            return
+        try:
+            from astrbot.api.message_components import Image
+
+            yield event.chain_result(
+                MessageChain([Image(file=f"base64://{image_data}")])
+            )
+        except Exception as exc:
+            yield event.plain_result(f"战绩海报已生成但发送失败：{exc}")
 
     @filter.command("谁是卧底海报", alias={"卧底海报", "战况海报测试"})
     async def undercover_poster_test(self, event: AstrMessageEvent, camp: str = ""):
@@ -4085,10 +4310,12 @@ class GameCompanionPlugin(Star):
             "type": "png",
             "full_page": True,
             "viewport_width": 720,
-            "timeout": 15.0,
+            # 自建 t2i 服务下渲染开销低：用高分屏 DPR（1.8x）出更清晰的海报
+            "device_scale_factor_level": "ultra",
+            "timeout": 8.0,
         }
         url = await asyncio.wait_for(
-            render(_UNDERCOVER_POSTER_TMPL, data, options=options), timeout=15
+            render(_UNDERCOVER_POSTER_TMPL, data, options=options), timeout=8
         )
         if not url:
             raise RuntimeError("t2i 渲染返回空结果")
@@ -4204,57 +4431,7 @@ class GameCompanionPlugin(Star):
             "whiteboard": (156, 203, 255),
         }.get(camp, (255, 209, 102))
 
-        def font(bold: bool, px: int) -> Any:
-            key = (bold, px)
-            cached = _POSTER_FONT_CACHE.get(key)
-            if cached is not None:
-                return cached
-            resolved = _POSTER_FONT_PATH.get(bold)
-            if resolved is None:
-                for candidate, index in _POSTER_FONT_CANDIDATES:
-                    try:
-                        ImageFont.truetype(candidate, px, index=index)
-                        resolved = (candidate, index)
-                        _POSTER_FONT_PATH[bold] = resolved
-                        break
-                    except OSError:
-                        continue
-                if resolved is None:
-                    raise RuntimeError("未找到可用的中文字体")
-            f = ImageFont.truetype(resolved[0], px, index=resolved[1])
-            _POSTER_FONT_CACHE[key] = f
-            return f
-
-        def truncate(text: str, max_w: int, f: Any) -> str:
-            text = _POSTER_EMOJI_RE.sub("", str(text or ""))
-            if font_length(text, f) <= max_w:
-                return text
-            for index in range(len(text) - 1, 0, -1):
-                if font_length(text[:index] + "…", f) <= max_w:
-                    return text[:index] + "…"
-            return text[:1]
-
-        def font_length(text: str, f: Any) -> float:
-            return d.textlength(text, font=f)
-
-        def wrap(text: str, max_w: int, f: Any, max_lines: int) -> list[str]:
-            text = _POSTER_EMOJI_RE.sub("", str(text or ""))
-            out: list[str] = []
-            cur = ""
-            for ch in text:
-                nxt = cur + ch
-                if cur and font_length(nxt, f) > max_w:
-                    out.append(cur)
-                    cur = ch
-                else:
-                    cur = nxt
-            if cur:
-                out.append(cur)
-            if len(out) > max_lines:
-                out = out[:max_lines]
-                out[-1] = (out[-1] or "")[:-1] + "…"
-            return out or [""]
-
+        # 文字绘制统一使用模块级 Pillow 助手（_pillow_*），支持中文/emoji 混排
         S = 1.5
         W, H, M = int(720 * S), int(720 * S), int(46 * S)
         img = Image.new("RGBA", (W, H), (32, 9, 7, 255))
@@ -4280,22 +4457,22 @@ class GameCompanionPlugin(Star):
         d.rectangle([0, H - int(10 * S), W, H], fill=camp_col + (255,))
 
         # 顶部标题行
-        title_font = font(True, int(22 * S))
-        d.text((M, int(64 * S)), "谁是卧底 · 战况通知", font=title_font, fill=(255, 217, 160, 255))
-        right_font = font(False, int(16 * S))
-        d.text(
-            (W - M, int(64 * S)),
-            truncate(title, W - 2 * M - int(200 * S), right_font),
-            font=right_font,
-            fill=(255, 255, 255, 153),
-            anchor="rs",
+        title_font = _pillow_font(True, int(22 * S))
+        ef_title = _pillow_emoji_font(int(22 * S))
+        _pillow_draw_text(d, M, int(64 * S), "📢 谁是卧底 · 战况通知", title_font, (255, 217, 160, 255), efont=ef_title)
+        right_font = _pillow_font(False, int(16 * S))
+        ef_right = _pillow_emoji_font(int(16 * S))
+        _pillow_draw_text(
+            d, W - M, int(64 * S),
+            _pillow_truncate(d, title, W - 2 * M - int(200 * S), right_font, ef_right),
+            right_font, (255, 255, 255, 153), anchor="rs", efont=ef_right,
         )
 
         # 中央大字：获胜阵营（描边 + 阵营色，大字报醒目感）
         big_text = f"{camp_cn or '本局'} 获胜"
-        big_font = font(True, int(88 * S))
-        if font_length(big_text, big_font) > W - 2 * M:
-            big_font = font(True, int(72 * S))
+        big_font = _pillow_font(True, int(88 * S))
+        if _pillow_font_length(d, big_text, big_font) > W - 2 * M:
+            big_font = _pillow_font(True, int(72 * S))
         big_y = int(215 * S)
         d.text(
             (W / 2, big_y),
@@ -4313,49 +4490,46 @@ class GameCompanionPlugin(Star):
         ]
         w_line_count = 0
         if winners:
-            w_font = font(True, int(26 * S))
-            lines = wrap("🎉 " + " · ".join(winners), W - 2 * M, w_font, 3)
+            w_font = _pillow_font(True, int(26 * S))
+            ef_w = _pillow_emoji_font(int(26 * S))
+            lines = _pillow_wrap(d, "🎉 " + " · ".join(winners), W - 2 * M, w_font, 3, ef_w)
             w_line_count = len(lines)
             for i, line in enumerate(lines):
-                d.text(
-                    (W / 2, int(330 * S) + i * int(40 * S)),
-                    line,
-                    font=w_font,
-                    fill=(255, 227, 176, 255),
-                    anchor="mm",
+                _pillow_draw_text(
+                    d, W / 2, int(330 * S) + i * int(40 * S),
+                    line, w_font, (255, 227, 176, 255), anchor="mm", efont=ef_w,
                 )
 
         # 词条双药丸
-        def pill(text: str, x: int, y: int, w: int, fill_col: tuple[int, int, int, int], f: Any) -> None:
+        def pill(text: str, x: int, y: int, w: int, fill_col: tuple[int, int, int, int], f: Any, ef: Any = None) -> None:
             d.rounded_rectangle([x, y, x + w, y + int(46 * S)], radius=int(23 * S), fill=fill_col)
-            d.text(
-                (x + w / 2, y + int(23 * S)),
-                text,
-                font=f,
-                fill=(255, 255, 255, 255),
-                anchor="mm",
+            _pillow_draw_text(
+                d, x + w / 2, y + int(23 * S), text, f, (255, 255, 255, 255),
+                anchor="mm", efont=ef,
             )
 
         if cw or uw:
             pill_top = int(356 * S) + max(1, w_line_count) * int(40 * S)
-            pill_font = font(True, int(20 * S))
-            cw_t = truncate(f"平民「{cw}」", int(300 * S), pill_font)
-            uw_t = truncate(f"卧底「{uw}」", int(300 * S), pill_font)
-            cw_w = int(font_length(cw_t, pill_font)) + int(34 * S)
-            uw_w = int(font_length(uw_t, pill_font)) + int(34 * S)
+            pill_font = _pillow_font(True, int(20 * S))
+            ef_p = _pillow_emoji_font(int(20 * S))
+            cw_t = _pillow_truncate(d, f"🛡️ 平民「{cw}」", int(300 * S), pill_font, ef_p)
+            uw_t = _pillow_truncate(d, f"🕵️ 卧底「{uw}」", int(300 * S), pill_font, ef_p)
+            cw_w = int(_pillow_font_length(d, cw_t, pill_font, ef_p)) + int(34 * S)
+            uw_w = int(_pillow_font_length(d, uw_t, pill_font, ef_p)) + int(34 * S)
             gap = int(20 * S)
             x0 = int((W - (cw_w + gap + uw_w)) / 2)
             if x0 >= M:
-                pill(cw_t, x0, pill_top, cw_w, (125, 255, 176, 41), pill_font)
-                pill(uw_t, x0 + cw_w + gap, pill_top, uw_w, (221, 169, 255, 41), pill_font)
+                pill(cw_t, x0, pill_top, cw_w, (125, 255, 176, 41), pill_font, ef_p)
+                pill(uw_t, x0 + cw_w + gap, pill_top, uw_w, (221, 169, 255, 41), pill_font, ef_p)
             else:
-                small = font(True, int(18 * S))
-                cw2 = truncate(f"平民「{cw}」", int(440 * S), small)
-                uw2 = truncate(f"卧底「{uw}」", int(440 * S), small)
-                w1 = int(font_length(cw2, small)) + int(34 * S)
-                w2 = int(font_length(uw2, small)) + int(34 * S)
-                pill(cw2, int((W - w1) / 2), pill_top, w1, (125, 255, 176, 41), small)
-                pill(uw2, int((W - w2) / 2), pill_top + int(56 * S), w2, (221, 169, 255, 41), small)
+                small = _pillow_font(True, int(18 * S))
+                ef_s = _pillow_emoji_font(int(18 * S))
+                cw2 = _pillow_truncate(d, f"🛡️ 平民「{cw}」", int(440 * S), small, ef_s)
+                uw2 = _pillow_truncate(d, f"🕵️ 卧底「{uw}」", int(440 * S), small, ef_s)
+                w1 = int(_pillow_font_length(d, cw2, small, ef_s)) + int(34 * S)
+                w2 = int(_pillow_font_length(d, uw2, small, ef_s)) + int(34 * S)
+                pill(cw2, int((W - w1) / 2), pill_top, w1, (125, 255, 176, 41), small, ef_s)
+                pill(uw2, int((W - w2) / 2), pill_top + int(56 * S), w2, (221, 169, 255, 41), small, ef_s)
 
         # 底部失败方
         camp_cn_of = {"civilian": "平民", "undercover": "卧底", "whiteboard": "白板"}
@@ -4365,26 +4539,148 @@ class GameCompanionPlugin(Star):
             if p_camp and p_camp != camp
         ]
         if losers:
-            l_font = font(False, int(17 * S))
-            lines = wrap("败方：" + "、".join(losers), W - 2 * M - int(150 * S), l_font, 2)
+            l_font = _pillow_font(False, int(17 * S))
+            ef_l = _pillow_emoji_font(int(17 * S))
+            lines = _pillow_wrap(d, "💔 败方：" + "、".join(losers), W - 2 * M - int(150 * S), l_font, 2, ef_l)
             for i, line in enumerate(lines):
-                d.text(
-                    (M, int(636 * S) + i * int(26 * S)),
-                    line,
-                    font=l_font,
-                    fill=(255, 255, 255, 140),
-                    anchor="ls",
+                _pillow_draw_text(
+                    d, M, int(636 * S) + i * int(26 * S),
+                    line, l_font, (255, 255, 255, 140), anchor="ls", efont=ef_l,
                 )
 
         # 右下角水印
         d.text(
             (W - M, H - int(32 * S)),
             "由 花火 监督生成",
-            font=font(False, int(14 * S)),
+            font=_pillow_font(False, int(14 * S)),
             fill=(255, 255, 255, 102),
             anchor="rs",
         )
 
+        import base64
+        import io
+
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    def _undercover_report_data(
+        self, limit: int = 20, subtitle: str = "日报"
+    ) -> dict[str, Any]:
+        """提取战绩榜数据（全局榜前 limit，前 3 名金银铜），供日报海报 t2i/Pillow 共用。"""
+        rows = self.manager.global_leaderboard("undercover", limit=limit)
+        medals = ["🥇", "🥈", "🥉"]
+        items = [
+            {
+                "rank": medals[index] if index < 3 else f"#{index + 1}",
+                "name": str(row.get("name") or "").strip() or f"玩家{index + 1}",
+                "wins": int(row.get("wins") or 0),
+            }
+            for index, row in enumerate(rows)
+        ]
+        return {"subtitle": subtitle, "rows": items}
+
+    async def _undercover_report_poster(self, data: dict[str, Any]) -> str:
+        """生成战绩日报/周报排行榜海报，返回 base64 PNG。
+
+        优先 AstrBot t2i（HTML 渲染），失败回退 Pillow；都失败时抛出异常，
+        由调用方回退纯文字榜单。
+        """
+        try:
+            return await self._undercover_report_poster_t2i(data)
+        except Exception as exc:
+            logger.warning("[GameCompanion] t2i 渲染战绩海报失败，回退 Pillow: %s", exc)
+        return await asyncio.to_thread(self._undercover_report_poster_pillow, data)
+
+    async def _undercover_report_poster_t2i(self, data: dict[str, Any]) -> str:
+        """用 AstrBot 的 t2i（HTML 渲染）生成战绩排行榜海报，返回 base64 PNG。"""
+        render = getattr(self, "html_render", None)
+        if not callable(render):
+            raise RuntimeError("当前 AstrBot 未提供 html_render（t2i）能力")
+        options = {
+            "type": "png",
+            "full_page": True,
+            "viewport_width": 720,
+            # 自建 t2i 服务下渲染开销低：用高分屏 DPR（1.8x）出更清晰的海报
+            "device_scale_factor_level": "ultra",
+            "timeout": 8.0,
+        }
+        url = await asyncio.wait_for(
+            render(_UNDERCOVER_REPORT_TMPL, data, options=options), timeout=8
+        )
+        if not url:
+            raise RuntimeError("t2i 渲染返回空结果")
+        return await self._download_image_base64(url)
+
+    @staticmethod
+    def _undercover_report_poster_pillow(data: dict[str, Any]) -> str:
+        """Pillow 手绘战绩排行榜海报（t2i 不可用时的兜底），返回 base64 PNG。"""
+        from PIL import Image, ImageDraw
+
+        rows = data.get("rows") or []
+        S = 1.5
+        W = int(720 * S)
+        M = int(46 * S)
+        top_pad = int(70 * S)
+        title_h = int(44 * S)
+        row_h = int(58 * S)
+        foot_h = int(96 * S)
+        H = top_pad + title_h + max(1, len(rows)) * row_h + foot_h
+        img = Image.new("RGBA", (W, H), (13, 27, 40, 255))
+        d = ImageDraw.Draw(img, "RGBA")
+        # 深蓝渐变背景（与战况海报的深红区分）
+        top_c = (22, 50, 77)
+        bottom_c = (13, 27, 40)
+        for y in range(H):
+            t = y / max(1, H - 1)
+            d.line(
+                [(0, y), (W, y)],
+                fill=(
+                    round(top_c[0] + (bottom_c[0] - top_c[0]) * t),
+                    round(top_c[1] + (bottom_c[1] - top_c[1]) * t),
+                    round(top_c[2] + (bottom_c[2] - top_c[2]) * t),
+                    255,
+                ),
+            )
+        # 标题
+        tf = _pillow_font(True, int(24 * S))
+        ef_t = _pillow_emoji_font(int(24 * S))
+        _pillow_draw_text(d, M, top_pad, "📊 谁是卧底 · 战绩报告", tf, (255, 224, 150, 255), efont=ef_t)
+        sf = _pillow_font(False, int(16 * S))
+        ef_s = _pillow_emoji_font(int(16 * S))
+        _pillow_draw_text(
+            d, W - M, top_pad, str(data.get("subtitle") or ""), sf,
+            (255, 255, 255, 170), anchor="rs", efont=ef_s,
+        )
+        d.line([(M, top_pad + title_h), (W - M, top_pad + title_h)], fill=(255, 255, 255, 40), width=int(2 * S))
+        # 榜单行
+        rank_x = M + int(12 * S)
+        name_x = M + int(64 * S)
+        wins_x = W - M - int(12 * S)
+        name_max_w = wins_x - name_x - int(90 * S)
+        if not rows:
+            nf = _pillow_font(False, int(20 * S))
+            _pillow_draw_text(d, W / 2, top_pad + title_h + row_h, "当前暂无卧底战绩记录。", nf, (255, 255, 255, 150), anchor="mm", efont=ef_t)
+        else:
+            for index, row in enumerate(rows):
+                y = top_pad + title_h + index * row_h
+                if index < 3:
+                    d.rounded_rectangle(
+                        [M, y + int(4 * S), W - M, y + row_h - int(4 * S)],
+                        radius=int(12 * S), fill=(255, 215, 130, 26),
+                    )
+                rf = _pillow_font(True, int(20 * S))
+                ef_r = _pillow_emoji_font(int(20 * S))
+                _pillow_draw_text(d, rank_x, y + row_h / 2, str(row.get("rank") or ""), rf, (255, 255, 255, 220), anchor="lm", efont=ef_r)
+                name = _pillow_truncate(d, str(row.get("name") or ""), name_max_w, rf, ef_r)
+                _pillow_draw_text(d, name_x, y + row_h / 2, name, rf, (255, 255, 255, 235), anchor="lm", efont=ef_r)
+                wins_f = _pillow_font(True, int(19 * S))
+                _pillow_draw_text(d, wins_x, y + row_h / 2, f"{int(row.get('wins') or 0)} 胜", wins_f, (255, 224, 150, 255), anchor="rm", efont=ef_r)
+        # 底部信息与强调条
+        ff = _pillow_font(False, int(15 * S))
+        _pillow_draw_text(d, M, H - int(52 * S), "数据来自跨房间全局战绩榜", ff, (255, 255, 255, 120), efont=ef_t)
+        _pillow_draw_text(d, W - M, H - int(32 * S), "由 花火 监督生成", ff, (255, 255, 255, 90), anchor="rs", efont=ef_t)
+        d.rectangle([0, H - int(6 * S), W, H], fill=(255, 215, 130, 255))
         import base64
         import io
 
