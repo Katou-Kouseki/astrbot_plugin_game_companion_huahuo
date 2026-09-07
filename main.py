@@ -467,6 +467,23 @@ _EMOJI_SPLIT_RE = re.compile(
 )
 
 
+def _pillow_blend(
+    base: tuple[int, int, int],
+    fg: tuple[int, int, int],
+    alpha: int,
+) -> tuple[int, int, int]:
+    """手动把前景色按 alpha 混到背景色上，返回不透明 RGB。
+
+    本环境定制版 Pillow 对形状（ellipse/rounded_rectangle/rectangle/line）的
+    RGBA 填充不做 alpha 混合（直接存原始色），转 RGB 后变成实色；因此半透明
+    背景/卡片/圆章需要预先算好混合色，用不透明值绘制。
+    """
+    alpha = max(0, min(255, int(alpha)))
+    return tuple(
+        round(b + (c - b) * alpha / 255) for b, c in zip(base, fg)
+    )
+
+
 def _pillow_font(bold: bool, px: int) -> Any:
     """按 (粗体, 字号) 缓存中文字体；找不到可用字体时抛错，由调用方回退纯文字。"""
     key = (bold, px)
@@ -477,7 +494,15 @@ def _pillow_font(bold: bool, px: int) -> Any:
 
     resolved = _POSTER_FONT_PATH.get(bold)
     if resolved is None:
-        for candidate, index in _POSTER_FONT_CANDIDATES:
+        msyh = "C:/Windows/Fonts/msyh.ttc"
+        # 微软雅黑 ttc 内含常规/粗体两页：常规 0、粗体 1；非粗体跳过纯粗体字体（msyhbd）
+        first = [(msyh, 1 if bold else 0)]
+        rest = [
+            (candidate, index)
+            for candidate, index in _POSTER_FONT_CANDIDATES
+            if candidate != msyh and not (not bold and "msyhbd" in candidate)
+        ]
+        for candidate, index in first + rest:
             try:
                 ImageFont.truetype(candidate, px, index=index)
                 resolved = (candidate, index)
@@ -581,24 +606,30 @@ def _pillow_draw_text(
     anchor: str = "ls",
     efont: Any = None,
 ) -> None:
-    """混合字体绘制：anchor 支持 ls/rs/mm/lm/rm；mm/rm/lm 时 y 为行中垂线（按字体尺寸换算到基线）。"""
+    """混合字体绘制：anchor 支持 ls/rs/lm/rm/mm。
+
+    垂直对齐交给 Pillow 原生锚点（lm/ls），不手算基线偏移——
+    中文与 emoji 字体的度量不同，手算会导致文字下移出框。
+    """
     segs = _pillow_segments(text, efont)
     if not segs:
         return
     total = sum(d.textlength(seg, font=seg_font or f) for seg, seg_font in segs)
-    if anchor == "mm":
-        x = x - total / 2
-        y = y + int(getattr(f, "size", 0) or 0) * 0.32
+    x0 = x
+    draw_anchor = "ls"  # 基线左对齐（默认）
+    if anchor == "rs":
+        x0 = x - total
     elif anchor == "rm":
-        x = x - total
-        y = y + int(getattr(f, "size", 0) or 0) * 0.32
+        x0 = x - total
+        draw_anchor = "lm"
+    elif anchor == "mm":
+        x0 = x - total / 2
+        draw_anchor = "lm"
     elif anchor == "lm":
-        y = y + int(getattr(f, "size", 0) or 0) * 0.32
-    elif anchor == "rs":
-        x = x - total
+        draw_anchor = "lm"
     for seg, seg_font in segs:
-        d.text((x, y), seg, font=seg_font or f, fill=fill)
-        x += d.textlength(seg, font=seg_font or f)
+        d.text((x0, y), seg, font=seg_font or f, fill=fill, anchor=draw_anchor)
+        x0 += d.textlength(seg, font=seg_font or f)
 
 # 服务端「战况通知」海报的 HTML/Jinja2 模板（AstrBot t2i 渲染，样式与前端战况大字报一致）。
 # 由 t2i 服务端做 Jinja2 渲染，支持循环/条件；浏览器渲染天然支持 emoji/渐变/描边，效果优于 Pillow。
@@ -650,7 +681,8 @@ _UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
 </body>
 </html>"""
 
-# 服务端「战绩日报/周报」排行榜海报的 HTML/Jinja2 模板（深蓝主题，前 3 名金银铜高亮）。
+# 服务端「战绩日报/周报」排行榜海报的 HTML/Jinja2 模板（深蓝榜单卡风格：图标头、
+# 金色圆章奖牌 + 名字 + 进度条 + 胜场，前三名金色高亮）。
 _UNDERCOVER_REPORT_TMPL = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -659,49 +691,74 @@ _UNDERCOVER_REPORT_TMPL = """<!DOCTYPE html>
 <style>
   html, body { margin: 0; padding: 0; }
   .poster {
-    min-width: 720px; min-height: 520px; box-sizing: border-box;
-    padding: 40px 46px 34px; display: flex; flex-direction: column; position: relative;
-    background: linear-gradient(160deg, #16324d 0%, #0d1b28 100%);
+    min-width: 720px; min-height: 560px; box-sizing: border-box;
+    padding: 40px 44px 30px; position: relative; overflow: hidden;
+    background: linear-gradient(160deg, #1c2b4e 0%, #0c1526 100%);
     font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; color: #fff;
   }
-  .poster::before {
-    content: ''; position: absolute; inset: 0; pointer-events: none;
-    background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.04) 0 2px, transparent 2px 40px);
-  }
-  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 8px; background: #ffd782; }
-  .head { display: flex; justify-content: space-between; align-items: center; position: relative; }
-  .head .t { font-size: 26px; font-weight: 800; color: #ffe096; }
-  .head .r { font-size: 16px; color: rgba(255,255,255,.6); }
-  .rule { margin-top: 22px; border-top: 1px solid rgba(255,255,255,.12); position: relative; }
-  .rows { margin-top: 18px; display: flex; flex-direction: column; gap: 12px; position: relative; }
-  .row { height: 50px; border-radius: 14px; padding: 0 16px; display: flex; align-items: center; gap: 14px; background: rgba(255,255,255,.05); }
-  .row.top { background: rgba(255,215,130,.16); }
-  .rank { width: 64px; font-size: 20px; font-weight: 700; color: rgba(255,255,255,.9); }
+  .poster::before { content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 80% at 85% -10%, rgba(90,130,220,.28), transparent 60%),
+                radial-gradient(90% 60% at -10% 110%, rgba(255,190,90,.12), transparent 55%); }
+  .poster::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.03) 0 2px, transparent 2px 40px); }
+  .header { display: flex; align-items: center; gap: 16px; position: relative; }
+  .icon { width: 54px; height: 54px; border-radius: 14px; flex: none; display: flex; align-items: center;
+    justify-content: center; font-size: 30px; background: rgba(255,215,130,.16); border: 1px solid rgba(255,215,130,.35); }
+  .titles { flex: 1; min-width: 0; }
+  .title { font-size: 26px; font-weight: 800; color: #ffe096; letter-spacing: 1px; }
+  .sub { margin-top: 4px; font-size: 13px; color: rgba(255,255,255,.5); }
+  .badge { flex: none; padding: 6px 18px; border-radius: 999px; font-size: 15px; font-weight: 700;
+    color: #3a2a08; background: linear-gradient(135deg, #ffd782, #ffb34d); box-shadow: 0 4px 14px rgba(255,180,80,.35); }
+  .rule { margin-top: 26px; height: 1px; position: relative;
+    background: linear-gradient(90deg, rgba(255,255,255,.02), rgba(255,255,255,.18), rgba(255,255,255,.02)); }
+  .rows { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; position: relative; }
+  .row { height: 56px; border-radius: 14px; padding: 0 16px; display: flex; align-items: center; gap: 14px;
+    background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.05); }
+  .row.top { background: linear-gradient(90deg, rgba(255,215,130,.12), rgba(255,215,130,.03));
+    border-color: rgba(255,215,130,.26); }
+  .rank { width: 40px; height: 40px; border-radius: 50%; flex: none; display: flex; align-items: center;
+    justify-content: center; font-size: 20px; font-weight: 700; color: rgba(255,255,255,.75); background: rgba(255,255,255,.08); }
+  .rank.medal { background: radial-gradient(circle at 35% 30%, #fff7e0, #ffd782); font-size: 22px;
+    box-shadow: 0 3px 10px rgba(255,200,110,.4); }
   .name { flex: 1; min-width: 0; font-size: 20px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .wins { font-size: 19px; font-weight: 700; color: #ffe096; }
-  .empty { margin-top: 30px; text-align: center; font-size: 20px; color: rgba(255,255,255,.55); position: relative; }
-  .foot { margin-top: auto; padding-top: 16px; display: flex; justify-content: space-between; font-size: 15px; color: rgba(255,255,255,.5); position: relative; }
+  .bar-wrap { flex: none; width: 120px; height: 8px; border-radius: 999px; background: rgba(0,0,0,.22); overflow: hidden; }
+  .bar { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #f5a623, #e8912d); }
+  .row:not(.top) .bar { background: rgba(255,255,255,.4); }
+  .wins { flex: none; font-size: 19px; font-weight: 700; color: #ffe096; }
+  .wins small { font-size: 13px; font-weight: 500; color: rgba(255,255,255,.55); }
+  .empty { margin-top: 36px; text-align: center; font-size: 20px; color: rgba(255,255,255,.55); position: relative; }
+  .footer { margin-top: 26px; text-align: center; font-size: 13px; color: rgba(255,255,255,.45); position: relative; }
+  .accent { position: absolute; left: 0; right: 0; bottom: 0; height: 6px;
+    background: linear-gradient(90deg, #ffd782, #ff9d5c, #ffd782); }
 </style>
 </head>
 <body>
 <div class="poster">
-  <div class="head"><span class="t">📊 谁是卧底 · 战绩报告</span><span class="r">{{ subtitle }}</span></div>
+  <div class="header">
+    <div class="icon">📊</div>
+    <div class="titles">
+      <div class="title">谁是卧底 · 战绩报告</div>
+      <div class="sub">跨房间全局战绩榜 · 前 {{ rows|length }} 名</div>
+    </div>
+    <div class="badge">{{ subtitle }}</div>
+  </div>
   <div class="rule"></div>
   {% if rows %}
   <div class="rows">
   {% for row in rows %}
     <div class="row {{ 'top' if loop.index0 < 3 else '' }}">
-      <span class="rank">{{ row.rank }}</span>
-      <span class="name">{{ row.name }}</span>
-      <span class="wins">{{ row.wins }} 胜</span>
+      <div class="rank {{ 'medal' if loop.index0 < 3 else '' }}">{{ row.rank }}</div>
+      <div class="name">{{ row.name }}</div>
+      <div class="bar-wrap"><div class="bar" style="width: {{ row.pct }}%"></div></div>
+      <div class="wins">{{ row.wins }}<small> 胜</small></div>
     </div>
   {% endfor %}
   </div>
   {% else %}
   <div class="empty">当前暂无卧底战绩记录。</div>
   {% endif %}
-  <div class="foot"><span>数据来自跨房间全局战绩榜</span><span>由 花火 监督生成</span></div>
-  <div class="bar"></div>
+  <div class="footer">数据来自跨房间全局战绩榜 · 由 花火 监督生成</div>
+  <div class="accent"></div>
 </div>
 </body>
 </html>"""
@@ -4450,9 +4507,10 @@ class GameCompanionPlugin(Star):
                     255,
                 ),
             )
-        # 斜纹装饰
+        # 斜纹装饰（半透明白色需手动预混，本环境形状填充不混合 alpha）
+        stripe = _pillow_blend((61, 18, 14), (255, 255, 255), 12)
         for x in range(-H, W + H, int(36 * S)):
-            d.line([(x, 0), (x + H, H)], fill=(255, 255, 255, 12))
+            d.line([(x, 0), (x + H, H)], fill=stripe)
         # 底部阵营色强调条
         d.rectangle([0, H - int(10 * S), W, H], fill=camp_col + (255,))
 
@@ -4519,8 +4577,8 @@ class GameCompanionPlugin(Star):
             gap = int(20 * S)
             x0 = int((W - (cw_w + gap + uw_w)) / 2)
             if x0 >= M:
-                pill(cw_t, x0, pill_top, cw_w, (125, 255, 176, 41), pill_font, ef_p)
-                pill(uw_t, x0 + cw_w + gap, pill_top, uw_w, (221, 169, 255, 41), pill_font, ef_p)
+                pill(cw_t, x0, pill_top, cw_w, _pillow_blend((61, 18, 14), (125, 255, 176), 41), pill_font, ef_p)
+                pill(uw_t, x0 + cw_w + gap, pill_top, uw_w, _pillow_blend((61, 18, 14), (221, 169, 255), 41), pill_font, ef_p)
             else:
                 small = _pillow_font(True, int(18 * S))
                 ef_s = _pillow_emoji_font(int(18 * S))
@@ -4528,8 +4586,8 @@ class GameCompanionPlugin(Star):
                 uw2 = _pillow_truncate(d, f"🕵️ 卧底「{uw}」", int(440 * S), small, ef_s)
                 w1 = int(_pillow_font_length(d, cw2, small, ef_s)) + int(34 * S)
                 w2 = int(_pillow_font_length(d, uw2, small, ef_s)) + int(34 * S)
-                pill(cw2, int((W - w1) / 2), pill_top, w1, (125, 255, 176, 41), small, ef_s)
-                pill(uw2, int((W - w2) / 2), pill_top + int(56 * S), w2, (221, 169, 255, 41), small, ef_s)
+                pill(cw2, int((W - w1) / 2), pill_top, w1, _pillow_blend((61, 18, 14), (125, 255, 176), 41), small, ef_s)
+                pill(uw2, int((W - w2) / 2), pill_top + int(56 * S), w2, _pillow_blend((61, 18, 14), (221, 169, 255), 41), small, ef_s)
 
         # 底部失败方
         camp_cn_of = {"civilian": "平民", "undercover": "卧底", "whiteboard": "白板"}
@@ -4578,7 +4636,10 @@ class GameCompanionPlugin(Star):
             }
             for index, row in enumerate(rows)
         ]
-        return {"subtitle": subtitle, "rows": items}
+        max_wins = max((item["wins"] for item in items), default=0)
+        for item in items:
+            item["pct"] = round(item["wins"] / max_wins * 100) if max_wins else 0
+        return {"subtitle": subtitle, "rows": items, "max_wins": max_wins}
 
     async def _undercover_report_poster(self, data: dict[str, Any]) -> str:
         """生成战绩日报/周报排行榜海报，返回 base64 PNG。
@@ -4614,23 +4675,30 @@ class GameCompanionPlugin(Star):
 
     @staticmethod
     def _undercover_report_poster_pillow(data: dict[str, Any]) -> str:
-        """Pillow 手绘战绩排行榜海报（t2i 不可用时的兜底），返回 base64 PNG。"""
+        """Pillow 手绘战绩排行榜海报（t2i 不可用时的兜底，与 HTML 版同款榜单卡风格）。"""
         from PIL import Image, ImageDraw
 
         rows = data.get("rows") or []
+        subtitle = str(data.get("subtitle") or "")
         S = 1.5
         W = int(720 * S)
-        M = int(46 * S)
-        top_pad = int(70 * S)
-        title_h = int(44 * S)
-        row_h = int(58 * S)
-        foot_h = int(96 * S)
-        H = top_pad + title_h + max(1, len(rows)) * row_h + foot_h
-        img = Image.new("RGBA", (W, H), (13, 27, 40, 255))
+        pad = int(44 * S)
+        header_top = int(40 * S)
+        icon_h = int(54 * S)
+        rule_gap = int(26 * S)
+        row_h = int(56 * S)
+        row_gap = int(10 * S)
+        accent_h = int(6 * S)
+        rows_h = max(1, len(rows)) * (row_h + row_gap)
+        H = (
+            header_top + icon_h + rule_gap + rows_h
+            + int(30 * S) + int(22 * S) + accent_h + int(26 * S)
+        )
+        img = Image.new("RGBA", (W, H), (12, 21, 38, 255))
         d = ImageDraw.Draw(img, "RGBA")
-        # 深蓝渐变背景（与战况海报的深红区分）
-        top_c = (22, 50, 77)
-        bottom_c = (13, 27, 40)
+        # 深蓝渐变背景
+        top_c = (28, 43, 78)
+        bottom_c = (12, 21, 38)
         for y in range(H):
             t = y / max(1, H - 1)
             d.line(
@@ -4642,45 +4710,89 @@ class GameCompanionPlugin(Star):
                     255,
                 ),
             )
-        # 标题
-        tf = _pillow_font(True, int(24 * S))
-        ef_t = _pillow_emoji_font(int(24 * S))
-        _pillow_draw_text(d, M, top_pad, "📊 谁是卧底 · 战绩报告", tf, (255, 224, 150, 255), efont=ef_t)
-        sf = _pillow_font(False, int(16 * S))
-        ef_s = _pillow_emoji_font(int(16 * S))
-        _pillow_draw_text(
-            d, W - M, top_pad, str(data.get("subtitle") or ""), sf,
-            (255, 255, 255, 170), anchor="rs", efont=ef_s,
+        ef_h = _pillow_emoji_font(int(30 * S))
+        ef_t = _pillow_emoji_font(int(26 * S))
+        base = (18, 30, 52)  # 榜单卡背景代表色（用于手动预混半透明形状填充）
+        # 标题区：图标块 + 标题 + 副标题 + 右上角药丸
+        icon_x = pad
+        icon_y = header_top
+        d.rounded_rectangle(
+            [icon_x, icon_y, icon_x + icon_h, icon_y + icon_h],
+            radius=int(14 * S), fill=_pillow_blend(base, (255, 215, 130), 41),
+            outline=_pillow_blend(base, (255, 215, 130), 89), width=int(2 * S),
         )
-        d.line([(M, top_pad + title_h), (W - M, top_pad + title_h)], fill=(255, 255, 255, 40), width=int(2 * S))
+        _pillow_draw_text(d, icon_x + icon_h / 2, icon_y + icon_h / 2, "📊", _pillow_font(True, int(30 * S)), (255, 224, 150, 255), anchor="mm", efont=ef_h)
+        title_f = _pillow_font(True, int(26 * S))
+        _pillow_draw_text(d, icon_x + icon_h + int(16 * S), icon_y + int(6 * S), "谁是卧底 · 战绩报告", title_f, (255, 224, 150, 255), efont=ef_t)
+        sub_f = _pillow_font(False, int(13 * S))
+        _pillow_draw_text(d, icon_x + icon_h + int(16 * S), icon_y + int(6 * S) + int(36 * S), f"跨房间全局战绩榜 · 前 {len(rows)} 名", sub_f, (255, 255, 255, 128), efont=ef_t)
+        badge_f = _pillow_font(True, int(15 * S))
+        bw = int(_pillow_font_length(d, subtitle, badge_f)) + int(36 * S)
+        bh = int(30 * S)
+        bx = W - pad - bw
+        by = icon_y + (icon_h - bh) // 2
+        d.rounded_rectangle([bx, by, bx + bw, by + bh], radius=bh // 2, fill=(255, 215, 130, 255))
+        _pillow_draw_text(d, bx + bw / 2, by + bh / 2, subtitle, badge_f, (58, 42, 8, 255), anchor="mm", efont=ef_t)
+        # 分隔线
+        rule_y = header_top + icon_h + rule_gap
+        d.line([(pad, rule_y), (W - pad, rule_y)], fill=_pillow_blend(base, (255, 255, 255), 46), width=int(2 * S))
         # 榜单行
-        rank_x = M + int(12 * S)
-        name_x = M + int(64 * S)
-        wins_x = W - M - int(12 * S)
-        name_max_w = wins_x - name_x - int(90 * S)
+        row_x0 = pad
+        row_x1 = W - pad
+        rank_r = int(20 * S)
+        rank_cx = row_x0 + int(20 * S)
+        name_x = rank_cx + rank_r + int(16 * S)
+        bar_w = int(120 * S)
+        bar_h = int(8 * S)
+        wins_f = _pillow_font(True, int(19 * S))
+        ef_w = _pillow_emoji_font(int(19 * S))
+        bar_right = W - pad - int(90 * S)
+        name_max_w = bar_right - name_x - bar_w - int(34 * S)
+        row_top = rule_y + int(20 * S)
         if not rows:
             nf = _pillow_font(False, int(20 * S))
-            _pillow_draw_text(d, W / 2, top_pad + title_h + row_h, "当前暂无卧底战绩记录。", nf, (255, 255, 255, 150), anchor="mm", efont=ef_t)
+            _pillow_draw_text(d, W / 2, row_top + row_h, "当前暂无卧底战绩记录。", nf, (255, 255, 255, 140), anchor="mm", efont=ef_t)
         else:
             for index, row in enumerate(rows):
-                y = top_pad + title_h + index * row_h
-                if index < 3:
-                    d.rounded_rectangle(
-                        [M, y + int(4 * S), W - M, y + row_h - int(4 * S)],
-                        radius=int(12 * S), fill=(255, 215, 130, 26),
-                    )
-                rf = _pillow_font(True, int(20 * S))
-                ef_r = _pillow_emoji_font(int(20 * S))
-                _pillow_draw_text(d, rank_x, y + row_h / 2, str(row.get("rank") or ""), rf, (255, 255, 255, 220), anchor="lm", efont=ef_r)
-                name = _pillow_truncate(d, str(row.get("name") or ""), name_max_w, rf, ef_r)
-                _pillow_draw_text(d, name_x, y + row_h / 2, name, rf, (255, 255, 255, 235), anchor="lm", efont=ef_r)
-                wins_f = _pillow_font(True, int(19 * S))
-                _pillow_draw_text(d, wins_x, y + row_h / 2, f"{int(row.get('wins') or 0)} 胜", wins_f, (255, 224, 150, 255), anchor="rm", efont=ef_r)
-        # 底部信息与强调条
-        ff = _pillow_font(False, int(15 * S))
-        _pillow_draw_text(d, M, H - int(52 * S), "数据来自跨房间全局战绩榜", ff, (255, 255, 255, 120), efont=ef_t)
-        _pillow_draw_text(d, W - M, H - int(32 * S), "由 花火 监督生成", ff, (255, 255, 255, 90), anchor="rs", efont=ef_t)
-        d.rectangle([0, H - int(6 * S), W, H], fill=(255, 215, 130, 255))
+                y = row_top + index * (row_h + row_gap)
+                is_top = index < 3
+                if is_top:
+                    d.rounded_rectangle([row_x0, y, row_x1, y + row_h], radius=int(14 * S), fill=_pillow_blend(base, (255, 215, 130), 28))
+                    d.rounded_rectangle([row_x0, y, row_x1, y + row_h], radius=int(14 * S), outline=_pillow_blend(base, (255, 215, 130), 66), width=int(2 * S))
+                else:
+                    d.rounded_rectangle([row_x0, y, row_x1, y + row_h], radius=int(14 * S), fill=_pillow_blend(base, (255, 255, 255), 12))
+                cy = y + row_h / 2
+                # 排名圆章
+                if is_top:
+                    d.ellipse([rank_cx - rank_r, cy - rank_r, rank_cx + rank_r, cy + rank_r], fill=(255, 215, 130, 255))
+                    rank_f = _pillow_font(True, int(20 * S))
+                    ef_r = _pillow_emoji_font(int(22 * S))
+                    _pillow_draw_text(d, rank_cx, cy, str(row.get("rank") or ""), rank_f, (58, 42, 8, 255), anchor="mm", efont=ef_r)
+                else:
+                    d.ellipse([rank_cx - rank_r, cy - rank_r, rank_cx + rank_r, cy + rank_r], fill=_pillow_blend(base, (255, 255, 255), 20))
+                    rank_f = _pillow_font(True, int(17 * S))
+                    ef_r = _pillow_emoji_font(int(17 * S))
+                    _pillow_draw_text(d, rank_cx, cy, str(row.get("rank") or ""), rank_f, (255, 255, 255, 191), anchor="mm", efont=ef_r)
+                # 名字
+                name_f = _pillow_font(False, int(20 * S))
+                name = _pillow_truncate(d, str(row.get("name") or ""), name_max_w, name_f, ef_r)
+                _pillow_draw_text(d, name_x, cy, name, name_f, (255, 255, 255, 240), anchor="lm", efont=ef_r)
+                # 进度条
+                bar_left = bar_right - bar_w
+                bar_y = cy - bar_h / 2
+                d.rounded_rectangle([bar_left, bar_y, bar_right, bar_y + bar_h], radius=bar_h // 2, fill=_pillow_blend(base, (0, 0, 0), 40) if is_top else _pillow_blend(base, (255, 255, 255), 26))
+                pct = max(0, min(100, int(row.get("pct") or 0)))
+                if pct > 0:
+                    fill_w = max(int(bar_w * pct / 100), int(4 * S))
+                    fill_col = (245, 166, 35, 255) if is_top else _pillow_blend(base, (255, 255, 255), 92)
+                    d.rounded_rectangle([bar_left, bar_y, bar_left + fill_w, bar_y + bar_h], radius=bar_h // 2, fill=fill_col)
+                # 胜场
+                wins_text = f"{int(row.get('wins') or 0)} 胜"
+                _pillow_draw_text(d, W - pad - int(16 * S), cy, wins_text, wins_f, (255, 224, 150, 255), anchor="rm", efont=ef_w)
+        # 底部与强调条
+        ff = _pillow_font(False, int(13 * S))
+        _pillow_draw_text(d, W / 2, H - accent_h - int(30 * S), "数据来自跨房间全局战绩榜 · 由 花火 监督生成", ff, (255, 255, 255, 115), anchor="mm", efont=ef_t)
+        d.rectangle([0, H - accent_h, W, H], fill=(255, 190, 92, 255))
         import base64
         import io
 
