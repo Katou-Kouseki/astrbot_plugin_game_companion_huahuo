@@ -315,7 +315,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "minimum": 0,
                 "maximum": 120,
                 "unit": "秒",
-                "hint": "开局前让玩家查看身份词条的缓冲时间。",
+                "hint": "开局身份卡上「确认」按钮按此时长锁定（倒计时结束后才可确认开局），期间可查看身份与词条；设为 0 则直接可确认。",
             },
             {
                 "key": "speaking_seconds",
@@ -5006,10 +5006,6 @@ class GameCompanionPlugin(Star):
         """
         game = room.game
         if not isinstance(game, UndercoverGame) or game.finished:
-            return
-        if game.phase == "preparing":
-            # 发词准备倒计时结束：直接进入第一轮发言，避免缓冲期把局卡在“发词中”
-            await self.manager.begin_undercover_first_round(room)
             return
         if game.phase in ("speech", "pk"):
             exp = game.expected_speaker_number

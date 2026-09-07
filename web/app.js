@@ -16,6 +16,8 @@
   let ucLastGameUid = "";             // 上一帧对局 uid（用于新一局重置动画/提示状态）
   let ucLastRoundCount = 0;          // 上一帧时间线已渲染的轮次数（用于新轮高亮）
   let ucVoteFlipTimeout = null;       // 票数「？」→数字翻拍的延时句柄
+  let ucRevealLockTimer = null;       // 身份卡确认按钮的解锁倒计时句柄（按发词准备时长锁定）
+  let ucRevealGameUid = "";           // 本局编号（显示在身份卡上）
   let ucLastHostScalesKey = "";        // 上次渲染的房主阵营比例键（用于仅在校验变化时回填输入框）
   let ucLastResult = null;             // 本局结果快照，供「分享战报」canvas 生成 PNG
   let ucShownResultUid = "";           // 当前结算卡已展示的游戏 uid（用于跨轮询只在换局时重置按钮状态）
@@ -567,6 +569,8 @@
     const campEl = document.getElementById("ucRevealCamp");
     const wordEl = document.getElementById("ucRevealWord");
     const hintEl = document.getElementById("ucRevealHint");
+    const gameNoEl = document.getElementById("ucRevealGameNo");
+    if (gameNoEl) gameNoEl.textContent = ucRevealGameUid ? `本局编号：${ucRevealGameUid}` : "";
     if (my.camp) {
       const campMap = {
         civilian: ["平民", "is-civilian", "你是平民：你的词条和大多数玩家一致。找到卧底，把卧底投票出局即可获胜。"],
@@ -597,6 +601,33 @@
     void card.offsetWidth;
     card.style.animation = "";
     overlay.hidden = false;
+    // 「确认」按钮按「发词准备时长」锁定：倒计时结束后才可点击确认
+    const btn = document.getElementById("ucRevealClose");
+    const prepareSeconds = Math.max(
+      0,
+      Number((typeof room !== "undefined" && room && room.undercover_prepare_seconds) || 0)
+    );
+    window.clearInterval(ucRevealLockTimer);
+    if (!btn) return;
+    if (prepareSeconds <= 0) {
+      btn.disabled = false;
+      btn.textContent = "知道了，开始游戏";
+      return;
+    }
+    btn.disabled = true;
+    const end = Date.now() + prepareSeconds * 1000;
+    const tick = () => {
+      const remain = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+      if (remain <= 0) {
+        window.clearInterval(ucRevealLockTimer);
+        btn.disabled = false;
+        btn.textContent = "知道了，开始游戏";
+      } else {
+        btn.textContent = `${remain} 秒后可确认`;
+      }
+    };
+    tick();
+    ucRevealLockTimer = window.setInterval(tick, 500);
   }
 
   // 发词前先播放一段“甄选词条”预热，再弹出身份牌
@@ -615,8 +646,9 @@
     tick();
     ucPreheatCounter = window.setInterval(tick, 500);
   }
-  function revealUcIdentity(my) {
+  function revealUcIdentity(my, gameUid) {
     if (!my || (!my.camp && !my.word)) return;
+    ucRevealGameUid = String(gameUid || "");
     const overlay = document.getElementById("ucRevealOverlay");
     if (!overlay) return;
     const cardEl = document.getElementById("ucRevealCard");
@@ -1138,9 +1170,6 @@
       text = timerActive
         ? `已投 ${voted}/${voters || "-"} · 剩余 ${remain} 秒`
         : `已投 ${voted}/${voters || "-"}`;
-    } else if (phase === "preparing") {
-      // 发词准备缓冲期：显示倒计时，让玩家有时间看身份/词条卡
-      text = timerActive ? `发词倒计时 · 剩余 ${remain} 秒` : "发词准备中";
     } else if (phase === "finished") {
       text = "";
     } else {
@@ -2903,7 +2932,7 @@
       document.getElementById("ucPhase").textContent = "发词中… 花火正在抽选你的身份词条卡";
     }
     if (
-      ["speech", "preparing"].includes(snap.phase) &&
+      snap.phase === "speech" &&
       roundNumber === 1 &&
       my.is_player &&
       (my.camp || my.word) &&
@@ -2920,7 +2949,7 @@
       } catch (_err) {
         alreadyRevealed = false; // localStorage 不可用时退回“总是弹出”
       }
-      if (!alreadyRevealed) revealUcIdentity(my);
+      if (!alreadyRevealed) revealUcIdentity(my, snap.game_uid);
     }
     const expectedSpan = document.getElementById("ucExpectedSpeaker");
     if (expectedSpeaker && snap.phase !== "finished") {

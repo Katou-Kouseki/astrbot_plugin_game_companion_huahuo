@@ -1097,9 +1097,6 @@ class RoomManager:
             [(seat.number, seat.qq, seat.display_name) for seat in live_seats]
         )
         room.game.assign_words(word_pair)
-        # 发词准备时长 = 0：跳过缓冲，直接进入第一轮（等同旧行为）
-        if self.undercover_prepare_seconds <= 0:
-            room.game.begin_first_round()
         room.multiplayer.current_turn_index = 0
         return ""
 
@@ -2361,16 +2358,6 @@ class RoomManager:
         await self._emit("seats_changed", room, {"swapped": True})
         return True
 
-    async def begin_undercover_first_round(self, room: GameRoom) -> None:
-        """发词准备倒计时结束：进入第一轮发言，并按发言阶段重设倒计时。"""
-        async with room.lock:
-            game = room.game
-            if not isinstance(game, UndercoverGame) or game.phase != "preparing":
-                return
-            game.begin_first_round()
-            self._reset_turn_deadline(room)
-            room.touch()
-
     async def destroy(self, room_id: str, reason: str) -> GameRoom | None:
         """Destroy a room and release its quota exactly once."""
         async with self._lock:
@@ -2906,6 +2893,7 @@ class RoomManager:
             capacity = self.undercover_max_players
             # 把 manager 级配置同步到 room，供前端 snapshot 显示
             room.undercover_min_players = self.undercover_min_players
+            room.undercover_prepare_seconds = self.undercover_prepare_seconds
             room.undercover_allow_host_customize_camp_scales = (
                 self.undercover_allow_host_customize_camp_scales
             )

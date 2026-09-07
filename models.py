@@ -286,6 +286,7 @@ class GameRoom:
     undercover_host_camp_scales: str | None = None
     undercover_ai_fill_enabled: bool = False
     undercover_min_players: int = 2
+    undercover_prepare_seconds: int = 0
     undercover_allow_host_customize_camp_scales: bool = True
     undercover_reveal_identity: bool | None = None
     # 引用管理器「卧底分阵营胜场」同一 dict；存在时座位徽章按实时数据计算
@@ -565,6 +566,7 @@ class GameRoom:
             "undercover_host_camp_scales": self.undercover_host_camp_scales,
             "undercover_ai_fill_enabled": self.undercover_ai_fill_enabled,
             "undercover_min_players": self.undercover_min_players,
+            "undercover_prepare_seconds": self.undercover_prepare_seconds,
             "undercover_allow_host_customize_camp_scales": (
                 self.undercover_allow_host_customize_camp_scales
             ),

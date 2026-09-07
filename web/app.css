@@ -776,10 +776,18 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   padding-bottom: 2px;
 }
 .uc-reveal-hint {
-  margin: 0 0 16px;
+  margin: 0 0 10px;
   font-size: 13px;
   color: var(--muted, #707873);
   line-height: 1.5;
+}
+/* 身份卡上的本局编号 */
+.uc-reveal-gameno {
+  margin: 0 0 14px;
+  font-size: 12px;
+  color: var(--muted, #707873);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: .5px;
 }
 .uc-reveal-card .primary-action { width: 100%; justify-content: center; }
 /* 玩家被淘汰时居中的离场提示 */
