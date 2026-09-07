@@ -5,6 +5,7 @@
   const emptyState = document.getElementById("emptyState");
   const assignDialog = document.getElementById("assignDialog");
   const confirmDialog = document.getElementById("confirmDialog");
+  const promptDialog = document.getElementById("promptDialog");
   const toast = document.getElementById("toast");
   const gameOptions = [
     ["gomoku", "五子棋"],
@@ -25,6 +26,7 @@
   let toastTimer = 0;
   let refreshTimer = 0;
   let confirmResolver = null;
+  let promptResolver = null;
 
   function icons() {
     if (window.lucide?.createIcons) window.lucide.createIcons();
@@ -42,6 +44,27 @@
     confirmResolver = null;
     if (confirmDialog.open) confirmDialog.close();
     if (resolver) resolver(Boolean(accepted));
+  }
+
+  // 页面内数值输入框（管理台页面运行在沙箱 iframe，window.prompt 会被浏览器拦截）
+  function openPrompt({ title, message, label = "数值", initial = "0" }) {
+    if (promptResolver) resolvePromptValue(null);
+    document.getElementById("promptTitle").textContent = title;
+    document.getElementById("promptMessage").textContent = message;
+    document.getElementById("promptLabel").textContent = label;
+    const input = document.getElementById("promptInput");
+    input.value = initial;
+    promptDialog.showModal();
+    window.setTimeout(() => input.focus(), 0);
+    icons();
+    return new Promise((resolve) => { promptResolver = resolve; });
+  }
+
+  function resolvePromptValue(value) {
+    const resolver = promptResolver;
+    promptResolver = null;
+    if (promptDialog.open) promptDialog.close();
+    if (resolver) resolver(value);
   }
 
   function confirmAction({ title, message, label = "确认", danger = false }) {
@@ -912,7 +935,13 @@
       del.textContent = "删除";
       del.style.color = "var(--red, #c6373a)";
       del.addEventListener("click", async () => {
-        if (!window.confirm(`确认删除词条对「${item.word1} / ${item.word2}」？`)) return;
+        const ok = await confirmAction({
+          title: "删除词条对",
+          message: `确认删除词条对「${item.word1} / ${item.word2}」？`,
+          label: "确认删除",
+          danger: true,
+        });
+        if (!ok) return;
         try {
           const res = await endpoint("POST", "undercover_words/delete", { id: item.id });
           renderUndercoverWords(res?.data?.items || [], tbody, countLabel);
@@ -1113,14 +1142,7 @@
   }
 
   async function promptNumber(message) {
-    const raw = window.prompt(message);
-    if (raw === null) return null;
-    const num = Number(String(raw).trim());
-    if (!Number.isFinite(num) || num < 0) {
-      showToast("请输入非负整数作为胜场数");
-      return promptNumber(message);
-    }
-    return Math.floor(num);
+    return openPrompt({ title: "修正胜场", message, label: "胜场数", initial: "0" });
   }
 
   async function clearStatsLeaderboard() {
@@ -1260,6 +1282,32 @@
   });
   confirmDialog.addEventListener("close", () => {
     if (confirmResolver) resolveConfirmation(false);
+  });
+  // 数值输入框：取消（含 Esc / X / 取消按钮）返回 null，确定则校验后返回非负整数
+  const promptInput = document.getElementById("promptInput");
+  const promptProceed = document.getElementById("promptProceed");
+  promptDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    resolvePromptValue(null);
+  });
+  promptDialog.addEventListener("close", () => {
+    if (promptResolver) resolvePromptValue(null);
+  });
+  promptProceed.addEventListener("click", () => {
+    const raw = String(promptInput.value || "").trim();
+    if (!raw) { showToast("请输入胜场数"); return; }
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num < 0) {
+      showToast("请输入非负整数作为胜场数");
+      return;
+    }
+    resolvePromptValue(Math.floor(num));
+  });
+  promptInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      promptProceed.click();
+    }
   });
   icons();
   loadRooms();

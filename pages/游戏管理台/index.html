@@ -104,7 +104,7 @@
         <span id="tunnelUrl" class="tunnel-url"></span>
       </header>
       <div class="table-wrap">
-        <table>
+        <table class="wide-table">
           <thead>
             <tr>
               <th>房间</th>
@@ -177,7 +177,7 @@
             </div>
           </header>
           <div class="table-wrap">
-            <table>
+            <table class="stats-table">
               <thead>
                 <tr>
                   <th>#</th>
@@ -204,7 +204,7 @@
             </div>
           </header>
           <div class="table-wrap">
-            <table>
+            <table class="stats-table log-table">
               <thead>
                 <tr>
                   <th>时间</th>
@@ -269,6 +269,31 @@
         <button class="secondary-button" value="cancel" type="submit">取消</button>
         <button id="confirmProceed" class="primary-button" value="default" type="button">
           <i data-lucide="check"></i><span>确认</span>
+        </button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="promptDialog">
+    <form method="dialog" id="promptForm">
+      <header>
+        <div>
+          <span class="eyebrow">输入数值</span>
+          <h2 id="promptTitle">请输入</h2>
+        </div>
+        <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <p id="promptMessage" class="dialog-message"></p>
+      <label>
+        <span id="promptLabel">数值</span>
+        <input id="promptInput" type="number" min="0" step="1" inputmode="numeric" autocomplete="off" required />
+      </label>
+      <footer>
+        <button class="secondary-button" value="cancel" type="submit">取消</button>
+        <button id="promptProceed" class="primary-button" value="default" type="button">
+          <i data-lucide="check"></i><span>确定</span>
         </button>
       </footer>
     </form>

@@ -115,30 +115,49 @@ def _qq_avatar_url(qq: str) -> str:
     return f"https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
 
 
+def _undercover_identity_key(seat: "PlayerSeat") -> tuple[str, str]:
+    """返回 (分阵营胜场存储键, 显示名)。
+
+    已绑定 QQ 的真人用 `qq:xxx` 作稳定键：改 QQ 昵称/换设备都不丢胜场与徽章；
+    AI / 未绑定玩家按名字存（`name:xxx`）。
+    """
+    qq = str(getattr(seat, "qq", "") or "").strip()
+    name = (getattr(seat, "display_name", "") or "").strip()
+    if qq and getattr(seat, "identity_confirmed", False):
+        return f"qq:{qq}", name
+    return f"name:{name or '?'}", name
+
+
 def _seat_badges(seat: "PlayerSeat", room: "GameRoom") -> list[dict[str, object]]:
-    """按玩家分阵营胜场即时计算「藏品/护身符」徽章。
+    """按玩家身份（QQ 稳定键 / 名字）即时计算「藏品/护身符」徽章。
 
     若房间持有阵营胜场存储（room.camp_wins_store，引用管理器同一 dict），
-    实时按名字计算；否则回退到游戏中缓存的 seat.undercover_badges。
+    实时计算；否则回退到游戏中缓存的 seat.undercover_badges。
     """
-    name = (seat.display_name or "").strip()
     store = getattr(room, "camp_wins_store", None)
-    if isinstance(store, dict) and name:
-        return _undercover_badges_for(name, store)
+    if isinstance(store, dict):
+        key, name = _undercover_identity_key(seat)
+        return _undercover_badges_for(key, name, store)
     cached = getattr(seat, "undercover_badges", None)
     return list(cached) if isinstance(cached, list) else []
 
 
 def _undercover_badges_for(
-    name: str, stats: dict[str, dict[str, int]]
+    key: str, name: str, stats: dict[str, dict[str, object]]
 ) -> list[dict[str, object]]:
     """分阵营胜场的「藏品/护身符」徽章规则（与 room_manager 保持一致）。
+
+    按稳定键读胜场（qq:xxx / name:xxx）；键下无数据时回退到旧版裸昵称数据的
+    name: 前缀键，保证升级前已积累的胜场仍能点亮徽章。
 
     卧底/平民/白板各有专属阶梯，胜场越多点亮越高阶；同时按总胜场点亮一枚荣誉段位。
     只返回「当前已达成的最高阶」每阵营一枚，避免玩家卡被徽章刷屏。
     """
-    name = (name or "").strip()
-    entry = stats.get(name, {}) if isinstance(stats, dict) else {}
+    stats = stats if isinstance(stats, dict) else {}
+    entry = stats.get(key) or {}
+    if not isinstance(entry, dict) or not entry:
+        legacy = stats.get(f"name:{name}") if name else {}
+        entry = legacy if isinstance(legacy, dict) else {}
     civ = int(entry.get("civilian", 0) or 0)
     uc = int(entry.get("undercover", 0) or 0)
     wb = int(entry.get("whiteboard", 0) or 0)

@@ -24,13 +24,23 @@
 
   // 发言文字“逐字加速打出”：驱动所有在播的发言节点按“先慢后快”的进度曲线逐字展示。
   // 时间线每次轮询会重建 DOM，因此这里缓存节点并在重建时重新挂载，保证动画跨轮询连续。
+  // 时间线自动跟随：仅在“贴底”（用户在看最新消息）时把滚动条钉在最底部；
+  // 玩家向上翻看历史时绝不强制下拉，不干扰手动滑动。
+  function ucAutoFollowTimeline(el) {
+    if (!el || !el.isConnected) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 64) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }
   function ucDriveSpeechTyping() {
     const now = performance.now();
     let active = false;
+    let typingInTimeline = false;
     for (const k in ucSpeechTyping) {
       const t = ucSpeechTyping[k];
       if (!t.text || !t.node || !t.node.isConnected) { t.done = true; t.node = null; continue; }
       if (t.done) continue;
+      if (t.node.closest && t.node.closest("#ucTimeline")) typingInTimeline = true;
       const duration = Math.min(2400, 360 + t.text.length * 55); // 越短越快，一两秒内打完
       const p = Math.min(1, (now - t.started) / duration);
       const revealed = Math.floor(Math.pow(p, 1.7) * t.text.length); // 先慢后快 = 逐字加速
@@ -38,6 +48,8 @@
       if (p < 1) { active = true; }
       else { t.done = true; t.node.textContent = t.text; t.node = null; }
     }
+    // 打字过程会让时间线高度缓慢增长：贴底跟随的玩家保持在最新一行可见
+    if (typingInTimeline) ucAutoFollowTimeline(document.getElementById("ucTimeline"));
     if (active) { ucSpeechTypingRaf = requestAnimationFrame(ucDriveSpeechTyping); }
     else { ucSpeechTypingRaf = null; }
   }
@@ -2583,6 +2595,9 @@
 
     // 4. 发言 & 投票时间线
     const timeline = document.getElementById("ucTimeline");
+    // 重建前记录“是否贴底”：贴底说明在跟随最新消息，重建后自动滚回底部看新信息；
+    // 玩家向上翻看历史（未贴底）时保持原位，不做强制滚动。
+    const ucWasNearBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 64;
     timeline.innerHTML = "";
     const rounds = snap.rounds_public || [];
     const currentRoundIdx = rounds.length ? rounds.length - 1 : -1;
@@ -2799,6 +2814,9 @@
 
     // 记录本轮时间线轮次数（供新轮淡入动画判断）
     ucLastRoundCount = rounds.length;
+
+    // 新信息出现时自动跟随到底部（仅贴底时滚动，向上翻看历史时保持不动）
+    if (ucWasNearBottom) timeline.scrollTop = timeline.scrollHeight;
 
     // 5. 操作区：发言 / 投票 / PK banner
     document.getElementById("ucPhase").textContent = phaseText;

@@ -25,6 +25,7 @@ from .models import (
     TurtleSoupMode,
     Visitor,
     _undercover_badges_for,
+    _undercover_identity_key,
 )
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
@@ -414,7 +415,7 @@ class RoomManager:
     def _format_time(stamp: float) -> str:
         return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp))
 
-    def _load_undercover_camp_wins(self) -> dict[str, dict[str, int]]:
+    def _load_undercover_camp_wins(self) -> dict[str, dict[str, object]]:
         if self.undercover_camp_wins_path is None or not self.undercover_camp_wins_path.is_file():
             return {}
         try:
@@ -423,16 +424,22 @@ class RoomManager:
             return {}
         if not isinstance(raw, dict):
             return {}
-        cleaned: dict[str, dict[str, int]] = {}
+        cleaned: dict[str, dict[str, object]] = {}
         valid = {"civilian", "undercover", "whiteboard"}
         for name, camps in raw.items():
             if not isinstance(name, str) or not isinstance(camps, dict):
                 continue
-            cleaned[name.strip()] = {
-                key: max(0, int(val or 0))
-                for key, val in camps.items()
-                if key in valid
-            }
+            key = name.strip()
+            # 旧版按裸昵称存 → 迁移为 name: 前缀；新版真人按 qq: 前缀、AI 按 name: 前缀
+            if not (key.startswith("qq:") or key.startswith("name:")):
+                key = f"name:{key}"
+            entry: dict[str, object] = {}
+            for field, val in camps.items():
+                if field in valid:
+                    entry[field] = max(0, int(val or 0))
+                elif field == "name" and isinstance(val, str):
+                    entry["name"] = val  # 保留随键存储的显示名，重载后不丢失
+            cleaned[key] = entry
         return cleaned
 
     def _save_undercover_camp_wins(self) -> None:
@@ -446,21 +453,39 @@ class RoomManager:
         except OSError:
             logger.warning("[GameCompanion] 卧底分阵营胜场保存失败。")
 
-    def _credit_undercover_camp_wins(self, name: str, camp: str) -> None:
-        name = (name or "").strip()
-        if not name or camp not in {"civilian", "undercover", "whiteboard"}:
+    def _credit_undercover_camp_wins(self, key: str, name: str, camp: str) -> None:
+        """给分阵营胜场 +1：key 为稳定键（真人 qq:xxx / AI name:xxx），
+        显示名随 key 一起存，改昵称后胜场仍跟 QQ 走不丢失。"""
+        key = (key or "").strip()
+        if not key or camp not in {"civilian", "undercover", "whiteboard"}:
             return
-        entry = self.undercover_camp_wins.setdefault(name, {})
+        existed = key in self.undercover_camp_wins
+        entry = self.undercover_camp_wins.setdefault(key, {})
+        if name:
+            entry["name"] = name
+        # 首次按稳定键记分：把旧版裸昵称迁移出的 name: 数据合并进 QQ 键，
+        # 避免升级后第一次胜场徽章数“回退”（旧数据仍在文件里但查不到）
+        if not existed and name:
+            legacy_key = f"name:{name}"
+            legacy = self.undercover_camp_wins.get(legacy_key)
+            if isinstance(legacy, dict) and legacy is not entry:
+                for camp_key in ("civilian", "undercover", "whiteboard"):
+                    entry[camp_key] = (
+                        int(entry.get(camp_key, 0) or 0)
+                        + int(legacy.get(camp_key, 0) or 0)
+                    )
+                self.undercover_camp_wins.pop(legacy_key, None)
         entry[camp] = int(entry.get(camp, 0) or 0) + 1
         self._save_undercover_camp_wins()
 
     @staticmethod
-    def _undercover_badges(name: str, stats: dict[str, dict[str, int]]) -> list[dict[str, object]]:
-        """按分阵营胜场解锁「藏品/护身符」徽章（纯装饰，不影响对局）。
+    def _undercover_badges(seat: PlayerSeat, stats: dict[str, dict[str, object]]) -> list[dict[str, object]]:
+        """按稳定身份键（QQ / 名字）解锁「藏品/护身符」徽章（纯装饰，不影响对局）。
 
         与 models._undercover_badges_for 共用同一套阶梯规则。
         """
-        return _undercover_badges_for(name, stats)
+        key, name = _undercover_identity_key(seat)
+        return _undercover_badges_for(key, name, stats)
 
     async def create_room(
         self,
@@ -2565,10 +2590,13 @@ class RoomManager:
                             )
                             if entry["name"]:
                                 global_entry["name"] = entry["name"]
-                            # 分阵营胜场：用于解锁「藏品/护身符」徽章
-                            self._credit_undercover_camp_wins(entry["name"], camp)
+                            # 分阵营胜场：用于解锁「藏品/护身符」徽章；
+                            # 按 QQ 稳定键存储，改昵称后胜场与徽章不丢失
+                            self._credit_undercover_camp_wins(
+                                f"qq:{qq}", entry["name"], camp
+                            )
                             seat.undercover_badges = type(self)._undercover_badges(
-                                entry["name"], self.undercover_camp_wins
+                                seat, self.undercover_camp_wins
                             )
                             self._save_global_stats()
             elif getattr(room.game, "draw", False):
@@ -3832,18 +3860,22 @@ class RoomManager:
                 "system",
                 f"{self._visitor_label(visitor)}退出玩家席，已回到观众席。",
             )
-            # 谁是卧底集结阶段有人退席：重置「全员就绪确认窗口」，
-            # 避免开局倒计时内突然少人导致仓促开局；剩余玩家保持就绪，重新全员就绪后再开。
-            if (
-                room.game_type == "undercover"
-                and room.status == "setup"
-                and room.game is None
-                and self._undercover_all_ready_at.pop(room.room_id, None) is not None
-            ):
-                room.add_message(
-                    "system",
-                    "有玩家退出了玩家席，自动开局已重置，等待全员重新就绪。",
-                )
+            # 谁是卧底有人退席：一律先清除「全员就绪确认窗口」标记——
+            # 若玩家席因此清空、房间退回 waiting，标记若残留会在下次全员就绪时
+            # 被误当成“早已到点”而秒开，所以这里不依赖 room.status 判断直接清除。
+            if room.game_type == "undercover":
+                had_window = self._undercover_all_ready_at.pop(
+                    room.room_id, None
+                ) is not None
+                if (
+                    had_window
+                    and room.status == "setup"
+                    and room.game is None
+                ):
+                    room.add_message(
+                        "system",
+                        "有玩家退出了玩家席，自动开局已重置，等待全员重新就绪。",
+                    )
         await self._emit("seats_changed", room, {"left": visitor_token})
 
     async def set_undercover_reveal_identity(
