@@ -4367,9 +4367,10 @@ class GameCompanionPlugin(Star):
             "type": "png",
             "full_page": True,
             "viewport_width": 720,
-            # 自建 t2i 服务下渲染开销低：用高分屏 DPR（1.8x）出更清晰的海报
+            # 自建 t2i 服务下渲染开销低：用高分屏 DPR（1.8x）出更清晰的海报。
+            # timeout 单位为毫秒（Playwright），传 20000ms；外层 wait_for 按秒兜底
             "device_scale_factor_level": "ultra",
-            "timeout": 8.0,
+            "timeout": 20000,
         }
         url = await asyncio.wait_for(
             render(_UNDERCOVER_POSTER_TMPL, data, options=options), timeout=8
@@ -4662,9 +4663,10 @@ class GameCompanionPlugin(Star):
             "type": "png",
             "full_page": True,
             "viewport_width": 720,
-            # 自建 t2i 服务下渲染开销低：用高分屏 DPR（1.8x）出更清晰的海报
+            # 自建 t2i 服务下渲染开销低：用高分屏 DPR（1.8x）出更清晰的海报。
+            # timeout 单位为毫秒（Playwright），传 20000ms；外层 wait_for 按秒兜底
             "device_scale_factor_level": "ultra",
-            "timeout": 8.0,
+            "timeout": 20000,
         }
         url = await asyncio.wait_for(
             render(_UNDERCOVER_REPORT_TMPL, data, options=options), timeout=8
