@@ -2454,23 +2454,38 @@
         wordSpan.textContent = `词条「${p.word}」`;
         meta.appendChild(wordSpan);
       }
-      // 藏品/护身符徽章：内联小徽章（emoji）直观展示，桌面悬停弹出独立样式窗口看详情，移动端也能看到徽章
+      // 藏品/护身符徽章：独立成行展示，与身份/词条徽章分开，避免结算后与词条挤在同一行
       if (room?.game_type === "undercover" && Array.isArray(room.player_seats)) {
         const seatBadges = (room.player_seats.find((s) => Number(s.number) === Number(p.player_number)) || {}).badges;
         const badges = Array.isArray(seatBadges) ? seatBadges : [];
-        badges.forEach((badge) => {
-          const wrap = document.createElement("span");
-          wrap.className = "uc-badge-wrap";
-          const chip = document.createElement("span");
-          chip.className = `chip uc-badge uc-badge-mini uc-badge-${badge.tone || ""}`;
-          chip.textContent = badge.emoji || "🏅";
-          const tip = document.createElement("span");
-          tip.className = "uc-badge-tip";
-          tip.textContent = `${badge.label || "徽章"} · 该阵营已胜 ${badge.wins || 0} 局`;
-          wrap.appendChild(chip);
-          wrap.appendChild(tip);
-          meta.appendChild(wrap);
-        });
+        if (badges.length) {
+          const badgeRow = document.createElement("div");
+          badgeRow.className = "uc-badge-row";
+          badges.forEach((badge) => {
+            const wrap = document.createElement("span");
+            wrap.className = "uc-badge-wrap";
+            const chip = document.createElement("span");
+            chip.className = `chip uc-badge uc-badge-mini uc-badge-${badge.tone || ""}`;
+            chip.textContent = badge.emoji || "🏅";
+            const tip = document.createElement("span");
+            tip.className = "uc-badge-tip";
+            // 荣誉段位（gold）按总胜场描述，阵营徽章才写“该阵营已胜”
+            tip.textContent = badge.tone === "gold"
+              ? `${badge.label || "徽章"} · 累计获胜 ${badge.wins || 0} 局`
+              : `${badge.label || "徽章"} · 该阵营已胜 ${badge.wins || 0} 局`;
+            wrap.appendChild(chip);
+            wrap.appendChild(tip);
+            // 移动端没有悬停：点按切换提示窗
+            wrap.addEventListener("click", (e) => {
+              e.stopPropagation();
+              const active = document.querySelectorAll(".uc-badge-wrap.active");
+              active.forEach((n) => { if (n !== wrap) n.classList.remove("active"); });
+              wrap.classList.toggle("active");
+            });
+            badgeRow.appendChild(wrap);
+          });
+          card.appendChild(badgeRow);
+        }
       }
       // 被投票数（进行中只在投票阶段显示各目标得票，不显示投手；全员投完后才揭晓数字）
       if (
@@ -3886,7 +3901,7 @@
       if (overlay) overlay.hidden = true;
     });
   }
-  // 分享战报：把本局结果画成 PNG 卡片并下载
+  // 分享战报：把本局结果画成 PNG 卡片并保存/分享
   const ucResultShare = document.getElementById("ucResultShare");
   if (ucResultShare) {
     ucResultShare.addEventListener("click", async () => {
@@ -3895,16 +3910,51 @@
       try {
         const url = await undercoverSharePosterUrl(ucLastResult);
         if (!url) throw new Error("empty");
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `谁是卧底战报_${new Date().toISOString().slice(0, 10)}.png`;
-        a.click();
+        savePosterImage(url, `谁是卧底战报_${new Date().toISOString().slice(0, 10)}.png`);
       } catch (error) {
         showToast("生成战报失败：请稍后重试");
       } finally {
         btn.disabled = false;
       }
     });
+  }
+
+  // 保存分享图：优先系统分享（iOS 微信/TIM 内可存相册/转发），退而求其次用下载，再退化为新标签打开长按保存
+  function savePosterImage(dataUrl, filename) {
+    if (typeof navigator !== "undefined" && navigator.canShare && navigator.share) {
+      try {
+        const blob = dataUrlToBlob(dataUrl);
+        const file = new File([blob], filename, { type: "image/png" });
+        if (navigator.canShare({ files: [file] })) {
+          navigator.share({ files: [file], title: "谁是卧底战报" })
+            .catch(() => fallbackSavePoster(dataUrl, filename));
+          return;
+        }
+      } catch (_shareError) { /* 走兜底 */ }
+    }
+    fallbackSavePoster(dataUrl, filename);
+  }
+  function fallbackSavePoster(dataUrl, filename) {
+    try {
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (_dlError) {
+      // 极少数 WebView 不支持 a[download]：新标签打开，用户可长按保存
+      window.open(dataUrl, "_blank");
+    }
+  }
+  function dataUrlToBlob(dataUrl) {
+    const parts = String(dataUrl || "").split(",");
+    const meta = (parts[0] || "").match(/data:(.*?)(;|$)/);
+    const mime = (meta && meta[1]) || "image/png";
+    const bin = window.atob(parts[1] || "");
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: mime });
   }
   // 花火复盘：同局缓存，点击后展示，不重复请求 LLM
   const ucResultRecapBtn = document.getElementById("ucResultRecapBtn");
@@ -3941,8 +3991,8 @@
       btn.textContent = "通知中…";
       let image = "";
       try {
-        // 生成一张战报海报，随通知发给群（是否发送由图插件配置决定）
-        image = await undercoverSharePosterUrl(ucLastResult) || "";
+        // 通知用「战况大字报」风格图（与分享战报完全不同的设计），随通知发给群
+        image = await undercoverAnnouncePosterUrl(ucLastResult) || "";
       } catch (_imgError) { image = ""; }
       try {
         const data = await request("POST", "undercover/announce", { image });
@@ -4074,6 +4124,118 @@
     return cv.toDataURL("image/png");
   }
 
+  // 单局「战况大字报」PNG（通知到群专用）：与分享战报完全独立的设计——
+  // 横幅式横版 + 超大获胜阵营字 + 醒目药丸词条，适合群里一眼看清战况
+  async function undercoverAnnouncePosterUrl(result) {
+    if (!result) return "";
+    const W = 720, H = 600, M = 46;
+    const players = result.players || [];
+    const camp = result.camp;
+    const campCn = { civilian: "平民", undercover: "卧底", whiteboard: "白板" }[camp] || "";
+    const campCol = { civilian: "#7dffb0", undercover: "#dda9ff", whiteboard: "#9ccbff" }[camp] || "#ffd166";
+    const cv = document.createElement("canvas");
+    cv.width = W; cv.height = H;
+    const c = cv.getContext("2d");
+    const font = (bold, px) => `${bold ? "bold " : ""}${px}px 'PingFang SC','Microsoft YaHei',sans-serif`;
+    const rr = (x, y, w, h, r) => {
+      c.beginPath(); c.moveTo(x + r, y);
+      c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+      c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+    };
+
+    // 背景：深红「通知/大字报」暖调渐变（与分享战报的深蓝完全不同）
+    const g = c.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, "#5a1c16"); g.addColorStop(1, "#200907");
+    c.fillStyle = g; c.fillRect(0, 0, W, H);
+    // 斜纹装饰
+    c.save();
+    c.globalAlpha = 0.05; c.strokeStyle = "#ffffff"; c.lineWidth = 2;
+    for (let i = -H; i < W + H; i += 36) {
+      c.beginPath(); c.moveTo(i, 0); c.lineTo(i + H, H); c.stroke();
+    }
+    c.restore();
+    // 底部主题色强调条
+    c.fillStyle = campCol; c.fillRect(0, H - 10, W, 10);
+
+    // 顶部标题行
+    c.textAlign = "left";
+    c.font = font(true, 22); c.fillStyle = "#ffd9a0";
+    c.fillText("📢 谁是卧底 · 战况通知", M, 62);
+    c.font = font(false, 16); c.fillStyle = "rgba(255,255,255,.6)";
+    const titleTxt = truncatePosterText(c, result.title || "本局已结束", W - 2 * M - 200);
+    c.textAlign = "right"; c.fillText(titleTxt, W - M, 62);
+    c.textAlign = "left";
+
+    // 中央大字：获胜阵营（超大字号 + 阵营色描边，大字报的醒目感）
+    const bigText = `${campCn || "本局"} 获胜`;
+    c.font = font(true, 88);
+    let bigW = c.measureText(bigText).width;
+    if (bigW > W - 2 * M) { c.font = font(true, 72); bigW = c.measureText(bigText).width; }
+    c.textBaseline = "middle";
+    c.lineJoin = "round";
+    c.strokeStyle = "rgba(0,0,0,.5)"; c.lineWidth = 12;
+    c.strokeText(bigText, (W - bigW) / 2, 185);
+    c.fillStyle = campCol;
+    c.fillText(bigText, (W - bigW) / 2, 185);
+    c.textBaseline = "alphabetic";
+
+    // 获胜玩家名单（金色大号）
+    const winners = players
+      .filter((p) => p.camp === camp)
+      .map((p) => `${p.player_number}号${p.display_name || ""}`.trim());
+    if (winners.length) {
+      const wText = "🎉 " + winners.join(" · ");
+      const wLines = wrapPosterLines(c, wText, W - 2 * M, font(true, 27), 2);
+      c.fillStyle = "#ffe3b0";
+      wLines.forEach((ln, i) => c.fillText(ln, (W - c.measureText(ln).width) / 2, 262 + i * 38));
+    }
+
+    // 词条双药丸（比分享战报更大更醒目；过宽时缩小字号分两行）
+    const pill = (text, x, y, w, col, fg, fs) => {
+      rr(x, y, w, 46, 23); c.fillStyle = col; c.fill();
+      c.font = font(true, fs); c.fillStyle = fg; c.textAlign = "center"; c.textBaseline = "middle";
+      c.fillText(text, x + w / 2, y + 23);
+      c.textBaseline = "alphabetic";
+    };
+    if (result.civilian_word || result.undercover_word) {
+      const cwT = `🛡️ 平民「${result.civilian_word}」`;
+      const uwT = `🕵️ 卧底「${result.undercover_word}」`;
+      c.font = font(true, 20);
+      const cwW = c.measureText(truncatePosterText(c, cwT, 300)).width + 34;
+      const uwW = c.measureText(truncatePosterText(c, uwT, 300)).width + 34;
+      const gap = 20;
+      const x0 = (W - (cwW + gap + uwW)) / 2;
+      if (x0 >= M) {
+        pill(truncatePosterText(c, cwT, 300), x0, 350, cwW, "rgba(125,255,176,.16)", "#b6ffd6", 20);
+        pill(truncatePosterText(c, uwT, 300), x0 + cwW + gap, 350, uwW, "rgba(221,169,255,.16)", "#ecc9ff", 20);
+      } else {
+        // 一行放不下：缩小字号，分上下两行
+        c.font = font(true, 18);
+        const cw2 = truncatePosterText(c, cwT, 440);
+        const uw2 = truncatePosterText(c, uwT, 440);
+        const w1 = c.measureText(cw2).width + 34;
+        const w2 = c.measureText(uw2).width + 34;
+        pill(cw2, (W - w1) / 2, 344, w1, "rgba(125,255,176,.16)", "#b6ffd6", 18);
+        pill(uw2, (W - w2) / 2, 402, w2, "rgba(221,169,255,.16)", "#ecc9ff", 18);
+      }
+      c.textAlign = "left"; // 药丸内部置 center，画完恢复，避免后续文字错位
+    }
+
+    // 底部：失败方（灰白小字）
+    const losers = players.filter((p) => p.camp && p.camp !== camp);
+    if (losers.length) {
+      const lText = "败方：" + losers.map((p) => `${p.player_number}号${p.display_name || ""}`.trim()).join("、");
+      c.font = font(false, 17); c.fillStyle = "rgba(255,255,255,.55)";
+      const lLines = wrapPosterLines(c, lText, W - 2 * M - 150, font(false, 17), 2);
+      lLines.forEach((ln, i) => c.fillText(ln, M, H - 76 + i * 26));
+    }
+    // 右下角水印
+    c.textAlign = "right";
+    c.font = font(false, 14); c.fillStyle = "rgba(255,255,255,.4)";
+    c.fillText("由 花火 监督生成", W - M, H - 30);
+    return cv.toDataURL("image/png");
+  }
+
   function forShareCol(i) { return [24, 92, 360, 500][i]; }
 
   // 生成一句「以屏幕前玩家视角」的有趣分享文案（多款随机，丰富多样性）
@@ -4088,6 +4250,15 @@
     const meName = me.name || `${me.number}号玩家`;
     const win = r.camp;
     const meWin = me.camp === win;
+    const isSpectator = !me.camp; // 观众/未参与：不套用“我参战”文案
+    if (isSpectator) {
+      const pool = [
+        `旁观了一场${t}的卧底对决：${campCn(win)}笑到了最后！`,
+        `${t}围观完毕：这局${campCn(win)}更胜一筹，精彩！`,
+        `${t}看完了这场谁是卧底，胜负已分——${campCn(win)}获胜！`,
+      ];
+      return pool[Math.floor(Math.random() * pool.length)];
+    }
     const allies = ps
       .filter((p) => p.camp === win && p.camp !== me.camp && Number(p.player_number) !== me.number && !p.is_out)
       .map((p) => p.display_name || `${p.player_number}号`);
@@ -4143,7 +4314,8 @@
   }
   function loadPosterImage(url, number, timeoutMs) {
     return new Promise((resolve) => {
-      if (!url) return resolve({ number, img: null });
+      const src = avatarProxyUrl(url);
+      if (!src) return resolve({ number, img: null });
       const img = new Image();
       img.crossOrigin = "anonymous";
       let settled = false;
@@ -4151,9 +4323,19 @@
       img.onload = () => done({ number, img });
       img.onerror = () => done({ number, img: null });
       img.referrerPolicy = "no-referrer";
-      img.src = url;
+      img.src = src;
       window.setTimeout(() => done({ number, img: null }), timeoutMs);
     });
+  }
+
+  // qlogo 不带 CORS 头，Canvas 无法直接绘制；改为经本服务端代理（补 ACAO 头）后加载。
+  // 非 qlogo 地址（如自定义头像）保持原样，交给浏览器按原逻辑处理。
+  function avatarProxyUrl(url) {
+    if (!url || !accessToken || !/^https:\/\/(q1|q2)\.qlogo\.cn\//.test(url)) return url || "";
+    return new URL(
+      `../../api/room/${accessToken}/avatar?url=${encodeURIComponent(url)}`,
+      window.location.href
+    ).toString();
   }
 
   function truncatePosterText(ctx, text, max) {

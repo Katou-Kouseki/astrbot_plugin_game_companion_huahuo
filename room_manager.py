@@ -2664,7 +2664,13 @@ class RoomManager:
                         room.touch()
                     all_ready_confirm = (now - ready_at) >= self.UC_ALL_READY_CONFIRM_SECONDS
                 else:
-                    self._undercover_all_ready_at.pop(room.room_id, None)
+                    # 有人取消准备或退出玩家席：撤销已进入倒计时的自动开局，避免秒开后缺人
+                    if self._undercover_all_ready_at.pop(room.room_id, None) is not None:
+                        room.add_message(
+                            "system",
+                            "有玩家取消了准备或退出玩家席，自动开局已取消，等待重新就绪。",
+                        )
+                        room.touch()
                 if (full or timed_out or all_ready_confirm) and live_count >= self.undercover_min_players:
                     target = next(
                         (
@@ -3816,6 +3822,18 @@ class RoomManager:
                 "system",
                 f"{self._visitor_label(visitor)}退出玩家席，已回到观众席。",
             )
+            # 谁是卧底集结阶段有人退席：重置「全员就绪确认窗口」，
+            # 避免开局倒计时内突然少人导致仓促开局；剩余玩家保持就绪，重新全员就绪后再开。
+            if (
+                room.game_type == "undercover"
+                and room.status == "setup"
+                and room.game is None
+                and self._undercover_all_ready_at.pop(room.room_id, None) is not None
+            ):
+                room.add_message(
+                    "system",
+                    "有玩家退出了玩家席，自动开局已重置，等待全员重新就绪。",
+                )
         await self._emit("seats_changed", room, {"left": visitor_token})
 
     async def set_undercover_reveal_identity(

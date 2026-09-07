@@ -3696,26 +3696,35 @@ class GameCompanionPlugin(Star):
             logger.debug("[GameCompanion] 回发游戏消息失败: %s", exc)
 
     async def undercover_recap(self, room: GameRoom) -> str:
-        """生成一局谁是卧底的短复盘摘要（结算卡「生成复盘」用，点击时才请求 LLM）。
+        """生成一局谁是卧底的短复盘摘要（结算卡「生成复盘」/「通知到群」共用）。
 
+        按 game_uid 缓存：同局第一次请求才调 LLM，之后直接复用，避免重复请求。
         依据房间内的本局结果（胜方、阵营、词条、出局情况）生成 2-3 句要点；
         LLM 不可用或超时时返回本地兜底文案，保证始终有内容可展示。
         """
         game = room.game
+        uid = str(getattr(game, "game_uid", "") or "") if game else ""
+        cache = getattr(room, "recap_cache", None) or {}
+        if uid and cache.get(uid):
+            return cache[uid]
         gap = _undercover_game_summary(game)
         title = _undercover_title_text(game)
         if not gap and not title:
-            return self._undercover_fallback_recap()
-        prompt = (
-            "请为一局「谁是卧底」生成简短复盘（中文，2~4 句，口语化、不写感谢语）。\n"
-            f"结局：{title}\n对局情况：{gap or '（无额外明细）'}\n"
-            "要点：谁最早出局/发挥如何、是否存在明显可疑发言、胜利方为什么赢。"
-        )
-        text = await self._llm_gen_neutral(
-            prompt,
-            system_prompt="你是冷静的复盘叙述者，只输出复盘正文，不要标题、不要编号、不要 emoji。",
-        )
-        return (text or self._undercover_fallback_recap()).strip()
+            text = self._undercover_fallback_recap()
+        else:
+            prompt = (
+                "请为一局「谁是卧底」生成简短复盘（中文，2~4 句，口语化、不写感谢语）。\n"
+                f"结局：{title}\n对局情况：{gap or '（无额外明细）'}\n"
+                "要点：谁最早出局/发挥如何、是否存在明显可疑发言、胜利方为什么赢。"
+            )
+            text = await self._llm_gen_neutral(
+                prompt,
+                system_prompt="你是冷静的复盘叙述者，只输出复盘正文，不要标题、不要编号、不要 emoji。",
+            )
+            text = (text or self._undercover_fallback_recap()).strip()
+        if uid:
+            room.recap_cache[uid] = text
+        return text
 
     @staticmethod
     def _undercover_fallback_recap() -> str:
@@ -3724,12 +3733,12 @@ class GameCompanionPlugin(Star):
     async def undercover_announce_result(
         self, room: GameRoom, image_data: str = ""
     ) -> str:
-        """把本局胜负与（若启用）惩罚发到开房群，返回已发送的文案。
+        """把本局胜负（+复盘）发到开房群，返回已发送的文案。
 
-        文案顺序：标题 → 词条（上移） → 胜利方 → 失败方 → 惩罚。
+        文案顺序：标题 → 词条 → 胜利方（列出玩家名）→ 失败方；
+        复盘与图片都放在文字之后（📝 复盘跟在图片后面）。
         若开启图片发送（undercover.group_announce_style = image/both）且前端传来海报图，
-        随文案一起发送；仅图片时只发图。
-        仅在插件配置开启群通报（undercover.group_announce_enabled）时真正发送。
+        随文案一起发送；仅图片时只发图。仅在插件配置开启群通报时真正发送。
         """
         if not getattr(self, "group_announce_enabled", False):
             return ""
@@ -3742,7 +3751,8 @@ class GameCompanionPlugin(Star):
         camp = winner_get("camp")
         cw = winner_get("civilian_word") or ""
         uw = winner_get("undercover_word") or ""
-        # 文案顺序：标题 → 词条 → 胜利方 → 失败方 → 惩罚
+        players = getattr(game, "players", None) or []
+        # 文案：标题 → 词条 → 胜利方（列出玩家名）→ 失败方（不写惩罚）
         lines = [f"🕵️ 谁是卧底战报：{title}"]
         if cw or uw:
             lines.append(f"词条：平民「{cw}」/ 卧底「{uw}」")
@@ -3750,9 +3760,15 @@ class GameCompanionPlugin(Star):
             camp_text = {
                 "civilian": "平民", "undercover": "卧底", "whiteboard": "白板",
             }.get(camp, camp)
-            lines.append(f"胜利方：{camp_text}")
-        # 失败方（非胜方阵营的存活/参与玩家）
-        players = getattr(game, "players", None) or []
+            winners = [
+                f"{getattr(p, 'number', '?')}号{getattr(p, 'display_name', '') or ''}"
+                for p in players
+                if getattr(p, "camp", None) == camp
+            ]
+            lines.append(
+                f"胜利方：{camp_text}"
+                + (f"（{'、'.join(winners)}）" if winners else "")
+            )
         losers = [
             p for p in players
             if getattr(p, "camp", None) and p.camp != camp
@@ -3763,43 +3779,30 @@ class GameCompanionPlugin(Star):
                 for p in losers
             )
             lines.append(f"失败方：{names}")
-        # 惩罚（插件配置命中才附上）
-        muted = [
-            (label, seconds)
-            for label, seconds in (
-                ("失败方禁言", getattr(self, "undercover_failed_mute_seconds", 0)),
-                ("违规禁言", getattr(self, "undercover_violated_mute_seconds", 0)),
-            )
-            if seconds
-        ]
-        if muted:
-            lines.append(
-                "惩罚：" + "；".join(f"{label} {s}秒" for label, s in muted)
-            )
-        # 结合「花火复盘」：有缓存/可生成则附上一段复盘，让群通报更完整
+        text = "\n".join(lines)
+        # 结合「花火复盘」：共用同一局缓存
         try:
             recap = await self.undercover_recap(room)
         except Exception:
             recap = ""
-        if recap:
-            lines.append(f"📝 复盘：{recap}")
-        text = "\n".join(lines)
         style = (getattr(self, "group_announce_style", "text") or "text").lower()
         want_image = style in {"image", "both"}
         want_text = style in {"text", "both"}
         if not want_text and not want_image:
             want_text = True  # 兜底：未知配置按仅文字
         if want_image and image_data:
-            await self._send_to_origin_image(room, text if want_text else "", image_data)
+            await self._send_to_origin_image(
+                room, text if want_text else "", image_data, recap if want_text else ""
+            )
             return text if want_text else ""
         if want_text:
-            await self._send_to_origin(room, text)
+            await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
         return text
 
     async def _send_to_origin_image(
-        self, room: GameRoom, text: str, image_data_url: str
+        self, room: GameRoom, text: str, image_data_url: str, recap: str = ""
     ) -> None:
-        """把文字（可选）与一张 base64 海报图发到开房群。"""
+        """把文字（可选）、一张战报图与复盘（可选）发到开房群，复盘放在图片后面。"""
         try:
             from astrbot.api.message_components import Image
 
@@ -3809,14 +3812,18 @@ class GameCompanionPlugin(Star):
             b64 = str(image_data_url or "").split(",", 1)[-1]
             if b64:
                 parts.append(Image(file=f"base64://{b64}"))
+            if recap:
+                parts.append(Plain(f"\n📝 复盘：{recap}"))
             if parts:
                 await self.context.send_message(
                     room.session_id, MessageChain(parts)
                 )
         except Exception as exc:
             logger.warning("[GameCompanion] 发送战报图片失败，回退纯文字: %s", exc)
-            if text:
-                await self._send_to_origin(room, text)
+            if text or recap:
+                await self._send_to_origin(
+                    room, (text + (f"\n📝 复盘：{recap}" if recap else "")).strip()
+                )
 
     def _register_report_scheduler(self) -> None:
         """用 AstrBot 自带的 APScheduler（context.cron_manager.scheduler）注册卧底日报/周报定时任务。

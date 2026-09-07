@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+import aiohttp
 from aiohttp import web
 from astrbot.api import logger
 
@@ -160,6 +161,10 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
         app.router.add_post("/api/room/{access_token}/chat", self._chat)
         app.router.add_post("/api/room/{access_token}/leave", self._leave)
+        # QQ 头像代理：qlogo 不带 CORS 头，Canvas 无法直接绘制；服务端拉取后补 ACAO
+        app.router.add_get(
+            "/api/room/{access_token}/avatar", self._avatar_proxy
+        )
         return app
 
     async def stop(self) -> None:
@@ -198,6 +203,37 @@ class GameRoomServer:
                 "rooms": len(self.manager.rooms),
             },
             headers=self._headers("application/json"),
+        )
+
+    async def _avatar_proxy(self, request: web.Request) -> web.StreamResponse:
+        """QQ 头像代理：qlogo 即使带 Origin 也不返回 Access-Control-Allow-Origin，
+        浏览器无法把跨域头像绘入 Canvas（分享/通知海报会画成首字占位）。
+
+        这里由服务端拉取头像后补上 ACAO 头返回，前端以 same-origin 加载即可绘制。
+        仅允许 q1/q2.qlogo.cn，且要求房间 access_token 有效，避免成为开放代理。
+        """
+        self._room(request)  # 无效/已关闭房间直接 404/410
+        url = str(request.query.get("url") or "").strip()
+        if not re.match(r"^https://q[12]\.qlogo\.cn/", url):
+            raise web.HTTPBadRequest(text="头像地址不受支持")
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return web.Response(status=502, text="头像拉取失败")
+                    data = await resp.read()
+                    ctype = resp.headers.get("Content-Type", "image/jpeg")
+        except Exception as exc:
+            logger.debug("[GameCompanion] QQ 头像代理拉取失败: %s", exc)
+            return web.Response(status=502, text="头像拉取失败")
+        return web.Response(
+            body=data,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Type": ctype,
+                "Cache-Control": "public, max-age=86400",
+            },
         )
 
     async def _join(self, request: web.Request) -> web.Response:
