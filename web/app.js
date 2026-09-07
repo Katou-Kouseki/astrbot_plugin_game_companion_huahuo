@@ -4249,7 +4249,7 @@
     c.fillText(bigText, (W - bigW) / 2, 182);
     c.textBaseline = "alphabetic";
 
-    // 获胜玩家名单（金色大号，可换行最多 3 行；与大标题保持足够间距）
+    // 获胜玩家名单（金色大号，可换行最多 3 行；与大标题拉开足够间距）
     const winners = players
       .filter((p) => p.camp === camp)
       .map((p) => `${p.player_number}号${p.display_name || ""}`.trim());
@@ -4259,11 +4259,11 @@
       const wLines = wrapPosterLines(c, wText, W - 2 * M, font(true, 26), 3);
       wLineCount = wLines.length;
       c.fillStyle = "#ffe3b0";
-      wLines.forEach((ln, i) => c.fillText(ln, (W - c.measureText(ln).width) / 2, 270 + i * 40));
+      wLines.forEach((ln, i) => c.fillText(ln, (W - c.measureText(ln).width) / 2, 296 + i * 40));
     }
 
     // 词条双药丸（比分享战报更大更醒目；位置随胜利方行数下移；过宽时缩小字号分两行）
-    const pillTop = 296 + Math.max(1, wLineCount) * 40;
+    const pillTop = 322 + Math.max(1, wLineCount) * 40;
     const pill = (text, x, y, w, col, fg, fs) => {
       rr(x, y, w, 46, 23); c.fillStyle = col; c.fill();
       c.font = font(true, fs); c.fillStyle = fg; c.textAlign = "center"; c.textBaseline = "middle";

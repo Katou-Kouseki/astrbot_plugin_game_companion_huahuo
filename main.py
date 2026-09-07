@@ -3713,16 +3713,17 @@ class GameCompanionPlugin(Star):
             text = self._undercover_fallback_recap()
         else:
             prompt = (
-                "请为一局「谁是卧底」生成简短复盘（中文，2~4 句，俏皮口吻，"
+                "请为一局「谁是卧底」生成简短复盘（中文，2~4 句，轻松俏皮口吻，"
                 "可以带点网络梗和适度 emoji，不要标题、不要编号、不要客套感谢语）。\n"
                 f"结局：{title}\n对局情况：{gap or '（无额外明细）'}\n"
-                "风格参考：像游戏里的毒舌解说员，点出局里的名场面（谁最快暴露、"
-                "谁演技炸裂、谁被冤出局），结尾可以随口调侃一句。"
+                "风格参考：像一起玩的朋友在茶余饭后聊这场对局，轻松幽默、善意调侃，"
+                "绝不攻击或贬低任何玩家；点一下局里的名场面（谁最快暴露、谁演技在线、"
+                "谁被冤出局），结尾可以随口开个无恶意的玩笑。"
             )
             text = await self._llm_gen_neutral(
                 prompt,
                 system_prompt=(
-                    "你是古灵精怪的复盘解说员「花火」，点评犀利又俏皮，"
+                    "你是古灵精怪但温和的复盘解说员「花火」，点评轻松俏皮、善意不伤人，"
                     "只用中文输出复盘正文，不要标题、不要编号。"
                 ),
             )
@@ -3770,12 +3771,12 @@ class GameCompanionPlugin(Star):
             }.get(camp, camp)
             winners = [
                 f"{getattr(p, 'number', '?')}号{getattr(p, 'display_name', '') or ''}"
+                f"（{camp_text}）"
                 for p in players
                 if getattr(p, "camp", None) == camp
             ]
             lines.append(
-                f"🏆 胜利方：{camp_text}"
-                + (f"（{'、'.join(winners)}）" if winners else "")
+                f"🏆 胜利方：{'、'.join(winners)}" if winners else f"🏆 胜利方：{camp_text}"
             )
         losers = [
             p for p in players
