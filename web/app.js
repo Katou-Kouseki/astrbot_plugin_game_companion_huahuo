@@ -2266,6 +2266,7 @@
         const wb = document.getElementById("ucHostWbInput");
         const save = document.getElementById("ucHostCampSave");
         const addAi = document.getElementById("ucHostAddAi");
+        const removeAi = document.getElementById("ucHostRemoveAi");
         const seatCount = document.getElementById("ucHostSeatCount");
         const defaultScales = (room.undercover_host_camp_scales || "4 1 0")
           .split(/[\s:：,，]+/).map((x) => Number(x) || 0);
@@ -2391,6 +2392,39 @@
               showToast(err?.message || "添加失败");
             } finally {
               addAi.disabled = false;
+            }
+          });
+        }
+        // —— 移除一位 AI 玩家（房主可随时增减补位人数）
+        if (removeAi && !removeAi.dataset.bound) {
+          removeAi.dataset.bound = "1";
+          removeAi.addEventListener("click", async () => {
+            if (!accessToken || !visitorToken) {
+              showToast("请先进入玩家席");
+              return;
+            }
+            try {
+              removeAi.disabled = true;
+              const res = await request(
+                "POST",
+                "undercover/remove_ai",
+                { visitor_token: visitorToken }
+              );
+              if (res?.room) {
+                setRoom(res.room);
+                render();
+                showToast(res?.removed
+                  ? `已移除 ${res.display_name || `${res.number}号`}（现在 ${res.live_count || 0} 人）`
+                  : "已移除 AI 玩家");
+              } else if (res?.error) {
+                showToast(res.error);
+              } else {
+                showToast("移除失败");
+              }
+            } catch (err) {
+              showToast(err?.message || "移除失败");
+            } finally {
+              removeAi.disabled = false;
             }
           });
         }

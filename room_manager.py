@@ -63,14 +63,18 @@ _UC_GAME_TYPES: frozenset[str] = frozenset(
 
 
 def _uc_ai_name(avoid: set[str] | None = None) -> tuple[str, str]:
-    """生成 (显示名「火花·调皮(AI)」, 性格形容词「调皮」)。"""
+    """生成 (显示名「火花·调皮(AI)」/「花火·调皮(AI)」, 性格形容词「调皮」)。
+
+    基础名在「火花 / 花火」里随机，形容词从池中不重复抽取。
+    """
     pool = [a for a in _UC_AI_ADJECTIVES if a not in _UC_AI_USED and (not avoid or a not in avoid)]
     if not pool:
         _UC_AI_USED.clear()
         pool = [a for a in _UC_AI_ADJECTIVES if not avoid or a not in avoid] or list(_UC_AI_ADJECTIVES)
     adj = random.choice(pool)
     _UC_AI_USED.add(adj)
-    return f"火花·{adj}(AI)", adj
+    base = random.choice(("火花", "花火"))
+    return f"{base}·{adj}(AI)", adj
 
 RoomCallback = Callable[[str, GameRoom, dict[str, Any]], Awaitable[None]]
 
@@ -117,6 +121,10 @@ class RoomManager:
     MAX_CLOSED_ACCESS_RECORDS = 256
     FINISHED_PLAYER_LEAVE_GRACE_SECONDS = 8
     FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS = 60
+    # 集结阶段离线玩家席自动移出：显式关闭网页（leave）宽限数秒防刷新误踢；
+    # 心跳超时阈值放宽到 90s，容忍浏览器后台标签节流（否则切后台的玩家会被误踢）
+    DEPARTED_LEAVE_GRACE_SECONDS = 8
+    DEPARTED_HEARTBEAT_TIMEOUT_SECONDS = 90
     IDENTITY_TOKEN_TTL_SECONDS = 300
     CHAT_COOLDOWN_SECONDS = 0.8
 
@@ -2651,6 +2659,52 @@ class RoomManager:
         if self.event_callback is not None:
             await self.event_callback(event, room, payload)
 
+    def _vacate_departed_seats(self, room: GameRoom, now: float) -> None:
+        """等待/准备阶段把「已离开」的玩家移出玩家席（对局中不清理）。
+
+        - 显式关闭网页（leave 已设置 left_at）：宽限数秒后移出，刷新后心跳会清掉 left_at；
+        - 心跳超时（断网/崩溃/后台标签节流）：按较长阈值移出，避免误踢切后台的玩家。
+        移出后保留访客记录（QQ 绑定身份不丢），回到观众席；AI 座位不清理。
+        """
+        if room.status not in ("waiting", "setup"):
+            return
+        state = room.multiplayer
+        if not state.enabled or not state.seats:
+            return
+        for seat in list(state.seats):
+            if seat.is_ai:
+                continue
+            visitor = room.visitors.get(seat.visitor_token)
+            if visitor is None:
+                continue
+            left_at = getattr(visitor, "left_at", None)
+            departed = (
+                left_at is not None
+                and now - left_at >= self.DEPARTED_LEAVE_GRACE_SECONDS
+            ) or (
+                now - visitor.last_seen_at
+                >= self.DEPARTED_HEARTBEAT_TIMEOUT_SECONDS
+            )
+            if not departed:
+                continue
+            label = self._visitor_label(visitor)
+            number = seat.number
+            self._remove_multiplayer_seat(room, seat.visitor_token)
+            if room.multiplayer.seats:
+                self._sync_primary_player(room)
+            else:
+                self._clear_primary_player(room)
+                room.player_empty_since = time.time()
+                room.game = None
+                room.status = "waiting"
+                room.multiplayer.turn_deadline = 0.0
+            room.touch()
+            room.add_message(
+                "system", f"{label}（{number}号）已离线，已移出玩家席。"
+            )
+            if room.game_type == "undercover":
+                self._undercover_all_ready_at.pop(room.room_id, None)
+
     async def _tick_multiplayer_room(self, room: GameRoom, now: float) -> None:
         """Expire swap requests and rotate an overdue active turn."""
         dealer_ready = False
@@ -2661,6 +2715,8 @@ class RoomManager:
             if not state.enabled:
                 return
             self._purge_swap_requests(room, now)
+            # 等待/准备阶段先把已离开的玩家移出玩家席，避免离线占座挡住就绪与开局
+            self._vacate_departed_seats(room, now)
             game = room.game
             if isinstance(game, BlackjackGame):
                 dealer_ready = self._tick_blackjack_locked(room, now)
@@ -3752,6 +3808,61 @@ class RoomManager:
                 "number": ai_seat.number,
                 "live_count": live_count,
                 "capacity": capacity,
+            }
+
+    async def remove_undercover_ai_seat(
+        self,
+        room: GameRoom,
+        visitor_token: str,
+    ) -> dict[str, object]:
+        """房主/管理员手动移除一位 AI 玩家（每次一个，优先移除编号最大的）。
+
+        Returns:
+            {"removed": True, "display_name": str, "number": int, "live_count": int, "capacity": int}
+        """
+        async with room.lock:
+            if room.game_type != "undercover":
+                raise PermissionError("仅谁是卧底房间支持本设置")
+            if room.status not in ("waiting", "setup"):
+                raise PermissionError("对局已开始，不能再移除 AI 玩家")
+            # 权限与追加 AI 一致：管理台房间任意访客；普通房间需是房主
+            if not room.admin_room:
+                host_seat = type(self)._undercover_host_seat(room)
+                requester = self._visitor(room, visitor_token)
+                if host_seat is None:
+                    raise PermissionError(
+                        "房间内暂无已绑定QQ身份的玩家，暂无法移除 AI 玩家"
+                    )
+                if host_seat.visitor_token != requester.token:
+                    raise PermissionError(
+                        f"只有房主（{host_seat.display_name or f'{host_seat.number}号'}）才能移除 AI 玩家"
+                    )
+            ai_seats = [s for s in room.multiplayer.seats if s.is_ai]
+            if not ai_seats:
+                raise ValueError("当前没有可移除的 AI 玩家")
+            ai_seat = max(ai_seats, key=lambda s: int(s.number or 0))
+            token = ai_seat.visitor_token
+            number = ai_seat.number
+            display_name = ai_seat.display_name or f"{number}号"
+            self._remove_multiplayer_seat(room, token)
+            room.visitors.pop(token, None)  # AI 的访客记录是临时注册的，一并清理
+            if room.multiplayer.seats:
+                self._sync_primary_player(room)
+            else:
+                self._clear_primary_player(room)
+                room.player_empty_since = time.time()
+                room.game = None
+                room.status = "waiting"
+                room.multiplayer.turn_deadline = 0.0
+            # AI 自动算已就绪：移除后重置全员就绪确认窗口，重新按在场玩家评估
+            self._undercover_all_ready_at.pop(room.room_id, None)
+            room.touch()
+            return {
+                "removed": True,
+                "display_name": display_name,
+                "number": number,
+                "live_count": len(room.multiplayer.seats),
+                "capacity": room.multiplayer.capacity or 0,
             }
 
     async def set_player_ready(

@@ -147,6 +147,10 @@ class GameRoomServer:
             self._undercover_add_ai_seat,
         )
         app.router.add_post(
+            "/api/room/{access_token}/undercover/remove_ai",
+            self._undercover_remove_ai_seat,
+        )
+        app.router.add_post(
             "/api/room/{access_token}/undercover/batch_words",
             self._undercover_batch_words,
         )
@@ -695,6 +699,23 @@ class GameRoomServer:
         visitor_token = str(payload.get("visitor_token") or "")
         try:
             result = await self.manager.add_undercover_ai_seat(
+                room, visitor_token
+            )
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=400,
+            )
+        return self._response({**result, "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+
+    async def _undercover_remove_ai_seat(self, request: web.Request) -> web.Response:
+        """房主/管理员手动移除一位 AI 玩家（每次一个，编号最大的优先）。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        try:
+            result = await self.manager.remove_undercover_ai_seat(
                 room, visitor_token
             )
         except (ValueError, PermissionError) as exc:
