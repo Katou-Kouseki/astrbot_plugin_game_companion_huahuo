@@ -931,6 +931,42 @@
     return `<span class="${cls.join(" ")}">${letter}</span>`;
   }
 
+  // 复用已加载的 QQ 头像 <img> 节点：玩家网格每次轮询都会重建卡片，
+  // 若不复用 img，移动端会反复重新请求 qlogo 导致头像闪烁。
+  const ucAvatarImgCache = {}; // 座位号 -> {src, el}
+  function ucSeatAvatarNode(number, size = "medium", isMine = false) {
+    const seats = Array.isArray(room?.player_seats) ? room.player_seats : [];
+    const seat = seats.find((s) => Number(s.number) === Number(number));
+    const name = seat && seat.display_name ? String(seat.display_name) : "";
+    const url = seat && seat.avatar_url ? String(seat.avatar_url) : "";
+    const isAi = seat ? !!seat.is_ai : false;
+    const cls = ["uc-avatar", `uc-avatar-${size}`];
+    const span = document.createElement("span");
+    if (isMine) cls.push("is-me");
+    if (url) {
+      span.className = cls.join(" ");
+      let cached = ucAvatarImgCache[Number(number)];
+      let img;
+      if (cached && cached.src === url) {
+        img = cached.el; // 复用同一 img，避免重新下载
+      } else {
+        img = document.createElement("img");
+        img.src = url;
+        img.alt = "";
+        img.loading = "lazy";
+        img.referrerPolicy = "no-referrer";
+        ucAvatarImgCache[Number(number)] = { src: url, el: img };
+      }
+      span.appendChild(img);
+      return span;
+    }
+    const letter = (name || (Number(number) >= 0 ? `${number}` : "？")).trim().charAt(0) || "？";
+    cls.push("uc-avatar-text", ucAvatarHueClass(name, number, isAi));
+    span.className = cls.join(" ");
+    span.textContent = letter;
+    return span;
+  }
+
   /**
    * 醒目弹出“轮到谁发言”全屏动画通知（所有玩家/观众都能看到）
    * 传入 nextNumber：true 表示显示“接下来谁发言”，false 表示当前发言者本人。
@@ -1376,7 +1412,21 @@
         .find((s) => Number(s.number) === vNum);
       const vName = room.visitor_display_name || "";
       if (mySeat && mySeat.avatar_url) {
-        myAvatar.innerHTML = `<img src="${mySeat.avatar_url}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+        // 复用已加载的 img 节点，避免每次轮询重刷头像（移动端会闪烁）
+        const n = Number(mySeat.number);
+        let cached = ucAvatarImgCache[n];
+        let img;
+        if (cached && cached.src === mySeat.avatar_url) {
+          img = cached.el;
+        } else {
+          img = document.createElement("img");
+          img.src = mySeat.avatar_url;
+          img.alt = "";
+          img.loading = "lazy";
+          img.referrerPolicy = "no-referrer";
+          ucAvatarImgCache[n] = { src: mySeat.avatar_url, el: img };
+        }
+        myAvatar.replaceChildren(img);
       } else if (mySeat && mySeat.is_ai) {
         myAvatar.textContent = (mySeat.display_name || "AI").charAt(0) || "?";
       } else if (vName) {
@@ -2347,7 +2397,7 @@
       const headRow = document.createElement("div");
       headRow.className = "uc-pn-head";
       card.appendChild(headRow);
-      headRow.innerHTML = ucSeatAvatarHtml(Number(p.player_number), "medium", (room.visitor_number && p.player_number === room.visitor_number));
+      headRow.appendChild(ucSeatAvatarNode(Number(p.player_number), "medium", (room.visitor_number && p.player_number === room.visitor_number)));
       const nameLine = document.createElement("strong");
       nameLine.className = "uc-pn-name";
       nameLine.textContent = `${p.player_number}号${p.display_name ? " · " + sanitizeDisplayText(p.display_name) : ""}`;

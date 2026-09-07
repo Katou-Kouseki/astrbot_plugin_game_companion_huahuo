@@ -2456,6 +2456,7 @@ body.dark .uc-speech-box textarea:focus {
   border-radius: 22px;
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 16px;
   background: linear-gradient(160deg, var(--green, #22a06b), #146b49);
   color: #fff;
@@ -2468,9 +2469,10 @@ body.dark .uc-speech-box textarea:focus {
 .speech-turn-notification .stn-text {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  text-align: left;
+  align-items: center;
+  gap: 3px;
+  text-align: center;
+  min-width: 0;
 }
 .speech-turn-notification .stn-text span {
   font-size: 20px;
