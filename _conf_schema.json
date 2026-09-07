@@ -359,6 +359,69 @@
       }
     }
   },
+  "undercover": {
+    "description": "谁是卧底（群操作与战绩播报）",
+    "type": "object",
+    "hint": "涉及 QQ 群操作与定时播报的配置在此设置；其余对局参数在游戏管理台调整。",
+    "items": {
+      "failed_mute_seconds": {
+        "description": "失败方禁言时长（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "对局失败阵营被禁言的秒数，向 60 秒向上取整；0 表示不禁言。"
+      },
+      "violated_mute_seconds": {
+        "description": "违规说出词条禁言时长（秒）",
+        "type": "int",
+        "default": 300,
+        "hint": "平民/卧底误说自己的词条后被禁言的秒数，向 60 秒向上取整；0 表示不禁言。"
+      },
+      "group_announce_enabled": {
+        "description": "开启群通报",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，结算卡上「通报到群」可用，将本局胜负方与惩罚发到开房群（一局一次）。"
+      },
+      "group_announce_auto": {
+        "description": "自动播报",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后每局结束自动发群通报，无需手动点按钮。"
+      },
+      "report_enabled": {
+        "description": "开启战绩日报/周报",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后按下方时间/白名单定时推送谁是卧底战绩榜。"
+      },
+      "report_mode": {
+        "description": "推送频率",
+        "type": "string",
+        "default": "daily",
+        "options": ["daily", "weekly"],
+        "labels": ["每日", "每周"],
+        "hint": "weekly 时每天由 report_weekday 指定星期几推送一次。"
+      },
+      "report_time": {
+        "description": "推送时间（HH:MM）",
+        "type": "string",
+        "default": "09:00",
+        "hint": "本地时间；示例 09:00。周报同样取该时分。"
+      },
+      "report_weekday": {
+        "description": "每周推送的星期（0-6，0=周一）",
+        "type": "int",
+        "default": 1,
+        "hint": "仅 report_mode 为 weekly 时生效；与 report_time 配合。"
+      },
+      "report_groups": {
+        "description": "推送白名单（UMO 会话串）",
+        "type": "text",
+        "default": "",
+        "hint": "每行一个或逗号/空格分隔，例如 UMO:huahuo:GroupMessage:454366619。"
+      }
+    }
+  },
   "memory": {
     "description": "陪伴记忆",
     "type": "object",
