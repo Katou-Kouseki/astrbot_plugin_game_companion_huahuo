@@ -3919,9 +3919,11 @@
     });
   }
 
-  // 保存分享图：优先系统分享（iOS 微信/TIM 内可存相册/转发），退而求其次用下载，再退化为新标签打开长按保存
+  // 保存分享图：
+  // - 移动端（微信/TIM 内嵌 WebView）：优先系统分享面板，方便存相册/转发；退化为下载、再退化为新标签长按保存。
+  // - PC：直接下载图片，并尽量把图片复制进剪贴板，玩家 Ctrl+V 即可粘贴到聊天窗口。
   function savePosterImage(dataUrl, filename) {
-    if (typeof navigator !== "undefined" && navigator.canShare && navigator.share) {
+    if (isMobileUA() && typeof navigator !== "undefined" && navigator.canShare && navigator.share) {
       try {
         const blob = dataUrlToBlob(dataUrl);
         const file = new File([blob], filename, { type: "image/png" });
@@ -3932,20 +3934,49 @@
         }
       } catch (_shareError) { /* 走兜底 */ }
     }
+    if (!isMobileUA()) {
+      // PC：下载 + 复制剪贴板
+      downloadPosterFile(dataUrl, filename);
+      copyPosterToClipboard(dataUrl).then((copied) => {
+        showToast(copied ? "已下载并复制图片，Ctrl+V 即可粘贴" : "已下载战报图片");
+      });
+      return;
+    }
     fallbackSavePoster(dataUrl, filename);
   }
   function fallbackSavePoster(dataUrl, filename) {
     try {
-      const a = document.createElement("a");
-      a.href = dataUrl;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      downloadPosterFile(dataUrl, filename);
     } catch (_dlError) {
       // 极少数 WebView 不支持 a[download]：新标签打开，用户可长按保存
       window.open(dataUrl, "_blank");
     }
+  }
+  function downloadPosterFile(dataUrl, filename) {
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+  // 把 PNG 写入剪贴板（需安全上下文 + Chromium ClipboardItem）；失败静默返回 false
+  function copyPosterToClipboard(dataUrl) {
+    try {
+      const blob = dataUrlToBlob(dataUrl);
+      if (navigator.clipboard && navigator.clipboard.write && window.ClipboardItem) {
+        return navigator.clipboard
+          .write([new window.ClipboardItem({ "image/png": blob })])
+          .then(() => true)
+          .catch(() => false);
+      }
+    } catch (_clipError) { /* 不支持则跳过 */ }
+    return Promise.resolve(false);
+  }
+  function isMobileUA() {
+    return /Android|iPhone|iPad|iPod|Mobile|Windows Phone/i.test(
+      (typeof navigator !== "undefined" && navigator.userAgent) || ""
+    );
   }
   function dataUrlToBlob(dataUrl) {
     const parts = String(dataUrl || "").split(",");
@@ -4012,9 +4043,10 @@
     });
   }
 
-  // 单局「谁是卧底战报」PNG 卡片（纯前端 Canvas 绘制）
+  // 单局「谁是卧底战报」PNG 卡片（纯前端 Canvas 绘制；2x 高清，iOS 相册里也清晰）
   async function undercoverSharePosterUrl(result) {
     if (!result) return "";
+    const scale = 2;
     const W = 640, M = 24, rowH = 54, padTop = 252, headerH = 44, footerH = 72;
     const players = result.players || [];
     const H = padTop + headerH + players.length * rowH + footerH;
@@ -4023,8 +4055,9 @@
       players.filter((p) => p.avatar_url).map((p) => ({ number: p.player_number, url: p.avatar_url }))
     );
     const cv = document.createElement("canvas");
-    cv.width = W; cv.height = H;
+    cv.width = W * scale; cv.height = H * scale;
     const c = cv.getContext("2d");
+    c.scale(scale, scale); // 画布放大，全部按逻辑坐标绘制，输出为 2x 高清图
     const font = (bold, px) => `${bold ? "bold " : ""}${px}px 'PingFang SC','Microsoft YaHei',sans-serif`;
     const rr = (x, y, w, h, r) => {
       c.beginPath(); c.moveTo(x + r, y);
@@ -4034,19 +4067,32 @@
     const campCol = { civilian: "#34d399", undercover: "#c084fc", whiteboard: "#60a5fa" }[result.camp] || "#fbbf24";
     const campCn = { civilian: "平民", undercover: "卧底", whiteboard: "白板" }[result.camp] || result.title || "本局";
 
-    // 背景
+    // 背景（深蓝渐变 + 顶部辉光 + 右下装饰圆 + 暗角，避免大片纯色显得呆板）
     const g = c.createLinearGradient(0, 0, W, H);
     g.addColorStop(0, "#17344f"); g.addColorStop(1, "#101d2a");
     c.fillStyle = g; c.fillRect(0, 0, W, H);
+    const glow = c.createRadialGradient(W / 2, 40, 10, W / 2, 40, 420);
+    glow.addColorStop(0, "rgba(255,255,255,.10)"); glow.addColorStop(1, "rgba(255,255,255,0)");
+    c.fillStyle = glow; c.fillRect(0, 0, W, H);
+    c.save();
+    c.globalAlpha = 0.06;
+    c.strokeStyle = campCol; c.lineWidth = 2;
+    c.beginPath(); c.arc(W + 60, H - 40, 150, 0, Math.PI * 2); c.stroke();
+    c.beginPath(); c.arc(W + 90, H - 10, 90, 0, Math.PI * 2); c.stroke();
+    c.restore();
+    const vig = c.createRadialGradient(W / 2, H / 2, H * 0.42, W / 2, H / 2, H * 0.78);
+    vig.addColorStop(0, "rgba(0,0,0,0)"); vig.addColorStop(1, "rgba(0,0,0,.34)");
+    c.fillStyle = vig; c.fillRect(0, 0, W, H);
 
     // 顶部横幅
     const hg = c.createLinearGradient(0, 0, W, padTop);
     hg.addColorStop(0, "#1d4f86"); hg.addColorStop(1, "#14355a");
     c.fillStyle = hg; c.fillRect(0, 0, W, padTop);
     c.fillStyle = campCol; c.fillRect(0, padTop - 4, W, 4); // 主题色强调线
+    c.save();
     c.globalAlpha = 0.08; c.font = font(true, 120); c.textAlign = "right";
     c.fillStyle = "#ffffff"; c.fillText(result.icon || "🕵️", W - 26, padTop - 28);
-    c.globalAlpha = 1;
+    c.restore();
     c.textAlign = "left";
     c.font = font(false, 20); c.fillStyle = "#9fc4ec"; c.fillText("🕵️ 谁是卧底 · 单局战报", M, 42);
     // 以“我”的视角生成一句有趣文案（随机多款）
@@ -4116,8 +4162,11 @@
       c.font = font(false, 14);
       c.fillText(p.is_out ? "✖ 已出局" : "● 存活", forShareCol(3), y + 33);
     });
-    // 底部
-    // 右下角水印
+    // 底部：分隔线 + 左侧标语 + 右下角水印
+    c.fillStyle = "rgba(255,255,255,.08)"; c.fillRect(M, H - 42, W - 2 * M, 1);
+    c.textAlign = "left";
+    c.font = font(false, 13); c.fillStyle = "rgba(160,180,205,.75)";
+    c.fillText("🕵️ 谁是卧底 · 花火陪你玩", M, H - 22);
     c.textAlign = "right";
     c.font = font(false, 14); c.fillStyle = "rgba(140,160,185,.65)";
     c.fillText("由 花火 监督生成", W - M, H - 22);
@@ -4128,14 +4177,17 @@
   // 横幅式横版 + 超大获胜阵营字 + 醒目药丸词条，适合群里一眼看清战况
   async function undercoverAnnouncePosterUrl(result) {
     if (!result) return "";
-    const W = 720, H = 600, M = 46;
+    const scale = 1.5; // 720 -> 1080 宽，群里也足够清晰，同时控制 base64 体积
+    const W = 720, H = 660, M = 46;
     const players = result.players || [];
     const camp = result.camp;
     const campCn = { civilian: "平民", undercover: "卧底", whiteboard: "白板" }[camp] || "";
     const campCol = { civilian: "#7dffb0", undercover: "#dda9ff", whiteboard: "#9ccbff" }[camp] || "#ffd166";
+    const campName = { civilian: "平民", undercover: "卧底", whiteboard: "白板" };
     const cv = document.createElement("canvas");
-    cv.width = W; cv.height = H;
+    cv.width = W * scale; cv.height = H * scale;
     const c = cv.getContext("2d");
+    c.scale(scale, scale); // 画布放大，全部按逻辑坐标绘制
     const font = (bold, px) => `${bold ? "bold " : ""}${px}px 'PingFang SC','Microsoft YaHei',sans-serif`;
     const rr = (x, y, w, h, r) => {
       c.beginPath(); c.moveTo(x + r, y);
@@ -4160,10 +4212,10 @@
     // 顶部标题行
     c.textAlign = "left";
     c.font = font(true, 22); c.fillStyle = "#ffd9a0";
-    c.fillText("📢 谁是卧底 · 战况通知", M, 62);
+    c.fillText("📢 谁是卧底 · 战况通知", M, 64);
     c.font = font(false, 16); c.fillStyle = "rgba(255,255,255,.6)";
     const titleTxt = truncatePosterText(c, result.title || "本局已结束", W - 2 * M - 200);
-    c.textAlign = "right"; c.fillText(titleTxt, W - M, 62);
+    c.textAlign = "right"; c.fillText(titleTxt, W - M, 64);
     c.textAlign = "left";
 
     // 中央大字：获胜阵营（超大字号 + 阵营色描边，大字报的醒目感）
@@ -4174,23 +4226,26 @@
     c.textBaseline = "middle";
     c.lineJoin = "round";
     c.strokeStyle = "rgba(0,0,0,.5)"; c.lineWidth = 12;
-    c.strokeText(bigText, (W - bigW) / 2, 185);
+    c.strokeText(bigText, (W - bigW) / 2, 182);
     c.fillStyle = campCol;
-    c.fillText(bigText, (W - bigW) / 2, 185);
+    c.fillText(bigText, (W - bigW) / 2, 182);
     c.textBaseline = "alphabetic";
 
-    // 获胜玩家名单（金色大号）
+    // 获胜玩家名单（金色大号，可换行最多 3 行；与大标题保持足够间距）
     const winners = players
       .filter((p) => p.camp === camp)
       .map((p) => `${p.player_number}号${p.display_name || ""}`.trim());
+    let wLineCount = 0;
     if (winners.length) {
       const wText = "🎉 " + winners.join(" · ");
-      const wLines = wrapPosterLines(c, wText, W - 2 * M, font(true, 27), 2);
+      const wLines = wrapPosterLines(c, wText, W - 2 * M, font(true, 26), 3);
+      wLineCount = wLines.length;
       c.fillStyle = "#ffe3b0";
-      wLines.forEach((ln, i) => c.fillText(ln, (W - c.measureText(ln).width) / 2, 262 + i * 38));
+      wLines.forEach((ln, i) => c.fillText(ln, (W - c.measureText(ln).width) / 2, 270 + i * 40));
     }
 
-    // 词条双药丸（比分享战报更大更醒目；过宽时缩小字号分两行）
+    // 词条双药丸（比分享战报更大更醒目；位置随胜利方行数下移；过宽时缩小字号分两行）
+    const pillTop = 296 + Math.max(1, wLineCount) * 40;
     const pill = (text, x, y, w, col, fg, fs) => {
       rr(x, y, w, 46, 23); c.fillStyle = col; c.fill();
       c.font = font(true, fs); c.fillStyle = fg; c.textAlign = "center"; c.textBaseline = "middle";
@@ -4206,8 +4261,8 @@
       const gap = 20;
       const x0 = (W - (cwW + gap + uwW)) / 2;
       if (x0 >= M) {
-        pill(truncatePosterText(c, cwT, 300), x0, 350, cwW, "rgba(125,255,176,.16)", "#b6ffd6", 20);
-        pill(truncatePosterText(c, uwT, 300), x0 + cwW + gap, 350, uwW, "rgba(221,169,255,.16)", "#ecc9ff", 20);
+        pill(truncatePosterText(c, cwT, 300), x0, pillTop, cwW, "rgba(125,255,176,.16)", "#b6ffd6", 20);
+        pill(truncatePosterText(c, uwT, 300), x0 + cwW + gap, pillTop, uwW, "rgba(221,169,255,.16)", "#ecc9ff", 20);
       } else {
         // 一行放不下：缩小字号，分上下两行
         c.font = font(true, 18);
@@ -4215,24 +4270,26 @@
         const uw2 = truncatePosterText(c, uwT, 440);
         const w1 = c.measureText(cw2).width + 34;
         const w2 = c.measureText(uw2).width + 34;
-        pill(cw2, (W - w1) / 2, 344, w1, "rgba(125,255,176,.16)", "#b6ffd6", 18);
-        pill(uw2, (W - w2) / 2, 402, w2, "rgba(221,169,255,.16)", "#ecc9ff", 18);
+        pill(cw2, (W - w1) / 2, pillTop, w1, "rgba(125,255,176,.16)", "#b6ffd6", 18);
+        pill(uw2, (W - w2) / 2, pillTop + 56, w2, "rgba(221,169,255,.16)", "#ecc9ff", 18);
       }
       c.textAlign = "left"; // 药丸内部置 center，画完恢复，避免后续文字错位
     }
 
-    // 底部：失败方（灰白小字）
+    // 底部：失败方（灰白小字，带身份）
     const losers = players.filter((p) => p.camp && p.camp !== camp);
     if (losers.length) {
-      const lText = "败方：" + losers.map((p) => `${p.player_number}号${p.display_name || ""}`.trim()).join("、");
+      const lText = "💔 败方：" + losers.map(
+        (p) => `${p.player_number}号${p.display_name || ""}`.trim() + `（${campName[p.camp] || p.camp || "?"}）`
+      ).join("、");
       c.font = font(false, 17); c.fillStyle = "rgba(255,255,255,.55)";
       const lLines = wrapPosterLines(c, lText, W - 2 * M - 150, font(false, 17), 2);
-      lLines.forEach((ln, i) => c.fillText(ln, M, H - 76 + i * 26));
+      lLines.forEach((ln, i) => c.fillText(ln, M, H - 84 + i * 26));
     }
     // 右下角水印
     c.textAlign = "right";
     c.font = font(false, 14); c.fillStyle = "rgba(255,255,255,.4)";
-    c.fillText("由 花火 监督生成", W - M, H - 30);
+    c.fillText("由 花火 监督生成", W - M, H - 32);
     return cv.toDataURL("image/png");
   }
 

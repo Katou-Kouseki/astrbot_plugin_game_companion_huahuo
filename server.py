@@ -82,10 +82,9 @@ class GameRoomServer:
     def _build_app(self) -> web.Application:
         """Build the room application for the real server and isolated tests."""
         app = web.Application(
-            # A 384 KiB image expands to slightly over 512 KiB once base64 and
-            # the JSON envelope are included. Raw image validation remains
-            # capped in the plugin before it reaches the visual provider.
-            client_max_size=768 * 1024,
+            # 通知到群的海报图以 base64 放进 JSON 请求体（1080 宽 PNG 约 300-900KB，
+            # base64 膨胀 1/3，预留 2MB 足够；图片拉取验证仍由插件负责）。
+            client_max_size=2 * 1024 * 1024,
             middlewares=[self._error_middleware],
         )
         app.router.add_get("/", self._serve_index)

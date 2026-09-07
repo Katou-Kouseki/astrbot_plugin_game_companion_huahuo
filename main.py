@@ -3713,13 +3713,18 @@ class GameCompanionPlugin(Star):
             text = self._undercover_fallback_recap()
         else:
             prompt = (
-                "请为一局「谁是卧底」生成简短复盘（中文，2~4 句，口语化、不写感谢语）。\n"
+                "请为一局「谁是卧底」生成简短复盘（中文，2~4 句，俏皮口吻，"
+                "可以带点网络梗和适度 emoji，不要标题、不要编号、不要客套感谢语）。\n"
                 f"结局：{title}\n对局情况：{gap or '（无额外明细）'}\n"
-                "要点：谁最早出局/发挥如何、是否存在明显可疑发言、胜利方为什么赢。"
+                "风格参考：像游戏里的毒舌解说员，点出局里的名场面（谁最快暴露、"
+                "谁演技炸裂、谁被冤出局），结尾可以随口调侃一句。"
             )
             text = await self._llm_gen_neutral(
                 prompt,
-                system_prompt="你是冷静的复盘叙述者，只输出复盘正文，不要标题、不要编号、不要 emoji。",
+                system_prompt=(
+                    "你是古灵精怪的复盘解说员「花火」，点评犀利又俏皮，"
+                    "只用中文输出复盘正文，不要标题、不要编号。"
+                ),
             )
             text = (text or self._undercover_fallback_recap()).strip()
         if uid:
@@ -3728,7 +3733,10 @@ class GameCompanionPlugin(Star):
 
     @staticmethod
     def _undercover_fallback_recap() -> str:
-        return "本局已结束。建议复盘一下关键的几轮投票与发言，找出谁是破局的转折点。"
+        return (
+            "这局水有点深呀～建议复盘下关键的几轮发言和投票，"
+            "看看是谁演技炸裂、又是谁被冤出局的。"
+        )
 
     async def undercover_announce_result(
         self, room: GameRoom, image_data: str = ""
@@ -3755,7 +3763,7 @@ class GameCompanionPlugin(Star):
         # 文案：标题 → 词条 → 胜利方（列出玩家名）→ 失败方（不写惩罚）
         lines = [f"🕵️ 谁是卧底战报：{title}"]
         if cw or uw:
-            lines.append(f"词条：平民「{cw}」/ 卧底「{uw}」")
+            lines.append(f"📌 词条：平民「{cw}」/ 卧底「{uw}」")
         if camp:
             camp_text = {
                 "civilian": "平民", "undercover": "卧底", "whiteboard": "白板",
@@ -3766,7 +3774,7 @@ class GameCompanionPlugin(Star):
                 if getattr(p, "camp", None) == camp
             ]
             lines.append(
-                f"胜利方：{camp_text}"
+                f"🏆 胜利方：{camp_text}"
                 + (f"（{'、'.join(winners)}）" if winners else "")
             )
         losers = [
@@ -3774,11 +3782,15 @@ class GameCompanionPlugin(Star):
             if getattr(p, "camp", None) and p.camp != camp
         ]
         if losers:
+            camp_text_of = {
+                "civilian": "平民", "undercover": "卧底", "whiteboard": "白板",
+            }
             names = "、".join(
                 f"{getattr(p, 'number', '?')}号{getattr(p, 'display_name', '') or ''}"
+                f"（{camp_text_of.get(getattr(p, 'camp', ''), getattr(p, 'camp', '') or '?')}）"
                 for p in losers
             )
-            lines.append(f"失败方：{names}")
+            lines.append(f"💔 失败方：{names}")
         text = "\n".join(lines)
         # 结合「花火复盘」：共用同一局缓存
         try:

@@ -1385,6 +1385,10 @@ body.dark .uc-avatar-tone-neutral { color: var(--text-strong, #f0f0f0); }
   transform: translateY(1px);
 }
 .uc-badge-wrap { position: relative; display: inline-flex; }
+/* 移动端屏幕窄，徽章适当缩小，避免占太多行高 */
+@media (max-width: 640px) {
+  .uc-badge-mini { padding: .08rem .26rem; font-size: .66rem; }
+}
 /* 徽章独立行：与身份/词条徽章分开，用分隔线强调是“藏品”区，避免结算后与词条挤在一起 */
 .uc-badge-row {
   display: flex;

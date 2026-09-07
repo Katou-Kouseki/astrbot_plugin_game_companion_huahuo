@@ -311,18 +311,28 @@ class RoomManager:
     def clear_global_stats(self, game_type: str | None = None) -> int:
         """清空全局胜场排行榜：game_type 为空时清空全部游戏类型，否则只清该类型。
 
+        谁是卧底的分阵营胜场（徽章数据源 undercover_camp_wins.json）同步清空，
+        避免管理台清完排行榜后徽章仍残留旧胜场。
+
         返回被清空的游戏类型数量（0 表示没有可清理的数据或未启用持久化）。
         """
         if self.global_stats_path is None:
             return 0
+        cleared = 0
         if game_type:
             if game_type not in self.global_player_wins:
                 return 0
             del self.global_player_wins[game_type]
+            cleared = 1
         else:
             self.global_player_wins.clear()
+            cleared = 1
         self._save_global_stats()
-        return 1
+        # 谁是卧底分阵营胜场与排行榜同步清空（含清空全部时）
+        if (not game_type or game_type == "undercover") and self.undercover_camp_wins:
+            self.undercover_camp_wins.clear()
+            self._save_undercover_camp_wins()
+        return cleared
 
     def record_operation(
         self, action: str, detail: str = "", operator: str = ""
