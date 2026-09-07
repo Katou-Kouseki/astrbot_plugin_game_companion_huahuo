@@ -256,10 +256,12 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
         "game_type": "undercover",
         "label": "谁是卧底",
         "description": "多人社交推理：每人随机词条，按轮次发言描述，投票淘汰可疑玩家。",
+        # 启用开关在 AstrBot 配置中的键名：对局参数键统一为中文键（历史英文键由 _migrate_undercover_config_keys 迁移）
+        "enabled_key": "undercover.启用谁是卧底",
         "fields": (
             {
                 "key": "max_players",
-                "config_key": "undercover.max_players",
+                "config_key": "undercover.最大玩家席",
                 "label": "最大玩家席",
                 "type": "int",
                 "default": 10,
@@ -270,7 +272,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "min_players",
-                "config_key": "undercover.min_players",
+                "config_key": "undercover.最低开局人数",
                 "label": "最低开局人数",
                 "type": "int",
                 "default": 2,
@@ -281,7 +283,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "camp_scales_default",
-                "config_key": "undercover.camp_scales_default",
+                "config_key": "undercover.默认阵营比例",
                 "label": "默认阵营比例（平民 卧底 白板）",
                 "type": "str",
                 "default": "4 1 0",
@@ -289,7 +291,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "allow_host_customize_camp_scales",
-                "config_key": "undercover.allow_host_customize_camp_scales",
+                "config_key": "undercover.允许房主自定义阵营比例",
                 "label": "允许首位玩家（房主）自定义阵营比例",
                 "type": "bool",
                 "default": True,
@@ -297,7 +299,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "match_seconds",
-                "config_key": "undercover.match_seconds",
+                "config_key": "undercover.匹配等待时长",
                 "label": "匹配等待时长",
                 "type": "int",
                 "default": 180,
@@ -308,7 +310,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "prepare_seconds",
-                "config_key": "undercover.prepare_seconds",
+                "config_key": "undercover.发词准备时长",
                 "label": "发词准备时长",
                 "type": "int",
                 "default": 10,
@@ -319,7 +321,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "speaking_seconds",
-                "config_key": "undercover.speaking_seconds",
+                "config_key": "undercover.单人次发言时长上限",
                 "label": "单人次发言时长上限",
                 "type": "int",
                 "default": 160,
@@ -330,7 +332,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "voting_seconds",
-                "config_key": "undercover.voting_seconds",
+                "config_key": "undercover.投票时长上限",
                 "label": "投票时长上限",
                 "type": "int",
                 "default": 120,
@@ -341,7 +343,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "first_round_non_voting",
-                "config_key": "undercover.first_round_non_voting",
+                "config_key": "undercover.首轮不投票的最低存活人数",
                 "label": "首轮不投票的最低存活人数",
                 "type": "int",
                 "default": 3,
@@ -352,7 +354,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "send_identity_in_card",
-                "config_key": "undercover.send_identity_in_card",
+                "config_key": "undercover.告知身份",
                 "label": "告知身份（开场发放身份/词条卡）",
                 "type": "bool",
                 "default": True,
@@ -360,7 +362,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "show_voters",
-                "config_key": "undercover.show_voters",
+                "config_key": "undercover.投票结算展示具体投票人",
                 "label": "投票结算展示具体投票人",
                 "type": "bool",
                 "default": False,
@@ -368,7 +370,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "similarity",
-                "config_key": "undercover.similarity",
+                "config_key": "undercover.发言相似度阈值",
                 "label": "发言相似度阈值",
                 "type": "int",
                 "default": 80,
@@ -379,7 +381,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "ai_fill_enabled",
-                "config_key": "undercover.ai_fill_enabled",
+                "config_key": "undercover.开启AI玩家自动补位",
                 "label": "开启 AI 玩家自动补位（可作为人数不足的后备玩法）",
                 "type": "bool",
                 "default": True,
@@ -387,7 +389,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             },
             {
                 "key": "ai_fill_min_players",
-                "config_key": "undercover.ai_fill_min_players",
+                "config_key": "undercover.AI补位后的最低总人数",
                 "label": "AI 补位后的最低总人数",
                 "type": "int",
                 "default": 3,
@@ -399,6 +401,39 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
         ),
     },
 )
+
+
+def _game_enabled_key(game_type: str) -> str:
+    """返回某游戏「启用开关」在 AstrBot 配置中的键名。
+
+    谁是卧底对局参数的历史英文键已统一迁移为中文键（见 _UNDERCOVER_LEGACY_CONFIG_KEYS）。
+    """
+    for definition in GAME_CATALOG:
+        if str(definition["game_type"]) == game_type:
+            return str(definition.get("enabled_key") or f"{game_type}.enabled")
+    return f"{game_type}.enabled"
+
+
+# 谁是卧底对局参数：旧英文配置键 → (中文键, 默认值)
+# 早期版本把游戏管理台保存的参数直接写进 AstrBot 配置，导致插件配置页出现一排英文键；
+# 现统一改为中文键，加载时自动迁移旧值并清理旧键。
+_UNDERCOVER_LEGACY_CONFIG_KEYS: dict[str, tuple[str, object]] = {
+    "undercover.enabled": ("undercover.启用谁是卧底", True),
+    "undercover.max_players": ("undercover.最大玩家席", 10),
+    "undercover.min_players": ("undercover.最低开局人数", 2),
+    "undercover.camp_scales_default": ("undercover.默认阵营比例", "4 1 0"),
+    "undercover.allow_host_customize_camp_scales": ("undercover.允许房主自定义阵营比例", True),
+    "undercover.match_seconds": ("undercover.匹配等待时长", 180),
+    "undercover.prepare_seconds": ("undercover.发词准备时长", 10),
+    "undercover.speaking_seconds": ("undercover.单人次发言时长上限", 160),
+    "undercover.voting_seconds": ("undercover.投票时长上限", 120),
+    "undercover.first_round_non_voting": ("undercover.首轮不投票的最低存活人数", 3),
+    "undercover.send_identity_in_card": ("undercover.告知身份", True),
+    "undercover.show_voters": ("undercover.投票结算展示具体投票人", False),
+    "undercover.similarity": ("undercover.发言相似度阈值", 80),
+    "undercover.ai_fill_enabled": ("undercover.开启AI玩家自动补位", True),
+    "undercover.ai_fill_min_players": ("undercover.AI补位后的最低总人数", 3),
+}
 
 
 @dataclass(slots=True)
@@ -533,6 +568,8 @@ class GameCompanionPlugin(Star):
         self.plugin_root = Path(__file__).resolve().parent
         self.data_dir = Path(StarTools.get_data_dir(PLUGIN_NAME))
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        # 历史遗留的英文对局参数键迁移为中文键（必须在任何 undercover 读取之前执行）
+        self._migrate_undercover_config_keys()
 
         self.server_enabled = self._cfg_bool("server.enabled", True)
         self.server_host = self._cfg_str("server.host", "127.0.0.1") or "127.0.0.1"
@@ -619,7 +656,7 @@ class GameCompanionPlugin(Star):
             "game.commentary_cooldown_seconds", 45, minimum=10, maximum=600
         )
         self.enabled_games: dict[GameType, bool] = {
-            game_type: self._cfg_bool(f"{game_type}.enabled", True)
+            game_type: self._cfg_bool(_game_enabled_key(game_type), True)
             for game_type in SUPPORTED_GAMES
         }
         self.turtle_soup_max_hints = self._cfg_int(
@@ -646,42 +683,42 @@ class GameCompanionPlugin(Star):
         self.blackjack_max_players = self._cfg_int(
             "blackjack.max_players", 1, minimum=1, maximum=6
         )
-        # ------------------------ 谁是卧底配置 ------------------------
+        # ------------------------ 谁是卧底配置（键名与插件配置页中文键一致） ------------------------
         self.undercover_max_players = self._cfg_int(
-            "undercover.max_players", 10, minimum=2, maximum=20
+            "undercover.最大玩家席", 10, minimum=2, maximum=20
         )
         self.undercover_min_players = self._cfg_int(
-            "undercover.min_players", 2, minimum=2, maximum=10
+            "undercover.最低开局人数", 2, minimum=2, maximum=10
         )
         self.undercover_camp_scales_default = (
-            self._cfg_str("undercover.camp_scales_default", "4 1 0") or "4 1 0"
+            self._cfg_str("undercover.默认阵营比例", "4 1 0") or "4 1 0"
         )
         self.undercover_allow_host_customize_camp_scales = self._cfg_bool(
-            "undercover.allow_host_customize_camp_scales", True
+            "undercover.允许房主自定义阵营比例", True
         )
         self.undercover_match_seconds = self._cfg_int(
-            "undercover.match_seconds", 180, minimum=10, maximum=600
+            "undercover.匹配等待时长", 180, minimum=10, maximum=600
         )
         self.undercover_prepare_seconds = self._cfg_int(
-            "undercover.prepare_seconds", 10, minimum=0, maximum=120
+            "undercover.发词准备时长", 10, minimum=0, maximum=120
         )
         self.undercover_speaking_seconds = self._cfg_int(
-            "undercover.speaking_seconds", 160, minimum=0, maximum=600
+            "undercover.单人次发言时长上限", 160, minimum=0, maximum=600
         )
         self.undercover_voting_seconds = self._cfg_int(
-            "undercover.voting_seconds", 120, minimum=0, maximum=600
+            "undercover.投票时长上限", 120, minimum=0, maximum=600
         )
         self.undercover_first_round_non_voting = self._cfg_int(
-            "undercover.first_round_non_voting", 3, minimum=2, maximum=10
+            "undercover.首轮不投票的最低存活人数", 3, minimum=2, maximum=10
         )
         self.undercover_send_identity_in_card = self._cfg_bool(
-            "undercover.send_identity_in_card", True
+            "undercover.告知身份", True
         )
         self.undercover_show_voters = self._cfg_bool(
-            "undercover.show_voters", False
+            "undercover.投票结算展示具体投票人", False
         )
         self.undercover_similarity = self._cfg_int(
-            "undercover.similarity", 80, minimum=0, maximum=100
+            "undercover.发言相似度阈值", 80, minimum=0, maximum=100
         )
         # 失败禁言 / 违规禁言（单位：秒，0 表示不禁言；默认 60 / 300）
         self.undercover_failed_mute_seconds = self._cfg_int(
@@ -691,10 +728,10 @@ class GameCompanionPlugin(Star):
             "undercover.violated_mute_seconds", 300, minimum=0, maximum=3600
         )
         self.undercover_ai_fill_enabled = self._cfg_bool(
-            "undercover.ai_fill_enabled", True
+            "undercover.开启AI玩家自动补位", True
         )
         self.undercover_ai_fill_min_players = self._cfg_int(
-            "undercover.ai_fill_min_players", 3, minimum=2, maximum=8
+            "undercover.AI补位后的最低总人数", 3, minimum=2, maximum=8
         )
         # 群通报（本局胜负+惩罚发到开房游戏群）：总开关 + 是否自动播报；
         # 关闭自动时由结算卡「通报到群」按钮手动触发。属插件配置，不在管理台展示。
@@ -707,6 +744,10 @@ class GameCompanionPlugin(Star):
         self.group_announce_style = (
             self._cfg_str("undercover.group_announce_style", "text") or "text"
         ).lower()
+        # 群通报是否附带「花火复盘」：关闭后只发战报本身，图文模式复盘放在图片之后
+        self.group_announce_recap = self._cfg_bool(
+            "undercover.group_announce_recap", True
+        )
         # 谁是卧底战绩报表（配置项先行，定时触发后续）：白名单为空格/逗号分隔的 UMO 会话串，
         # 例如 UMO:huahuo:GroupMessage:454366619。
         self.undercover_report_enabled = self._cfg_bool(
@@ -3793,16 +3834,23 @@ class GameCompanionPlugin(Star):
             )
             lines.append(f"💔 失败方：{names}")
         text = "\n".join(lines)
-        # 结合「花火复盘」：共用同一局缓存
-        try:
-            recap = await self.undercover_recap(room)
-        except Exception:
-            recap = ""
+        # 结合「花火复盘」：共用同一局缓存；是否附带复盘由配置 group_announce_recap 控制
+        recap = ""
+        if getattr(self, "group_announce_recap", True):
+            try:
+                recap = await self.undercover_recap(room)
+            except Exception:
+                recap = ""
         style = (getattr(self, "group_announce_style", "text") or "text").lower()
         want_image = style in {"image", "both"}
         want_text = style in {"text", "both"}
         if not want_text and not want_image:
             want_text = True  # 兜底：未知配置按仅文字
+        if style == "image" and image_data:
+            # 纯图片模式：只发图（可选附带复盘）；附带复盘时图片前加一行标题，不发详情
+            title_line = f"🕵️ 谁是卧底战报：{title}" if recap else ""
+            await self._send_to_origin_image(room, title_line, image_data, recap)
+            return title_line
         if want_image and image_data:
             await self._send_to_origin_image(
                 room, text if want_text else "", image_data, recap if want_text else ""
@@ -4562,7 +4610,7 @@ class GameCompanionPlugin(Star):
                     "game_type": game_type,
                     "label": definition["label"],
                     "description": definition["description"],
-                    "enabled": self._cfg_bool(f"{game_type}.enabled", True),
+                    "enabled": self._cfg_bool(_game_enabled_key(game_type), True),
                     "fields": fields,
                 }
             )
@@ -4599,7 +4647,7 @@ class GameCompanionPlugin(Star):
             if "enabled" in submitted:
                 if not isinstance(submitted["enabled"], bool):
                     raise ValueError(f"{self._game_label(game_type)}开关必须是布尔值")
-                changes[f"{game_type}.enabled"] = submitted["enabled"]
+                changes[_game_enabled_key(game_type)] = submitted["enabled"]
             for key, value in submitted.items():
                 if key == "enabled":
                     continue
@@ -4676,9 +4724,50 @@ class GameCompanionPlugin(Star):
             return
         self.config.update(patch)
 
+    def _migrate_undercover_config_keys(self) -> None:
+        """把历史遗留的英文对局参数键迁移为中文键（插件配置页不再出现英文项）。
+
+        早期版本把游戏管理台保存的参数直接写进 AstrBot 配置（如 undercover.max_players），
+        现统一为中文键（如 undercover.最大玩家席）。加载时把旧键的值搬进新键、删掉旧键，
+        保留用户已保存的对局参数；新键只有 schema 默认值时也会被旧值覆盖。
+        """
+        try:
+            config = self.config
+            if not isinstance(config, dict):
+                return
+            changed = False
+            # 嵌套存储：config["undercover"] = {"max_players": ...}
+            section = config.get("undercover")
+            if isinstance(section, dict):
+                for legacy, (chinese, default) in _UNDERCOVER_LEGACY_CONFIG_KEYS.items():
+                    old_key = legacy.split(".", 1)[1]
+                    new_key = chinese.split(".", 1)[1]
+                    if old_key not in section:
+                        continue
+                    current = section.get(new_key)
+                    if current is None or current == default:
+                        section[new_key] = section[old_key]
+                    section.pop(old_key, None)
+                    changed = True
+            # 平铺存储：config["undercover.max_players"] = ...
+            for legacy, (chinese, default) in _UNDERCOVER_LEGACY_CONFIG_KEYS.items():
+                if legacy not in config:
+                    continue
+                current = config.get(chinese)
+                if current is None or current == default:
+                    config[chinese] = config[legacy]
+                config.pop(legacy, None)
+                changed = True
+            if changed:
+                save = getattr(config, "save_config", None)
+                if callable(save):
+                    save()
+        except Exception as exc:
+            logger.warning("[GameCompanion] 谁是卧底配置键迁移失败（不影响运行）: %s", exc)
+
     def _apply_game_settings_runtime(self) -> None:
         self.enabled_games = {
-            game_type: self._cfg_bool(f"{game_type}.enabled", True)
+            game_type: self._cfg_bool(_game_enabled_key(game_type), True)
             for game_type in SUPPORTED_GAMES
         }
         self.manager.enabled_games.update(self.enabled_games)

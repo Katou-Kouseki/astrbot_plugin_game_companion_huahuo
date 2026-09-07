@@ -781,7 +781,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   color: var(--muted, #707873);
   line-height: 1.5;
 }
-/* 身份卡上的本局编号 */
+/* 身份卡上的本局座位号 */
 .uc-reveal-gameno {
   margin: 0 0 14px;
   font-size: 12px;
@@ -2666,9 +2666,14 @@ body.dark .uc-speech-box textarea:focus {
   flex: 1 1 0;
   min-height: 44px;
 }
-/* 移动端「请投票」主字号缩小，避免过大占屏 */
+/* 移动端「请投票」整体缩小，避免弹窗/停靠条换行不美观 */
 @media (max-width: 600px) {
-  .vote-turn-notification .stn-text strong { font-size: 26px; }
+  .vote-turn-notification .stn-text strong { font-size: 20px; }
+  .vote-turn-notification .stn-text { gap: 4px; }
+  .vote-turn-notification.is-dock .stn-text { flex-wrap: nowrap; gap: 0 6px; }
+  .vote-turn-notification.is-dock .stn-text strong { font-size: 14px; white-space: nowrap; }
+  .vote-turn-notification.is-dock.is-urgent .stn-text strong { font-size: 16px; }
+  .vote-turn-notification.is-dock .stn-text .speech-sec { font-size: 11px; white-space: nowrap; }
 }
 
 /* ====== 房间成员：玩家/观众分组 ====== */

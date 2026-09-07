@@ -17,7 +17,6 @@
   let ucLastRoundCount = 0;          // 上一帧时间线已渲染的轮次数（用于新轮高亮）
   let ucVoteFlipTimeout = null;       // 票数「？」→数字翻拍的延时句柄
   let ucRevealLockTimer = null;       // 身份卡确认按钮的解锁倒计时句柄（按发词准备时长锁定）
-  let ucRevealGameUid = "";           // 本局编号（显示在身份卡上）
   let ucLastHostScalesKey = "";        // 上次渲染的房主阵营比例键（用于仅在校验变化时回填输入框）
   let ucLastResult = null;             // 本局结果快照，供「分享战报」canvas 生成 PNG
   let ucShownResultUid = "";           // 当前结算卡已展示的游戏 uid（用于跨轮询只在换局时重置按钮状态）
@@ -570,7 +569,8 @@
     const wordEl = document.getElementById("ucRevealWord");
     const hintEl = document.getElementById("ucRevealHint");
     const gameNoEl = document.getElementById("ucRevealGameNo");
-    if (gameNoEl) gameNoEl.textContent = ucRevealGameUid ? `本局编号：${ucRevealGameUid}` : "";
+    // 展示本局座位号（每局给玩家排的座次）
+    if (gameNoEl) gameNoEl.textContent = my.player_number ? `本局座位号：${my.player_number} 号` : "";
     if (my.camp) {
       const campMap = {
         civilian: ["平民", "is-civilian", "你是平民：你的词条和大多数玩家一致。找到卧底，把卧底投票出局即可获胜。"],
@@ -646,9 +646,8 @@
     tick();
     ucPreheatCounter = window.setInterval(tick, 500);
   }
-  function revealUcIdentity(my, gameUid) {
+  function revealUcIdentity(my) {
     if (!my || (!my.camp && !my.word)) return;
-    ucRevealGameUid = String(gameUid || "");
     const overlay = document.getElementById("ucRevealOverlay");
     if (!overlay) return;
     const cardEl = document.getElementById("ucRevealCard");
@@ -1001,6 +1000,15 @@
   // 复用已加载的 QQ 头像 <img> 节点：玩家网格每次轮询都会重建卡片，
   // 若不复用 img，移动端会反复重新请求 qlogo 导致头像闪烁。
   const ucAvatarImgCache = {}; // 座位号 -> {src, el}
+  const ucAvatarImgFailed = new Set(); // 座位号：头像加载失败过，本轮回退首字占位（刷新页面后重试）
+
+  // img 加载失败 → 用首字占位替换，避免显示破图/空白
+  function ucAvatarFallbackNode(span, name, number, isAi, isMine, cls) {
+    span.replaceChildren();
+    const letter = (name || (Number(number) >= 0 ? `${number}` : "？")).trim().charAt(0) || "？";
+    span.textContent = letter;
+    span.className = [...cls, "uc-avatar-text", ucAvatarHueClass(name, number, isAi)].join(" ");
+  }
   function ucSeatAvatarNode(number, size = "medium", isMine = false) {
     const seats = Array.isArray(room?.player_seats) ? room.player_seats : [];
     const seat = seats.find((s) => Number(s.number) === Number(number));
@@ -1010,7 +1018,7 @@
     const cls = ["uc-avatar", `uc-avatar-${size}`];
     const span = document.createElement("span");
     if (isMine) cls.push("is-me");
-    if (url) {
+    if (url && !ucAvatarImgFailed.has(Number(number))) {
       span.className = cls.join(" ");
       let cached = ucAvatarImgCache[Number(number)];
       let img;
@@ -1024,6 +1032,13 @@
         img.referrerPolicy = "no-referrer";
         ucAvatarImgCache[Number(number)] = { src: url, el: img };
       }
+      img.onerror = () => {
+        if (!img._ucFallbackApplied) {
+          img._ucFallbackApplied = true;
+          ucAvatarImgFailed.add(Number(number));
+          if (span.isConnected) ucAvatarFallbackNode(span, name, number, isAi, isMine, cls);
+        }
+      };
       span.appendChild(img);
       return span;
     }
@@ -1507,7 +1522,9 @@
       const mySeat = (Array.isArray(room.player_seats) ? room.player_seats : [])
         .find((s) => Number(s.number) === vNum);
       const vName = room.visitor_display_name || "";
-      if (mySeat && mySeat.avatar_url) {
+      // 头像曾加载失败（本轮回退首字占位），避免反复请求破图/空白；刷新页面后重试
+      const seatAvatarFailed = !!(mySeat && mySeat.avatar_url && ucAvatarImgFailed.has(Number(mySeat.number)));
+      if (mySeat && mySeat.avatar_url && !seatAvatarFailed) {
         // 复用已加载的 img 节点，避免每次轮询重刷头像（移动端会闪烁）
         const n = Number(mySeat.number);
         let cached = ucAvatarImgCache[n];
@@ -1522,15 +1539,30 @@
           img.referrerPolicy = "no-referrer";
           ucAvatarImgCache[n] = { src: mySeat.avatar_url, el: img };
         }
+        // 头像加载失败：回退首字占位，避免空白/破图
+        img.onerror = () => {
+          if (!img._ucFallbackApplied) {
+            img._ucFallbackApplied = true;
+            ucAvatarImgFailed.add(n);
+            const fName = room.visitor_display_name || "";
+            const fNum = Number(room.visitor_number || 0);
+            myAvatar.replaceChildren();
+            myAvatar.textContent = fName.trim().charAt(0) || (fNum ? String(fNum).charAt(0) : "?");
+            myAvatar.classList.add("uc-avatar-text");
+          }
+        };
         myAvatar.replaceChildren(img);
-      } else if (mySeat && mySeat.is_ai) {
-        myAvatar.textContent = (mySeat.display_name || "AI").charAt(0) || "?";
+      } else if (mySeat && (mySeat.is_ai || seatAvatarFailed)) {
+        // AI 或头像加载失败：首字占位
+        const fallbackName = seatAvatarFailed ? vName : (mySeat.display_name || "AI");
+        myAvatar.textContent = fallbackName.trim().charAt(0) || (vNum ? String(vNum).charAt(0) : "?");
       } else if (vName) {
         myAvatar.textContent = vName.trim().charAt(0) || "?";
       } else {
         myAvatar.innerHTML = vNum ? `<strong class="uc-avatar-fallback-num">${vNum}</strong>` : "?";
       }
-      myAvatar.classList.toggle("uc-avatar-text", !(mySeat && mySeat.avatar_url));
+      // 头像正常显示时去掉占位文字样式；失败回退/无头像时保留
+      myAvatar.classList.toggle("uc-avatar-text", seatAvatarFailed || !(mySeat && mySeat.avatar_url));
     }
     const action = document.getElementById("seatAction");
     const note = document.getElementById("seatNote");
@@ -2949,7 +2981,7 @@
       } catch (_err) {
         alreadyRevealed = false; // localStorage 不可用时退回“总是弹出”
       }
-      if (!alreadyRevealed) revealUcIdentity(my, snap.game_uid);
+      if (!alreadyRevealed) revealUcIdentity(my);
     }
     const expectedSpan = document.getElementById("ucExpectedSpeaker");
     if (expectedSpeaker && snap.phase !== "finished") {
@@ -4059,10 +4091,15 @@
       openPosterPreview(dataUrl, filename);
       return;
     }
-    // PC：下载 + 复制剪贴板
+    // PC：下载 + 复制剪贴板，并提示可直接粘贴发送
     downloadPosterFile(dataUrl, filename);
     copyPosterToClipboard(dataUrl).then((copied) => {
-      showToast(copied ? "已下载并复制图片，Ctrl+V 即可粘贴" : "已下载战报图片");
+      showToast(
+        copied
+          ? "战报已复制到剪贴板！打开聊天框按 Ctrl+V 粘贴即可发送"
+          : "战报图片已保存到下载目录，可拖入聊天框发送",
+        4500
+      );
     });
   }
   function downloadPosterFile(dataUrl, filename) {
