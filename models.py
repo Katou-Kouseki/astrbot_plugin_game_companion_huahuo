@@ -105,6 +105,14 @@ class MultiplayerState:
         )
 
 
+def _qq_avatar_url(qq: str) -> str:
+    """由 QQ 号拼出官方头像地址；空/非法 QQ 号返回空串。"""
+    qq = str(qq or "").strip()
+    if not qq.isdigit() or len(qq) < 5:
+        return ""
+    return f"https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
+
+
 @dataclass(slots=True)
 class Visitor:
     """One browser identity inside a room."""
@@ -150,6 +158,10 @@ class Visitor:
             "is_current_player": is_current_player,
             "display_name": self.display_name if self.identity_confirmed else "",
             "identity_confirmed": self.identity_confirmed,
+            # QQ 头像：仅已确认身份时下发
+            "avatar_url": (
+                _qq_avatar_url(self.qq) if self.qq and self.identity_confirmed else ""
+            ),
         }
 
 
@@ -458,6 +470,12 @@ class GameRoom:
                     "is_ai": bool(seat.is_ai),
                     "seated_at": seat.seated_at,
                     "ready": bool(seat.ready),
+                    # QQ 头像：仅已确认身份的玩家下发头像地址；AI 座位前端回退显示首字
+                    "avatar_url": (
+                        _qq_avatar_url(seat.qq)
+                        if seat.qq and seat.identity_confirmed
+                        else ""
+                    ),
                 }
                 for seat in (multiplayer.seats if multiplayer.enabled else [])
             ],

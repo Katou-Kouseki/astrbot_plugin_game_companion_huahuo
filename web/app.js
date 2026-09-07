@@ -864,6 +864,30 @@
   }
 
   /**
+   * 从座位号解析头像：已绑定 QQ（identity_confirmed）用 QQ 头像；
+   * AI 座位/未绑定则回退显示名字首字。
+   * @param {number} number 座位号
+   * @param {string} size 尺寸，small | medium | big（用于 CSS 类）
+   * @param {boolean} [isMine] 是否本人（强调高亮）
+   * @returns {string} 头像 HTML 片段
+   */
+  function ucSeatAvatarHtml(number, size = "medium", isMine = false) {
+    const seats = Array.isArray(room?.player_seats) ? room.player_seats : [];
+    const seat = seats.find((s) => Number(s.number) === Number(number));
+    const name = seat && seat.display_name ? String(seat.display_name) : "";
+    const url = seat && seat.avatar_url ? String(seat.avatar_url) : "";
+    const isAi = seat ? !!seat.is_ai : false;
+    const cls = ["uc-avatar", `uc-avatar-${size}`];
+    if (isMine) cls.push("is-me");
+    if (url) {
+      return `<span class="${cls.join(" ")}"><img src="${url}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>`;
+    }
+    // AI / 未绑定：首字占位
+    const letter = (name || (Number(number) >= 0 ? `${number}` : "？")).trim().charAt(0) || "？";
+    return `<span class="${cls.join(" ")} uc-avatar-text">${letter}</span>`;
+  }
+
+  /**
    * 醒目弹出“轮到谁发言”全屏动画通知（所有玩家/观众都能看到）
    * 传入 nextNumber：true 表示显示“接下来谁发言”，false 表示当前发言者本人。
    */
@@ -873,10 +897,11 @@
     const note = document.createElement("div");
     note.className = "speech-turn-notification";
     note.dataset.live = "1";
+    const avatarHtml = ucSeatAvatarHtml(Number(playerNumber), "big", isMine);
     if (isMine) {
-      note.innerHTML = `<span>到你发言了！</span><strong>${playerNumber}号</strong><em class="speech-sec"></em>`;
+      note.innerHTML = `${avatarHtml}<div class="stn-text"><span>到你发言了！</span><strong>${playerNumber}号</strong><em class="speech-sec"></em></div>`;
     } else {
-      note.innerHTML = `<span>接下来发言</span><strong>${playerNumber}号</strong><em class="speech-sec"></em>`;
+      note.innerHTML = `${avatarHtml}<div class="stn-text"><span>接下来发言</span><strong>${playerNumber}号</strong><em class="speech-sec"></em></div>`;
     }
     document.body.appendChild(note);
     // 弹出动画结束后，逐渐缩小收缩到棋盘顶部，持续显示发言倒计时（由每秒 tick 同步）
@@ -1299,6 +1324,24 @@
 
   function renderSeat() {
     const badge = document.getElementById("seatBadge");
+    // 当前浏览者头像：优先本人座位头像，观众则显示首字占位
+    const myAvatar = document.getElementById("mySeatAvatar");
+    if (myAvatar) {
+      const vNum = Number(room.visitor_number || 0);
+      const mySeat = (Array.isArray(room.player_seats) ? room.player_seats : [])
+        .find((s) => Number(s.number) === vNum);
+      const vName = room.visitor_display_name || "";
+      if (mySeat && mySeat.avatar_url) {
+        myAvatar.innerHTML = `<img src="${mySeat.avatar_url}" alt="" loading="lazy" referrerpolicy="no-referrer">`;
+      } else if (mySeat && mySeat.is_ai) {
+        myAvatar.textContent = (mySeat.display_name || "AI").charAt(0) || "?";
+      } else if (vName) {
+        myAvatar.textContent = vName.trim().charAt(0) || "?";
+      } else {
+        myAvatar.innerHTML = vNum ? `<strong class="uc-avatar-fallback-num">${vNum}</strong>` : "?";
+      }
+      myAvatar.classList.toggle("uc-avatar-text", !(mySeat && mySeat.avatar_url));
+    }
     const action = document.getElementById("seatAction");
     const note = document.getElementById("seatNote");
     const identityChallenge = document.getElementById("identityChallenge");
@@ -1322,10 +1365,21 @@
     rememberInput.checked = rememberIdentity();
     trustedStatus.hidden = !(room.trusted_browser_available && room.player_confirmed);
     if (!trustedStatus.hidden) {
-      trustedText.textContent = room.trusted_browser_active
-        ? "此浏览器已记住你的身份"
-        : "身份仅在当前房间有效";
-      forgetIdentity.hidden = !room.trusted_browser_active;
+      // 对局进行中禁止解绑：置灰并提示，避免误触导致房间状态错乱
+      const inPlay = room.status === "active";
+      if (inPlay) {
+        trustedText.textContent = "对局进行中，结束后才能解绑玩家";
+        forgetIdentity.hidden = false;
+        forgetIdentity.disabled = true;
+        forgetIdentity.title = "对局进行中，结束后才能解绑玩家";
+      } else {
+        trustedText.textContent = room.trusted_browser_active
+          ? "此浏览器已记住你的身份"
+          : "身份仅在当前房间有效";
+        forgetIdentity.disabled = false;
+        forgetIdentity.title = "解绑玩家，回到绑定引导界面";
+        forgetIdentity.hidden = !room.trusted_browser_active;
+      }
     }
     if (identityRequired) {
       const token = room.identity_token || "--------";
@@ -1561,6 +1615,10 @@
 
   async function forgetTrustedIdentity() {
     if (busy || !room?.trusted_browser_active) return;
+    if (room.status === "active") {
+      showToast("对局进行中，结束后才能解绑玩家");
+      return;
+    }
     busy = true;
     try {
       const data = await request("POST", "identity/forget", {
@@ -2242,10 +2300,14 @@
         card.classList.add("is-just-out");
         ucShownOutSet.add(p.player_number);
       }
+      const headRow = document.createElement("div");
+      headRow.className = "uc-pn-head";
+      card.appendChild(headRow);
+      headRow.innerHTML = ucSeatAvatarHtml(Number(p.player_number), "medium", (room.visitor_number && p.player_number === room.visitor_number));
       const nameLine = document.createElement("strong");
       nameLine.className = "uc-pn-name";
       nameLine.textContent = `${p.player_number}号${p.display_name ? " · " + sanitizeDisplayText(p.display_name) : ""}`;
-      card.appendChild(nameLine);
+      headRow.appendChild(nameLine);
       // 如果 visitor 是本人，要高亮显示
       if (room.visitor_number && p.player_number === room.visitor_number) {
         card.classList.add("is-me");

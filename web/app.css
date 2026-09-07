@@ -1276,6 +1276,51 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   0% { clip-path: inset(0 100% 0 0); }
   100% { clip-path: inset(0 0 0 0); }
 }
+/* 玩家卡头像 + 名字行 */
+.uc-pn-head {
+  display: flex;
+  align-items: center;
+  gap: .55rem;
+}
+/* ====== 通用 QQ 头像 ====== */
+.uc-avatar {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border: 2px solid var(--border);
+  color: var(--text-strong);
+  font-weight: 800;
+  user-select: none;
+  text-transform: none;
+}
+.uc-avatar.speech-turn-avatar { border-color: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+.uc-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.uc-avatar-small { width: 26px; height: 26px; font-size: 13px; }
+.uc-avatar-medium { width: 38px; height: 38px; font-size: 17px; }
+.uc-avatar-big { width: 66px; height: 66px; font-size: 30px; border-width: 3px; }
+.uc-avatar.is-me {
+  border-color: color-mix(in srgb, var(--gold) 70%, var(--border));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--gold) 30%, transparent);
+}
+.uc-avatar-text { letter-spacing: 0; }
+.uc-avatar-fallback-num { font-weight: 800; }
+/* seat-panel 顶部“我的身份”头像行 */
+.section-head-main {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  min-width: 0;
+}
 .uc-pn-name {
   color: var(--text-strong);
   font-size: 1rem;
@@ -2379,35 +2424,41 @@ body.dark .uc-speech-box textarea:focus {
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 120;
-  min-width: 260px;
-  padding: 22px 36px;
+  min-width: 280px;
+  padding: 20px 34px;
   border-radius: 22px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 16px;
   background: linear-gradient(160deg, var(--green, #22a06b), #146b49);
   color: #fff;
   box-shadow: 0 0 0 6px rgba(34, 160, 107, 0.25), 0 22px 60px rgba(0, 0, 0, 0.45);
-  text-align: center;
   pointer-events: none;
   animation: ucSpeechBannerIn 1.15s cubic-bezier(0.2, 0.85, 0.25, 1.15) both;
   /* 收起为“顶部发言倒计时常驻条”时，用过渡平滑滑上缩小，衔接更自然 */
   transition: top .6s cubic-bezier(0.2, 0.85, 0.35, 1.05), transform .6s cubic-bezier(0.2, 0.85, 0.35, 1.05);
 }
-.speech-turn-notification span {
+.speech-turn-notification .stn-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+}
+.speech-turn-notification .stn-text span {
   font-size: 20px;
   font-weight: 800;
   letter-spacing: 1px;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
-.speech-turn-notification strong {
+.speech-turn-notification .stn-text strong {
   font-size: 46px;
   font-weight: 900;
   line-height: 1;
   color: #fff;
   text-shadow: 0 3px 0 rgba(0, 0, 0, 0.18), 0 0 24px rgba(255, 255, 255, 0.6);
 }
+.speech-turn-notification .stn-text .speech-sec { font-size: 14px; font-weight: 700; opacity: 0.95; }
 /* 弹出动画结束后，平滑滑上并缩小为棋盘顶部的“发言倒计时”常驻条 */
 .speech-turn-notification.is-dock {
   top: 112px;
@@ -2420,17 +2471,18 @@ body.dark .uc-speech-box textarea:focus {
   transform: translate(-50%, -50%) scale(0.6);
   transition: top .6s cubic-bezier(0.2, 0.85, 0.35, 1.05), transform .6s cubic-bezier(0.2, 0.85, 0.35, 1.05);
 }
-.speech-turn-notification.is-dock span { font-size: 14px; font-weight: 700; }
-.speech-turn-notification.is-dock strong { font-size: 20px; }
-.speech-turn-notification .speech-sec { font-size: 13px; font-weight: 700; opacity: 0.95; }
+.speech-turn-notification.is-dock .stn-text { align-items: center; text-align: center; flex-direction: row; gap: 0 10px; }
+.speech-turn-notification.is-dock .stn-text span { font-size: 14px; font-weight: 700; }
+.speech-turn-notification.is-dock .stn-text strong { font-size: 20px; }
+.speech-turn-notification.is-dock .stn-text .speech-sec { font-size: 13px; }
 /* 倒计时剩余 ≤30 秒时：横幅先放大以醒目，再加入红圈脉冲和轻微缩放，催促屏幕前的玩家发言 */
 .speech-turn-notification.is-dock.is-urgent {
   padding: 14px 28px;
   animation: ucSpeechUrgent 0.8s ease-in-out infinite;
 }
-.speech-turn-notification.is-dock.is-urgent span { font-size: 17px; }
-.speech-turn-notification.is-dock.is-urgent strong { font-size: 30px; }
-.speech-turn-notification.is-dock.is-urgent .speech-sec { font-size: 15px; }
+.speech-turn-notification.is-dock.is-urgent .stn-text span { font-size: 17px; }
+.speech-turn-notification.is-dock.is-urgent .stn-text strong { font-size: 30px; }
+.speech-turn-notification.is-dock.is-urgent .stn-text .speech-sec { font-size: 15px; }
 @keyframes ucSpeechUrgent {
   0%, 100% { box-shadow: 0 0 0 0 rgba(255, 90, 60, 0.75), 0 8px 26px rgba(0, 0, 0, 0.4); transform: translate(-50%, -50%) scale(1.02); }
   50% { box-shadow: 0 0 0 22px rgba(255, 90, 60, 0), 0 8px 26px rgba(0, 0, 0, 0.46); transform: translate(-50%, -50%) scale(1.12); }

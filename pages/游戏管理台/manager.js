@@ -512,6 +512,26 @@
     }
   }
 
+  async function clearLeaderboard() {
+    if (!await confirmAction({
+      title: "清空战绩排行榜",
+      message: "确认清空所有玩法的全局战绩排行榜？此操作不可撤销，房间右侧的“本房战绩排行”也会被清除。",
+      label: "确认清空",
+      danger: true,
+    })) return;
+    const action = document.getElementById("clearLeaderboardAction");
+    action.disabled = true;
+    try {
+      const result = await endpoint("POST", "leaderboard/clear", {});
+      showToast(result?.data?.cleared ? "战绩排行榜已清空" : "没有可清空的排行榜数据");
+      await loadRooms();
+    } catch (error) {
+      showToast(error?.message || "清空排行榜失败");
+    } finally {
+      action.disabled = false;
+    }
+  }
+
   function settingInput(game, field) {
     const wrapper = document.createElement("label");
     wrapper.className = `setting-field setting-${field.type}`;
@@ -984,6 +1004,7 @@
   document.getElementById("tunnelAction").addEventListener("click", toggleTunnel);
   document.getElementById("engineAction").addEventListener("click", installEngine);
   document.getElementById("cloudflaredAction").addEventListener("click", installCloudflared);
+  document.getElementById("clearLeaderboardAction").addEventListener("click", clearLeaderboard);
   document.getElementById("saveSettingsAction").addEventListener("click", saveSettings);
   document.getElementById("reloadSettingsAction").addEventListener("click", loadSettings);
   document.querySelectorAll(".manager-tab").forEach((tab) => {

@@ -290,6 +290,22 @@ class RoomManager:
         except OSError:
             logger.warning("[GameCompanion] 全局胜场数据保存失败。")
 
+    def clear_global_stats(self, game_type: str | None = None) -> int:
+        """清空全局胜场排行榜：game_type 为空时清空全部游戏类型，否则只清该类型。
+
+        返回被清空的游戏类型数量（0 表示没有可清理的数据或未启用持久化）。
+        """
+        if self.global_stats_path is None:
+            return 0
+        if game_type:
+            if game_type not in self.global_player_wins:
+                return 0
+            del self.global_player_wins[game_type]
+        else:
+            self.global_player_wins.clear()
+        self._save_global_stats()
+        return 1
+
     async def create_room(
         self,
         *,
@@ -3657,6 +3673,8 @@ class RoomManager:
 
     async def unbind_identity(self, room: GameRoom, visitor_token: str) -> None:
         """解绑当前访客的 QQ 身份：清空座位绑定，回到绑定引导界面。"""
+        if room.status == "active":
+            raise PermissionError("对局进行中，无法解绑玩家，请等本局结束后再操作")
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             old_qq = visitor.qq or ""

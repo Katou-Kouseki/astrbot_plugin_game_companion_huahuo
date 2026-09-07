@@ -3860,6 +3860,12 @@ class GameCompanionPlugin(Star):
             "Install cloudflared",
         )
         register_api(
+            f"{PAGE_API_PREFIX}/leaderboard/clear",
+            self.page_clear_leaderboard,
+            ["POST"],
+            "Clear global leaderboard",
+        )
+        register_api(
             f"{PAGE_API_PREFIX}/settings",
             self.page_game_settings,
             ["GET"],
@@ -4120,6 +4126,19 @@ class GameCompanionPlugin(Star):
         except (ValueError, RuntimeError, PermissionError) as exc:
             return {"status": "error", "message": str(exc), "data": {}}
         return {"status": "ok", "data": {"room_id": room.room_id, "action": action}}
+
+    async def page_clear_leaderboard(self) -> dict[str, Any]:
+        """清空全局战绩排行榜。payload: {"game_type": "undercover"}，留空则清空全部。"""
+        payload = await request.json(default={}) or {}
+        game_type = str(payload.get("game_type") or "").strip() or None
+        if game_type and game_type not in self.manager.global_player_wins:
+            game_type = None  # 指定类型不存在则视为清空全部，避免卡在“找不到该类型”
+        cleared = self.manager.clear_global_stats(game_type)
+        return {
+            "status": "ok" if cleared else "error",
+            "message": "" if cleared else "没有可清空的排行榜数据（持久化未启用或为空）",
+            "data": {"cleared": bool(cleared)},
+        }
 
     async def page_xiangqi_install(self) -> dict[str, Any]:
         try:
