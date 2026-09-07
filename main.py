@@ -64,7 +64,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.5.0"
+PLUGIN_VERSION = "0.5.1"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -704,6 +704,9 @@ class GameCompanionPlugin(Star):
         self.group_announce_auto = self._cfg_bool(
             "undercover.group_announce_auto", False
         )
+        self.group_announce_style = (
+            self._cfg_str("undercover.group_announce_style", "text") or "text"
+        ).lower()
         # 谁是卧底战绩报表（配置项先行，定时触发后续）：白名单为空格/逗号分隔的 UMO 会话串，
         # 例如 UMO:huahuo:GroupMessage:454366619。
         self.undercover_report_enabled = self._cfg_bool(
@@ -3718,31 +3721,36 @@ class GameCompanionPlugin(Star):
     def _undercover_fallback_recap() -> str:
         return "本局已结束。建议复盘一下关键的几轮投票与发言，找出谁是破局的转折点。"
 
-    async def undercover_announce_result(self, room: GameRoom) -> str:
+    async def undercover_announce_result(
+        self, room: GameRoom, image_data: str = ""
+    ) -> str:
         """把本局胜负与（若启用）惩罚发到开房群，返回已发送的文案。
 
-        仅在插件配置开启群通报（undercover.group_announce_enabled）时真正发送；
-        未开启时返回空串，由调用方提示。
+        文案顺序：标题 → 词条（上移） → 胜利方 → 失败方 → 惩罚。
+        若开启图片发送（undercover.group_announce_style = image/both）且前端传来海报图，
+        随文案一起发送；仅图片时只发图。
+        仅在插件配置开启群通报（undercover.group_announce_enabled）时真正发送。
         """
         if not getattr(self, "group_announce_enabled", False):
             return ""
         game = room.game
         title = _undercover_title_text(game) or "本局已结束"
-        lines = [f"🕵️ 谁是卧底战报：{title}"]
         winner = getattr(game, "winner", None) or {}
         winner_get = (
             (lambda key, _d=None: winner.get(key, _d)) if isinstance(winner, dict) else (lambda key, _d=None: getattr(winner, key, _d))
         )
         camp = winner_get("camp")
+        cw = winner_get("civilian_word") or ""
+        uw = winner_get("undercover_word") or ""
+        # 文案顺序：标题 → 词条 → 胜利方 → 失败方 → 惩罚
+        lines = [f"🕵️ 谁是卧底战报：{title}"]
+        if cw or uw:
+            lines.append(f"词条：平民「{cw}」/ 卧底「{uw}」")
         if camp:
             camp_text = {
                 "civilian": "平民", "undercover": "卧底", "whiteboard": "白板",
             }.get(camp, camp)
             lines.append(f"胜利方：{camp_text}")
-        cw = winner_get("civilian_word") or ""
-        uw = winner_get("undercover_word") or ""
-        if cw or uw:
-            lines.append(f"词条：平民「{cw}」/ 卧底「{uw}」")
         # 失败方（非胜方阵营的存活/参与玩家）
         players = getattr(game, "players", None) or []
         losers = [
@@ -3768,8 +3776,47 @@ class GameCompanionPlugin(Star):
             lines.append(
                 "惩罚：" + "；".join(f"{label} {s}秒" for label, s in muted)
             )
-        await self._send_to_origin(room, "\n".join(lines))
-        return "\n".join(lines)
+        # 结合「花火复盘」：有缓存/可生成则附上一段复盘，让群通报更完整
+        try:
+            recap = await self.undercover_recap(room)
+        except Exception:
+            recap = ""
+        if recap:
+            lines.append(f"📝 复盘：{recap}")
+        text = "\n".join(lines)
+        style = (getattr(self, "group_announce_style", "text") or "text").lower()
+        want_image = style in {"image", "both"}
+        want_text = style in {"text", "both"}
+        if not want_text and not want_image:
+            want_text = True  # 兜底：未知配置按仅文字
+        if want_image and image_data:
+            await self._send_to_origin_image(room, text if want_text else "", image_data)
+            return text if want_text else ""
+        if want_text:
+            await self._send_to_origin(room, text)
+        return text
+
+    async def _send_to_origin_image(
+        self, room: GameRoom, text: str, image_data_url: str
+    ) -> None:
+        """把文字（可选）与一张 base64 海报图发到开房群。"""
+        try:
+            from astrbot.api.message_components import Image
+
+            parts: list[Any] = []
+            if text:
+                parts.append(Plain(text))
+            b64 = str(image_data_url or "").split(",", 1)[-1]
+            if b64:
+                parts.append(Image(file=f"base64://{b64}"))
+            if parts:
+                await self.context.send_message(
+                    room.session_id, MessageChain(parts)
+                )
+        except Exception as exc:
+            logger.warning("[GameCompanion] 发送战报图片失败，回退纯文字: %s", exc)
+            if text:
+                await self._send_to_origin(room, text)
 
     def _register_report_scheduler(self) -> None:
         """用 AstrBot 自带的 APScheduler（context.cron_manager.scheduler）注册卧底日报/周报定时任务。

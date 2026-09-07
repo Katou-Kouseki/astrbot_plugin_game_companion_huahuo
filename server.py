@@ -607,27 +607,28 @@ class GameRoomServer:
         return self._response({"recap": recap, "cached": False})
 
     async def _undercover_announce(self, request: web.Request) -> web.Response:
-        """结算卡「通报到群」：把本局胜负(与惩罚)发到开房群。
+        """结算卡「通知到群」：把本局胜负(与惩罚、复盘)发到开房群。
 
-        同局只允许通报一次（按 game_uid），重复点击返回已通报文案而不重复发送。
+        同局只允许通知一次（按 game_uid），重复点击返回已通知文案而不重复发送。
         仅在插件配置开启群通报时才会真正发送。
         """
         self._require_origin(request)
         room = self._room(request)
-        await self._payload(request)  # 读取并丢弃 body，保持接口一致
+        payload = await self._payload(request)
         game = getattr(room, "game", None)
         uid = str(getattr(game, "game_uid", "") or "") if game else ""
         if uid and room.last_announced_uid == uid:
-            # 本局已通报过 → 幂等返回，不重复发
+            # 本局已通知过 → 幂等返回，不重复发
             return self._response({
                 "announced": bool(room.last_announced_text),
                 "already": True,
                 "text": room.last_announced_text,
             })
+        image_data = str(payload.get("image") or "")
         try:
-            text = await self.plugin.undercover_announce_result(room)
+            text = await self.plugin.undercover_announce_result(room, image_data)
         except Exception as exc:
-            logger.warning("[GameCompanion] 通报失败: %s", exc)
+            logger.warning("[GameCompanion] 通知失败: %s", exc)
             return web.json_response(
                 {"status": "error", "message": str(exc)}, status=400
             )

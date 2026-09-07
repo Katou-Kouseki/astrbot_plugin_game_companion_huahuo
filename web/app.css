@@ -1370,6 +1370,29 @@ body.dark .uc-avatar-tone-neutral { color: var(--text-strong, #f0f0f0); }
 .uc-badge-wb { color: #3c8fd0; border-color: color-mix(in srgb, #3c8fd0 35%, transparent); background: color-mix(in srgb, #3c8fd0 12%, transparent); }
 .uc-badge-gold { color: #b8860b; border-color: color-mix(in srgb, #d4a017 45%, transparent); background: color-mix(in srgb, #f5d576 18%, transparent); }
 .uc-badge-list { color: var(--muted); border-color: color-mix(in srgb, var(--gold) 38%, transparent); background: color-mix(in srgb, var(--gold) 10%, transparent); cursor: help; }
+/* 徽章迷你 emoji + 悬停独立提示窗（移动端也能看到 emoji 徽章本身） */
+.uc-badge-mini { padding: .1rem .32rem; font-size: .78rem; cursor: default; }
+.uc-badge-wrap { position: relative; display: inline-flex; }
+.uc-badge-tip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .28);
+  font-size: 11.5px;
+  white-space: nowrap;
+  color: var(--text-strong);
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.uc-badge-wrap:hover .uc-badge-tip { display: block; opacity: 1; }
 body.dark .uc-badge-civ { color: #6fdca2; }
 body.dark .uc-badge-uc { color: #c39af0; }
 body.dark .uc-badge-wb { color: #7fc4ee; }
@@ -2452,16 +2475,16 @@ body.dark .uc-speech-box textarea:focus {
   left: 50%;
   transform: translate(-50%, -50%);
   z-index: 120;
-  min-width: 280px;
-  padding: 20px 34px;
-  border-radius: 22px;
+  min-width: 250px;
+  padding: 14px 24px;
+  border-radius: 18px;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: 12px;
   background: linear-gradient(160deg, var(--green, #22a06b), #146b49);
   color: #fff;
-  box-shadow: 0 0 0 6px rgba(34, 160, 107, 0.25), 0 22px 60px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 0 0 5px rgba(34, 160, 107, 0.25), 0 18px 48px rgba(0, 0, 0, 0.45);
   pointer-events: none;
   animation: ucSpeechBannerIn 1.15s cubic-bezier(0.2, 0.85, 0.25, 1.15) both;
   /* 收起为“顶部发言倒计时常驻条”时，用过渡平滑滑上缩小，衔接更自然 */
@@ -2476,23 +2499,23 @@ body.dark .uc-speech-box textarea:focus {
   min-width: 0;
 }
 .speech-turn-notification .stn-text span {
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 800;
   letter-spacing: 1px;
   text-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
 .speech-turn-notification .stn-text strong {
-  font-size: 46px;
+  font-size: 38px;
   font-weight: 900;
   line-height: 1;
   color: #fff;
   text-shadow: 0 3px 0 rgba(0, 0, 0, 0.18), 0 0 24px rgba(255, 255, 255, 0.6);
 }
-.speech-turn-notification .stn-text .speech-sec { font-size: 14px; font-weight: 700; opacity: 0.95; }
+.speech-turn-notification .stn-text .speech-sec { font-size: 13px; font-weight: 700; opacity: 0.95; }
 /* 发言通知头像：按卡片内文字比例缩放，不撑大卡片 */
-.speech-turn-notification .uc-avatar-big { width: 44px; height: 44px; font-size: 20px; }
-.speech-turn-notification.is-dock .uc-avatar-big { width: 24px; height: 24px; font-size: 14px; }
-.speech-turn-notification.is-dock.is-urgent .uc-avatar-big { width: 30px; height: 30px; font-size: 16px; }
+.speech-turn-notification .uc-avatar-big { width: 34px; height: 34px; font-size: 16px; }
+.speech-turn-notification.is-dock .uc-avatar-big { width: 20px; height: 20px; font-size: 12px; }
+.speech-turn-notification.is-dock.is-urgent .uc-avatar-big { width: 24px; height: 24px; font-size: 13px; }
 /* 弹出动画结束后，平滑滑上并缩小为棋盘顶部的“发言倒计时”常驻条 */
 .speech-turn-notification.is-dock {
   top: 112px;

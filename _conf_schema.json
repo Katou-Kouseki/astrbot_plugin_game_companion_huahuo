@@ -388,6 +388,14 @@
         "default": false,
         "hint": "开启后每局结束自动发群通报，无需手动点按钮。"
       },
+      "group_announce_style": {
+        "description": "群通报发送方式",
+        "type": "string",
+        "default": "text",
+        "options": ["text", "image", "both"],
+        "labels": ["仅文字", "仅图片", "文字+图片"],
+        "hint": "图片为前端生成的本局战报海报；需开启群通报后才生效。"
+      },
       "report_enabled": {
         "description": "开启战绩日报/周报",
         "type": "bool",

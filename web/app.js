@@ -909,7 +909,7 @@
       ucShownResultUid = uid;
       if (recapBtn) { recapBtn.hidden = false; recapBtn.disabled = false; recapBtn.textContent = "✨ 花火复盘"; }
       if (recapBox) { recapBox.hidden = true; recapBox.textContent = ""; }
-      if (announceBtn) { announceBtn.hidden = false; announceBtn.disabled = false; announceBtn.textContent = "📢 通报到群"; }
+      if (announceBtn) { announceBtn.hidden = false; announceBtn.disabled = false; announceBtn.textContent = "📢 通知到群"; }
       // 本局已有缓存的复盘则直接展示
       if (recapBox && uid && ucRecapCache[uid]) {
         recapBox.textContent = ucRecapCache[uid];
@@ -2454,17 +2454,23 @@
         wordSpan.textContent = `词条「${p.word}」`;
         meta.appendChild(wordSpan);
       }
-      // 藏品/护身符徽章：历代战绩积累，正常展示（压缩成单个徽章数，悬停展开全部，避免占满玩家卡）
+      // 藏品/护身符徽章：内联小徽章（emoji）直观展示，桌面悬停弹出独立样式窗口看详情，移动端也能看到徽章
       if (room?.game_type === "undercover" && Array.isArray(room.player_seats)) {
         const seatBadges = (room.player_seats.find((s) => Number(s.number) === Number(p.player_number)) || {}).badges;
         const badges = Array.isArray(seatBadges) ? seatBadges : [];
-        if (badges.length) {
-          const b = document.createElement("span");
-          b.className = "chip uc-badge uc-badge-list";
-          b.textContent = `🎖 徽章 ×${badges.length}`;
-          b.title = badges.map((bg) => `${bg.emoji || "🏅"} ${bg.label || ""}`).join("、");
-          meta.appendChild(b);
-        }
+        badges.forEach((badge) => {
+          const wrap = document.createElement("span");
+          wrap.className = "uc-badge-wrap";
+          const chip = document.createElement("span");
+          chip.className = `chip uc-badge uc-badge-mini uc-badge-${badge.tone || ""}`;
+          chip.textContent = badge.emoji || "🏅";
+          const tip = document.createElement("span");
+          tip.className = "uc-badge-tip";
+          tip.textContent = `${badge.label || "徽章"} · 该阵营已胜 ${badge.wins || 0} 局`;
+          wrap.appendChild(chip);
+          wrap.appendChild(tip);
+          meta.appendChild(wrap);
+        });
       }
       // 被投票数（进行中只在投票阶段显示各目标得票，不显示投手；全员投完后才揭晓数字）
       if (
@@ -3926,25 +3932,31 @@
       }
     });
   }
-  // 通报到群：本局一次性（后端按 game_uid 幂等），成功或已通报后禁用按钮
+  // 通知到群：本局一次性（后端按 game_uid 幂等），携带战报海报图按插件配置发送
   const ucResultAnnounce = document.getElementById("ucResultAnnounce");
   if (ucResultAnnounce) {
     ucResultAnnounce.addEventListener("click", async () => {
       const btn = ucResultAnnounce;
       btn.disabled = true;
+      btn.textContent = "通知中…";
+      let image = "";
       try {
-        const data = await request("POST", "undercover/announce", {});
+        // 生成一张战报海报，随通知发给群（是否发送由图插件配置决定）
+        image = await undercoverSharePosterUrl(ucLastResult) || "";
+      } catch (_imgError) { image = ""; }
+      try {
+        const data = await request("POST", "undercover/announce", { image });
         if (data?.announced) {
-          btn.textContent = "✅ 已通报（本局一次）";
-          showToast(data?.already ? "本局已通报过，未重复发送" : "已通报到群");
+          btn.textContent = "✅ 已通知（本局一次）";
+          showToast(data?.already ? "本局已通知过，未重复发送" : "已通知到群");
         } else {
-          btn.textContent = "📢 通报到群";
-          showToast("群通报未开启：请在插件配置开启 undercover.group_announce_enabled");
+          btn.textContent = "📢 通知到群";
+          showToast("群通知未开启：请在插件配置开启 undercover.group_announce_enabled");
           btn.disabled = false;
         }
       } catch (error) {
-        showToast(error?.message || "通报失败");
-        btn.textContent = "📢 通报到群";
+        showToast(error?.message || "通知失败");
+        btn.textContent = "📢 通知到群";
         btn.disabled = false;
       }
     });
@@ -4019,9 +4031,9 @@
     ["玩家", "身份", "状态"].forEach((t, i) => {
       c.fillText(t, forShareCol(i + 1), yHeader + 27);
     });
-    // 数据行
+    // 数据行（从表头下方开始，避免与表头文字重叠）
     players.forEach((p, i) => {
-      const y = yHeader + i * rowH;
+      const y = yHeader + headerH + i * rowH;
       if (i % 2 === 0) { c.fillStyle = "rgba(255,255,255,.028)"; c.fillRect(0, y, W, rowH); }
       // 头像圆标：优先 QQ 头像，回退首字；本人生成高亮金边
       const ax = forShareCol(0) + 19, ay = y + 27, r = 19;
