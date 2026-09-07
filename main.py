@@ -448,6 +448,56 @@ _POSTER_FONT_CANDIDATES: tuple[tuple[str, int], ...] = (
 _POSTER_FONT_PATH: dict[bool, tuple[str, int]] = {}  # 已探测到的字体路径（bold → (path, index)）
 _POSTER_FONT_CACHE: dict[tuple[bool, int], Any] = {}  # (bold, px) → ImageFont
 
+# 服务端「战况通知」海报的 HTML/Jinja2 模板（AstrBot t2i 渲染，样式与前端战况大字报一致）。
+# 由 t2i 服务端做 Jinja2 渲染，支持循环/条件；浏览器渲染天然支持 emoji/渐变/描边，效果优于 Pillow。
+_UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=720">
+<style>
+  html, body { margin: 0; padding: 0; }
+  .poster {
+    min-width: 720px; min-height: 720px; box-sizing: border-box;
+    padding: 34px 46px 30px; display: flex; flex-direction: column; position: relative;
+    background: linear-gradient(135deg, #5a1c16 0%, #200907 100%);
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; color: #fff;
+  }
+  .poster::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.05) 0 2px, transparent 2px 36px);
+  }
+  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; background: {{ camp_color }}; }
+  .head { display: flex; justify-content: space-between; align-items: center; position: relative; }
+  .head .t { font-size: 22px; font-weight: 800; color: #ffd9a0; }
+  .head .r { font-size: 16px; color: rgba(255,255,255,.6); max-width: 340px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .big { margin-top: 76px; text-align: center; font-size: 88px; font-weight: 900; line-height: 1.1;
+    color: {{ camp_color }}; -webkit-text-stroke: 10px rgba(0,0,0,.45); text-shadow: 0 6px 24px rgba(0,0,0,.3); position: relative; }
+  .winners { margin-top: 44px; text-align: center; font-size: 26px; font-weight: 700;
+    color: #ffe3b0; line-height: 40px; position: relative; }
+  .pills { margin-top: 44px; display: flex; justify-content: center; gap: 20px; position: relative; }
+  .pill { height: 46px; line-height: 46px; padding: 0 17px; border-radius: 23px; font-size: 20px; font-weight: 700; white-space: nowrap; }
+  .pill.c { background: rgba(125,255,176,.16); color: #b6ffd6; }
+  .pill.u { background: rgba(221,169,255,.16); color: #ecc9ff; }
+  .losers { margin-top: auto; font-size: 17px; color: rgba(255,255,255,.55); line-height: 26px; position: relative; }
+  .wm { margin-top: 10px; text-align: right; font-size: 14px; color: rgba(255,255,255,.4); position: relative; }
+</style>
+</head>
+<body>
+<div class="poster">
+  <div class="head"><span class="t">📢 谁是卧底 · 战况通知</span><span class="r">{{ title }}</span></div>
+  <div class="big">{{ camp_cn }} 获胜</div>
+  {% if winners %}<div class="winners">🎉 {{ winners|join(' · ') }}</div>{% endif %}
+  {% if cw or uw %}
+  <div class="pills">{% if cw %}<span class="pill c">🛡️ 平民「{{ cw }}」</span>{% endif %}{% if uw %}<span class="pill u">🕵️ 卧底「{{ uw }}」</span>{% endif %}</div>
+  {% endif %}
+  {% if losers %}<div class="losers">💔 败方：{{ losers|join('、') }}</div>{% endif %}
+  <div class="wm">由 花火 监督生成</div>
+  <div class="bar"></div>
+</div>
+</body>
+</html>"""
+
 
 @dataclass(slots=True)
 class _RecentPrivateGameResult:
@@ -1279,26 +1329,28 @@ class GameCompanionPlugin(Star):
         else:
             yield event.plain_result("当前 QQ 没有有效的受信任浏览器绑定。")
 
-    @game_commands.command("谁是卧底日报", alias={"卧底日报", "谁是卧底周报", "卧底周报"})
+    @filter.command("谁是卧底日报", alias={"卧底日报", "谁是卧底周报", "卧底周报"})
     async def undercover_report_now(self, event: AstrMessageEvent):
         """立即生成一份谁是卧底战绩日报/周报发到当前会话（样式测试/手动补发）。
 
+        顶层指令：直接发送「谁是卧底日报 / 卧底日报」等即可触发（无需游戏指令组前缀）。
         内容与定时日报/周报相同（全局战绩榜前 20），不依赖 report_enabled 开关。
         """
         yield event.plain_result(self._build_undercover_report())
 
-    @game_commands.command("谁是卧底海报", alias={"卧底海报", "战况海报测试"})
+    @filter.command("谁是卧底海报", alias={"卧底海报", "战况海报测试"})
     async def undercover_poster_test(self, event: AstrMessageEvent, camp: str = ""):
         """用示例数据生成一张「战况通知」海报（服务端渲染），用于测试海报样式。
 
-        可选参数：平民 / 卧底 / 白板（默认平民），例如「谁是卧底海报 卧底」。
-        需要服务端 Pillow 与中文字体；失败时提示回退纯文字。
+        顶层指令：直接发送「谁是卧底海报 / 卧底海报」即可触发。
+        可选参数：平民 / 卧底 / 白板（默认平民），例如「卧底海报 卧底」。
+        优先用 AstrBot t2i（HTML 渲染）出图，不可用时回退服务端 Pillow。
         """
         room = self._undercover_sample_room(camp)
         try:
-            image_data = self._undercover_announce_poster(room)
+            image_data = await self._undercover_announce_poster(room)
         except Exception as exc:
-            yield event.plain_result(f"生成测试海报失败：{exc}（需要服务端 Pillow 与中文字体）")
+            yield event.plain_result(f"生成测试海报失败：{exc}（需要服务端 Pillow 或可用的 AstrBot t2i 服务）")
             return
         try:
             from astrbot.api.message_components import Image
@@ -1309,10 +1361,11 @@ class GameCompanionPlugin(Star):
         except Exception as exc:
             yield event.plain_result(f"海报已生成但发送失败：{exc}")
 
-    @game_commands.command("谁是卧底战报", alias={"卧底战报", "战报样式测试"})
+    @filter.command("谁是卧底战报", alias={"卧底战报", "战报样式测试"})
     async def undercover_report_test(self, event: AstrMessageEvent, camp: str = ""):
         """用示例数据生成一条「群通报」战报文案，用于测试战报文字样式。
 
+        顶层指令：直接发送「谁是卧底战报 / 卧底战报」即可触发。
         可选参数：平民 / 卧底 / 白板（默认平民）；复盘为示例占位，真实场景由 LLM 生成。
         """
         text = self._undercover_announce_text(
@@ -3992,9 +4045,7 @@ class GameCompanionPlugin(Star):
             image_data = ""
             if style in {"image", "both"}:
                 try:
-                    image_data = await asyncio.to_thread(
-                        self._undercover_announce_poster, room
-                    )
+                    image_data = await self._undercover_announce_poster(room)
                 except Exception as exc:
                     logger.warning("[GameCompanion] 自动播报生成海报失败，回退纯文字: %s", exc)
                     image_data = ""
@@ -4007,8 +4058,110 @@ class GameCompanionPlugin(Star):
         except Exception as exc:
             logger.warning("[GameCompanion] 谁是卧底自动播报失败: %s", exc)
 
-    def _undercover_announce_poster(self, room: GameRoom) -> str:
-        """服务端生成「战况通知」海报（与前端战况大字报同款设计），返回 base64 PNG。
+    async def _undercover_announce_poster(self, room: GameRoom) -> str:
+        """生成「战况通知」海报，返回 base64 PNG。
+
+        优先用 AstrBot 的 t2i（HTML/Jinja2 → 图片，样式精美、支持 emoji）；
+        t2i 服务不可用或超时时回退 Pillow 手绘。两者都失败则抛出异常，
+        由调用方回退纯文字播报。
+        """
+        try:
+            return await self._undercover_poster_t2i(room)
+        except Exception as exc:
+            logger.warning("[GameCompanion] t2i 渲染战况海报失败，回退 Pillow: %s", exc)
+        return await asyncio.to_thread(self._undercover_poster_pillow, room)
+
+    async def _undercover_poster_t2i(self, room: GameRoom) -> str:
+        """用 AstrBot 的 t2i（HTML 渲染）生成战况海报，返回 base64 PNG。
+
+        需要 AstrBot 配置可用的文转图服务（远程或本地，AstrBot 外观→文本转图像）；
+        未提供 html_render / 服务不可用 / 超时均抛异常，由调用方回退 Pillow。
+        """
+        render = getattr(self, "html_render", None)
+        if not callable(render):
+            raise RuntimeError("当前 AstrBot 未提供 html_render（t2i）能力")
+        data = self._undercover_poster_data(room)
+        options = {
+            "type": "png",
+            "full_page": True,
+            "viewport_width": 720,
+            "timeout": 15.0,
+        }
+        url = await asyncio.wait_for(
+            render(_UNDERCOVER_POSTER_TMPL, data, options=options), timeout=15
+        )
+        if not url:
+            raise RuntimeError("t2i 渲染返回空结果")
+        return await self._download_image_base64(url)
+
+    @staticmethod
+    async def _download_image_base64(url: str) -> str:
+        """下载远程图片并转成 base64（避免依赖远程 URL 的时效性）。"""
+        import aiohttp
+        import base64
+
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url) as response:
+                response.raise_for_status()
+                raw = await response.read()
+        return base64.b64encode(raw).decode("ascii")
+
+    @staticmethod
+    def _undercover_poster_data(room: GameRoom) -> dict[str, Any]:
+        """提取海报所需数据（标题/阵营/词条/胜方/败方），供 t2i HTML 模板与 Pillow 共用。"""
+        game = room.game
+        winner = getattr(game, "winner", None) or {}
+        winner_get = (
+            (lambda key, _d=None: winner.get(key, _d))
+            if isinstance(winner, dict)
+            else (lambda key, _d=None: getattr(winner, key, _d))
+        )
+        camp = winner_get("camp")
+        title = _undercover_title_text(game) or "本局已结束"
+        cw = winner_get("civilian_word") or ""
+        uw = winner_get("undercover_word") or ""
+        players = getattr(game, "players", None) or []
+        seats = getattr(room.multiplayer, "seats", None) or []
+        seat_names = {
+            int(s.number): str(getattr(s, "display_name", "") or "").strip()
+            for s in seats
+        }
+        names = [
+            (
+                int(getattr(p, "number", 0)),
+                str(getattr(p, "display_name", "") or "").strip()
+                or seat_names.get(int(getattr(p, "number", 0)), ""),
+                getattr(p, "camp", "") or "",
+            )
+            for p in players
+        ]
+        camp_cn_of = {"civilian": "平民", "undercover": "卧底", "whiteboard": "白板"}
+        winners = [
+            f"{num}号{name}".strip() for num, name, p_camp in names if p_camp == camp
+        ]
+        losers = [
+            f"{num}号{name}".strip()
+            + (f"（{camp_cn_of.get(p_camp, p_camp or '?')}）" if p_camp else "")
+            for num, name, p_camp in names
+            if p_camp and p_camp != camp
+        ]
+        return {
+            "title": title,
+            "camp_cn": camp_cn_of.get(camp, ""),
+            "camp_color": {
+                "civilian": "#7dffb0",
+                "undercover": "#dda9ff",
+                "whiteboard": "#9ccbff",
+            }.get(camp, "#ffd166"),
+            "winners": winners,
+            "cw": cw,
+            "uw": uw,
+            "losers": losers,
+        }
+
+    def _undercover_poster_pillow(self, room: GameRoom) -> str:
+        """Pillow 手绘「战况通知」海报（t2i 服务不可用时的兜底），返回 base64 PNG。
 
         仅文字/纯 ASCII 内容（无彩色 emoji，规避 Pillow 缺 emoji 字体时的方框）；缺 Pillow
         或找不到中文字体时抛出异常，由调用方回退纯文字播报。
