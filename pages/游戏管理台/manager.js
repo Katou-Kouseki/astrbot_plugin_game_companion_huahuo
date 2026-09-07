@@ -1123,7 +1123,29 @@
     return Math.floor(num);
   }
 
-  function exportPoster() {
+  async function clearStatsLeaderboard() {
+    const scope = statsFilter ? `《${gameLabel(statsFilter)}》` : "全部玩法";
+    if (!await confirmAction({
+      title: "清空战绩排行",
+      message: `确认清空${scope}的全局战绩排行榜？此操作不可撤销，房间右侧“本房战绩排行”也会同步清除。`,
+      label: "确认清空",
+      danger: true,
+    })) return;
+    const action = document.getElementById("statsClearAction");
+    action.disabled = true;
+    try {
+      const result = await endpoint("POST", "leaderboard/clear", statsFilter ? { game_type: statsFilter } : {});
+      showToast(result?.data?.cleared ? `已清空${scope}战绩` : (result?.message || "没有可清空的排行榜数据"));
+      await loadStats();
+      await loadRooms();
+    } catch (error) {
+      showToast(error?.message || "清空排行榜失败");
+    } finally {
+      action.disabled = false;
+    }
+  }
+
+  async function exportPoster() {
     const selected = statsFilter ? { [statsFilter]: statsLeaderboard[statsFilter] || [] } : statsLeaderboard;
     const entries = [];
     Object.entries(selected).forEach(([gtype, list]) => {
@@ -1219,6 +1241,7 @@
   document.getElementById("saveSettingsAction").addEventListener("click", saveSettings);
   document.getElementById("reloadSettingsAction").addEventListener("click", loadSettings);
   document.getElementById("posterAction").addEventListener("click", exportPoster);
+  document.getElementById("statsClearAction").addEventListener("click", clearStatsLeaderboard);
   document.getElementById("refreshStatsAction").addEventListener("click", loadStats);
   document.getElementById("statsGameSelect").addEventListener("change", (e) => {
     statsFilter = e.target.value;

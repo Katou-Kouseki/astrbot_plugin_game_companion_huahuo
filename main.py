@@ -4375,20 +4375,27 @@ class GameCompanionPlugin(Star):
         return {"status": "ok", "data": {"room_id": room.room_id, "action": action}}
 
     async def page_clear_leaderboard(self) -> dict[str, Any]:
-        """清空全局战绩排行榜。payload: {"game_type": "undercover"}，留空则清空全部。"""
+        """清空战绩排行榜（按玩法）。payload: {"game_type": "undercover"}，留空则清空全部玩法。"""
         payload = await request.json(default={}) or {}
         game_type = str(payload.get("game_type") or "").strip() or None
-        if game_type and game_type not in self.manager.global_player_wins:
-            game_type = None  # 指定类型不存在则视为清空全部，避免卡在“找不到该类型”
+        # 指定玩法时严格只清该玩法；即使该玩法当前无数据，也不回退到清空全部，避免误操作
         cleared = self.manager.clear_global_stats(game_type)
         if cleared:
             self.manager.record_operation(
                 "clear_leaderboard",
-                f"清空全局战绩排行榜（{'全部玩法' if not game_type else game_type}）",
+                f"清空战绩排行榜（{'全部玩法' if not game_type else game_type}）",
             )
         return {
             "status": "ok" if cleared else "error",
-            "message": "" if cleared else "没有可清空的排行榜数据（持久化未启用或为空）",
+            "message": (
+                ""
+                if cleared
+                else (
+                    "该玩法暂无排行榜数据"
+                    if game_type
+                    else "没有可清空的排行榜数据（持久化未启用或为空）"
+                )
+            ),
             "data": {"cleared": bool(cleared)},
         }
 
