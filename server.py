@@ -887,7 +887,8 @@ class GameRoomServer:
         }
         if content_type.startswith("text/html"):
             headers["Content-Security-Policy"] = (
-                "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+                "default-src 'self'; script-src 'self'; style-src 'self'; "
+                "img-src 'self' data: https://q1.qlogo.cn https://q.qlogo.cn; "
                 "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
             )
         return headers

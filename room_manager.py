@@ -3455,6 +3455,27 @@ class RoomManager:
                 return seat
         return None
 
+    def _announce_host_transfer(
+        self, room: GameRoom, previous_host_token: str | None
+    ) -> None:
+        """房主更替时在房内刷一条提示，避免静默交接。
+
+        房主始终按 _undercover_host_seat 动态取「第一个绑定QQ身份的真人」，
+        此处只负责在房主位置因退席/解绑发生变迁时，向全房同步新接任者。
+        若此前无房主或房主未变（如普通玩家离开），则不打扰。
+        """
+        if room.game_type != "undercover" or not room.multiplayer.enabled:
+            return
+        host = type(self)._undercover_host_seat(room)
+        if host is None or host.visitor_token == previous_host_token:
+            return
+        room.add_message(
+            "system",
+            f"{host.display_name or f'{host.number}号'} 已成为本房房主，"
+            "可在集结界面调整阵营比例或追加 AI 玩家。",
+        )
+        room.touch()
+
     async def add_undercover_ai_seat(
         self,
         room: GameRoom,
@@ -3619,8 +3640,14 @@ class RoomManager:
                 )
                 if p is not None:
                     p.is_out = True
+            # 记录退席前的房主，退席后若房主位置迁移则向全房同步新接任者
+            previous_host = type(self)._undercover_host_seat(room)
+            previous_host_token = (
+                previous_host.visitor_token if previous_host else None
+            )
             # _remove_multiplayer_seat 自带黑杰克手牌 surrender 与席位轮转清理
             self._remove_multiplayer_seat(room, visitor.token)
+            self._announce_host_transfer(room, previous_host_token)
             if room.multiplayer.seats:
                 self._sync_primary_player(room)
                 if room.status != "active":
@@ -3678,6 +3705,11 @@ class RoomManager:
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             old_qq = visitor.qq or ""
+            # 记录解绑前的房主，解绑后若房主位置迁移则向全房同步新接任者
+            previous_host = type(self)._undercover_host_seat(room)
+            previous_host_token = (
+                previous_host.visitor_token if previous_host else None
+            )
             visitor.identity_confirmed = False
             visitor.qq = ""
             visitor.binding_token = ""
@@ -3693,4 +3725,5 @@ class RoomManager:
                     room.player_qq = ""
             if old_qq and old_qq in room.confirmed_participant_qqs:
                 room.confirmed_participant_qqs.discard(old_qq)
+            self._announce_host_transfer(room, previous_host_token)
             room.touch()

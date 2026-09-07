@@ -1256,12 +1256,13 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   45% { transform: scale(.96); }
   100% { transform: scale(.96); filter: saturate(.7) grayscale(.35); opacity: .55; }
 }
-/* 叉掉标记：压在卡片右上角，随卡片一起打进画面 */
+/* 叉掉标记：压在卡片右下角（避开头像与长名字），随卡片一起打进画面 */
 .uc-player-card.is-just-out::after,
 .uc-player-card.is-out::after {
   content: "✕";
   position: absolute;
-  top: .3rem;
+  top: auto;
+  bottom: .35rem;
   right: .5rem;
   font-size: 22px;
   font-weight: 900;
@@ -1281,6 +1282,7 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   display: flex;
   align-items: center;
   gap: .55rem;
+  min-width: 0;
 }
 /* ====== 通用 QQ 头像 ====== */
 .uc-avatar {
@@ -1324,6 +1326,11 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 .uc-pn-name {
   color: var(--text-strong);
   font-size: 1rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.35;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .uc-pn-meta {
   display: flex;
@@ -2459,6 +2466,10 @@ body.dark .uc-speech-box textarea:focus {
   text-shadow: 0 3px 0 rgba(0, 0, 0, 0.18), 0 0 24px rgba(255, 255, 255, 0.6);
 }
 .speech-turn-notification .stn-text .speech-sec { font-size: 14px; font-weight: 700; opacity: 0.95; }
+/* 发言通知头像：按卡片内文字比例缩放，不撑大卡片 */
+.speech-turn-notification .uc-avatar-big { width: 44px; height: 44px; font-size: 20px; }
+.speech-turn-notification.is-dock .uc-avatar-big { width: 24px; height: 24px; font-size: 14px; }
+.speech-turn-notification.is-dock.is-urgent .uc-avatar-big { width: 30px; height: 30px; font-size: 16px; }
 /* 弹出动画结束后，平滑滑上并缩小为棋盘顶部的“发言倒计时”常驻条 */
 .speech-turn-notification.is-dock {
   top: 112px;

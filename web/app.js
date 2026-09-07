@@ -767,7 +767,8 @@
               window.clearInterval(rollTimer);
               cell.textContent = finalVal;
               cell.classList.remove("is-question", "is-rolling");
-              cell.classList.add("is-flipped", finalVal === "0" ? "is-zero" : "");
+              cell.classList.add("is-flipped");
+              if (finalVal === "0") cell.classList.add("is-zero");
             }
           }, 90);
         }, delay);
