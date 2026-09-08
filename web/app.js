@@ -1530,36 +1530,38 @@
       // 头像曾加载失败（本轮回退首字占位），避免反复请求破图/空白；刷新页面后重试
       const seatAvatarFailed = !!(mySeat && mySeat.avatar_url && ucAvatarImgFailed.has(Number(mySeat.number)));
       if (mySeat && mySeat.avatar_url && !seatAvatarFailed) {
-        // 复用已加载的 img 节点，避免每次轮询重刷头像（移动端会闪烁）
+        const url = String(mySeat.avatar_url);
         const n = Number(mySeat.number);
-        let cached = ucAvatarImgCache[n];
-        let img;
-        if (cached && cached.src === mySeat.avatar_url) {
-          img = cached.el;
-          // 缓存元素可能正挂在玩家网格的卡片上（同一 img 不能同时存在于两处）：
-          // 克隆一份放置，避免元素被网格「移动」走导致本面板头像空白
-          if (img.isConnected) img = img.cloneNode(true);
-        } else {
+        // 本面板用独立常驻的 img 节点（存在元素上），不共享玩家网格的缓存 img：
+        // 网格的 img 一直连接在文档里，若这里去 clone 它，每次轮询都会生成一个
+        // 全新的 <img> 重新下载 qlogo，移动端就会闪烁。各自持有一份、复用即可。
+        let img = myAvatar._ucSeatImg;
+        if (!img) {
           img = document.createElement("img");
-          img.src = mySeat.avatar_url;
           img.alt = "";
-          img.loading = "lazy";
           img.referrerPolicy = "no-referrer";
-          ucAvatarImgCache[n] = { src: mySeat.avatar_url, el: img };
+          myAvatar._ucSeatImg = img;
+        }
+        // 仅当 src 变化才触发加载；同一 URL 不重复设置，避免反复重新下载
+        if (img.getAttribute("src") !== url) {
+          img.src = url;
+          img.loading = "lazy";
+          img._ucFallbackApplied = false;
         }
         // 头像加载失败：回退首字占位，避免空白/破图
         img.onerror = () => {
           if (!img._ucFallbackApplied) {
             img._ucFallbackApplied = true;
             ucAvatarImgFailed.add(n);
+            myAvatar.replaceChildren();
             const fName = room.visitor_display_name || "";
             const fNum = Number(room.visitor_number || 0);
-            myAvatar.replaceChildren();
             myAvatar.textContent = fName.trim().charAt(0) || (fNum ? String(fNum).charAt(0) : "?");
             myAvatar.classList.add("uc-avatar-text");
           }
         };
-        myAvatar.replaceChildren(img);
+        // 只在本面板尚未挂载该 img 时才挂载，重复 replaceChildren 会中断加载闪烁
+        if (!myAvatar.contains(img)) myAvatar.replaceChildren(img);
       } else if (mySeat && (mySeat.is_ai || seatAvatarFailed)) {
         // AI 或头像加载失败：首字占位
         const fallbackName = seatAvatarFailed ? vName : (mySeat.display_name || "AI");
