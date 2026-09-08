@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -79,7 +79,7 @@ def test_active_snapshot_never_exposes_solution_or_key_facts() -> None:
 
 
 def test_judge_parsers_reject_unknown_verdict_and_overconfident_answer() -> None:
-    verdict, facts = parse_question_judgment(
+    verdict, facts, solved_flag = parse_question_judgment(
         '{"verdict":"maybe","matched_facts":[0,9,"1"]}', fact_count=3
     )
     solved, coverage, answer_facts = parse_answer_judgment(
@@ -88,9 +88,21 @@ def test_judge_parsers_reject_unknown_verdict_and_overconfident_answer() -> None
 
     assert verdict == "irrelevant"
     assert facts == {0, 1}
+    assert not solved_flag
     assert not solved
     assert coverage == 0.7
     assert answer_facts == {0, 1, 2}
+
+    _, _, solved_flag2 = parse_question_judgment(
+        '{"verdict":"yes","solved":true}',
+        fact_count=3,
+    )
+    _, _, solved_flag3 = parse_question_judgment(
+        '{"verdict":"yes","solved":"true"}',
+        fact_count=3,
+    )
+    assert solved_flag2 is True
+    assert solved_flag3 is False
 
 
 @pytest.mark.asyncio

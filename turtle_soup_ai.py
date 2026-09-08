@@ -88,7 +88,10 @@ def question_judge_prompt(
         + "\n\nverdict 只能是 yes、no、irrelevant、partial、compound。"
         "当一句话包含两个需要分别回答的独立判断时使用 compound。"
         "matched_facts 只列出本问题直接触及的 key_facts 的零基索引。"
-        '\n只输出：{"verdict":"yes","matched_facts":[0]}'
+        "即使这句话没有出现“答案/真相/推理”等字样，只要它本身已经完整还原"
+        "汤底的核心因果链和绝大多数关键事实，就把 solved 设为 true（否则省略为 false）。"
+        "纯闲聊或与题目无关的内容 verdict 用 irrelevant 且 solved 为 false。"
+        '\n只输出：{"verdict":"yes","solved":false,"matched_facts":[0]}'
     )
     return system, prompt
 
@@ -195,12 +198,13 @@ def validation_passed(text: str) -> bool:
 
 def parse_question_judgment(
     text: str, *, fact_count: int
-) -> tuple[SoupVerdict, set[int]]:
+) -> tuple[SoupVerdict, set[int], bool]:
     data = extract_json_object(text) or {}
     verdict = str(data.get("verdict") or "irrelevant").strip().lower()
     if verdict not in {"yes", "no", "irrelevant", "partial", "compound"}:
         verdict = "irrelevant"
-    return verdict, _fact_indices(data.get("matched_facts"), fact_count)  # type: ignore[return-value]
+    solved = bool(data.get("solved") is True)
+    return verdict, _fact_indices(data.get("matched_facts"), fact_count), solved  # type: ignore[return-value]
 
 
 def parse_answer_judgment(

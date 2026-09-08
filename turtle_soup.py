@@ -97,6 +97,7 @@ class TurtleSoupGame:
     last_bot_action: SoupBotAction | None = None
     last_bot_text: str = ""
     failure_reason: str = ""
+    last_judge_at: float = 0.0
 
     def __post_init__(self) -> None:
         if self.mode == "player_host" and self.phase == "preparing":
@@ -175,6 +176,7 @@ class TurtleSoupGame:
         self.processing = False
         self.processing_player_number = None
         self.failure_reason = ""
+        self.last_judge_at = time.time()
         return newly_discovered
 
     def record_answer(
@@ -207,6 +209,7 @@ class TurtleSoupGame:
         self.processing = False
         self.processing_player_number = None
         self.failure_reason = ""
+        self.last_judge_at = time.time()
         if solved:
             self.solved = True
             self.phase = "finished"

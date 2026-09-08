@@ -290,6 +290,18 @@
         "type": "int",
         "default": 6,
         "hint": "0 表示不限制；普通房间可自行加入空席，管理员房间仍由游戏管理台安排。"
+      },
+      "free_questioning": {
+        "description": "自由提问（不强制轮次）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后海龟汤常规玩法（Bot 出题）不再要求按玩家席顺位轮流提问，任意玩家席成员都能随时提问/答题；观众仍需先加入玩家席。"
+      },
+      "free_question_cooldown": {
+        "description": "自由提问判定冷却（秒）",
+        "type": "int",
+        "default": 1,
+        "hint": "范围 0-30；限制两次 LLM 判定之间的最短间隔，防止玩家连续提问把模型打满。0 表示不额外限速（仍受单格判断锁约束）。"
       }
     }
   },

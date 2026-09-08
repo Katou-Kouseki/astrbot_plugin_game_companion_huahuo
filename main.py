@@ -996,6 +996,12 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_max_players = self._cfg_non_negative(
             "turtle_soup.max_players", 6
         )
+        self.turtle_soup_free_questioning = self._cfg_bool(
+            "turtle_soup.free_questioning", False
+        )
+        self.turtle_soup_free_question_cooldown = self._cfg_int(
+            "turtle_soup.free_question_cooldown", 1, minimum=0, maximum=30
+        )
         self.draw_guess_vision_provider_id = self._cfg_str(
             "draw_guess.vision_provider_id", "agnes-ai/agnes-image-2.5-flash"
         )
@@ -1136,6 +1142,8 @@ class GameCompanionPlugin(Star):
             turtle_soup_max_hints=self.turtle_soup_max_hints,
             turtle_soup_content_level=self.turtle_soup_content_level,
             turtle_soup_max_players=self.turtle_soup_max_players,
+            turtle_soup_free_questioning=self.turtle_soup_free_questioning,
+            turtle_soup_free_question_cooldown=self.turtle_soup_free_question_cooldown,
             multiplayer_turn_timeout=self.multiplayer_turn_timeout,
             swap_request_cooldown=self.swap_request_cooldown,
             swap_request_expiry=self.swap_request_expiry,
@@ -2852,6 +2860,7 @@ class GameCompanionPlugin(Star):
     ) -> tuple[str, dict[str, Any]]:
         """Recognize authoritative game intents; ordinary conversation stays chat."""
         normalized = re.sub(r"[\s，。！!？?、]", "", str(text or "").lower())
+        raw_answer_text = str(text or "").strip()
         if any(phrase in normalized for phrase in ("关闭房间", "结束房间", "销毁房间")):
             return "close", {}
 
@@ -2926,11 +2935,62 @@ class GameCompanionPlugin(Star):
             if room.status == "active":
                 return "soup_respond", {}
             return "", {}
-        if any(word in normalized for word in ("我猜答案", "完整答案", "完整推理", "真相是", "答案是")):
+        # 答案识别分「强标记 / 弱猜词」两档，避免漏判玩家五花八门的答法。
+        # 强标记：语义确定的答案提交，无条件视为答案。
+        strong_answer_words = (
+            "答案是",
+            "我的答案是",
+            "我答案是",
+            "我猜答案",
+            "正确答案是",
+            "最终答案是",
+            "完整答案",
+            "完整推理",
+            "真相是",
+            "真相就是",
+            "谜底是",
+            "谜底就是",
+            "揭晓答案",
+            "公布答案",
+        )
+        # 弱猜词：玩家常用的猜测式表达，通常也算答案，但在疑问语气下回落为提问。
+        weak_guess_words = (
+            "我猜是",
+            "我认为是",
+            "我觉得是",
+            "应该是",
+            "我想是",
+            "应该是是",
+            "推测是",
+            "推理是",
+            "推理结果是",
+            "我推理出",
+            "想想是",
+        )
+        strong_answer = bool(
+            any(word in normalized for word in strong_answer_words)
+            or bool(re.match(r"^答[：:\s]", raw_answer_text))
+            or normalized.startswith("答案")
+        )
+        raw_text = str(text or "").strip()
+        interrogative = (
+            bool(re.search(r"[?？]", raw_text))
+            or normalized.endswith(("吗", "呢", "吧", "嘛"))
+            or any(
+                q in normalized
+                for q in ("是不是", "是否", "有没有", "会不会", "能否", "为什么")
+            )
+        )
+        weak_guess = any(word in normalized for word in weak_guess_words) and not interrogative
+        if strong_answer or weak_guess:
             return "soup_answer", {}
-        if room.status == "active" and any(
-            marker in str(text) for marker in ("?", "？", "吗", "是否", "是不是", "有没有", "为什么", "会不会", "能否")
+        if (
+            room.status == "active"
+            and len(raw_text) >= 2
         ):
+            # 内容有信息量的发言交给统一判定：既可能是“是/否”问题，也可能已经
+            # 把真相说完整（此时 LLM 会在同一次判定里返回 solved=true 判定答对），
+            # 无需玩家刻意加“答案/真相”等字样。太短的语气词仍走聊天。
             return "soup_question", {}
         return "", {}
 
@@ -3249,11 +3309,29 @@ class GameCompanionPlugin(Star):
             raw = await self._call_room_model(
                 room, system_prompt=system_prompt, prompt=prompt, timeout=30
             )
-            verdict, matched_facts = parse_question_judgment(
+            verdict, matched_facts, solved = parse_question_judgment(
                 raw, fact_count=len(game.puzzle.key_facts)
             )
             if verdict == "compound":
                 matched_facts.clear()
+            if solved:
+                # 玩家这句话本身已是完整真相：直接判对，无需出现“答案/真相”等字样。
+                applied = await self.manager.resolve_turtle_soup_answer(
+                    room,
+                    game,
+                    question,
+                    solved=True,
+                    source=source,
+                    matched_facts=matched_facts,
+                )
+                if not applied:
+                    raise RuntimeError("房间状态已经变化，请重新查看当前题目")
+                return {
+                    "solved": True,
+                    "coverage": 1.0,
+                    "reply": "推理正确，汤底已经揭晓。",
+                    "solution": game.puzzle.solution,
+                }
             applied = await self.manager.resolve_turtle_soup_question(
                 room,
                 game,
@@ -5722,6 +5800,12 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_max_players = self._cfg_int(
             "turtle_soup.max_players", 6, minimum=0, maximum=100
         )
+        self.turtle_soup_free_questioning = self._cfg_bool(
+            "turtle_soup.free_questioning", False
+        )
+        self.turtle_soup_free_question_cooldown = self._cfg_int(
+            "turtle_soup.free_question_cooldown", 1, minimum=0, maximum=30
+        )
         self.multiplayer_turn_timeout = self._cfg_int(
             "multiplayer.turn_timeout_seconds", 60, minimum=0, maximum=3600
         )
@@ -5755,6 +5839,8 @@ class GameCompanionPlugin(Star):
         self.manager.turtle_soup_max_hints = self.turtle_soup_max_hints
         self.manager.turtle_soup_content_level = self.turtle_soup_content_level
         self.manager.turtle_soup_max_players = self.turtle_soup_max_players
+        self.manager.turtle_soup_free_questioning = self.turtle_soup_free_questioning
+        self.manager.turtle_soup_free_question_cooldown = self.turtle_soup_free_question_cooldown
         self.manager.multiplayer_turn_timeout = self.multiplayer_turn_timeout
         self.manager.swap_request_cooldown = self.swap_request_cooldown
         self.manager.swap_request_expiry = self.swap_request_expiry

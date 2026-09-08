@@ -138,6 +138,8 @@ class RoomManager:
         turtle_soup_max_hints: int = 3,
         turtle_soup_content_level: SoupContentLevel = "normal",
         turtle_soup_max_players: int = 6,
+        turtle_soup_free_questioning: bool = False,
+        turtle_soup_free_question_cooldown: int = 1,
         multiplayer_turn_timeout: int = 60,
         swap_request_cooldown: int = 30,
         swap_request_expiry: int = 20,
@@ -172,6 +174,8 @@ class RoomManager:
         self.turtle_soup_max_hints = max(0, int(turtle_soup_max_hints))
         self.turtle_soup_content_level = turtle_soup_content_level
         self.turtle_soup_max_players = max(0, int(turtle_soup_max_players))
+        self.turtle_soup_free_questioning = bool(turtle_soup_free_questioning)
+        self.turtle_soup_free_question_cooldown = max(0, int(turtle_soup_free_question_cooldown))
         self.multiplayer_turn_timeout = max(0, int(multiplayer_turn_timeout))
         self.swap_request_cooldown = max(0, int(swap_request_cooldown))
         self.swap_request_expiry = max(1, int(swap_request_expiry))
@@ -2083,6 +2087,16 @@ class RoomManager:
                 raise ValueError("当前海龟汤已经暂停")
             if room.status != "active":
                 raise ValueError("当前没有正在进行的海龟汤")
+            # 自由提问防刷：冷却期内丢弃新的提问/答题，避免玩家轮番提问把 LLM 打满。
+            # （并发由 game.begin_processing() 的单格判断锁兜底，这里是更平滑的限速提示。）
+            if (
+                self._turtle_soup_free_mode(room)
+                and self.turtle_soup_free_question_cooldown > 0
+                and time.time()
+                - float(getattr(game, "last_judge_at", 0) or 0)
+                < self.turtle_soup_free_question_cooldown
+            ):
+                raise ValueError("别急，稍等片刻再问下一句～花火正在消化上一条推理。")
             game.begin_processing()
             game.processing_player_number = player_number
             room.multiplayer.turn_deadline = 0.0
@@ -2118,7 +2132,8 @@ class RoomManager:
                 player_number=game.processing_player_number,
             )
             room.touch()
-            self._advance_multiplayer_turn(room)
+            if not self._turtle_soup_free_mode(room):
+                self._advance_multiplayer_turn(room)
         await self._emit(
             "soup_question_answered",
             room,
@@ -2151,7 +2166,8 @@ class RoomManager:
                 player_number=game.processing_player_number,
             )
             room.touch()
-            self._advance_multiplayer_turn(room)
+            if not self._turtle_soup_free_mode(room):
+                self._advance_multiplayer_turn(room)
         if solved:
             await self._finish_game(room)
         else:
@@ -2792,6 +2808,8 @@ class RoomManager:
                     state.turn_deadline = 0.0  # 先清零，防止每个 housekeeping 周期重复触发
                     need_undercover_timeout = room
             else:
+                # 自由提问模式不强制轮次：关闭回合超时轮换，玩家可随时提问
+                free_soup = self._turtle_soup_free_mode(room)
                 turn_active = bool(
                     room.status == "active"
                     and isinstance(game, TurtleSoupGame)
@@ -2799,6 +2817,7 @@ class RoomManager:
                     and not game.processing
                     and state.seats
                     and state.turn_timeout_seconds
+                    and not free_soup
                 )
                 if not turn_active:
                     state.turn_deadline = 0.0
@@ -3100,6 +3119,9 @@ class RoomManager:
             state.turn_timeout_seconds
             and state.seats
             and room.status == "active"
+            and not (
+                isinstance(game, TurtleSoupGame) and self._turtle_soup_free_mode(room)
+            )
             and (
                 (
                     isinstance(game, TurtleSoupGame)
@@ -3351,6 +3373,18 @@ class RoomManager:
             raise ValueError("当前房间不是海龟汤")
         return room.game
 
+    def _turtle_soup_free_mode(self, room: GameRoom) -> bool:
+        """自由提问：海龟汤常规玩法（Bot 出题）且开启免轮次开关。
+
+        开启后不再强制按玩家席轮次发言，任意玩家席成员都能提问/答题；
+        同时关闭回合超时轮换，避免「还没轮到你」卡住多人进度。
+        """
+        return bool(
+            self.turtle_soup_free_questioning
+            and isinstance(room.game, TurtleSoupGame)
+            and room.game.mode == "bot_host"
+        )
+
     def _require_turtle_soup_player(
         self,
         room: GameRoom,
@@ -3364,16 +3398,24 @@ class RoomManager:
             if room.multiplayer.enabled
             else room.player_token
         )
+        free = self._turtle_soup_free_mode(room)
         if source == "web":
             visitor = self._visitor(room, visitor_token)
-            if visitor.token != expected_token:
+            if not free and visitor.token != expected_token:
                 raise PermissionError("还没有轮到你这个当前玩家推进海龟汤")
+            if free:
+                # 自由提问：无需轮到顺位，但必须是玩家席成员（观众不能推进游戏）
+                if room.multiplayer.enabled:
+                    if room.multiplayer.seat_for_token(visitor.token) is None:
+                        raise PermissionError("只有玩家席成员可以提问/答题")
+                elif not (room.player_token and visitor.token == room.player_token):
+                    raise PermissionError("只有玩家席成员可以提问/答题")
             return visitor.number
         if room.multiplayer.enabled:
             seat = room.multiplayer.seat_for_qq(actor_qq)
             if seat is None:
                 raise PermissionError("你的 QQ 尚未绑定到玩家席，请在 WebUI 操作")
-            if seat.visitor_token != expected_token:
+            if not free and seat.visitor_token != expected_token:
                 raise PermissionError("还没有轮到你这个当前玩家推进海龟汤")
             visitor = room.visitors.get(seat.visitor_token)
             if visitor is None:
