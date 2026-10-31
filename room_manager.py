@@ -345,6 +345,9 @@ class RoomManager:
         ):
             wins = int(info.get("wins") or 0)
             games = int(info.get("games") or 0)
+            # 历史数据（0.5.20 及更早）只记「胜场」没记「总局数」，升级后 games 会从 0 开始，
+            # 导致「12 胜 / 1 局」算成 1200%。这里兜底：局数至少等于胜场（每胜至少对应一局）。
+            games = max(games, wins)
             rows.append(
                 {
                     "name": str(info["name"]),
@@ -385,10 +388,14 @@ class RoomManager:
             for qq, info in players.items():
                 if not isinstance(qq, str) or not qq.strip() or not isinstance(info, dict):
                     continue
+                wins = max(0, int(info.get("wins") or 0))
+                games = max(0, int(info.get("games") or 0))
+                # 旧数据没有 games 字段：每胜至少对应一局，用 wins 兜底，避免出现 >100% 的胜率
+                games = max(games, wins)
                 cleaned[gtype][qq.strip()] = {
                     "name": str(info.get("name") or ""),
-                    "wins": max(0, int(info.get("wins") or 0)),
-                    "games": max(0, int(info.get("games") or 0)),
+                    "wins": wins,
+                    "games": games,
                 }
         return cleaned
 

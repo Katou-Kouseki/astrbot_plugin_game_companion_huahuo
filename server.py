@@ -148,6 +148,10 @@ class GameRoomServer:
             "/api/room/{access_token}/board/announce",
             self._board_announce,
         )
+        app.router.add_post(
+            "/api/room/{access_token}/board/recap",
+            self._board_recap,
+        )
         app.router.add_post("/api/room/{access_token}/ready", self._ready)
         app.router.add_post(
             "/api/room/{access_token}/undercover/add_ai",
@@ -741,6 +745,17 @@ class GameRoomServer:
             room.last_announced_uid = key
             room.last_announced_text = text
         return self._response({"announced": bool(text), "already": False, "text": text})
+
+    async def _board_recap(self, request: web.Request) -> web.Response:
+        """棋类结算卡「花火复盘」：按局（completed_games）缓存，同局只请求一次 LLM。"""
+        self._require_origin(request)
+        room = self._room(request)
+        try:
+            recap = await self.plugin.board_recap(room)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 生成棋类复盘失败: %s", exc)
+            recap = ""
+        return self._response({"recap": (recap or "").strip()})
 
     async def _seat_leave(self, request: web.Request) -> web.Response:
         """玩家主动从玩家席退到观众席（仅本人可操作）。"""

@@ -733,6 +733,12 @@ class GameRoom:
                 "draws": self.draws,
                 "games": self.completed_games,
             },
+            # 本局（棋类）是否已自动/手动通报到群：前端据此把「通知到群」按钮置灰
+            "board_announced": bool(
+                self.game_type in {"gomoku", "othello", "xiangqi", "weiqi"}
+                and self.last_announced_uid
+                == f"board:{int(self.completed_games or 0)}"
+            ),
             "leaderboard": (
                 [
                     {

@@ -4281,7 +4281,12 @@
       return;
     }
     // gomoku / weiqi：网格 + 黑白子
-    const palette = getGamePalette(gt) || { board: "#d4a85f", line: "#5d472c", blackStone: "#242724", whiteStone: "#f7f8f5", whiteEdge: "#9da39e" };
+    // 缩略图固定用浅色木纹底（海报背景恒为深色，主题色板在暗色下会跟背景糊成一团，
+    // 只剩孤零零的网格线，看起来像「划线不完整 / 乱出线」）。
+    const palette = {
+      gomoku: { board: "#d4a85f", line: "#5d472c", blackStone: "#242724", whiteStone: "#f7f8f5", whiteEdge: "#9da39e" },
+      weiqi: { board: "#dcc089", line: "#6b5636", blackStone: "#22251f", whiteStone: "#fbfcf8", whiteEdge: "#9aa19b" },
+    }[gt] || { board: "#d4a85f", line: "#5d472c", blackStone: "#242724", whiteStone: "#f7f8f5", whiteEdge: "#9da39e" };
     const gap = (size - size * 0.1) / (n - 1);
     const m = size * 0.05;
     c.fillStyle = palette.board;
@@ -4330,11 +4335,20 @@
     if (result.opponent) parts.push(`对手：${result.opponent}`);
     parts.push(`共 ${result.move_count} 手`);
     if (messageEl) messageEl.textContent = parts.join(" · ");
+    const recapBox = document.getElementById("boardResultRecap");
+    const recapBtn = document.getElementById("boardResultRecapBtn");
+    if (recapBtn) { recapBtn.hidden = false; recapBtn.disabled = false; recapBtn.textContent = "✨ 花火复盘"; }
+    if (recapBox) { recapBox.hidden = true; recapBox.textContent = ""; }
     if (announceBtn) {
-      // 通知到群：跟随「谁是卧底」的群通知总开关；未开启时隐藏（保持与卧底一致）
       announceBtn.hidden = false;
-      announceBtn.disabled = false;
-      announceBtn.textContent = "📢 通知到群";
+      // 花火获胜已自动通报过的这一局，「通知到群」置灰（再点会重复刷群）
+      if (room?.board_announced) {
+        announceBtn.disabled = true;
+        announceBtn.textContent = "✅ 已通知（本局一次）";
+      } else {
+        announceBtn.disabled = false;
+        announceBtn.textContent = "📢 通知到群";
+      }
     }
     drawBoardResultThumb(result);
     // 彩带
@@ -5686,6 +5700,27 @@
       if (overlay) overlay.hidden = true;
     });
   }
+  // 棋类「花火复盘」：按局缓存，点一下生成
+  const boardResultRecapBtn = document.getElementById("boardResultRecapBtn");
+  if (boardResultRecapBtn) {
+    boardResultRecapBtn.addEventListener("click", async () => {
+      const btn = boardResultRecapBtn;
+      const recapBox = document.getElementById("boardResultRecap");
+      btn.disabled = true;
+      btn.textContent = "复盘生成中…";
+      try {
+        const data = await request("POST", "board/recap", {});
+        const text = String(data?.recap || "").trim() || "暂未生成复盘，稍后再试试。";
+        if (recapBox) { recapBox.textContent = text; recapBox.hidden = false; }
+        btn.textContent = "✨ 花火复盘";
+      } catch (error) {
+        showToast(error?.message || "复盘生成失败");
+        btn.textContent = "✨ 花火复盘";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
   // 棋类「分享战报」：画 PNG 卡片并保存/分享
   const boardResultShare = document.getElementById("boardResultShare");
   if (boardResultShare) {
@@ -5722,7 +5757,7 @@
           showToast(data?.already ? "本局已通知过，未重复发送" : "已通知到群");
         } else {
           btn.textContent = "📢 通知到群";
-          showToast("群通知未开启：请在插件配置开启 undercover.group_announce_enabled");
+          showToast("群通知未开启：请在插件配置开启 board.group_announce_enabled");
           btn.disabled = false;
         }
       } catch (error) {

@@ -629,6 +629,84 @@
       }
     }
   },
+  "board": {
+    "description": "棋类播报（五子棋/黑白棋/象棋/围棋）",
+    "type": "object",
+    "items": {
+      "group_announce_enabled": {
+        "description": "开启群通报",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，棋类结算弹窗上「通知到群」可用，把本局胜负（谁赢、执子、手数）发到开房群（一局一次）。"
+      },
+      "group_announce_auto": {
+        "description": "花火获胜自动播报",
+        "type": "bool",
+        "default": false,
+        "hint": "仅「和花火对局」时生效：花火获胜则局末自动把战况发到群，无需手动点按钮；已自动通报的那一局，「通知到群」按钮会置灰。"
+      },
+      "group_announce_style": {
+        "description": "群通报发送方式",
+        "type": "string",
+        "default": "text",
+        "options": [
+          "text",
+          "image",
+          "both"
+        ],
+        "labels": [
+          "仅文字",
+          "仅图片",
+          "文字+图片"
+        ],
+        "hint": "图片为前端生成的本局战报海报；自动播报时服务端没有前端，会先发文字、图片发送失败也回退纯文字；需开启群通报后才生效。"
+      },
+      "group_announce_recap": {
+        "description": "群通报附带复盘",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后随通报附带「花火复盘」（图文模式时放在图片之后）；关闭则只发战报本身。"
+      },
+      "report_enabled": {
+        "description": "开启棋类战绩日报/周报",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后按下方时间/白名单定时推送棋类全局战绩榜（含胜率）。"
+      },
+      "report_mode": {
+        "description": "推送频率",
+        "type": "string",
+        "default": "daily",
+        "options": [
+          "daily",
+          "weekly"
+        ],
+        "labels": [
+          "每日",
+          "每周"
+        ],
+        "hint": "weekly 时每天由 report_weekday 指定星期几推送一次。"
+      },
+      "report_time": {
+        "description": "推送时间（HH:MM）",
+        "type": "string",
+        "default": "09:00",
+        "hint": "本地时间；示例 09:00。周报同样取该时分。"
+      },
+      "report_weekday": {
+        "description": "每周推送的星期（0-6，0=周一）",
+        "type": "int",
+        "default": 1,
+        "hint": "仅 report_mode 为 weekly 时生效；与 report_time 配合。"
+      },
+      "report_groups": {
+        "description": "推送白名单（UMO 会话串）",
+        "type": "text",
+        "default": "",
+        "hint": "每行一个或逗号/空格分隔，例如 UMO:huahuo:GroupMessage:454366619。"
+      }
+    }
+  },
   "memory": {
     "description": "陪伴记忆",
     "type": "object",

@@ -33,7 +33,7 @@ from .othello import WHITE as OTHELLO_WHITE
 from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
-from .room_manager import BOARD_GAME_CLASSES, SUPPORTED_GAMES, RoomManager
+from .room_manager import BOARD_GAME_CLASSES, DUEL_GAMES, SUPPORTED_GAMES, RoomManager
 from .server import GameRoomServer
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
@@ -1339,6 +1339,35 @@ class GameCompanionPlugin(Star):
         self.undercover_report_weekday = self._cfg_int(
             "undercover.report_weekday", 1, minimum=0, maximum=6
         )
+        # 棋类播报（五子棋/黑白棋/象棋/围棋）：与谁是卧底同构的独立配置段，
+        # 群通报开关 / 花火获胜自动播报 / 发送方式 / 复盘 / 战绩日报周报。
+        self.board_group_announce_enabled = self._cfg_bool(
+            "board.group_announce_enabled", False
+        )
+        self.board_group_announce_auto = self._cfg_bool(
+            "board.group_announce_auto", False
+        )
+        self.board_group_announce_style = (
+            self._cfg_str("board.group_announce_style", "text") or "text"
+        ).lower()
+        self.board_group_announce_recap = self._cfg_bool(
+            "board.group_announce_recap", True
+        )
+        self.board_report_enabled = self._cfg_bool(
+            "board.report_enabled", False
+        )
+        self.board_report_mode = self._cfg_str(
+            "board.report_mode", "daily"
+        ) or "daily"
+        self.board_report_groups = self._cfg(
+            "board.report_groups", ""
+        )
+        self.board_report_time = self._cfg_str(
+            "board.report_time", "09:00"
+        ) or "09:00"
+        self.board_report_weekday = self._cfg_int(
+            "board.report_weekday", 1, minimum=0, maximum=6
+        )
         # 去重窗口：记录 N 次抽取到的词条，避免短时间重复
         self._undercover_word_window: list[tuple[str, str]] = []
         self._undercover_word_window_max = 10
@@ -1632,6 +1661,7 @@ class GameCompanionPlugin(Star):
         self._watchdog_task = asyncio.create_task(self._watchdog())
         self._register_companion_invite_ability()
         self._register_report_scheduler()
+        self._register_board_report_scheduler()
         logger.info(
             "[GameCompanion] 花火陪你玩已加载；房间服务将在首次创建房间时按需启动"
         )
@@ -1640,6 +1670,7 @@ class GameCompanionPlugin(Star):
         """Invalidate every room and stop only plugin-owned resources."""
         self._unregister_companion_invite_ability()
         self._unregister_report_scheduler()
+        self._unregister_board_report_scheduler()
         if self._watchdog_task is not None:
             self._watchdog_task.cancel()
             await asyncio.gather(self._watchdog_task, return_exceptions=True)
@@ -2778,6 +2809,17 @@ class GameCompanionPlugin(Star):
                 and self.group_announce_auto
             ):
                 self._spawn(self._auto_announce_undercover(room))
+            # 棋类：仅「和花火对局」且花火获胜时自动播报（board.group_announce_auto）
+            if (
+                room.game_type in DUEL_GAMES
+                and self.board_group_announce_enabled
+                and self.board_group_announce_auto
+                and room.multiplayer.enabled
+                and self.manager._ai_seat(room) is not None
+            ):
+                winner_seat = self.manager._duel_winner_seat(room)
+                if winner_seat is not None and winner_seat.is_ai:
+                    self._spawn(self._auto_announce_board(room))
             self._spawn(
                 self._comment(
                     room,
@@ -4875,11 +4917,11 @@ class GameCompanionPlugin(Star):
     ) -> str:
         """把棋类（五子棋/黑白棋/中国象棋/围棋）单局胜负发到开房群，返回已发送文案。
 
-        复用「通知到群」总开关与样式配置（undercover.group_announce_enabled /
-        group_announce_style）；棋类没有复盘环节，只发文字（可选随图）。
+        使用独立的「棋类播报」配置（board.group_announce_enabled / group_announce_style /
+        group_announce_recap）；复盘由 board_recap 生成（按局缓存）。
         幂等由 server._board_announce 按 completed_games 保证。
         """
-        if not getattr(self, "group_announce_enabled", False):
+        if not getattr(self, "board_group_announce_enabled", False):
             return ""
         if getattr(room, "game_type", "") not in {
             "gomoku", "othello", "xiangqi", "weiqi",
@@ -4888,17 +4930,83 @@ class GameCompanionPlugin(Star):
         text = self._board_announce_text(room)
         if not text:
             return ""
-        style = (getattr(self, "group_announce_style", "text") or "text").lower()
+        # 群通报附带「花火复盘」（board.group_announce_recap）
+        recap = ""
+        if getattr(self, "board_group_announce_recap", True):
+            try:
+                recap = await self.board_recap(room)
+            except Exception:
+                recap = ""
+        style = (getattr(self, "board_group_announce_style", "text") or "text").lower()
         want_image = style in {"image", "both"}
         want_text = style in {"text", "both"}
         if not want_text and not want_image:
             want_text = True
         if want_image and image_data:
-            await self._send_to_origin_image(room, text if want_text else "", image_data)
+            await self._send_to_origin_image(
+                room, text if want_text else "", image_data, recap if want_text else ""
+            )
             return text
-        if want_text:
-            await self._send_to_origin(room, text)
+        # 纯文字 / 「仅图片」但缺图（自动播报等无前端场景）：一律发文字兜底，保证群里能收到战况
+        await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
         return text
+
+    async def board_recap(self, room: GameRoom) -> str:
+        """生成一局棋类的短复盘摘要（结算卡「复盘」/「通知到群」共用）。
+
+        按 completed_games 缓存：同局第一次请求才调 LLM，之后直接复用。
+        依据本局结果（谁赢、执子、手数、终局局面）生成 2-3 句要点；
+        LLM 不可用或超时时返回本地兜底文案。
+        """
+        game = room.game
+        if game is None or not isinstance(game, BOARD_GAME_CLASSES):
+            return ""
+        key = f"board:{int(getattr(room, 'completed_games', 0) or 0)}"
+        cache = getattr(room, "recap_cache", None) or {}
+        if key in cache:
+            return str(cache[key] or "")
+        summary = self._board_game_summary(room)
+        if not summary:
+            text = "这局棋有点意思，输赢都在一手之间，下次再来一局见分晓。"
+        else:
+            prompt = (
+                "请为一局棋类对局生成简短复盘（中文，2~3 句，轻松俏皮口吻，"
+                "可以带点网络梗和适度 emoji，不要标题、不要编号、不要客套感谢语）。\n"
+                f"对局情况：{summary}\n"
+                "风格参考：像一起玩的朋友在茶余饭后聊这盘棋，轻松幽默、善意调侃，"
+                "点一下这局的关键（谁赢了、下得顺不顺、有没有翻盘/绝杀），绝不攻击或贬低任何一方。"
+            )
+            text = await self._llm_gen_neutral(
+                prompt,
+                system_prompt=(
+                    "你是古灵精怪但温和的复盘解说员「花火」，点评轻松俏皮、善意不伤人，"
+                    "只用中文输出复盘正文，不要标题、不要编号。"
+                ),
+            )
+            text = (text or "这局棋有点意思，输赢都在一手之间，下次再来一局见分晓。").strip()
+        if key:
+            room.recap_cache[key] = text
+        return text
+
+    def _board_game_summary(self, room: GameRoom) -> str:
+        """把一局棋类的关键信息拼成可读文本，供复盘使用。"""
+        try:
+            game = room.game
+            label = self.manager._game_label(room.game_type)
+            moves = len(getattr(game, "history", None) or [])
+            winner_seat = self.manager._duel_winner_seat(room)
+            if winner_seat is not None:
+                name = self.manager._seat_display(winner_seat)
+                side = self.manager._seat_side(room, winner_seat)
+                side_text = {"red": "红", "black": "黑", "white": "白"}.get(side, "")
+                outcome = f"{name}获胜" + (f"（执{side_text}）" if side_text else "")
+            elif getattr(game, "draw", False):
+                outcome = "平局"
+            else:
+                outcome = "胜负已定"
+            return f"{label}，共 {moves} 手，{outcome}"
+        except Exception:
+            return ""
 
     def _board_announce_text(self, room: GameRoom) -> str:
         """棋类纯文字战报：游戏名 → 谁赢（执什么）→ 手数，供群通报使用。"""
@@ -5037,6 +5145,23 @@ class GameCompanionPlugin(Star):
                 room.last_announced_text = announce_text
         except Exception as exc:
             logger.warning("[GameCompanion] 谁是卧底自动播报失败: %s", exc)
+
+    async def _auto_announce_board(self, room: GameRoom) -> None:
+        """花火获胜自动播报（board.group_announce_auto）。
+
+        自动播报发生在服务端、没有前端可生成战报海报，所以先发文字战况；
+        「仅图片」模式下缺图会自动回退纯文字。发送成功后写入与手动通知一致的
+        幂等标记，避免随后手动点「通知到群」重复发送。
+        """
+        try:
+            announce_text = await self.board_announce_result(room, "")
+            if announce_text:
+                room.last_announced_uid = (
+                    f"board:{int(getattr(room, 'completed_games', 0) or 0)}"
+                )
+                room.last_announced_text = announce_text
+        except Exception as exc:
+            logger.warning("[GameCompanion] 棋类自动播报失败: %s", exc)
 
     async def _undercover_announce_poster(self, room: GameRoom) -> str:
         """生成「战况通知」海报，返回 base64 PNG。
@@ -5616,6 +5741,98 @@ class GameCompanionPlugin(Star):
         for i, row in enumerate(rows):
             rank = medals[i] if i < 3 else f"#{i + 1}"
             lines.append(f"{rank} {row['name']}：{int(row['wins'] or 0)} 胜")
+        lines.append("——————")
+        lines.append("数据来自跨房间全局战绩榜。")
+        return "\n".join(lines)
+
+    def _register_board_report_scheduler(self) -> None:
+        """注册棋类战绩日报/周报定时任务（与卧底同构，用 board.* 配置段）。"""
+        self._unregister_board_report_scheduler()
+        if not getattr(self, "board_report_enabled", False):
+            return
+        groups = [g.strip() for g in re.split(r"[\s,，;；]+", str(getattr(self, "board_report_groups", "") or "")) if g.strip()]
+        if not groups:
+            return
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+
+            scheduler = getattr(getattr(self.context, "cron_manager", None), "scheduler", None)
+            if scheduler is None or not callable(getattr(scheduler, "add_job", None)):
+                logger.warning("[GameCompanion] AstrBot 未提供 cron_manager，棋类日报/周报定时不可用")
+                return
+            hour, minute = self._parse_board_report_time()
+            mode = (getattr(self, "board_report_mode", "daily") or "daily").lower()
+            weekday = max(0, min(6, int(getattr(self, "board_report_weekday", 1) or 1)))
+            trigger = (
+                CronTrigger(hour=hour, minute=minute)
+                if mode != "weekly"
+                else CronTrigger(day_of_week=weekday, hour=hour, minute=minute)
+            )
+            scheduler.add_job(
+                self._run_board_report,
+                trigger=trigger,
+                id="astrbot_plugin_game_companion_board_report",
+                replace_existing=True,
+                misfire_grace_time=120,
+            )
+            logger.info(
+                "[GameCompanion] 已注册棋类报表定时任务（%s %02d:%02d，白名单 %d 个）",
+                "周" if mode != "daily" else "日", hour, minute, len(groups),
+            )
+        except Exception as exc:
+            logger.warning("[GameCompanion] 注册棋类报表定时任务失败: %s", exc)
+
+    def _unregister_board_report_scheduler(self) -> None:
+        try:
+            scheduler = getattr(getattr(self.context, "cron_manager", None), "scheduler", None)
+            if scheduler is not None and callable(getattr(scheduler, "get_job", None)):
+                job_id = "astrbot_plugin_game_companion_board_report"
+                if scheduler.get_job(job_id):
+                    scheduler.remove_job(job_id)
+        except Exception:
+            pass
+
+    def _parse_board_report_time(self) -> tuple[int, int]:
+        try:
+            h, m = str(getattr(self, "board_report_time", "09:00") or "09:00").split(":")
+            return max(0, min(23, int(h))), max(0, min(59, int(m)))
+        except Exception:
+            return 9, 0
+
+    async def _run_board_report(self) -> None:
+        """APScheduler 定时触发：把棋类战绩报告发到白名单群。"""
+        if not getattr(self, "board_report_enabled", False):
+            return
+        groups = [g.strip() for g in re.split(r"[\s,，;；]+", str(getattr(self, "board_report_groups", "") or "")) if g.strip()]
+        if not groups:
+            return
+        text = self._build_board_report()
+        for umoid in groups:
+            self._spawn(self._send_report_piece(umoid, text))
+        logger.info("[GameCompanion] 已触发棋类战绩报表推送")
+
+    def _build_board_report(self) -> str:
+        """拼一份棋类战绩日报/周报文本（汇总四种棋类的全局战绩榜，含胜率）。"""
+        game_types = ["gomoku", "othello", "xiangqi", "weiqi"]
+        labels = {"gomoku": "五子棋", "othello": "黑白棋", "xiangqi": "中国象棋", "weiqi": "围棋"}
+        lines = ["📊 棋类对局 · 战绩报告", "——————"]
+        total_entries = 0
+        for gt in game_types:
+            rows = self.manager.global_leaderboard(gt, limit=10)
+            if not rows:
+                continue
+            total_entries += 1
+            lines.append(f"♟️ {labels[gt]}")
+            medals = ["🥇", "🥈", "🥉"]
+            for i, row in enumerate(rows):
+                rank = medals[i] if i < 3 else f"#{i + 1}"
+                games = int(row["games"] or 0)
+                wins = int(row["wins"] or 0)
+                rate = int(round(float(row["winrate"] or 0)))
+                suffix = f"{wins} 胜 · {rate}%" if games else f"{wins} 胜"
+                lines.append(f"  {rank} {row['name']}：{suffix}")
+        if not total_entries:
+            lines.append("当前暂无棋类战绩记录。")
         lines.append("——————")
         lines.append("数据来自跨房间全局战绩榜。")
         return "\n".join(lines)
