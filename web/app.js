@@ -3842,6 +3842,14 @@
       ? mySide()
       : (tictactoe ? room.game.human_mark : myColor());
     const humanTurn = room.game.turn === humanSide;
+    // 观众没有座位，myColor() 会回退到「玩家」的执色，不能跟着「你/对手」走；
+    // 观众统一按执方显示「轮到黑/白/红方」，只有真正落座者才说「轮到你」。
+    const isViewerSeated = Boolean(room.is_player);
+    const turnSideText = xiangqi
+      ? (room.game.turn === "red" ? "红" : "黑")
+      : tictactoe
+        ? (room.game.turn === 1 ? "X" : "O")
+        : (room.game.turn === 1 ? "黑" : "白");
     // 两人对弈时对手有名字，不再一律叫「花火」
     const opponentLabel = hasHumanOpponent(room) ? "对手" : "花火";
     const iWinText = hasHumanOpponent(room) ? "你赢了" : "玩家获胜";
@@ -3850,7 +3858,11 @@
     } else {
       label.textContent = room.game.winner
         ? (room.game.winner === humanSide ? iWinText : `${opponentLabel}获胜`)
-        : (room.game.draw ? "平局" : (humanTurn ? "轮到你走棋" : `等待${opponentLabel}落子`));
+        : (room.game.draw
+          ? "平局"
+          : (isViewerSeated
+            ? (humanTurn ? "轮到你走棋" : `等待${opponentLabel}落子`)
+            : `轮到${turnSideText}方`));
     }
     if (xiangqi) {
       stone.classList.add(room.game.turn === "red" ? "red" : "black");
@@ -3867,7 +3879,9 @@
         label.textContent = `${opponentLabel} 思考中 · 黑 ${black} : 白 ${white}`;
       } else {
         const side = room.game.turn === 1 ? "黑" : "白";
-        label.textContent = `${room.game.turn === humanSide ? "你" : opponentLabel}走${side} · 黑 ${black} : 白 ${white}${room.game.last_passed ? " · 对方跳过" : ""}`;
+        label.textContent = isViewerSeated
+          ? `${room.game.turn === humanSide ? "你" : opponentLabel}走${side} · 黑 ${black} : 白 ${white}${room.game.last_passed ? " · 对方跳过" : ""}`
+          : `轮到${side}方 · 黑 ${black} : 白 ${white}${room.game.last_passed ? " · 对方跳过" : ""}`;
       }
     } else {
       stone.classList.add(room.game.turn === 1 ? "black" : "white");

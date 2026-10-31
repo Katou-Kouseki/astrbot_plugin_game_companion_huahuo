@@ -347,7 +347,10 @@ async def test_new_room_waits_for_first_player_without_empty_sweep() -> None:
 
 @pytest.mark.asyncio
 async def test_empty_sweep_still_fires_after_player_leaves() -> None:
-    """玩家离席后，empty_player_timeout 仍然生效清理空房。"""
+    """玩家离席后，只要还有真人访客在线就不销毁；访客也离开后才由 empty_player_timeout 清理。
+
+    一局结束后玩家「退出玩家席」仍留在房间当观众，页面持续心跳，此时不应被当作空房秒杀。
+    """
     manager = RoomManager(empty_player_timeout=60, idle_timeout=0)
     room = await create_room(manager, source="private")
     visitor = await manager.join(room)
@@ -355,9 +358,12 @@ async def test_empty_sweep_still_fires_after_player_leaves() -> None:
     assert room.player_empty_since is None
     await manager.remove_player(room, visitor.number)
     assert room.player_empty_since is not None
-    assert await manager.sweep_expired(
-        now=room.player_empty_since + 61
-    ) == [room.room_id]
+    # 访客仍在线（只是退出玩家席当观众），不销毁
+    assert await manager.sweep_expired(now=room.player_empty_since + 61) == []
+    assert room.room_id in manager.rooms
+    # 访客也离开后，空房超时生效
+    await manager.leave(room, visitor.token)
+    assert await manager.sweep_expired(now=room.player_empty_since + 61) == [room.room_id]
 
 
 @pytest.mark.asyncio

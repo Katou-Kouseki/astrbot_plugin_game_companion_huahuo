@@ -2984,6 +2984,27 @@ class RoomManager:
         await self._emit("room_destroyed", room, {"reason": room.close_reason})
         return room
 
+    def _has_present_visitors(self, room: GameRoom, now: float) -> bool:
+        """Whether any real (non-AI) browser visitor is still present in the room.
+
+        玩家「退出玩家席」后仍会留在房间里当观众，页面持续发心跳（last_seen_at 保持新鲜）；
+        只要还有真人访客在线，房间就不能被 empty_player_timeout 当作「空房」销毁，
+        否则一局结束后两人退出玩家席、房间立刻在几十秒内被秒杀，无法继续开局或聊天。
+        AI 座位（花火）不算真人，不参与判定。
+        """
+        ai_tokens = {
+            seat.visitor_token for seat in room.multiplayer.seats if seat.is_ai
+        }
+        for visitor in room.visitors.values():
+            if visitor.token in ai_tokens:
+                continue
+            if (
+                visitor.connected
+                and now - visitor.last_seen_at < self.DEPARTED_HEARTBEAT_TIMEOUT_SECONDS
+            ):
+                return True
+        return False
+
     async def sweep_expired(self, *, now: float | None = None) -> list[str]:
         """Destroy rooms that exceed the configured empty or idle timeout."""
         current = time.time() if now is None else float(now)
@@ -3037,6 +3058,7 @@ class RoomManager:
                 self.empty_player_timeout
                 and room.player_empty_since is not None
                 and current - room.player_empty_since >= self.empty_player_timeout
+                and not self._has_present_visitors(room, current)
             ):
                 expired.append((room.room_id, "玩家席长时间无人，房间已自动销毁"))
                 continue
