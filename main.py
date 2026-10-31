@@ -947,7 +947,7 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
   .sub { margin-top: 8px; text-align: center; font-size: 18px; font-weight: 600;
     color: rgba(255,255,255,.8); position: relative; }
   .boardwrap { margin-top: 42px; display: flex; justify-content: center; position: relative; }
-  .boardwrap svg { width: 440px; height: 440px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+  .boardwrap svg { width: 410px; height: 410px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
   .wm { margin-top: auto; text-align: right; font-size: 14px; color: rgba(255,255,255,.4); position: relative; }
 </style>
 </head>
