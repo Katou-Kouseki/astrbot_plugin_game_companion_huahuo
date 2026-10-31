@@ -606,6 +606,27 @@
     <div id="appearanceMask" class="panel-mask"></div>
   </section>
 
+  <!-- 通用二次确认：单人局对局中退席等不可逆操作 -->
+  <div
+    id="confirmOverlay"
+    class="confirm-overlay"
+    hidden
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="confirmTitle"
+    aria-describedby="confirmMessage"
+  >
+    <div class="confirm-card">
+      <div class="confirm-badge" aria-hidden="true">⚠️</div>
+      <h2 class="confirm-title" id="confirmTitle">确认操作</h2>
+      <p class="confirm-message" id="confirmMessage"></p>
+      <div class="confirm-actions">
+        <button id="confirmCancel" class="secondary-action" type="button">取消</button>
+        <button id="confirmOk" class="confirm-danger" type="button">确定</button>
+      </div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" hidden role="status"></div>
   <script src="../../assets/lucide.min.js"></script>
   <script src="../../assets/app.js"></script>

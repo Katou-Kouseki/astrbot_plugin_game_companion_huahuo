@@ -74,7 +74,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.14"
+    assert metadata["version"] == "0.5.15"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -178,8 +178,34 @@ def test_every_game_exposes_leave_seat_outside_the_undercover_ready_area() -> No
     assert "function renderSeatLeave()" in script
     assert "renderSeatLeave();" in script
     assert 'document.getElementById("seatLeaveRow")' in script
-    # 多人局对局进行中置灰，避免中途退席破坏发言/投票状态
-    assert 'Boolean(room.multiplayer_enabled) && room.status === "active"' in script
+    # 多人局对局进行中置灰，避免中途退席破坏发言/投票状态；
+    # 判断走 roomSupportsSeats()，未来单人玩法开放上座后无需改前端
+    assert "function roomSupportsSeats(target = room)" in script
+    assert 'roomSupportsSeats(room) && room.status === "active"' in script
+
+
+def test_solo_leave_during_active_game_requires_confirmation() -> None:
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    # 单人局对局中退席会让本局作废，必须先弹确认
+    assert 'id="confirmOverlay"' in page
+    assert 'id="confirmOk"' in page
+    assert 'id="confirmCancel"' in page
+    assert "function askConfirm(" in script
+    assert "await askConfirm({" in script
+    assert 'room.status === "active" || room.status === "paused"' in script
+    assert "!roomSupportsSeats(room)" in script
+    assert "退出后这一局立即作废" in script
+    assert 'event.key === "Escape"' in script
+
+    # 预留多人上座：snapshot 暴露 player_mode，后端用统一的能力集合判断席位策略
+    assert '"player_mode": "multiplayer" if multiplayer.enabled else "solo_ai"' in models
+    assert "SEAT_CAPABLE_GAMES: frozenset[GameType]" in manager
+    assert "if room.game_type not in SEAT_CAPABLE_GAMES:" in manager
+    assert "if room.game_type in SEAT_CAPABLE_GAMES:" in manager
 
 
 def test_management_page_can_switch_games_and_install_engine() -> None:

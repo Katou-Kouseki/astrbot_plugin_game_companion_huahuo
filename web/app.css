@@ -3102,3 +3102,76 @@ body.dark .uc-speech-box textarea:focus {
   margin: 0;
   background: var(--surface-alt);
 }
+
+/* ============================================================
+   通用二次确认弹层（单人局对局中退席等不可逆操作）
+   复用主题变量，深浅色自动适配
+   ============================================================ */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--page-bg, #f5f7f8) 55%, rgba(0, 0, 0, 0.58));
+  backdrop-filter: blur(6px);
+}
+.confirm-overlay:not([hidden]) { display: flex; }
+.confirm-card {
+  width: min(360px, 92vw);
+  padding: 26px 24px 20px;
+  border-radius: 18px;
+  background: var(--surface-solid);
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.42);
+  text-align: center;
+  color: var(--text);
+  animation: confirmCardIn 0.24s cubic-bezier(0.2, 0.85, 0.3, 1.15) both;
+}
+@keyframes confirmCardIn {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.confirm-badge { font-size: 34px; line-height: 1; margin-bottom: 10px; }
+.confirm-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  color: var(--text-strong);
+}
+.confirm-message {
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
+  white-space: pre-line;
+}
+.confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.confirm-actions .secondary-action,
+.confirm-danger {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  padding: 0 14px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.confirm-danger {
+  border: 1px solid color-mix(in srgb, var(--red) 45%, transparent);
+  background: color-mix(in srgb, var(--red) 12%, transparent);
+  color: var(--red);
+  font-weight: 600;
+}
+.confirm-danger:hover { background: color-mix(in srgb, var(--red) 18%, transparent); }
+.confirm-danger:focus-visible,
+.confirm-actions .secondary-action:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--green) 55%, transparent);
+  outline-offset: 2px;
+}

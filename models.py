@@ -531,6 +531,10 @@ class GameRoom:
             ),
             "player_capacity": multiplayer.capacity if multiplayer.enabled else 1,
             "multiplayer_enabled": multiplayer.enabled,
+            # 对局模式：solo_ai（玩家 vs AI）/ multiplayer（玩家席多人对局）。
+            # 前端按此字段决定座位 UI 与中途退席策略；未来棋类等玩法开放多人上座时，
+            # 只要这里返回 multiplayer，前端无需再按玩法名改判断。
+            "player_mode": "multiplayer" if multiplayer.enabled else "solo_ai",
             "current_player_number": (
                 self.visitors[current_token].number
                 if current_token in self.visitors

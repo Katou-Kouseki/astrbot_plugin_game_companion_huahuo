@@ -91,6 +91,18 @@ SUPPORTED_GAMES: tuple[GameType, ...] = (
 # 直接由 SUPPORTED_GAMES 派生，新增玩法时无需再改这里。
 _UC_GAME_TYPES: frozenset[str] = frozenset(SUPPORTED_GAMES)
 
+# 已支持「玩家席（多人上座）」的玩法；其余玩法当前是「玩家 vs AI」单人局。
+#
+# 未来方向：棋类、贪心骰子、你画我猜也要支持多人上座（可多人入席对局，
+# 单人时仍可与 AI 对局）。届时只需：
+#   1. 把玩法加进这个集合，_configure_multiplayer 会自动为它建席位并沿用当前玩家；
+#   2. 补齐该玩法的多方轮转/结算逻辑（目前只有海龟汤、黑杰克、卧底有）；
+#   3. 由房间决定对局模式，snapshot 的 player_mode 返回 "solo_ai" 或 "multiplayer"。
+# 前端已改为按 player_mode 判断，不再硬编码玩法名。
+SEAT_CAPABLE_GAMES: frozenset[GameType] = frozenset(
+    {"turtle_soup", "blackjack", "undercover"}
+)
+
 
 def _parse_camp_scales(raw: object) -> tuple[int, int, int]:
     """解析"平民 卧底 白板"字符串，返回 tuple[int,int,int]。格式错误时兜底返回 (4,1,0)。"""
@@ -2977,6 +2989,16 @@ class RoomManager:
 
     def _configure_multiplayer(self, room: GameRoom) -> None:
         """Apply the current game's seat policy without losing its primary player."""
+        if room.game_type not in SEAT_CAPABLE_GAMES:
+            # 单人玩法（玩家 vs AI）：不启用玩家席。未来把玩法加入 SEAT_CAPABLE_GAMES
+            # 后即可复用下面的席位创建逻辑（新玩法默认 2 席，可再补专属容量配置）。
+            if room.multiplayer.enabled:
+                self._sync_primary_player(room)
+                # 统一重新编号，保证 seat.number 是 1..N
+                for idx, seat in enumerate(room.multiplayer.seats):
+                    seat.number = idx + 1
+            room.multiplayer = MultiplayerState()
+            return
         if room.game_type == "undercover":
             capacity = self.undercover_max_players
             # 把 manager 级配置同步到 room，供前端 snapshot 显示
@@ -3021,12 +3043,12 @@ class RoomManager:
             )
             self._sync_primary_player(room)
             return
-        if room.game_type in {"turtle_soup", "blackjack"}:
-            capacity = (
-                self.turtle_soup_max_players
-                if room.game_type == "turtle_soup"
-                else self.blackjack_max_players
-            )
+        if room.game_type in SEAT_CAPABLE_GAMES:
+            # 海龟汤 / 黑杰克；未来新增的上座玩法默认 2 席，接入专属配置后再覆盖
+            capacity = {
+                "turtle_soup": self.turtle_soup_max_players,
+                "blackjack": self.blackjack_max_players,
+            }.get(room.game_type, 2)
             if room.multiplayer.enabled:
                 room.multiplayer.capacity = capacity
                 room.multiplayer.turn_timeout_seconds = self.multiplayer_turn_timeout
@@ -3062,12 +3084,6 @@ class RoomManager:
             for idx, seat in enumerate(room.multiplayer.seats):
                 seat.number = idx + 1
             return
-        if room.multiplayer.enabled:
-            self._sync_primary_player(room)
-            # 统一重新编号，保证 seat.number 是 1..N
-            for idx, seat in enumerate(room.multiplayer.seats):
-                seat.number = idx + 1
-        room.multiplayer = MultiplayerState()
 
     @staticmethod
     def _visitor_label(visitor: Visitor) -> str:

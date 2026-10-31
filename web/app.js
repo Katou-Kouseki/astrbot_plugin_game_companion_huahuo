@@ -556,6 +556,47 @@
     toastTimer = window.setTimeout(() => { toast.hidden = true; }, Math.max(800, Number(duration) || 2600));
   }
 
+  /* 通用二次确认弹层：返回 Promise<boolean>，取消 / ESC / 点遮罩都算 false。
+     以后新增不可逆操作（认输、清空战绩等）直接复用，不要再弹 window.confirm。 */
+  let confirmResolver = null;
+  let confirmRestoreFocus = null;
+
+  function askConfirm(options = {}) {
+    const overlay = document.getElementById("confirmOverlay");
+    const okButton = document.getElementById("confirmOk");
+    const cancelButton = document.getElementById("confirmCancel");
+    const title = options.title || "确认操作";
+    const message = options.message || "";
+    if (!overlay || !okButton || !cancelButton) {
+      return Promise.resolve(window.confirm(message || title));
+    }
+    // 同一时刻只保留一个确认框：上一个未决的直接按取消处理，避免 Promise 泄漏
+    if (confirmResolver) settleConfirm(false);
+    const titleEl = document.getElementById("confirmTitle");
+    const messageEl = document.getElementById("confirmMessage");
+    if (titleEl) titleEl.textContent = title;
+    if (messageEl) messageEl.textContent = message;
+    okButton.textContent = options.confirmText || "确定";
+    cancelButton.textContent = options.cancelText || "取消";
+    confirmRestoreFocus = document.activeElement;
+    overlay.hidden = false;
+    // 默认聚焦「取消」：破坏性操作不应被一次回车误确认
+    cancelButton.focus();
+    return new Promise((resolve) => { confirmResolver = resolve; });
+  }
+
+  function settleConfirm(result) {
+    if (!confirmResolver) return;
+    const resolve = confirmResolver;
+    confirmResolver = null;
+    const overlay = document.getElementById("confirmOverlay");
+    if (overlay) overlay.hidden = true;
+    const restore = confirmRestoreFocus;
+    confirmRestoreFocus = null;
+    if (restore && typeof restore.focus === "function") restore.focus();
+    resolve(Boolean(result));
+  }
+
   function showUcIdentityReveal(my) {
     const overlay = document.getElementById("ucRevealOverlay");
     if (!overlay || !my || (!my.camp && !my.word)) return;
@@ -1703,6 +1744,22 @@
     renderSeatLeave();
   }
 
+  /**
+   * 房间是否已开启玩家席（多人上座）。
+   *
+   * 目前只有海龟汤 / 二十一点 / 谁是卧底为 true；棋类、骰子、你画我猜是
+   * 「玩家 vs AI」单人局。未来这些单人局开放上座（可多人入席，单人时仍可打 AI）时，
+   * 后端只需让 snapshot 的 player_mode 变成 "multiplayer"，座位 UI、退席策略
+   * 都会自动跟着切换 —— 前端不要再按 game_type 硬编码判断。
+   */
+  function roomSupportsSeats(target = room) {
+    const mode = target?.player_mode;
+    if (mode === "multiplayer") return true;
+    if (mode === "solo_ai") return false;
+    // 兼容 0.5.15 之前的快照（只有 multiplayer_enabled 布尔值）
+    return Boolean(target?.multiplayer_enabled);
+  }
+
   // 「退出对局（回到观众席）」是所有玩法通用的次级操作。
   // 早期实现把它塞进了「谁是卧底集结准备区」(ucReadyArea) 里，而那个区域只有
   // 卧底 setup 阶段才显示，于是棋类/海龟汤/骰子/二十一点房间只剩「加入对局」，
@@ -1714,8 +1771,9 @@
     const inSeat = Boolean(room?.is_player) && room?.status !== "closed";
     row.hidden = !inSeat;
     if (!inSeat) return;
-    // 多人局中途退席会破坏发言/投票状态，后端会直接拒绝，这里提前置灰说明原因
-    const locked = Boolean(room.multiplayer_enabled) && room.status === "active";
+    // 多人局中途退席会破坏发言/投票状态，后端会直接拒绝，这里提前置灰说明原因；
+    // 单人局对局中允许退出，但点击时会先弹二次确认（见 leavePlayerSeat）。
+    const locked = roomSupportsSeats(room) && room.status === "active";
     button.disabled = Boolean(busy) || locked;
     button.title = locked
       ? "本局游戏已开始，结束后才能退出对局"
@@ -1875,6 +1933,21 @@
   // 玩家主动从玩家席退到观众席
   async function leavePlayerSeat() {
     if (busy || !room?.is_player) return;
+    // 单人局对局中退席会让本局直接作废（后端清空棋局、房间回到 waiting），先确认。
+    // 暂停（paused）也保留着棋局，同样算进行中。多人局 active 时按钮已被
+    // renderSeatLeave 置灰；未来单人玩法开放上座后，这里会随 roomSupportsSeats()
+    // 自动改为「置灰」而不是「确认」。
+    const inProgress = room.status === "active" || room.status === "paused";
+    if (inProgress && !roomSupportsSeats(room)) {
+      const confirmed = await askConfirm({
+        title: "退出当前对局？",
+        message: "退出后这一局立即作废，不记录胜负，房间会回到等待状态。",
+        confirmText: "仍要退出",
+        cancelText: "继续对局",
+      });
+      // 弹窗期间房间状态可能已变化（例如对局刚好结束），落库前再兜一次
+      if (!confirmed || busy || !room?.is_player) return;
+    }
     busy = true;
     try {
       const data = await request("POST", "seat/leave", {
@@ -4857,6 +4930,21 @@
   if (ucLeaveSeatButton) {
     ucLeaveSeatButton.addEventListener("click", leavePlayerSeat);
   }
+  // 通用二次确认弹层：按钮 / 点击遮罩 / ESC 关闭
+  const confirmOverlayEl = document.getElementById("confirmOverlay");
+  document.getElementById("confirmOk")?.addEventListener("click", () => settleConfirm(true));
+  document.getElementById("confirmCancel")?.addEventListener("click", () => settleConfirm(false));
+  if (confirmOverlayEl) {
+    confirmOverlayEl.addEventListener("click", (event) => {
+      if (event.target === confirmOverlayEl) settleConfirm(false);
+    });
+  }
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && confirmResolver) {
+      event.preventDefault();
+      settleConfirm(false);
+    }
+  });
   // 投票（事件委托）
   const ucVoteGrid = document.getElementById("ucVoteGrid");
   if (ucVoteGrid) {
