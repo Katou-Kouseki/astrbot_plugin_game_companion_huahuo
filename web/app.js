@@ -1354,6 +1354,7 @@
       gomoku: "五子棋",
       xiangqi: "中国象棋",
       tictactoe: "井字棋",
+      othello: "黑白棋",
       turtle_soup: "海龟汤",
       pig_dice: "贪心骰子",
       draw_guess: "你画我猜",
@@ -1366,6 +1367,7 @@
     if (!room) return;
     const xiangqi = room.game_type === "xiangqi";
     const tictactoe = room.game_type === "tictactoe";
+    const othello = room.game_type === "othello";
     const turtleSoup = room.game_type === "turtle_soup";
     const pigDice = room.game_type === "pig_dice";
     const drawGuess = room.game_type === "draw_guess";
@@ -1375,7 +1377,7 @@
     document.getElementById("gameTitle").textContent = sanitizeDisplayText(gameLabel());
     document.getElementById("brandIcon").setAttribute(
       "data-lucide",
-      turtleSoup ? "shell" : (pigDice ? "dice-5" : (blackjack ? "spade" : (undercover ? "spy" : (drawGuess ? "paintbrush" : (xiangqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")))))),
+      turtleSoup ? "shell" : (pigDice ? "dice-5" : (blackjack ? "spade" : (undercover ? "spy" : (drawGuess ? "paintbrush" : (xiangqi || othello ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")))))),
     );
     boardStage.hidden = turtleSoup || pigDice || blackjack || drawGuess || undercover;
     const turnPanel = document.querySelector("section.turn-panel");
@@ -1390,6 +1392,7 @@
     undercoverStage.hidden = !undercover;
     boardStage.classList.toggle("xiangqi", xiangqi);
     boardStage.classList.toggle("tictactoe", tictactoe);
+    boardStage.classList.toggle("othello", othello);
     board.width = xiangqi ? 720 : 760;
     board.height = xiangqi ? 800 : 760;
     board.setAttribute(
@@ -1404,7 +1407,7 @@
         ? "九乘十中国象棋棋盘"
         : drawGuess
         ? "你画我猜作画区"
-        : (tictactoe ? "三乘三井字棋棋盘" : "十五乘十五五子棋棋盘"),
+        : (tictactoe ? "三乘三井字棋棋盘" : othello ? "八乘八黑白棋棋盘" : "十五乘十五五子棋棋盘"),
     );
     const buttons = Array.from(document.querySelectorAll("[data-side]"));
     let values = [["human_black", "我先手"], ["bot_black", "花火先手"], ["random", "随机"]];
@@ -1412,6 +1415,8 @@
       values = [["human_red", "我执红"], ["human_black", "我执黑"], ["random", "随机"]];
     } else if (tictactoe) {
       values = [["human_x", "我执 X"], ["human_o", "我执 O"], ["random", "随机"]];
+    } else if (othello) {
+      values = [["human_black", "我执黑"], ["bot_black", "我执白"], ["random", "随机"]];
     }
     selectedSide = values[0][0];
     buttons.forEach((button, index) => {
@@ -1683,6 +1688,30 @@
     } else {
       action.hidden = true;
       note.textContent = room.player_confirmed ? "身份已确认。" : "请先在 QQ 中绑定页面令牌。";
+    }
+    renderSeatLeave();
+  }
+
+  // 「退出对局（回到观众席）」是所有玩法通用的次级操作。
+  // 早期实现把它塞进了「谁是卧底集结准备区」(ucReadyArea) 里，而那个区域只有
+  // 卧底 setup 阶段才显示，于是棋类/海龟汤/骰子/二十一点房间只剩「加入对局」，
+  // 玩家入座后找不到退席入口。这里改成独立区块，只要人在玩家席就显示。
+  function renderSeatLeave() {
+    const row = document.getElementById("seatLeaveRow");
+    const button = document.getElementById("ucLeaveSeatButton");
+    if (!row || !button) return;
+    const inSeat = Boolean(room?.is_player) && room?.status !== "closed";
+    row.hidden = !inSeat;
+    if (!inSeat) return;
+    // 多人局中途退席会破坏发言/投票状态，后端会直接拒绝，这里提前置灰说明原因
+    const locked = Boolean(room.multiplayer_enabled) && room.status === "active";
+    button.disabled = Boolean(busy) || locked;
+    button.title = locked
+      ? "本局游戏已开始，结束后才能退出对局"
+      : "退出对局，回到观众席";
+    const label = button.querySelector("span");
+    if (label) {
+      label.textContent = locked ? "对局进行中，结束后可退出" : "退出对局（回到观众席）";
     }
   }
 
@@ -3459,6 +3488,7 @@
     }
     const xiangqi = room.game_type === "xiangqi";
     const tictactoe = room.game_type === "tictactoe";
+    const othello = room.game_type === "othello";
     const humanSide = xiangqi
       ? room.game.human_side
       : (tictactoe ? room.game.human_mark : room.game.human_color);
@@ -3475,6 +3505,18 @@
     } else if (tictactoe) {
       stone.classList.add(room.game.turn === 1 ? "x" : "o");
       stone.textContent = room.game.turn === 1 ? "X" : "O";
+    } else if (othello) {
+      stone.classList.add(room.game.turn === 1 ? "black" : "white");
+      const black = Number(room.game.black_count || 0);
+      const white = Number(room.game.white_count || 0);
+      if (room.game.winner || room.game.draw) {
+        label.textContent = `${room.game.draw ? "平局" : room.game.winner === humanSide ? "玩家获胜" : "花火 获胜"} · 黑 ${black} : 白 ${white}`;
+      } else if (pendingMove) {
+        label.textContent = `花火 思考中 · 黑 ${black} : 白 ${white}`;
+      } else {
+        const side = room.game.turn === 1 ? "黑" : "白";
+        label.textContent = `${room.game.turn === humanSide ? "玩家" : "花火"}走${side} · 黑 ${black} : 白 ${white}${room.game.last_passed ? " · 对方跳过" : ""}`;
+      }
     } else {
       stone.classList.add(room.game.turn === 1 ? "black" : "white");
     }
@@ -3484,7 +3526,93 @@
     if (["turtle_soup", "pig_dice", "draw_guess"].includes(room?.game_type)) return;
     if (room?.game_type === "xiangqi") drawXiangqi();
     else if (room?.game_type === "tictactoe") drawTicTacToe();
+    else if (room?.game_type === "othello") drawOthello();
     else drawGomoku();
+  }
+
+  function drawOthello() {
+    const size = board.width;
+    const margin = 34;
+    const cell = (size - margin * 2) / 8;
+    context.clearRect(0, 0, size, size);
+    context.fillStyle = "#27754f";
+    context.fillRect(0, 0, size, size);
+    context.strokeStyle = "rgba(14, 51, 34, .78)";
+    context.lineWidth = 2;
+    for (let index = 0; index <= 8; index += 1) {
+      const position = margin + index * cell;
+      context.beginPath(); context.moveTo(position, margin); context.lineTo(position, size - margin); context.stroke();
+      context.beginPath(); context.moveTo(margin, position); context.lineTo(size - margin, position); context.stroke();
+    }
+    const cells = (room?.game?.board || []).map((row) => row.slice());
+    if (pendingMove?.kind === "othello") {
+      const flips = othelloFlips(cells, pendingMove.row, pendingMove.column, pendingMove.color);
+      cells[pendingMove.row][pendingMove.column] = pendingMove.color;
+      flips.forEach(([row, column]) => { cells[row][column] = pendingMove.color; });
+    }
+    cells.forEach((row, rowIndex) => row.forEach((color, columnIndex) => {
+      if (color) drawOthelloDisk(rowIndex, columnIndex, color, margin, cell);
+    }));
+    const legal = Array.isArray(room?.game?.legal_moves) ? room.game.legal_moves : [];
+    if (!pendingMove && room.status === "active" && room.game.turn === room.game.human_color && room.is_player) {
+      legal.forEach(([row, column]) => {
+        context.beginPath();
+        context.arc(margin + (column + 0.5) * cell, margin + (row + 0.5) * cell, 5, 0, Math.PI * 2);
+        context.fillStyle = "rgba(245, 250, 246, .52)";
+        context.fill();
+      });
+    }
+    const lastMove = pendingMove?.kind === "othello"
+      ? [pendingMove.row, pendingMove.column]
+      : room?.game?.last_move;
+    if (Array.isArray(lastMove)) {
+      const x = margin + (lastMove[1] + 0.5) * cell;
+      const y = margin + (lastMove[0] + 0.5) * cell;
+      context.beginPath();
+      context.arc(x, y, cell * 0.46, 0, Math.PI * 2);
+      context.strokeStyle = "#d69c3d";
+      context.lineWidth = 4;
+      context.stroke();
+    }
+  }
+
+  function drawOthelloDisk(row, column, color, margin, cell) {
+    const x = margin + (column + 0.5) * cell;
+    const y = margin + (row + 0.5) * cell;
+    const radius = cell * 0.39;
+    const gradient = context.createRadialGradient(x - radius * 0.3, y - radius * 0.36, radius * 0.08, x, y, radius);
+    if (color === 1) {
+      gradient.addColorStop(0, "#555b56");
+      gradient.addColorStop(1, "#111512");
+    } else {
+      gradient.addColorStop(0, "#ffffff");
+      gradient.addColorStop(1, "#d8ddd8");
+    }
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fillStyle = gradient;
+    context.fill();
+    context.strokeStyle = color === 1 ? "#090c0a" : "#aab2ac";
+    context.lineWidth = 1.5;
+    context.stroke();
+  }
+
+  function othelloFlips(cells, row, column, color) {
+    const opponent = color === 1 ? 2 : 1;
+    const directions = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
+    const flips = [];
+    directions.forEach(([dy, dx]) => {
+      const line = [];
+      let y = row + dy;
+      let x = column + dx;
+      while (y >= 0 && y < 8 && x >= 0 && x < 8 && cells[y][x] === opponent) {
+        line.push([y, x]);
+        y += dy;
+        x += dx;
+      }
+      if (line.length && y >= 0 && y < 8 && x >= 0 && x < 8 && cells[y][x] === color) flips.push(...line);
+    });
+    return flips;
   }
 
   function drawTicTacToe() {
@@ -3760,7 +3888,43 @@
     if (room.game_type === "pig_dice") return;
     if (room.game_type === "xiangqi") await moveXiangqi(event);
     else if (room.game_type === "tictactoe") await moveTicTacToe(event);
+    else if (room.game_type === "othello") await moveOthello(event);
     else await moveGomoku(event);
+  }
+
+  async function moveOthello(event) {
+    if (room.game.turn !== room.game.human_color) return;
+    const rect = board.getBoundingClientRect();
+    const scaleX = board.width / rect.width;
+    const scaleY = board.height / rect.height;
+    const x = (event.clientX - rect.left) * scaleX;
+    const y = (event.clientY - rect.top) * scaleY;
+    const margin = 34;
+    const cell = (board.width - margin * 2) / 8;
+    const column = Math.floor((x - margin) / cell);
+    const row = Math.floor((y - margin) / cell);
+    if (row < 0 || row > 7 || column < 0 || column > 7) return;
+    const legal = Array.isArray(room.game.legal_moves) ? room.game.legal_moves : [];
+    if (!legal.some(([legalRow, legalColumn]) => legalRow === row && legalColumn === column)) {
+      showToast("这里不能夹住对方棋子，请选择带提示点的位置");
+      return;
+    }
+    busy = true;
+    pendingMove = { kind: "othello", row, column, color: room.game.human_color };
+    render();
+    try {
+      const data = await request("POST", "move", { visitor_token: visitorToken, row, column });
+      pendingMove = null;
+      setRoom(data.room);
+      render();
+    } catch (error) {
+      pendingMove = null;
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "无法落子");
+    } finally {
+      busy = false;
+      render();
+    }
   }
 
   async function moveTicTacToe(event) {

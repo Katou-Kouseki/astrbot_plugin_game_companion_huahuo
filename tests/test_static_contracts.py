@@ -55,6 +55,7 @@ def test_config_defaults_match_product_contract() -> None:
         "gomoku",
         "xiangqi",
         "tictactoe",
+        "othello",
         "turtle_soup",
         "pig_dice",
         "draw_guess",
@@ -73,7 +74,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.12"
+    assert metadata["version"] == "0.5.13"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -151,12 +152,43 @@ def test_tictactoe_webui_has_three_by_three_board_and_optimistic_move() -> None:
     assert ".board-stage.tictactoe" in style
 
 
+def test_othello_webui_has_eight_by_eight_board_and_legal_move_feedback() -> None:
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    style = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    assert 'room?.game_type === "othello"' in script
+    assert '["human_black", "我执黑"], ["bot_black", "我执白"]' in script
+    assert "function drawOthello()" in script
+    assert "room.game.legal_moves" in script
+    assert 'pendingMove = { kind: "othello", row, column, color: room.game.human_color };' in script
+    assert ".board-stage.othello" in style
+
+
+def test_every_game_exposes_leave_seat_outside_the_undercover_ready_area() -> None:
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    # 退席按钮不能挂在「谁是卧底集结准备区」里：那个区域只有卧底 setup 阶段可见，
+    # 其它玩法入座后就只剩「加入对局」，找不到退出入口。
+    ready_area_at = page.index('id="ucReadyArea"')
+    leave_row_at = page.index('id="seatLeaveRow"')
+    leave_button_at = page.index('id="ucLeaveSeatButton"')
+    assert leave_row_at > ready_area_at
+    assert leave_button_at > leave_row_at
+    assert "function renderSeatLeave()" in script
+    assert "renderSeatLeave();" in script
+    assert 'document.getElementById("seatLeaveRow")' in script
+    # 多人局对局进行中置灰，避免中途退席破坏发言/投票状态
+    assert 'Boolean(room.multiplayer_enabled) && room.status === "active"' in script
+
+
 def test_management_page_can_switch_games_and_install_engine() -> None:
     script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
     page = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(encoding="utf-8")
 
     assert 'action: "switch_game"' in script
     assert '["tictactoe", "井字棋"]' in script
+    assert '["othello", "黑白棋"]' in script
     assert '["turtle_soup", "海龟汤"]' in script
     assert "confirm_abandon: active" in script
     assert 'endpoint("POST", "xiangqi/install")' in script
@@ -284,6 +316,14 @@ def test_tictactoe_is_available_to_natural_language_tools() -> None:
     assert '"井字棋": "tictactoe"' in source
     assert '"圈叉棋": "tictactoe"' in source
     assert '"tictactoe": "井字棋"' in source
+
+
+def test_othello_is_available_to_natural_language_tools() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert '"黑白棋": "othello"' in source
+    assert '"奥赛罗": "othello"' in source
+    assert '"othello": "黑白棋"' in source
 
 
 def test_room_link_is_delivered_outside_model_rewrite_with_fallback() -> None:

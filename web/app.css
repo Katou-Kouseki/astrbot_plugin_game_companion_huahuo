@@ -196,6 +196,13 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   background: #f3f0e8;
 }
 
+.board-stage.othello {
+  max-width: 760px;
+  aspect-ratio: 1;
+  border-color: #1b5238;
+  background: #27754f;
+}
+
 #board { display: block; width: 100%; height: 100%; touch-action: manipulation; }
 .soup-stage {
   width: 100%;
@@ -1860,14 +1867,17 @@ body.dark .uc-badge-gold { color: #f0c957; }
   text-align: center;
   color: var(--muted);
 }
-/* 退出对局按钮：次级、弱化、独立一行 */
-.uc-ready-area .secondary-action {
+/* 退出对局按钮：次级、弱化、独立一行（所有玩法通用，不再只挂在卧底准备区里） */
+.seat-leave-row { margin-top: .55rem; }
+.seat-leave-row[hidden] { display: none; }
+.seat-leave-row .secondary-action {
+  width: 100%;
   min-height: 36px;
   background: var(--surface-alt);
   border: 1px solid var(--border);
   color: var(--muted);
 }
-.uc-ready-area .secondary-action:hover:not(:disabled) {
+.seat-leave-row .secondary-action:hover:not(:disabled) {
   border-color: var(--red);
   color: var(--red);
 }
