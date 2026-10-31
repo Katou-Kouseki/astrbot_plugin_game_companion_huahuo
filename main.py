@@ -943,9 +943,10 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
   .head .t { font-size: 22px; font-weight: 800; color: #ffe0a6; }
   .head .r { font-size: 30px; }
   .big { margin-top: 22px; text-align: center; font-size: 52px; font-weight: 900; line-height: 1.15;
-    color: {{ accent }}; -webkit-text-stroke: 6px rgba(0,0,0,.45); text-shadow: 0 4px 18px rgba(0,0,0,.3); position: relative; }
+    color: {{ accent }}; -webkit-text-stroke: 6px rgba(0,0,0,.45); text-shadow: 0 4px 18px rgba(0,0,0,.3);
+    position: relative; overflow-wrap: anywhere; word-break: break-all; }
   .sub { margin-top: 8px; text-align: center; font-size: 18px; font-weight: 600;
-    color: rgba(255,255,255,.8); position: relative; }
+    color: rgba(255,255,255,.8); position: relative; overflow-wrap: anywhere; word-break: break-all; }
   .boardwrap { margin-top: 42px; display: flex; justify-content: center; position: relative; }
   .boardwrap svg { width: 410px; height: 410px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
   .wm { margin-top: auto; text-align: right; font-size: 14px; color: rgba(255,255,255,.4); position: relative; }
@@ -5183,6 +5184,9 @@ class GameCompanionPlugin(Star):
         draw = bool(getattr(game, "draw", False))
         if winner_seat is not None:
             name = self.manager._seat_display(winner_seat)
+            # 昵称过长时截断，避免战报标题/副信息溢出画布「显示不全」
+            if len(name) > 10:
+                name = name[:10] + "…"
             side = self.manager._seat_side(room, winner_seat)
             side_text = {"red": "红", "black": "黑", "white": "白"}.get(side, "")
             title = f"{name} 获胜"
@@ -5355,16 +5359,21 @@ class GameCompanionPlugin(Star):
             d, W - pad, int(56 * S), data["badge"],
             _pillow_font(True, int(30 * S)), (255, 255, 255, 255), anchor="rs", efont=ef_b,
         )
-        # 大字结果
+        # 大字结果：昵称过长时逐档缩字号，仍超宽则截断，避免溢出画布「显示不全」
         title = data["title"]
+        max_w = W - 2 * pad
         big_font = _pillow_font(True, int(58 * S))
-        if _pillow_font_length(d, title, big_font, ef_b) > W - 2 * pad:
-            big_font = _pillow_font(True, int(44 * S))
+        for px in (58, 50, 44, 38, 32):
+            big_font = _pillow_font(True, int(px * S))
+            if _pillow_font_length(d, title, big_font, ef_b) <= max_w:
+                break
+        title = _pillow_truncate(d, title, max_w, big_font, ef_b)
         _pillow_draw_text(d, W / 2, int(160 * S), title, big_font, accent, anchor="mm", efont=ef_b)
-        # 副信息
+        # 副信息：过长时截断（含玩家昵称）
+        sub_font = _pillow_font(False, int(19 * S))
+        sub_text = _pillow_truncate(d, data["sub"], max_w, sub_font, ef_b)
         _pillow_draw_text(
-            d, W / 2, int(228 * S), data["sub"],
-            _pillow_font(False, int(19 * S)), (255, 255, 255, 204), anchor="mm", efont=ef_b,
+            d, W / 2, int(228 * S), sub_text, sub_font, (255, 255, 255, 204), anchor="mm", efont=ef_b,
         )
         # 棋盘
         board = int(560 * S)

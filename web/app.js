@@ -4458,8 +4458,17 @@
     c.textAlign = "left";
     c.fillStyle = "#9fd6bc"; c.font = font(false, 20);
     c.fillText(`${result.icon || "♟️"} ${result.label} · 单局战报`, 26, 52);
-    c.fillStyle = "#ffffff"; c.font = font(true, 44);
-    c.fillText(result.title || "本局结束", 26, 122);
+    c.fillStyle = "#ffffff";
+    const titleText = result.title || "本局结束";
+    const titleMaxW = W - 26 * 2;
+    let titlePx = 44;
+    c.font = font(true, titlePx);
+    // 玩家昵称过长时逐档缩字号，仍超宽则截断加省略号，避免战报图「显示不全」
+    while (titlePx > 24 && c.measureText(titleText).width > titleMaxW) {
+      titlePx -= 4;
+      c.font = font(true, titlePx);
+    }
+    c.fillText(truncatePosterText(c, titleText, titleMaxW), 26, 122);
     // 副信息行
     c.fillStyle = "#cfe6d8"; c.font = font(false, 17);
     const sub = [];
