@@ -5376,9 +5376,10 @@ class GameCompanionPlugin(Star):
             d.rectangle([x0, y0, x0 + size, y0 + size], fill=(39, 117, 79))
             ln, lw = (14, 51, 34), max(1, int(size / 200))
             for i in range(n + 1):
-                p = x0 + i * cell
-                d.line([(p, y0), (p, y0 + size)], fill=ln, width=lw)
-                d.line([(x0, p), (x0 + size, p)], fill=ln, width=lw)
+                x = x0 + i * cell
+                y = y0 + i * cell
+                d.line([(x, y0), (x, y0 + size)], fill=ln, width=lw)
+                d.line([(x0, y), (x0 + size, y)], fill=ln, width=lw)
             r = cell * 0.4
             for row in range(n):
                 for col in range(n):

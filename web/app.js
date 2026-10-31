@@ -4266,9 +4266,10 @@
       c.strokeStyle = "rgba(14, 51, 34, .78)";
       c.lineWidth = Math.max(1, size / 200);
       for (let i = 0; i <= n; i += 1) {
-        const p = px + i * cell;
-        c.beginPath(); c.moveTo(p, py); c.lineTo(p, py + size); c.stroke();
-        c.beginPath(); c.moveTo(px, p); c.lineTo(px + size, p); c.stroke();
+        const x = px + i * cell;
+        const y = py + i * cell;
+        c.beginPath(); c.moveTo(x, py); c.lineTo(x, py + size); c.stroke();
+        c.beginPath(); c.moveTo(px, y); c.lineTo(px + size, y); c.stroke();
       }
       cells.forEach((row, r) => row.forEach((v, col) => {
         if (!v) return;
@@ -4294,9 +4295,10 @@
     c.strokeStyle = palette.line;
     c.lineWidth = Math.max(1, size / 240);
     for (let i = 0; i < n; i += 1) {
-      const p = px + m + i * gap;
-      c.beginPath(); c.moveTo(px + m, p); c.lineTo(px + size - m, p); c.stroke();
-      c.beginPath(); c.moveTo(p, py + m); c.lineTo(p, py + size - m); c.stroke();
+      const x = px + m + i * gap;
+      const y = py + m + i * gap;
+      c.beginPath(); c.moveTo(px + m, y); c.lineTo(px + size - m, y); c.stroke();
+      c.beginPath(); c.moveTo(x, py + m); c.lineTo(x, py + size - m); c.stroke();
     }
     cells.forEach((row, r) => row.forEach((v, col) => {
       if (!v) return;
