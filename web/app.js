@@ -690,6 +690,14 @@
         "任意一行、一列或一条对角线率先集满三子的一方获胜。",
       ],
     },
+    othello: {
+      name: "黑白棋",
+      rules: [
+        "8×8 棋盘，黑方先行；落子必须夹住并翻转至少一枚对方棋子。",
+        "合法位置会显示提示点；一方无合法落子时自动跳过，由对方继续。",
+        "棋盘填满或双方都无合法步时结算，棋子较多的一方获胜。",
+      ],
+    },
     turtle_soup: {
       name: "海龟汤",
       rules: [
@@ -771,7 +779,10 @@
    * 按当前游戏类型刷新右栏「游戏规则 + 全局战绩」的内容（规则文案、标题、排行榜）。
    */
   function renderGameInfoPanel(room) {
-    const meta = UC_GAME_META[(room && room.game_type) || ""] || UC_GAME_META.undercover;
+    const meta = UC_GAME_META[(room && room.game_type) || ""] || {
+      name: "当前",
+      rules: ["暂未配置该玩法的规则说明。", "可以在房间对话里让花火换一种玩法。"],
+    };
     const rulesBody = document.getElementById("ucRulesBody");
     if (rulesBody) {
       rulesBody.innerHTML = "";

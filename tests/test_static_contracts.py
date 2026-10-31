@@ -74,7 +74,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.13"
+    assert metadata["version"] == "0.5.14"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -211,7 +211,7 @@ def test_webui_uses_one_room_chat_composer_for_turtle_soup_and_controls() -> Non
     assert 'id="chatInput"' in page
     assert 'id="soupSolution"' in page
     assert 'request("POST", "chat"' in script
-    assert '["turtle_soup", "pig_dice", "draw_guess", "blackjack"].includes(room.game_type)' in script
+    assert '["turtle_soup", "pig_dice", "draw_guess", "blackjack", "undercover"].includes(room.game_type)' in script
     assert ".side-choice[hidden] { display: none; }" in styles
     assert 'chatInput.value = "";' in script
     assert "function submitChat" in script
@@ -324,6 +324,39 @@ def test_othello_is_available_to_natural_language_tools() -> None:
     assert '"黑白棋": "othello"' in source
     assert '"奥赛罗": "othello"' in source
     assert '"othello": "黑白棋"' in source
+
+
+def test_every_game_has_rules_and_admin_label() -> None:
+    """规则面板与管理台标签必须覆盖全部玩法，否则会回退成错误的游戏文案。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    manager = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+
+    start = script.index("const UC_GAME_META = {")
+    meta_block = script[start : script.index("\n  };", start)]
+    labels_start = manager.index("const GAME_LABELS = {")
+    labels_block = manager[labels_start : manager.index("\n  };", labels_start)]
+
+    games = (
+        "gomoku",
+        "xiangqi",
+        "tictactoe",
+        "othello",
+        "turtle_soup",
+        "pig_dice",
+        "draw_guess",
+        "blackjack",
+        "undercover",
+    )
+    for game in games:
+        assert f"\n    {game}: {{" in meta_block, f"UC_GAME_META 缺少 {game}"
+        assert f"{game}:" in labels_block, f"GAME_LABELS 缺少 {game}"
+
+    othello_start = meta_block.index("othello: {")
+    othello_block = meta_block[othello_start : meta_block.index("\n    },", othello_start)]
+    assert 'name: "黑白棋"' in othello_block
+    assert "8×8" in othello_block
+    assert "夹住" in othello_block
+    assert 'othello: "黑白棋"' in labels_block
 
 
 def test_room_link_is_delivered_outside_model_rewrite_with_fallback() -> None:
