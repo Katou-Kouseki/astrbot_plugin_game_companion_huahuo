@@ -719,9 +719,9 @@
     xiangqi: {
       name: "中国象棋",
       rules: [
-        "按中国象棋标准规则，红黑双方轮流走子。",
+        "按中国象棋标准规则，红黑双方轮流走子，红方先行。",
         "将死或困毙对方「将/帅」即获胜；提前认输或超时判负。",
-        "由独立 Pikafish 引擎与你对弈。",
+        "可以两人同房各执一方，也能和花火对局（由 Pikafish 引擎走子）。",
       ],
     },
     tictactoe: {
@@ -1568,8 +1568,11 @@
       );
       const blackSeat = seats.find((seat) => seat.side === "black") || seats[0];
       const whiteSeat = seats.find((seat) => seat.side === "white") || seats[1];
-      document.getElementById("humanScoreLabel").textContent = seatLabel(blackSeat);
-      document.getElementById("botScoreLabel").textContent = seatLabel(whiteSeat);
+      // 象棋换先后红黑会换座位，比分列必须固定跟座位序号走，否则第二局后左右列会错位
+      const firstSeat = room.game_type === "xiangqi" ? seats[0] : blackSeat;
+      const secondSeat = room.game_type === "xiangqi" ? seats[1] : whiteSeat;
+      document.getElementById("humanScoreLabel").textContent = seatLabel(firstSeat);
+      document.getElementById("botScoreLabel").textContent = seatLabel(secondSeat);
       document.getElementById("drawScoreLabel").textContent = "平局";
     }
     renderSeat();
@@ -1746,7 +1749,7 @@
           note.textContent = "花火已经就座，随时可以开局。";
         } else {
           action.innerHTML = '<i data-lucide="sparkles"></i><span>和花火对局</span>';
-          const mySideText = myColor(room) === 1 ? "黑" : "白";
+          const mySideText = sideLabel(mySide(room), room);
           note.textContent = `已就座（你执${mySideText}），还差一位对手；也可以直接和花火对局。`;
         }
       } else {
@@ -1805,8 +1808,8 @@
   /**
    * 房间是否已开启玩家席（多人上座）。
    *
-   * 海龟汤 / 二十一点 / 谁是卧底，以及两人对弈的五子棋 / 黑白棋都返回 true；
-   * 象棋、井字棋、骰子、你画我猜仍是「玩家 vs AI」单人局。
+   * 海龟汤 / 二十一点 / 谁是卧底，以及两人对弈的五子棋 / 黑白棋 / 象棋都返回 true；
+   * 井字棋、骰子、你画我猜仍是「玩家 vs AI」单人局。
    * 前端不再按玩法名判断，只看快照里的 player_mode。
    */
   function roomSupportsSeats(target = room) {
@@ -1817,9 +1820,9 @@
     return Boolean(target?.multiplayer_enabled);
   }
 
-  // 两人对弈玩法（五子棋 / 黑白棋）：固定 2 席，座位顺序决定执色（1 号黑、2 号白），
+  // 两人对弈玩法（五子棋 / 黑白棋 / 中国象棋）：固定 2 席，座位顺序决定执方，
   // 空位可以等真人，也可以让花火坐下（对外只说「和花火对局」，不出现 AI 配置说法）。
-  const DUEL_GAMES = ["gomoku", "othello"];
+  const DUEL_GAMES = ["gomoku", "othello", "xiangqi"];
   function isDuelGame(target = room) {
     return DUEL_GAMES.includes(target?.game_type);
   }
@@ -1865,6 +1868,21 @@
     if (seat?.side === "black") return 1;
     if (seat?.side === "white") return 2;
     return Number(target?.game?.human_color || 1);
+  }
+
+  // 我在棋盘上执哪一方（象棋 red/black，棋类 black/white）
+  function mySide(target = room) {
+    const seat = mySeat(target);
+    if (seat?.side) return seat.side;
+    return target?.game?.viewer_side || target?.game?.human_side || "red";
+  }
+
+  // 执方文案：象棋说红/黑，五子棋与黑白棋说黑/白
+  function sideLabel(side, target = room) {
+    if (target?.game_type === "xiangqi") {
+      return side === "red" ? "红" : "黑";
+    }
+    return side === "black" ? "黑" : "白";
   }
 
   function hasAiOpponent(target = room) {
@@ -3701,7 +3719,7 @@
     const tictactoe = room.game_type === "tictactoe";
     const othello = room.game_type === "othello";
     const humanSide = xiangqi
-      ? room.game.human_side
+      ? mySide()
       : (tictactoe ? room.game.human_mark : myColor());
     const humanTurn = room.game.turn === humanSide;
     // 两人对弈时对手有名字，不再一律叫「花火」
@@ -3953,7 +3971,8 @@
   }
 
   function xiangqiFlipped() {
-    return room?.game?.human_side === "black";
+    // 我执黑时把棋盘转 180°，让自己的棋子始终在下方
+    return room?.game_type === "xiangqi" && mySide() === "black";
   }
 
   function displayPoint(row, column) {
@@ -4248,7 +4267,7 @@
   }
 
   async function moveXiangqi(event) {
-    if (room.game.turn !== room.game.human_side) return;
+    if (room.game.turn !== mySide()) return;
     const rect = board.getBoundingClientRect();
     const scaleX = board.width / rect.width;
     const scaleY = board.height / rect.height;

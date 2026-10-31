@@ -67,7 +67,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.5.17"
+PLUGIN_VERSION = "0.5.18"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -85,7 +85,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "minimum": 0,
                 "maximum": 3600,
                 "unit": "秒",
-                "hint": "五子棋 / 黑白棋「两位真人」对局共用，超时判负；和花火练习局不计时，0 表示关闭。",
+                "hint": "棋类对局（五子棋 / 黑白棋 / 象棋）「两位真人」共用，超时判负；和花火练习局不计时，0 表示关闭。",
             },
             {
                 "key": "duel_offline_grace_seconds",
@@ -120,6 +120,28 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "type": "bool",
                 "default": False,
                 "hint": "推荐保持关闭，由管理员先在管理台确认安装。",
+            },
+            {
+                "key": "duel_turn_timeout_seconds",
+                "config_key": "multiplayer.duel_turn_timeout_seconds",
+                "label": "对弈每步时间",
+                "type": "int",
+                "default": 180,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "与五子棋 / 黑白棋共用；象棋两位真人同房时每步超时判负，和花火练习局不计时。",
+            },
+            {
+                "key": "duel_offline_grace_seconds",
+                "config_key": "multiplayer.duel_offline_grace_seconds",
+                "label": "掉线等待重连",
+                "type": "int",
+                "default": 90,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "轮到的一方掉线后暂停对局，超过该时间未回来则判负；0 表示掉线立即判负。",
             },
         ),
     },

@@ -500,6 +500,20 @@ class GameRoom:
             if token in self.visitors
         ]
         current_player = self.visitors.get(current_token)
+        # 象棋快照按「当前浏览器坐在哪个座位」下发可走法：两位真人同房时，
+        # 对手的走法不该出现在自己页面上。
+        my_seat = (
+            next(
+                (
+                    seat
+                    for seat in multiplayer.seats
+                    if seat.visitor_token and seat.visitor_token == visitor_token
+                ),
+                None,
+            )
+            if multiplayer.enabled
+            else None
+        )
         if multiplayer.enabled and visitor:
             for swap in multiplayer.swap_requests.values():
                 requester = self.visitors.get(swap.requester_token)
@@ -645,6 +659,10 @@ class GameRoom:
                     )
                 )
                 if isinstance(self.game, UndercoverGame)
+                else self.game.snapshot(
+                    viewer_side=my_seat.side if my_seat else None
+                )
+                if isinstance(self.game, XiangqiGame)
                 else self.game.snapshot()
                 if self.game
                 else None

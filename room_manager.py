@@ -101,16 +101,18 @@ _UC_GAME_TYPES: frozenset[str] = frozenset(SUPPORTED_GAMES)
 # 集合之一，并补齐该玩法的多方轮转/结算逻辑即可；前端只按座位状态判断，不再
 # 硬编码玩法名。
 SEAT_CAPABLE_GAMES: frozenset[GameType] = frozenset(
-    {"turtle_soup", "blackjack", "undercover", "gomoku", "othello"}
+    {"turtle_soup", "blackjack", "undercover", "gomoku", "othello", "xiangqi"}
 )
 
-# 两人对弈类：座位顺序决定执色（1 号黑、2 号白），对局中不允许增减座位。
-DUEL_GAMES: frozenset[GameType] = frozenset({"gomoku", "othello"})
+# 两人对弈类：座位顺序决定执色（棋类 1 号黑、2 号白；象棋 1 号红、2 号黑），
+# 对局中不允许增减座位。
+DUEL_GAMES: frozenset[GameType] = frozenset({"gomoku", "othello", "xiangqi"})
 
 # 各上座玩法的默认席位数；未列出的走 2 席。
 SEAT_CAPACITY: dict[str, int] = {
     "gomoku": 2,
     "othello": 2,
+    "xiangqi": 2,
 }
 
 
@@ -1201,14 +1203,46 @@ class RoomManager:
                 raise ValueError("当前房间状态不能开始新对局")
             if room.game_type == "xiangqi":
                 engine = self._require_xiangqi_engine()
-                normalized_side = str(side or "human_red").strip().lower()
+                # 空字符串表示「沿用入座时选好的执方」，不能当成默认红方覆盖掉
+                normalized_side = str(side or "").strip().lower()
                 if normalized_side not in {"human_red", "human_black", "random"}:
-                    normalized_side = "human_red"
+                    normalized_side = ""
                 if normalized_side == "random":
                     normalized_side = secrets.choice(("human_red", "human_black"))
-                human_side = (
-                    XIANGQI_RED if normalized_side == "human_red" else XIANGQI_BLACK
-                )
+                if room.multiplayer.enabled:
+                    # 两位真人同房：1 号执红先走、2 号执黑；只有一个人时花火补位。
+                    if len(room.multiplayer.seats) < 2:
+                        self._append_ai_seat_locked(room)
+                    rotate = bool(room.completed_games)
+                    if rotate or any(
+                        not seat.side for seat in room.multiplayer.seats
+                    ):
+                        self._assign_duel_sides(room, rotate=rotate)
+                    human_seats = self._human_seats(room)
+                    # 首局只有一位真人时，按入座时选的「我执红/我执黑」定色；
+                    # 已经下过一局之后统一换先，不再保留上一次的选择
+                    if len(human_seats) == 1 and not room.completed_games and normalized_side:
+                        wanted = (
+                            XIANGQI_RED
+                            if normalized_side == "human_red"
+                            else XIANGQI_BLACK
+                        )
+                        human_seats[0].side = wanted
+                        for seat in room.multiplayer.seats:
+                            if seat.is_ai:
+                                seat.side = (
+                                    XIANGQI_BLACK
+                                    if wanted == XIANGQI_RED
+                                    else XIANGQI_RED
+                                )
+                    first_seat = room.multiplayer.seats[0]
+                    human_side = self._seat_side(room, first_seat) or XIANGQI_RED
+                else:
+                    human_side = (
+                        XIANGQI_BLACK
+                        if normalized_side == "human_black"
+                        else XIANGQI_RED
+                    )
                 room.game = await XiangqiGame.create(
                     engine,
                     human_side=human_side,
@@ -1349,33 +1383,47 @@ class RoomManager:
                 )
             else:
                 if room.game_type in DUEL_GAMES and room.multiplayer.enabled:
-                    black_seat = next(
-                        (
-                            s
-                            for s in room.multiplayer.seats
-                            if self._seat_color(room, s) == BLACK
-                        ),
-                        None,
-                    )
-                    white_seat = next(
-                        (
-                            s
-                            for s in room.multiplayer.seats
-                            if self._seat_color(room, s) == WHITE
-                        ),
-                        None,
-                    )
-                    if black_seat is not None and white_seat is not None:
-                        room.add_message(
-                            "system",
-                            f"新对局开始，{self._seat_display(black_seat)}执黑，"
-                            f"{self._seat_display(white_seat)}执白。",
-                        )
+                    if room.game_type == "xiangqi":
+                        red_seat = self._duel_seat_for_side(room, "red")
+                        black_seat = self._duel_seat_for_side(room, "black")
+                        if red_seat is not None and black_seat is not None:
+                            room.add_message(
+                                "system",
+                                f"新对局开始，{self._seat_display(red_seat)}执红先走，"
+                                f"{self._seat_display(black_seat)}执黑。",
+                            )
+                        else:
+                            room.add_message(
+                                "system", f"新对局开始，玩家执{side_label}。"
+                            )
                     else:
-                        room.add_message(
-                            "system",
-                            f"新对局开始，玩家执{side_label}。",
+                        black_seat = next(
+                            (
+                                s
+                                for s in room.multiplayer.seats
+                                if self._seat_color(room, s) == BLACK
+                            ),
+                            None,
                         )
+                        white_seat = next(
+                            (
+                                s
+                                for s in room.multiplayer.seats
+                                if self._seat_color(room, s) == WHITE
+                            ),
+                            None,
+                        )
+                        if black_seat is not None and white_seat is not None:
+                            room.add_message(
+                                "system",
+                                f"新对局开始，{self._seat_display(black_seat)}执黑，"
+                                f"{self._seat_display(white_seat)}执白。",
+                            )
+                        else:
+                            room.add_message(
+                                "system",
+                                f"新对局开始，玩家执{side_label}。",
+                            )
                 else:
                     room.add_message(
                         "system",
@@ -1411,7 +1459,7 @@ class RoomManager:
                         "words_assigned": True,
                     },
                 )
-        if isinstance(room.game, (GomokuGame, OthelloGame)):
+        if isinstance(room.game, (GomokuGame, OthelloGame, XiangqiGame)):
             async with room.lock:
                 # 开局第一步就开始计时（轮到花火时倒计时会留空）
                 room.multiplayer.duel_paused = False
@@ -1450,8 +1498,21 @@ class RoomManager:
             if isinstance(room.game, (TurtleSoupGame, PigDiceGame, DrawGuessGame)):
                 raise ValueError("当前游戏不使用棋盘落子接口")
             if isinstance(room.game, XiangqiGame):
-                await room.game.place_human(
+                # 两位真人同房：这一手属于哪个座位，就按那个座位的执方校验
+                side = (
+                    self._seat_side(room, seat)
+                    if seat is not None
+                    else room.game.human_side
+                )
+                board_event.update(
+                    from_row=int(from_row),
+                    from_column=int(from_column),
+                    to_row=int(to_row),
+                    to_column=int(to_column),
+                )
+                await room.game.place_side(
                     self._require_xiangqi_engine(),
+                    side or room.game.human_side,
                     int(from_row),
                     int(from_column),
                     int(to_row),
@@ -1502,8 +1563,8 @@ class RoomManager:
                 raise ValueError("当前游戏不支持棋盘落子")
             room.touch()
             finished = room.game.finished
-            if isinstance(room.game, (GomokuGame, OthelloGame)) and not finished:
-                # 落子即代表本人回来了：解除掉线暂停，并把倒计时交给下一位
+            if isinstance(room.game, (GomokuGame, OthelloGame, XiangqiGame)) and not finished:
+                # 走子即代表本人回来了：解除掉线暂停，并把倒计时交给下一位
                 room.multiplayer.duel_paused = False
                 room.multiplayer.duel_pause_deadline = 0.0
                 self._reset_turn_deadline(room)
@@ -1844,7 +1905,16 @@ class RoomManager:
                 )
                 side_label = ""
             elif isinstance(room.game, XiangqiGame):
-                human_side = room.game.human_side
+                if room.multiplayer.enabled:
+                    if len(room.multiplayer.seats) < 2:
+                        self._append_ai_seat_locked(room)
+                    # 再来一局换先：红黑互换，避免同一方连着先走
+                    self._assign_duel_sides(room, rotate=True)
+                    human_side = (
+                        self._seat_side(room, room.multiplayer.seats[0]) or XIANGQI_RED
+                    )
+                else:
+                    human_side = room.game.human_side
                 room.game = await XiangqiGame.create(
                     self._require_xiangqi_engine(),
                     human_side=human_side,
@@ -1995,6 +2065,9 @@ class RoomManager:
                 raise ValueError("当前没有可以悔棋的对局")
             if isinstance(room.game, (TurtleSoupGame, PigDiceGame, DrawGuessGame)):
                 raise ValueError("当前游戏不支持悔棋")
+            if room.multiplayer.enabled and self._duel_human_pair(room):
+                # 和真人对局悔棋等于单方面改局面，必须双方同意，这里直接不允许
+                raise PermissionError("和真人对局时不能悔棋")
             if isinstance(room.game, XiangqiGame):
                 removed = await room.game.undo_round(self._require_xiangqi_engine())
             else:
@@ -2035,7 +2108,20 @@ class RoomManager:
             elif isinstance(room.game, TurtleSoupGame):
                 room.game.give_up()
             elif isinstance(room.game, XiangqiGame):
-                room.game.winner = room.game.bot_side
+                # 两人对局：认输的是哪个座位，就把胜利判给对面
+                loser_side = ""
+                if room.multiplayer.enabled:
+                    seat = room.multiplayer.seat_for_token(visitor_token)
+                    if seat is None and room.player_token:
+                        seat = room.multiplayer.seat_for_token(room.player_token)
+                    if seat is not None:
+                        loser_side = self._seat_side(room, seat)
+                if loser_side == XIANGQI_RED:
+                    room.game.winner = XIANGQI_BLACK
+                elif loser_side == XIANGQI_BLACK:
+                    room.game.winner = XIANGQI_RED
+                else:
+                    room.game.winner = room.game.bot_side
             elif isinstance(room.game, (GomokuGame, OthelloGame)):
                 # 两人对弈：认输的是哪一方，就把胜利判给对方
                 loser_color = EMPTY
@@ -2500,6 +2586,9 @@ class RoomManager:
                 raise ValueError("当前游戏不支持多人席位交换")
             requester = self._visitor(room, visitor_token)
             self._purge_swap_requests(room, current)
+            if room.game_type in DUEL_GAMES and room.status in {"active", "paused"}:
+                # 对局中换座会让执方与棋局对不上，等这一局结束再换
+                raise ValueError("对局进行中不能换座，请等这一局结束")
             if state.seat_for_token(requester.token) is not None:
                 raise ValueError("玩家席内不能申请交换其他玩家")
             # 先按座位号定位（访客号与座位号可能不一致），再回退到访客号
@@ -2566,6 +2655,8 @@ class RoomManager:
             state.swap_requests.pop(swap.request_id, None)
             if not accepted:
                 return False
+            if room.game_type in DUEL_GAMES and room.status in {"active", "paused"}:
+                raise ValueError("对局进行中不能换座，请等这一局结束")
             if requester is None or state.seat_for_token(requester.token) is not None:
                 raise ValueError("申请者已经离开或身份已经变化")
             if not room.admin_room and not requester.identity_confirmed:
@@ -2596,6 +2687,9 @@ class RoomManager:
                 and visitor.token not in {item.requester_token, item.target_token}
             }
             self._sync_primary_player(room)
+            if room.game_type in DUEL_GAMES:
+                # 换座等于换了执方，局间重新按座位顺序分配
+                self._assign_duel_sides(room)
             self._reset_turn_deadline(room, now=current)
             room.add_message(
                 "system",
@@ -2744,8 +2838,10 @@ class RoomManager:
                         row=move[0], column=move[1], color=game.bot_mark
                     )
                 finished = game.finished
-                if not finished and isinstance(game, (GomokuGame, OthelloGame)):
-                    # 花火落子后把倒计时还给真人座位
+                if not finished and isinstance(
+                    game, (GomokuGame, OthelloGame, XiangqiGame)
+                ):
+                    # 花火走完把倒计时还给真人座位
                     self._reset_turn_deadline(room)
             await self._emit("board_changed", room, board_event)
             if finished:
@@ -2888,19 +2984,11 @@ class RoomManager:
             elif (
                 room.game_type in DUEL_GAMES
                 and room.multiplayer.enabled
-                and isinstance(room.game, (GomokuGame, OthelloGame))
+                and isinstance(room.game, (GomokuGame, OthelloGame, XiangqiGame))
             ):
                 # 两人对弈：胜负按「赢家座位」归属，输家不记胜。
                 duel_handled = True
-                winner_color = int(getattr(room.game, "winner", EMPTY) or EMPTY)
-                winner_seat = next(
-                    (
-                        seat
-                        for seat in room.multiplayer.seats
-                        if winner_color and self._seat_color(room, seat) == winner_color
-                    ),
-                    None,
-                )
+                winner_seat = self._duel_winner_seat(room)
                 if winner_seat is None:
                     room.draws += 1
                     result = "draw"
@@ -3069,7 +3157,7 @@ class RoomManager:
             game = room.game
             if isinstance(game, BlackjackGame):
                 dealer_ready = self._tick_blackjack_locked(room, now)
-            elif isinstance(game, (GomokuGame, OthelloGame)):
+            elif isinstance(game, (GomokuGame, OthelloGame, XiangqiGame)):
                 action = self._tick_duel_locked(room, now)
                 if action and "forfeit" in action:
                     duel_finished = self._forfeit_duel_locked(
@@ -3257,12 +3345,20 @@ class RoomManager:
     ) -> bool:
         """把还在思考的一方判负（对手获胜），返回是否真的结束了本局。"""
         game = room.game
-        if not isinstance(game, (GomokuGame, OthelloGame)) or game.finished:
+        if not isinstance(game, (GomokuGame, OthelloGame, XiangqiGame)) or game.finished:
             return False
-        loser_color = self._seat_color(room, seat)
-        if not loser_color:
-            return False
-        game.winner = WHITE if loser_color == BLACK else BLACK
+        if isinstance(game, XiangqiGame):
+            loser_side = self._seat_side(room, seat)
+            if not loser_side:
+                return False
+            game.winner = (
+                XIANGQI_BLACK if loser_side == XIANGQI_RED else XIANGQI_RED
+            )
+        else:
+            loser_color = self._seat_color(room, seat)
+            if not loser_color:
+                return False
+            game.winner = WHITE if loser_color == BLACK else BLACK
         state = room.multiplayer
         state.duel_paused = False
         state.duel_pause_deadline = 0.0
@@ -3475,25 +3571,51 @@ class RoomManager:
         return EMPTY
 
     def _assign_duel_sides(self, room: GameRoom, *, rotate: bool = False) -> None:
-        """按座位顺序分配执色：1 号黑、2 号白；rotate 时整体交换（用于再来一局换先）。"""
+        """按座位顺序分配执色：1 号先手（棋类黑 / 象棋红），rotate 时整体交换。
+
+        象棋用「红 / 黑」描述执方，五子棋与黑白棋用「黑 / 白」，两套词表不能混用，
+        所以这里按玩法决定写进座位的 side 值。
+        """
         if room.game_type not in DUEL_GAMES:
             return
+        first, second = (
+            ("red", "black") if room.game_type == "xiangqi" else ("black", "white")
+        )
         offset = 1 if rotate else 0
         for idx, seat in enumerate(room.multiplayer.seats):
-            seat.side = "black" if (idx + offset) % 2 == 0 else "white"
+            seat.side = first if (idx + offset) % 2 == 0 else second
 
-    def _seat_color(self, room: GameRoom, seat: PlayerSeat | None) -> int:
+    def _seat_side(self, room: GameRoom, seat: PlayerSeat | None) -> str:
+        """座位执方：象棋返回 red/black，棋类返回 black/white。"""
         if seat is None:
-            return EMPTY
-        color = type(self)._side_color(seat.side)
-        if color != EMPTY:
-            return color
+            return ""
+        if seat.side:
+            return seat.side
         # 兼容尚未分配 side 的历史房间：按座位序号推断
         try:
             index = room.multiplayer.seats.index(seat)
         except ValueError:
-            return EMPTY
-        return BLACK if index % 2 == 0 else WHITE
+            return ""
+        if room.game_type == "xiangqi":
+            return "red" if index % 2 == 0 else "black"
+        return "black" if index % 2 == 0 else "white"
+
+    def _seat_color(self, room: GameRoom, seat: PlayerSeat | None) -> int:
+        """座位在五子棋 / 黑白棋里的颜色常量（象棋不适用，返回 EMPTY）。"""
+        return type(self)._side_color(self._seat_side(room, seat))
+
+    def _duel_seat_for_side(self, room: GameRoom, side: str) -> PlayerSeat | None:
+        """按执方（black/white/red）反查座位。"""
+        if not side:
+            return None
+        return next(
+            (
+                seat
+                for seat in room.multiplayer.seats
+                if self._seat_side(room, seat) == side
+            ),
+            None,
+        )
 
     def _duel_seat_for_color(
         self, room: GameRoom, color: int
@@ -3501,30 +3623,34 @@ class RoomManager:
         """按棋盘颜色反查座位（1=黑 / 2=白）。"""
         if not color:
             return None
-        return next(
-            (
-                seat
-                for seat in room.multiplayer.seats
-                if self._seat_color(room, seat) == color
-            ),
-            None,
-        )
+        return self._duel_seat_for_side(room, "black" if color == BLACK else "white")
 
     def _duel_turn_owner(self, room: GameRoom) -> PlayerSeat | None:
-        """当前该落子的座位；单人局 / 对局结束 / 非活跃局返回 None。"""
+        """当前该落子/走棋的座位；单人局 / 对局结束 / 非活跃局返回 None。"""
         game = room.game
         if (
-            not isinstance(game, (GomokuGame, OthelloGame))
+            not isinstance(game, (GomokuGame, OthelloGame, XiangqiGame))
             or game.finished
             or not room.multiplayer.enabled
             or room.status != "active"
             or len(room.multiplayer.seats) < 2
         ):
             return None
+        if isinstance(game, XiangqiGame):
+            return self._duel_seat_for_side(room, str(game.turn))
         owner = self._duel_seat_for_color(room, int(game.turn))
         if owner is None:
             return None
         return owner
+
+    def _duel_winner_seat(self, room: GameRoom) -> PlayerSeat | None:
+        """本局赢家座位：象棋按执方查，棋类按颜色查；和棋返回 None。"""
+        game = room.game
+        if isinstance(game, XiangqiGame):
+            return self._duel_seat_for_side(room, str(game.winner or ""))
+        return self._duel_seat_for_color(
+            room, int(getattr(game, "winner", EMPTY) or EMPTY)
+        )
 
     @staticmethod
     def _duel_human_pair(room: GameRoom) -> bool:
@@ -3715,7 +3841,7 @@ class RoomManager:
             # 谁是卧底：按当前阶段设置正确的发言/投票时长，避免沿用匹配期的旧时长
             self._reset_undercover_deadline(room, now=now)
             return
-        if isinstance(game, (GomokuGame, OthelloGame)):
+        if isinstance(game, (GomokuGame, OthelloGame, XiangqiGame)):
             # 棋类对弈：只有轮到真人座位时才走倒计时；掉线暂停期间保持不变，
             # 由 _tick_duel_locked 决定恢复或判负。
             if state.duel_paused:
@@ -3930,11 +4056,13 @@ class RoomManager:
         # 两人对弈：只有坐在 AI 座位上的那一方才是「花火的回合」。
         # 两个真人时不触发任何自动落子，否则会替对手走棋。
         if room.multiplayer.enabled and isinstance(
-            room.game, (GomokuGame, OthelloGame)
+            room.game, (GomokuGame, OthelloGame, XiangqiGame)
         ):
             ai_seat = self._ai_seat(room)
             if ai_seat is None:
                 return False
+            if isinstance(room.game, XiangqiGame):
+                return room.game.turn == self._seat_side(room, ai_seat)
             return room.game.turn == self._seat_color(room, ai_seat)
         return self._game_is_bot_turn(room.game)
 
@@ -4444,17 +4572,27 @@ class RoomManager:
             if len(room.multiplayer.seats) >= capacity:
                 raise ValueError("玩家席已经坐满，不用再补对手了")
             ai_seat = self._append_ai_seat_locked(room)
-            # 首局尊重入座时选的先后手：我执黑（默认）/ 我执白（花火先行）/ 随机
+            # 首局尊重入座时选的执方：象棋「我执红 / 我执黑」，
+            # 五子棋与黑白棋「我先手（执黑）/ 花火先手（我执白）」，随机时抽一个
             desired = str(side or "").strip().lower()
-            if desired in {"human_black", "bot_black", "random"}:
+            if room.game_type == "xiangqi":
+                if desired == "random":
+                    desired = secrets.choice(("human_red", "human_black"))
+                if desired not in {"human_red", "human_black"}:
+                    desired = ""
+                human_wanted = "red" if desired == "human_red" else "black"
+                ai_wanted = "black" if human_wanted == "red" else "red"
+            else:
                 if desired == "random":
                     desired = secrets.choice(("human_black", "bot_black"))
+                if desired not in {"human_black", "bot_black"}:
+                    desired = ""
+                human_wanted = "white" if desired == "bot_black" else "black"
+                ai_wanted = "black" if human_wanted == "white" else "white"
+            if desired:
                 human_seat = room.multiplayer.seat_for_token(requester.token)
                 if human_seat is not None:
-                    if desired == "bot_black":
-                        human_seat.side, ai_seat.side = "white", "black"
-                    else:
-                        human_seat.side, ai_seat.side = "black", "white"
+                    human_seat.side, ai_seat.side = human_wanted, ai_wanted
             start_required = len(room.multiplayer.seats) >= capacity
             if room.status in ("waiting", "finished", "rematch_pending"):
                 room.status = "setup"

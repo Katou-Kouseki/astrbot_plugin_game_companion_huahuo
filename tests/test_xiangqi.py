@@ -162,6 +162,9 @@ async def test_xiangqi_engine_failure_pauses_game_after_human_move() -> None:
     )
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "human_red")
+    # 象棋已改为座位玩法：一个人坐着时点「和花火对局」，花火坐对面才开局
+    await manager.add_ai_seat(room, visitor.token, side="human_red")
+    assert room.status == "active"
 
     with pytest.raises(RuntimeError, match="引擎测试退出"):
         await manager.player_move(

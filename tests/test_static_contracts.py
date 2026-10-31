@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.17"
+    assert metadata["version"] == "0.5.18"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -224,10 +224,10 @@ def test_board_games_support_two_human_seats_and_ai_opponent() -> None:
 
     # 后端：两种棋类进入上座集合，并有独立的「两人对弈」集合与执色分配
     assert (
-        '{"turtle_soup", "blackjack", "undercover", "gomoku", "othello"}'
+        '{"turtle_soup", "blackjack", "undercover", "gomoku", "othello", "xiangqi"}'
         in manager
     )
-    assert 'DUEL_GAMES: frozenset[GameType] = frozenset({"gomoku", "othello"})' in manager
+    assert 'frozenset({"gomoku", "othello", "xiangqi"})' in manager
     assert "def _assign_duel_sides(" in manager
     assert "def _seat_color(" in manager
     assert "async def add_ai_seat(" in manager
@@ -254,6 +254,36 @@ def test_board_games_support_two_human_seats_and_ai_opponent() -> None:
     assert "function hasHumanOpponent(target = room)" in script
     assert "room.game.turn !== myColor()" in script
     assert "room.game.turn === myColor()" in script
+
+
+def test_xiangqi_supports_two_human_seats() -> None:
+    """中国象棋：2 席、红黑分色、按座位视角下发可走法。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    xiangqi = (ROOT / "xiangqi.py").read_text(encoding="utf-8")
+
+    # 后端：象棋进入上座集合与两人对弈集合，固定 2 席
+    assert '"xiangqi": 2,' in manager
+    assert '{"turtle_soup", "blackjack", "undercover", "gomoku", "othello", "xiangqi"}' in manager
+    assert 'frozenset({"gomoku", "othello", "xiangqi"})' in manager
+    # 执色按玩法区分：象棋红/黑，棋类黑/白
+    assert '("red", "black") if room.game_type == "xiangqi" else ("black", "white")' in manager
+    assert "def _seat_side(" in manager
+    assert "def _duel_seat_for_side(" in manager
+    assert "def _duel_winner_seat(" in manager
+
+    # 引擎：按执色落子 + 按视角下发合法着法
+    assert "async def place_side(" in xiangqi
+    assert '"viewer_side": viewer' in xiangqi
+    assert "if self.turn == viewer and not self.finished" in xiangqi
+    assert "viewer_side=my_seat.side if my_seat else None" in models
+
+    # 前端：象棋属于两人对弈，轮次与棋盘朝向按座位执方判断
+    assert 'const DUEL_GAMES = ["gomoku", "othello", "xiangqi"];' in script
+    assert "function mySide(target = room)" in script
+    assert 'room?.game_type === "xiangqi" && mySide() === "black"' in script
+    assert "if (room.game.turn !== mySide()) return;" in script
 
 
 def test_duel_turn_clock_pauses_on_disconnect_and_forfeits_on_timeout() -> None:

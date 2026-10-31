@@ -65,6 +65,26 @@ class XiangqiGame:
         game._record_position()
         return game
 
+    async def place_side(
+        self,
+        engine: PikafishService,
+        side: XiangqiSide,
+        from_row: int,
+        from_column: int,
+        to_row: int,
+        to_column: int,
+    ) -> str:
+        """按执色落子：两位真人同房对弈时，座位决定这一手是谁走的。"""
+        if self.finished or self.turn != side:
+            raise ValueError("还没轮到你走棋")
+        move = self.coordinates_to_iccs(
+            from_row, from_column, to_row, to_column
+        )
+        if move not in self.legal_moves:
+            raise ValueError("这枚棋子不能走到该位置")
+        await self._apply(engine, move)
+        return move
+
     async def place_human(
         self,
         engine: PikafishService,
@@ -73,15 +93,9 @@ class XiangqiGame:
         to_row: int,
         to_column: int,
     ) -> str:
-        if self.finished or self.turn != self.human_side:
-            raise ValueError("当前不是玩家的象棋回合")
-        move = self.coordinates_to_iccs(
-            from_row, from_column, to_row, to_column
+        return await self.place_side(
+            engine, self.human_side, from_row, from_column, to_row, to_column
         )
-        if move not in self.legal_moves:
-            raise ValueError("这枚棋子不能走到该位置")
-        await self._apply(engine, move)
-        return move
 
     async def place_bot(self, engine: PikafishService) -> str:
         if self.finished or self.turn != self.bot_side:
@@ -115,12 +129,20 @@ class XiangqiGame:
         self.legal_moves = await engine.legal_moves(self.moves)
         return removed
 
-    def snapshot(self) -> dict[str, object]:
+    def snapshot(self, viewer_side: XiangqiSide | None = None) -> dict[str, object]:
+        """棋盘快照。
+
+        `viewer_side` 是「当前浏览者执哪一方」：多人同房时每个浏览器只在自己
+        回合拿到可走法，避免看到对手的可走点、也避免前端误判轮到谁。
+        未传时回退到 human_side（单人练习局的历史行为）。
+        """
+        viewer = viewer_side if viewer_side in (RED, BLACK) else self.human_side
         return {
             "kind": "xiangqi",
             "board": self.board(),
             "turn": self.turn,
             "human_side": self.human_side,
+            "viewer_side": viewer,
             "bot_side": self.bot_side,
             "winner": self.winner,
             "draw": self.draw,
@@ -129,7 +151,7 @@ class XiangqiGame:
             "legal_moves": [
                 self.iccs_to_coordinates(move)
                 for move in self.legal_moves
-                if self.turn == self.human_side and not self.finished
+                if self.turn == viewer and not self.finished
             ],
         }
 
