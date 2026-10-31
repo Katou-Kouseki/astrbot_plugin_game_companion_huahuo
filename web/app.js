@@ -65,6 +65,7 @@
   const mobileVisitorToken = new URLSearchParams(window.location.search).get("visitor_token") || "";
   const board = document.getElementById("board");
   const boardStage = document.querySelector(".board-stage");
+  const boardColumn = document.querySelector(".board-column");
   const soupStage = document.getElementById("soupStage");
   const diceStage = document.getElementById("diceStage");
   const blackjackStage = document.getElementById("blackjackStage");
@@ -1477,6 +1478,10 @@
       turtleSoup ? "shell" : (pigDice ? "dice-5" : (blackjack ? "spade" : (undercover ? "spy" : (drawGuess ? "paintbrush" : (xiangqi || othello || weiqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")))))),
     );
     boardStage.hidden = turtleSoup || pigDice || blackjack || drawGuess || undercover;
+    // 棋盘现在包在 .board-column 里（对局双方头像 + 棋盘），隐藏棋盘时
+    // 必须连外层列一起隐藏，否则空列仍占住左栏，把海龟汤/骰子/你画我猜/
+    // 二十一点/谁是卧底这些玩法挤到右栏，布局就乱了。
+    if (boardColumn) boardColumn.hidden = boardStage.hidden;
     const turnPanel = document.querySelector("section.turn-panel");
     if (turnPanel) {
       // 谁是卧底、二十一点各有专属阶段/状态显示，隐藏通用"当前回合 走棋"面板

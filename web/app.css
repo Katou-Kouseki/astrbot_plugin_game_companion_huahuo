@@ -675,6 +675,9 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   color: #fff;
   font-weight: 650;
 }
+/* .primary-action 显式设了 display:flex，会盖过 UA 样式表的 [hidden]{display:none}，
+   导致对局中 seatAction 设了 hidden 仍显示、仍可点击；这里显式补回隐藏。 */
+.primary-action[hidden] { display: none; }
 .primary-action svg { width: 17px; }
 .seat-note { min-height: 17px; margin: 8px 0 0; color: #707873; font-size: 12px; line-height: 1.45; }
 /* 谁是卧底开局倒计时——醒目大字横幅 */
@@ -3194,6 +3197,7 @@ body.dark .uc-speech-box textarea:focus {
   gap: 10px;
   min-width: 0;
 }
+.board-column[hidden] { display: none; }
 .board-column .board-stage { width: 100%; }
 
 /* 对局双方：棋盘上方两位玩家的头像 + 执方，轮到谁就走谁的卡片发光 */
