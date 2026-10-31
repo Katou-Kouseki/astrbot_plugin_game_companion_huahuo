@@ -101,6 +101,7 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/move", self._move)
         # 围棋停一手：双方连续停手即按数子法结算
         app.router.add_post("/api/room/{access_token}/weiqi/pass", self._weiqi_pass)
+        app.router.add_post("/api/room/{access_token}/weiqi/resign", self._weiqi_resign)
         app.router.add_post("/api/room/{access_token}/weiqi/board", self._weiqi_board)
         app.router.add_post("/api/room/{access_token}/dice/action", self._dice_action)
         app.router.add_post(
@@ -356,6 +357,14 @@ class GameRoomServer:
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.player_pass(room, visitor_token)
+        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+
+    async def _weiqi_resign(self, request: web.Request) -> web.Response:
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        await self.manager.resign(room, visitor_token=visitor_token)
         return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
 
     async def _weiqi_board(self, request: web.Request) -> web.Response:

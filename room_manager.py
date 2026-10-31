@@ -2384,8 +2384,8 @@ class RoomManager:
                     room.game.winner = XIANGQI_RED
                 else:
                     room.game.winner = room.game.bot_side
-            elif isinstance(room.game, (GomokuGame, OthelloGame)):
-                # 两人对弈：认输的是哪一方，就把胜利判给对方
+            elif isinstance(room.game, (GomokuGame, OthelloGame, WeiqiGame)):
+                # 两人对弈：认输的是哪一方，就把胜利判给对方（围棋同样按座位颜色判负）
                 loser_color = EMPTY
                 if room.multiplayer.enabled:
                     seat = room.multiplayer.seat_for_token(visitor_token)

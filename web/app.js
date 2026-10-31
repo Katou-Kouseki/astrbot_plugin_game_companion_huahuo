@@ -310,6 +310,7 @@
     sad: "😢", cry: "😭", disappointed: "😞",
     angry: "😠", mad: "😡",
     confused: "😕", thinking: "🤔", hmm: "🧐", worry: "😟",
+    sigh: "😮‍💨", sighing: "😮‍💨", helpless: "😔",
     surprised: "😲", shocked: "😱",
     cool: "😎", sunglasses: "🕶️",
     sleepy: "😴", tired: "😩",
@@ -318,13 +319,21 @@
     clap: "👏", nice: "👍", good: "✨", star: "⭐", luck: "🍀",
     sorry: "💦", sweat: "💧",
   };
-  const EMOTICON_REGEX = /&&([A-Za-z0-9_\u4e00-\u9fa5]{1,16})&&/g;
+  // 单/双 `&` 都算：模型偶发输出 `&sigh&&` 这种少一个 & 的写法，不能漏掉
+  const EMOTICON_REGEX = /&+([A-Za-z0-9_\u4e00-\u9fa5]{1,16})&+/g;
 
   /** 清洗显示文本：表情、Bot 字样、旧品牌名。对非字符串安全返回原值 */
   function sanitizeDisplayText(value) {
     if (value == null) return value;
     if (typeof value !== "string") return value;
-    let out = value.replace(EMOTICON_REGEX, (_match, key) => {
+    let out = value
+      // 模型偶发把 & 输出成 HTML 实体，先还原，避免 `&amp;&amp;confused&&` 无法命中
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'");
+    out = out.replace(EMOTICON_REGEX, (_match, key) => {
       const k = String(key).toLowerCase();
       return EMOTICON_MAP[k] ?? "";
     });
@@ -3994,6 +4003,13 @@
       passButton.classList.toggle("is-ready", myTurn);
       passButton.title = myTurn ? "本手不下，选择停一手" : "只有轮到你时才能停手";
     }
+    const resignButton = document.getElementById("weiqiResignAction");
+    if (resignButton) {
+      // 认输不要求轮到自己：对局进行中随时可投子
+      const canResign = room.status === "active" && Boolean(room.is_player) && !busy;
+      resignButton.disabled = !canResign;
+      resignButton.classList.toggle("is-ready", canResign);
+    }
   }
 
   // 对局双方：棋盘上方显示「黑子是 X / 白子是 X」，头像复用座位面板的缓存头像
@@ -5252,6 +5268,30 @@
     }
   }
 
+  async function resignWeiqi() {
+    if (busy || !room?.is_player || room.status !== "active" || room.game_type !== "weiqi") return;
+    const confirmed = await askConfirm({
+      title: "认输结束本局？",
+      message: "认输后本局立即结束，判对方获胜并计入比分。",
+      confirmText: "确认认输",
+      cancelText: "继续对局",
+    });
+    if (!confirmed || busy || !room?.is_player) return;
+    busy = true;
+    render();
+    try {
+      const data = await request("POST", "weiqi/resign", { visitor_token: visitorToken });
+      setRoom(data.room);
+      render();
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "认输失败");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   async function moveXiangqi(event) {
     if (room.game.turn !== mySide()) return;
     const rect = board.getBoundingClientRect();
@@ -5341,6 +5381,7 @@
   document.getElementById("drawClear").addEventListener("click", () => changeDrawing([]));
   document.getElementById("drawGuessAction").addEventListener("click", guessDrawing);
   document.getElementById("weiqiPassAction").addEventListener("click", passWeiqi);
+  document.getElementById("weiqiResignAction").addEventListener("click", resignWeiqi);
   document.getElementById("weiqiBoardChoices").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-weiqi-size]");
     if (!button || button.disabled) return;

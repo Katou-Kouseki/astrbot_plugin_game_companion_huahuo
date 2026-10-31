@@ -1071,6 +1071,28 @@ def _sanitize_uc_ai_speech(text: str) -> str:
     return text.strip("，,、；;。！？!?")
 
 
+_EMOTION_TOKEN_RE = re.compile(r"&+[A-Za-z0-9_\u4e00-\u9fa5]{1,16}&+")
+
+
+def _clean_emotion_tokens(text: str) -> str:
+    """清洗模型偶发输出的表情/心情提示词 token（如 &&happy&&、&sigh&&、&amp;&amp;confused&&）。
+
+    先还原常见 HTML 实体（模型有时把 & 输出成 &amp;），再删除 &...& 形式的 token（单/双 &
+    都算），最后清理任何残留的孤立 &，返回干净正文。
+    """
+    text = str(text or "")
+    text = (
+        text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", '"')
+        .replace("&#39;", "'")
+    )
+    text = _EMOTION_TOKEN_RE.sub("", text)
+    text = text.replace("&", "")
+    return text.strip()
+
+
 def _uc_eligible_vote_targets(game, voter_num: int) -> list[int]:
     """返回某玩家当前可投的合法目标。
 
@@ -2505,15 +2527,50 @@ class GameCompanionPlugin(Star):
             )
             return room, False, False
         room = rooms[0]
-        _ = (
-            difficulty,
-            game_type,
-            turtle_soup_mode,
-            requested_admin_room,
-            confirm_abandon,
-        )
+        # 同一种游戏：直接复用原房间，避免同一群重复开房
+        if room.game_type == game_type:
+            await self._ensure_public_access()
+            return room, True, False
+        # 不同游戏：先看旧房间是否还有人占用
+        if self._room_in_use(room):
+            # 还有人在玩 → 不抢原房间链接，另起一个新房间（受「全部群聊合计最大房间数」约束）
+            if game_type == "xiangqi":
+                await self.xiangqi_engine.ensure_ready()
+            new_room = await self._create_room_from_event(
+                event,
+                difficulty,
+                game_type,
+                turtle_soup_mode,
+                requested_admin_room=requested_admin_room,
+            )
+            return new_room, False, False
+        # 旧房间空闲（没销毁也没人玩）→ 直接切换游戏类型，沿用原链接
+        _ = confirm_abandon
+        await self.manager.switch_game(room, game_type, force=True)
+        if game_type == "turtle_soup":
+            room.turtle_soup_mode = turtle_soup_mode
+        room.difficulty = difficulty
         await self._ensure_public_access()
         return room, True, False
+
+    @staticmethod
+    def _room_in_use(room: GameRoom) -> bool:
+        """判断房间是否「还有人在用」：进行中的对局、单人玩家占用、已落座的真人玩家都算。
+
+        用于群聊唤起另一种游戏时的分流：占用中 → 另开新房；空闲 → 切换游戏类型复用链接。
+        """
+        if room.status in {"active", "paused"}:
+            return True
+        if room.player_token:
+            return True
+        multiplayer = getattr(room, "multiplayer", None)
+        if multiplayer is not None:
+            for seat in getattr(multiplayer, "seats", None) or []:
+                if not getattr(seat, "is_ai", False) and getattr(
+                    seat, "visitor_token", ""
+                ):
+                    return True
+        return False
 
     async def _ensure_public_access(self) -> None:
         if not self.room_server.running:
@@ -3631,11 +3688,10 @@ class GameCompanionPlugin(Star):
             + f"\n\n请只回复当前这条消息：{text}"
         )
         try:
-            return (
-                await self._call_room_model(
-                    room, system_prompt=system_prompt, prompt=prompt, timeout=35
-                )
-            )[:500]
+            reply = await self._call_room_model(
+                room, system_prompt=system_prompt, prompt=prompt, timeout=35
+            )
+            return _clean_emotion_tokens(reply)[:500]
         except RuntimeError:
             return "我现在暂时没法组织好回复，稍后再和我说一次。"
 
@@ -4088,7 +4144,7 @@ class GameCompanionPlugin(Star):
             logger.debug("[GameCompanion] 生成人格化游戏回复失败: %s", exc)
             return ""
         text = str(getattr(response, "completion_text", "") or "")
-        return _strip_role_prefix(text).strip()[:500]
+        return _clean_emotion_tokens(_strip_role_prefix(text).strip())[:500]
 
     def _commentary_provider(self, room: GameRoom):
         """解说使用的模型：优先全局配置的 Provider，缺失时回退会话模型。"""

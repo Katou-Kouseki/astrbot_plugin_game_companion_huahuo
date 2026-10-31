@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.26"
+    assert metadata["version"] == "0.5.27"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -562,14 +562,18 @@ def test_weiqi_ships_winrate_panel_and_admin_difficulty_switch() -> None:
     assert "async def player_pass(" in manager
     assert '"/api/room/{access_token}/weiqi/pass"' in server
     assert "async def _weiqi_pass(" in server
+    assert '"/api/room/{access_token}/weiqi/resign"' in server
+    assert "async def _weiqi_resign(" in server
 
     # 前端：围棋棋盘绘制、停一手按钮、右侧胜率面板
     assert "function drawWeiqi()" in script
     assert "function moveWeiqi(event)" in script
     assert "function passWeiqi()" in script
+    assert "function resignWeiqi()" in script
     assert "function renderEvalPanel()" in script
     assert 'id="evalPanel"' in page
     assert 'id="weiqiPassAction"' in page
+    assert 'id="weiqiResignAction"' in page
     assert 'id="evalBlackBar"' in page
     assert 'weiqi: "围棋"' in script
 

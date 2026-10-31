@@ -218,3 +218,18 @@ async def test_capture_points_are_reported_for_the_replay_animation() -> None:
     game.turn = WHITE
     await manager.player_pass(room, second.token)
     assert room.game.last_captured_points == []
+
+
+@pytest.mark.asyncio
+async def test_weiqi_resign_attributes_win_to_opponent() -> None:
+    """围棋认输：认输的一方判负，胜利判给对面。"""
+    manager, room, first, second = await two_human_room()
+
+    await manager.player_move(room, first.token, row=4, column=4)
+    # 黑方（first）认输 → 白方获胜
+    await manager.resign(room, visitor_token=first.token)
+
+    assert room.status == "finished"
+    assert room.game.winner == WHITE
+    assert room.game.finished is True
+

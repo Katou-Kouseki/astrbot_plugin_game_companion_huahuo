@@ -3425,6 +3425,34 @@ body.dark .capture-chip.is-live { background: rgba(47, 125, 91, .18); border-col
 .pass-action.is-ready:hover { background: #17452f; border-color: #17452f; }
 body.dark .pass-action { background: var(--surface); border-color: #4a5651; color: #dfe5e1; }
 body.dark .pass-action.is-ready { border-color: #2f7d5b; background: #2f7d5b; color: #fff; box-shadow: 0 0 0 3px rgba(47, 125, 91, .22); }
+/* 认输：与停一手并排，轮到自己时可用，红调危险色 */
+.resign-action {
+  flex: 0 0 auto;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 16px;
+  border: 1px solid #e3b7b2;
+  border-radius: 6px;
+  background: var(--surface);
+  color: #a64238;
+  font-weight: 650;
+  font-size: 14px;
+  transition: background .18s ease, border-color .18s ease, color .18s ease, box-shadow .18s ease;
+}
+.resign-action svg { width: 17px; height: 17px; }
+.resign-action:disabled { opacity: .5; }
+.resign-action.is-ready {
+  border-color: #a64238;
+  background: #a64238;
+  color: #fff;
+  box-shadow: 0 0 0 3px rgba(166, 66, 56, .16);
+}
+.resign-action.is-ready:hover { background: #8d352c; border-color: #8d352c; }
+body.dark .resign-action { background: var(--surface); border-color: #5a4a48; color: #e2a099; }
+body.dark .resign-action.is-ready { border-color: #b55348; background: #b55348; color: #fff; box-shadow: 0 0 0 3px rgba(181, 83, 72, .22); }
 
 .eval-panel {
   margin-top: 0;

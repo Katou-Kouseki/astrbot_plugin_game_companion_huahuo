@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.main import _clean_emotion_tokens
 from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 
 
@@ -101,3 +102,70 @@ def test_explicit_admin_room_intent_has_deterministic_fallback(
     message: str, tool_value: bool, expected: bool
 ) -> None:
     assert GameCompanionPlugin._admin_room_requested(message, tool_value) is expected
+
+
+@pytest.mark.asyncio
+async def test_same_game_reuses_room() -> None:
+    plugin = make_plugin(allow_non_admin=True)
+    event = make_event()
+
+    room, reused, _ = await plugin._create_or_reuse_room_from_event(
+        event, "normal", "gomoku", confirm_abandon=False
+    )
+    assert reused is False
+
+    again, reused2, _ = await plugin._create_or_reuse_room_from_event(
+        event, "normal", "gomoku", confirm_abandon=False
+    )
+
+    assert reused2 is True
+    assert again.room_id == room.room_id
+    assert len(plugin.manager.rooms) == 1
+
+
+@pytest.mark.asyncio
+async def test_different_game_idle_switches_game_type() -> None:
+    plugin = make_plugin(allow_non_admin=True)
+    event = make_event()
+
+    room, _, _ = await plugin._create_or_reuse_room_from_event(
+        event, "normal", "gomoku", confirm_abandon=False
+    )
+
+    switched, reused, _ = await plugin._create_or_reuse_room_from_event(
+        event, "normal", "othello", confirm_abandon=False
+    )
+
+    assert reused is True
+    assert switched.room_id == room.room_id
+    assert switched.game_type == "othello"
+    assert len(plugin.manager.rooms) == 1
+
+
+@pytest.mark.asyncio
+async def test_different_game_in_use_creates_new_room() -> None:
+    plugin = make_plugin(allow_non_admin=True)
+    event = make_event()
+
+    room, _, _ = await plugin._create_or_reuse_room_from_event(
+        event, "normal", "gomoku", confirm_abandon=False
+    )
+    room.status = "active"  # 有人在玩
+
+    new_room, reused, _ = await plugin._create_or_reuse_room_from_event(
+        event, "normal", "othello", confirm_abandon=False
+    )
+
+    assert reused is False
+    assert new_room.room_id != room.room_id
+    assert room.game_type == "gomoku"  # 旧房间不被抢
+    assert new_room.game_type == "othello"
+    assert len(plugin.manager.rooms) == 2
+
+
+def test_clean_emotion_tokens_strips_tokens_and_entities() -> None:
+    assert _clean_emotion_tokens("&&confused&&") == ""
+    assert _clean_emotion_tokens("&sigh&&") == ""
+    assert _clean_emotion_tokens("&amp;&amp;confused&&") == ""
+    assert _clean_emotion_tokens("哈哈 &&happy&& 你好") == "哈哈  你好"
+
