@@ -67,7 +67,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.5.16"
+PLUGIN_VERSION = "0.5.17"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -75,7 +75,30 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
         "game_type": "gomoku",
         "label": "五子棋",
         "description": "15×15 棋盘，由 Bot 人格决定三档棋力。",
-        "fields": (),
+        "fields": (
+            {
+                "key": "duel_turn_timeout_seconds",
+                "config_key": "multiplayer.duel_turn_timeout_seconds",
+                "label": "对弈每步时间",
+                "type": "int",
+                "default": 180,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "五子棋 / 黑白棋「两位真人」对局共用，超时判负；和花火练习局不计时，0 表示关闭。",
+            },
+            {
+                "key": "duel_offline_grace_seconds",
+                "config_key": "multiplayer.duel_offline_grace_seconds",
+                "label": "掉线等待重连",
+                "type": "int",
+                "default": 90,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "轮到的一方掉线后暂停对局，超过该时间未回来则判负；0 表示掉线立即判负。",
+            },
+        ),
     },
     {
         "game_type": "xiangqi",
@@ -1120,6 +1143,13 @@ class GameCompanionPlugin(Star):
         self.multiplayer_turn_timeout = self._cfg_non_negative(
             "multiplayer.turn_timeout_seconds", 60
         )
+        # 棋类对弈：每步倒计时（超时判负）与掉线后等待重连的宽限
+        self.duel_turn_timeout = self._cfg_non_negative(
+            "multiplayer.duel_turn_timeout_seconds", 180
+        )
+        self.duel_offline_grace = self._cfg_non_negative(
+            "multiplayer.duel_offline_grace_seconds", 90
+        )
         self.swap_request_cooldown = self._cfg_non_negative(
             "multiplayer.swap_request_cooldown_seconds", 30
         )
@@ -1154,6 +1184,8 @@ class GameCompanionPlugin(Star):
             turtle_soup_free_questioning=self.turtle_soup_free_questioning,
             turtle_soup_free_question_cooldown=self.turtle_soup_free_question_cooldown,
             multiplayer_turn_timeout=self.multiplayer_turn_timeout,
+            duel_turn_timeout=self.duel_turn_timeout,
+            duel_offline_grace=self.duel_offline_grace,
             swap_request_cooldown=self.swap_request_cooldown,
             swap_request_expiry=self.swap_request_expiry,
             draw_guess_max_guesses=self.draw_guess_max_guesses,
@@ -5915,6 +5947,12 @@ class GameCompanionPlugin(Star):
         self.multiplayer_turn_timeout = self._cfg_int(
             "multiplayer.turn_timeout_seconds", 60, minimum=0, maximum=3600
         )
+        self.duel_turn_timeout = self._cfg_int(
+            "multiplayer.duel_turn_timeout_seconds", 180, minimum=0, maximum=3600
+        )
+        self.duel_offline_grace = self._cfg_int(
+            "multiplayer.duel_offline_grace_seconds", 90, minimum=0, maximum=3600
+        )
         self.swap_request_cooldown = self._cfg_int(
             "multiplayer.swap_request_cooldown_seconds",
             30,
@@ -5948,6 +5986,8 @@ class GameCompanionPlugin(Star):
         self.manager.turtle_soup_free_questioning = self.turtle_soup_free_questioning
         self.manager.turtle_soup_free_question_cooldown = self.turtle_soup_free_question_cooldown
         self.manager.multiplayer_turn_timeout = self.multiplayer_turn_timeout
+        self.manager.duel_turn_timeout = self.duel_turn_timeout
+        self.manager.duel_offline_grace = self.duel_offline_grace
         self.manager.swap_request_cooldown = self.swap_request_cooldown
         self.manager.swap_request_expiry = self.swap_request_expiry
         self.manager.draw_guess_duration_seconds = self.draw_guess_duration_seconds

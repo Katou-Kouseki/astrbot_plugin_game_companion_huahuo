@@ -149,6 +149,8 @@ class RoomManager:
     # 心跳超时阈值放宽到 90s，容忍浏览器后台标签节流（否则切后台的玩家会被误踢）
     DEPARTED_LEAVE_GRACE_SECONDS = 8
     DEPARTED_HEARTBEAT_TIMEOUT_SECONDS = 90
+    # 棋类对弈：心跳超过该秒数没更新就认为掉线，先暂停等重连而不是直接判负
+    DUEL_OFFLINE_SECONDS = 15
     IDENTITY_TOKEN_TTL_SECONDS = 300
     CHAT_COOLDOWN_SECONDS = 0.8
 
@@ -165,6 +167,8 @@ class RoomManager:
         turtle_soup_free_questioning: bool = False,
         turtle_soup_free_question_cooldown: int = 1,
         multiplayer_turn_timeout: int = 60,
+        duel_turn_timeout: int = 180,
+        duel_offline_grace: int = 90,
         swap_request_cooldown: int = 30,
         swap_request_expiry: int = 20,
         draw_guess_max_guesses: int = 5,
@@ -201,6 +205,9 @@ class RoomManager:
         self.turtle_soup_free_questioning = bool(turtle_soup_free_questioning)
         self.turtle_soup_free_question_cooldown = max(0, int(turtle_soup_free_question_cooldown))
         self.multiplayer_turn_timeout = max(0, int(multiplayer_turn_timeout))
+        # 棋类对弈：每步倒计时（0 关闭）与掉线后等待重连的宽限秒数
+        self.duel_turn_timeout = max(0, int(duel_turn_timeout))
+        self.duel_offline_grace = max(0, int(duel_offline_grace))
         self.swap_request_cooldown = max(0, int(swap_request_cooldown))
         self.swap_request_expiry = max(1, int(swap_request_expiry))
         self.draw_guess_max_guesses = max(1, min(int(draw_guess_max_guesses), 10))
@@ -1223,6 +1230,20 @@ class RoomManager:
                         not seat.side for seat in room.multiplayer.seats
                     ):
                         self._assign_duel_sides(room, rotate=rotate)
+                    # 首局只有一位真人时，按入座时选的先后手决定执色
+                    # （「花火先手」= 玩家执白）；两位真人时由座位顺序决定
+                    human_seats = [
+                        seat for seat in room.multiplayer.seats if not seat.is_ai
+                    ]
+                    normalized_side = str(side or "").strip().lower()
+                    if normalized_side == "random":
+                        normalized_side = secrets.choice(("human_black", "bot_black"))
+                    if len(human_seats) == 1 and not room.completed_games and normalized_side:
+                        wants_white = normalized_side in {"bot_black", "human_white"}
+                        human_seats[0].side = "white" if wants_white else "black"
+                        for seat in room.multiplayer.seats:
+                            if seat.is_ai:
+                                seat.side = "black" if wants_white else "white"
                     human_color = self._duel_human_color(room)
                 else:
                     # 兼容未启用玩家席的历史房间
@@ -1390,6 +1411,12 @@ class RoomManager:
                         "words_assigned": True,
                     },
                 )
+        if isinstance(room.game, (GomokuGame, OthelloGame)):
+            async with room.lock:
+                # 开局第一步就开始计时（轮到花火时倒计时会留空）
+                room.multiplayer.duel_paused = False
+                room.multiplayer.duel_pause_deadline = 0.0
+                self._reset_turn_deadline(room)
         await self._emit("game_started", room, {})
         if self._is_bot_turn(room):
             await self._bot_turn(room)
@@ -1475,6 +1502,11 @@ class RoomManager:
                 raise ValueError("当前游戏不支持棋盘落子")
             room.touch()
             finished = room.game.finished
+            if isinstance(room.game, (GomokuGame, OthelloGame)) and not finished:
+                # 落子即代表本人回来了：解除掉线暂停，并把倒计时交给下一位
+                room.multiplayer.duel_paused = False
+                room.multiplayer.duel_pause_deadline = 0.0
+                self._reset_turn_deadline(room)
         await self._emit("board_changed", room, board_event)
         if finished:
             await self._finish_game(room)
@@ -2712,6 +2744,9 @@ class RoomManager:
                         row=move[0], column=move[1], color=game.bot_mark
                     )
                 finished = game.finished
+                if not finished and isinstance(game, (GomokuGame, OthelloGame)):
+                    # 花火落子后把倒计时还给真人座位
+                    self._reset_turn_deadline(room)
             await self._emit("board_changed", room, board_event)
             if finished:
                 await self._finish_game(room)
@@ -3021,6 +3056,7 @@ class RoomManager:
     async def _tick_multiplayer_room(self, room: GameRoom, now: float) -> None:
         """Expire swap requests and rotate an overdue active turn."""
         dealer_ready = False
+        duel_finished = False
         need_start_undercover: None | tuple[GameRoom, str] = None
         need_undercover_timeout: GameRoom | None = None
         async with room.lock:
@@ -3033,6 +3069,14 @@ class RoomManager:
             game = room.game
             if isinstance(game, BlackjackGame):
                 dealer_ready = self._tick_blackjack_locked(room, now)
+            elif isinstance(game, (GomokuGame, OthelloGame)):
+                action = self._tick_duel_locked(room, now)
+                if action and "forfeit" in action:
+                    duel_finished = self._forfeit_duel_locked(
+                        room,
+                        action["forfeit"],
+                        str(action.get("reason") or "timeout"),
+                    )
             elif (
                 room.game_type == "undercover"
                 and room.status == "setup"
@@ -3135,6 +3179,8 @@ class RoomManager:
                     )
         if dealer_ready:
             await self._blackjack_dealer_turn(room)
+        if duel_finished:
+            await self._finish_game(room)
         if need_start_undercover is not None:
             try:
                 await self.start_game(
@@ -3150,6 +3196,87 @@ class RoomManager:
                 need_undercover_timeout,
                 {},
             )
+
+    def _tick_duel_locked(
+        self, room: GameRoom, now: float
+    ) -> dict[str, Any] | None:
+        """棋类对弈回合倒计时：掉线先暂停等重连，超时或宽限结束判负。
+
+        返回 {"forfeit": seat} 时由调用方在锁外结算；paused/resumed 只做提示。
+        """
+        state = room.multiplayer
+        seat = self._duel_turn_owner(room)
+        if seat is None or seat.is_ai or not self._duel_human_pair(room):
+            # 不是「两位真人」的回合（AI 自动落子 / 对局结束 / 单人练习局）：不计时
+            state.turn_deadline = 0.0
+            state.duel_paused = False
+            state.duel_pause_deadline = 0.0
+            return None
+        if not state.turn_timeout_seconds:
+            state.turn_deadline = 0.0
+            return None
+        visitor = room.visitors.get(seat.visitor_token)
+        online = bool(
+            visitor is not None
+            and visitor.connected
+            and now - visitor.last_seen_at < self.DUEL_OFFLINE_SECONDS
+        )
+        label = self._seat_display(seat)
+        if not online:
+            if state.duel_paused:
+                if now < state.duel_pause_deadline:
+                    return None
+                return {"forfeit": seat, "label": label, "reason": "offline"}
+            if self.duel_offline_grace <= 0:
+                return {"forfeit": seat, "label": label, "reason": "offline"}
+            state.duel_paused = True
+            state.duel_pause_deadline = now + self.duel_offline_grace
+            state.turn_deadline = state.duel_pause_deadline
+            room.add_message(
+                "system",
+                f"{label} 掉线了，对局暂停；{self.duel_offline_grace} 秒内回来可以继续，否则判负。",
+            )
+            room.touch()
+            return {"paused": seat, "label": label}
+        if state.duel_paused:
+            state.duel_paused = False
+            state.duel_pause_deadline = 0.0
+            state.turn_deadline = now + state.turn_timeout_seconds
+            room.add_message("system", f"{label} 已回到棋盘，回合倒计时重新开始。")
+            room.touch()
+            return {"resumed": seat, "label": label}
+        if not state.turn_deadline:
+            state.turn_deadline = now + state.turn_timeout_seconds
+            return None
+        if now >= state.turn_deadline:
+            return {"forfeit": seat, "label": label, "reason": "timeout"}
+        return None
+
+    def _forfeit_duel_locked(
+        self, room: GameRoom, seat: PlayerSeat, reason: str
+    ) -> bool:
+        """把还在思考的一方判负（对手获胜），返回是否真的结束了本局。"""
+        game = room.game
+        if not isinstance(game, (GomokuGame, OthelloGame)) or game.finished:
+            return False
+        loser_color = self._seat_color(room, seat)
+        if not loser_color:
+            return False
+        game.winner = WHITE if loser_color == BLACK else BLACK
+        state = room.multiplayer
+        state.duel_paused = False
+        state.duel_pause_deadline = 0.0
+        state.turn_deadline = 0.0
+        detail = (
+            "掉线后没有回来"
+            if reason == "offline"
+            else f"超过 {state.turn_timeout_seconds} 秒没有落子"
+        )
+        room.add_message(
+            "system", f"{self._seat_display(seat)} {detail}，本局判负。"
+        )
+        room.touch()
+        return True
 
     def _tick_blackjack_locked(self, room: GameRoom, now: float) -> bool:
         """Rotate or auto-stand an overdue Blackjack hand; return dealer-ready."""
@@ -3268,9 +3395,9 @@ class RoomManager:
             }.get(room.game_type, SEAT_CAPACITY.get(room.game_type, 2))
             if room.multiplayer.enabled:
                 room.multiplayer.capacity = capacity
-                # 两人对弈暂不做回合超时判负（没有落子倒计时），留 0 避免前端显示倒计时
+                # 两人对弈走独立的每步倒计时（默认 180 秒）：超时判负，掉线先暂停等待重连
                 room.multiplayer.turn_timeout_seconds = (
-                    0
+                    self.duel_turn_timeout
                     if room.game_type in DUEL_GAMES
                     else self.multiplayer_turn_timeout
                 )
@@ -3304,7 +3431,7 @@ class RoomManager:
                 enabled=True,
                 capacity=capacity,
                 turn_timeout_seconds=(
-                    0
+                    self.duel_turn_timeout
                     if room.game_type in DUEL_GAMES
                     else self.multiplayer_turn_timeout
                 ),
@@ -3367,6 +3494,47 @@ class RoomManager:
         except ValueError:
             return EMPTY
         return BLACK if index % 2 == 0 else WHITE
+
+    def _duel_seat_for_color(
+        self, room: GameRoom, color: int
+    ) -> PlayerSeat | None:
+        """按棋盘颜色反查座位（1=黑 / 2=白）。"""
+        if not color:
+            return None
+        return next(
+            (
+                seat
+                for seat in room.multiplayer.seats
+                if self._seat_color(room, seat) == color
+            ),
+            None,
+        )
+
+    def _duel_turn_owner(self, room: GameRoom) -> PlayerSeat | None:
+        """当前该落子的座位；单人局 / 对局结束 / 非活跃局返回 None。"""
+        game = room.game
+        if (
+            not isinstance(game, (GomokuGame, OthelloGame))
+            or game.finished
+            or not room.multiplayer.enabled
+            or room.status != "active"
+            or len(room.multiplayer.seats) < 2
+        ):
+            return None
+        owner = self._duel_seat_for_color(room, int(game.turn))
+        if owner is None:
+            return None
+        return owner
+
+    @staticmethod
+    def _duel_human_pair(room: GameRoom) -> bool:
+        """是否「两位真人」对弈。
+
+        只有真人对真人才计时判负：和花火对局属于练习局，挂机不该被直接判输。
+        """
+        return (
+            sum(1 for seat in room.multiplayer.seats if not seat.is_ai) >= 2
+        )
 
     @staticmethod
     def _ai_seat(room: GameRoom) -> PlayerSeat | None:
@@ -3546,6 +3714,24 @@ class RoomManager:
         if isinstance(game, UndercoverGame):
             # 谁是卧底：按当前阶段设置正确的发言/投票时长，避免沿用匹配期的旧时长
             self._reset_undercover_deadline(room, now=now)
+            return
+        if isinstance(game, (GomokuGame, OthelloGame)):
+            # 棋类对弈：只有轮到真人座位时才走倒计时；掉线暂停期间保持不变，
+            # 由 _tick_duel_locked 决定恢复或判负。
+            if state.duel_paused:
+                return
+            base = time.time() if now is None else float(now)
+            owner = self._duel_turn_owner(room)
+            active_duel = bool(
+                owner is not None
+                and not owner.is_ai
+                and self._duel_human_pair(room)
+            )
+            state.turn_deadline = (
+                base + state.turn_timeout_seconds
+                if active_duel and state.turn_timeout_seconds
+                else 0.0
+            )
             return
         active = bool(
             state.turn_timeout_seconds

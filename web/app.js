@@ -1828,6 +1828,28 @@
     return Array.isArray(target?.player_seats) ? target.player_seats : [];
   }
 
+  // 按快照时间戳推算当前服务器时间，用于回合倒计时每秒刷新
+  function serverNowSeconds() {
+    const base = Number(room?.server_time || 0);
+    if (!base) return Date.now() / 1000;
+    const takenAt = Number(room?._snapshot_local_ms || Date.now()) / 1000;
+    return base + (Date.now() / 1000 - takenAt);
+  }
+
+  // 棋类对弈的状态后缀：剩余时间 / 掉线暂停
+  function duelClockSuffix(target = room) {
+    if (!isDuelGame(target) || target.status !== "active") return "";
+    const remain = Number(target.turn_deadline || 0)
+      ? Math.max(0, Math.ceil(Number(target.turn_deadline) - serverNowSeconds()))
+      : 0;
+    if (target.duel_paused) {
+      return remain > 0
+        ? ` · 掉线暂停，等待重连（${remain} 秒后判负）`
+        : " · 掉线暂停，等待重连";
+    }
+    return remain > 0 ? ` · 剩余 ${remain} 秒` : "";
+  }
+
   // 当前浏览器占的座位（观众返回 null）
   function mySeat(target = room) {
     return (
@@ -1968,8 +1990,9 @@
         // 绑定了显示 QQ 昵称，未绑定显示“观众-<英文>”，不再显示座位号
         chip.textContent = memberName(visitor);
         if (room.multiplayer_enabled && !room.is_player && visitor.is_player) {
-          // 谁是卧底不提供席位交换（入座即按座位号发言/投票，交换无意义），隐藏入口
-          if (room.game_type !== "undercover") {
+          // 谁是卧底不提供席位交换（入座即按座位号发言/投票，交换无意义），隐藏入口；
+          // 花火坐的座位后端不接受交换，也不显示按钮，避免点了才报错
+          if (room.game_type !== "undercover" && !visitor.is_ai) {
             const request = document.createElement("button");
             request.type = "button";
             request.textContent = "申请交换";
@@ -3711,6 +3734,8 @@
     } else {
       stone.classList.add(room.game.turn === 1 ? "black" : "white");
     }
+    // 棋类对弈：追加回合倒计时 / 掉线暂停提示
+    label.textContent += duelClockSuffix();
   }
 
   function drawBoard() {

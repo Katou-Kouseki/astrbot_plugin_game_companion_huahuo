@@ -114,7 +114,11 @@ async def test_room_manager_starts_bot_when_human_chooses_white() -> None:
     )
     visitor = await manager.join(room)
 
+    # 两人对弈改为「先入座、再决定对手」：只有一个人时停在 setup，
+    # 可以等朋友，也可以直接让花火补位开局；首局仍按选的先后手决定执色。
     await manager.claim_and_start(room, visitor.token, "bot_black")
+    assert room.status == "setup"
+    await manager.start_game(room, visitor.token, "bot_black")
 
     assert isinstance(room.game, OthelloGame)
     assert room.game.human_color == WHITE

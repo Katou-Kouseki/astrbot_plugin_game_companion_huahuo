@@ -182,13 +182,25 @@
   "multiplayer": {
     "description": "多人席位",
     "type": "object",
-    "hint": "当前由海龟汤使用；席位、轮换和交换协议也可供后续多人游戏复用。",
+    "hint": "当前由海龟汤与棋类对弈使用；席位、轮换和交换协议也可供后续多人游戏复用。",
     "items": {
       "turn_timeout_seconds": {
         "description": "每位玩家回合秒数",
         "type": "int",
         "default": 60,
         "hint": "0 表示关闭回合倒计时；模型处理期间自动暂停。"
+      },
+      "duel_turn_timeout_seconds": {
+        "description": "棋类对弈每步秒数",
+        "type": "int",
+        "default": 180,
+        "hint": "五子棋 / 黑白棋「两位真人」对局专用：超时判负；和花火练习局不计时，0 表示关闭。"
+      },
+      "duel_offline_grace_seconds": {
+        "description": "掉线等待重连秒数",
+        "type": "int",
+        "default": 90,
+        "hint": "轮到的一方掉线后暂停对局，超过该时间未回来则判负；0 表示掉线立即判负。"
       },
       "swap_request_cooldown_seconds": {
         "description": "观众交换申请冷却秒数",

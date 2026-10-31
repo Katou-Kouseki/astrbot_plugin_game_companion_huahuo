@@ -36,6 +36,10 @@ def test_config_defaults_match_product_contract() -> None:
     assert schema["turtle_soup"]["items"]["content_level"]["default"] == "normal"
     assert schema["turtle_soup"]["items"]["max_players"]["default"] == 6
     assert schema["multiplayer"]["items"]["turn_timeout_seconds"]["default"] == 60
+    assert schema["multiplayer"]["items"]["duel_turn_timeout_seconds"]["default"] == 180
+    assert (
+        schema["multiplayer"]["items"]["duel_offline_grace_seconds"]["default"] == 90
+    )
     assert (
         schema["multiplayer"]["items"]["swap_request_cooldown_seconds"]["default"] == 30
     )
@@ -74,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.16"
+    assert metadata["version"] == "0.5.17"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -250,6 +254,31 @@ def test_board_games_support_two_human_seats_and_ai_opponent() -> None:
     assert "function hasHumanOpponent(target = room)" in script
     assert "room.game.turn !== myColor()" in script
     assert "room.game.turn === myColor()" in script
+
+
+def test_duel_turn_clock_pauses_on_disconnect_and_forfeits_on_timeout() -> None:
+    """两位真人对弈：掉线先暂停等重连，超时判负；和花火练习局不计时。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert "duel_turn_timeout: int = 180" in manager
+    assert "duel_offline_grace: int = 90" in manager
+    assert "def _duel_turn_owner(" in manager
+    assert "def _duel_human_pair(" in manager
+    assert "def _tick_duel_locked(" in manager
+    assert "def _forfeit_duel_locked(" in manager
+    # 掉线 -> 暂停 -> 宽限结束判负；在线超时直接判负
+    assert "state.duel_paused = True" in manager
+    assert 'return {"forfeit": seat, "label": label, "reason": "offline"}' in manager
+    assert 'return {"forfeit": seat, "label": label, "reason": "timeout"}' in manager
+    assert "game.winner = WHITE if loser_color == BLACK else BLACK" in manager
+
+    # 快照下发暂停状态，前端据此把倒计时换成「等待重连」
+    assert '"duel_paused": bool(multiplayer.enabled and multiplayer.duel_paused)' in models
+    assert "function duelClockSuffix(" in script
+    assert "duelClockSuffix()" in script
+    assert "掉线暂停" in script
 
 
 def test_management_page_can_switch_games_and_install_engine() -> None:

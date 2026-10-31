@@ -84,6 +84,9 @@ class MultiplayerState:
     seats: list[PlayerSeat] = field(default_factory=list)
     current_turn_index: int = 0
     turn_deadline: float = 0.0
+    # 棋类对弈：轮到的真人离线时先冻结棋盘等重连，超过宽限再判负
+    duel_paused: bool = False
+    duel_pause_deadline: float = 0.0
     swap_requests: dict[str, SeatSwapRequest] = field(default_factory=dict)
     last_swap_request_at: dict[str, float] = field(default_factory=dict)
 
@@ -254,7 +257,11 @@ class Visitor:
         self.binding_expires_at = current + max(1, int(ttl))
 
     def public_snapshot(
-        self, *, is_player: bool, is_current_player: bool = False
+        self,
+        *,
+        is_player: bool,
+        is_current_player: bool = False,
+        is_ai: bool = False,
     ) -> dict[str, object]:
         """Return fields safe to show to all room members."""
         return {
@@ -262,6 +269,8 @@ class Visitor:
             "online": self.connected and time.time() - self.last_seen_at < 15,
             "is_player": is_player,
             "is_current_player": is_current_player,
+            # 花火占的座位不接受换座申请，前端据此隐藏按钮
+            "is_ai": bool(is_ai),
             "display_name": self.display_name if self.identity_confirmed else "",
             "identity_confirmed": self.identity_confirmed,
             # QQ 头像：仅已确认身份时下发
@@ -470,6 +479,9 @@ class GameRoom:
         current_token = (
             multiplayer.current_token if multiplayer.enabled else self.player_token
         )
+        ai_tokens = {
+            seat.visitor_token for seat in multiplayer.seats if seat.is_ai
+        }
         now = time.time()
         incoming_requests: list[dict[str, object]] = []
         outgoing_request: dict[str, object] | None = None
@@ -547,6 +559,13 @@ class GameRoom:
             "turn_timeout_seconds": (
                 multiplayer.turn_timeout_seconds if multiplayer.enabled else 0
             ),
+            # 棋类对弈掉线暂停：前端据此把倒计时文案换成「等待重连」
+            "duel_paused": bool(multiplayer.enabled and multiplayer.duel_paused),
+            "duel_pause_remaining": (
+                max(0, int(round(multiplayer.duel_pause_deadline - now)))
+                if multiplayer.enabled and multiplayer.duel_paused
+                else 0
+            ),
             "incoming_swap_requests": incoming_requests,
             "outgoing_swap_request": outgoing_request,
             "swap_cooldown_until": (
@@ -606,6 +625,7 @@ class GameRoom:
                 item.public_snapshot(
                     is_player=item.token in player_tokens,
                     is_current_player=item.token == current_token,
+                    is_ai=item.token in ai_tokens,
                 )
                 for item in sorted(
                     self.visitors.values(), key=lambda value: value.number
@@ -677,6 +697,9 @@ class GameRoom:
         current_token = (
             multiplayer.current_token if multiplayer.enabled else self.player_token
         )
+        ai_tokens = {
+            seat.visitor_token for seat in multiplayer.seats if seat.is_ai
+        }
         return {
             "room_id": self.room_id,
             "source": self.source,
@@ -738,6 +761,7 @@ class GameRoom:
                     **item.public_snapshot(
                         is_player=item.token in player_tokens,
                         is_current_player=item.token == current_token,
+                        is_ai=item.token in ai_tokens,
                     ),
                     "player_qq": (
                         multiplayer.seat_for_token(item.token).qq
