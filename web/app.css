@@ -3175,3 +3175,10 @@ body.dark .uc-speech-box textarea:focus {
   outline: 2px solid color-mix(in srgb, var(--green) 55%, transparent);
   outline-offset: 2px;
 }
+
+/* 「等对手来」：正向操作，与退席（红色）区分 */
+.seat-wait-row { margin-top: .4rem; }
+.seat-wait-row .secondary-action:hover:not(:disabled) {
+  border-color: var(--green);
+  color: var(--green);
+}

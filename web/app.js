@@ -1558,6 +1558,20 @@
     document.getElementById("drawScoreLabel").textContent = drawGuess ? "总轮数" : turtleSoup ? "总题数" : (pigDice ? "总局数" : "平局");
     document.getElementById("botScoreLabel").textContent = drawGuess ? "未猜中" : turtleSoup ? (playerHostedSoup ? "花火 猜中" : "放弃") : "花火";
     if (turtleSoup || pigDice || drawGuess) document.getElementById("drawScore").textContent = room.score?.games ?? 0;
+    if (isDuelGame(room)) {
+      // 两人对弈的比分是「1 号座位 vs 2 号座位」，标题按座位昵称显示
+      const seats = roomSeats();
+      const seatLabel = (seat) => (
+        seat
+          ? (seat.is_ai ? "花火" : (seat.display_name || "").trim() || `${seat.number}号`)
+          : "空位"
+      );
+      const blackSeat = seats.find((seat) => seat.side === "black") || seats[0];
+      const whiteSeat = seats.find((seat) => seat.side === "white") || seats[1];
+      document.getElementById("humanScoreLabel").textContent = seatLabel(blackSeat);
+      document.getElementById("botScoreLabel").textContent = seatLabel(whiteSeat);
+      document.getElementById("drawScoreLabel").textContent = "平局";
+    }
     renderSeat();
     renderUcReady();
     renderPeople();
@@ -1645,7 +1659,14 @@
     const identityTokenInline = document.getElementById("identityTokenInline");
     badge.textContent = room.is_player ? "玩家席" : "观众席";
     badge.className = `seat-badge ${room.is_player ? "player" : ""}`;
-    sideChoice.hidden = ["turtle_soup", "pig_dice", "draw_guess", "blackjack", "undercover"].includes(room.game_type) || !(["waiting", "setup", "finished"].includes(room.status));
+    // 两人对弈只有在「一个人坐着、还没约花火」时才能选先后手；
+    // 已经有对手（真人或花火）时，执色由座位决定，不再提供切换。
+    const duelSoloSetup = isDuelGame(room)
+      && room.is_player
+      && room.status === "setup"
+      && !hasAiOpponent(room)
+      && roomSeats().length < Number(room.player_capacity || 2);
+    sideChoice.hidden = ["turtle_soup", "pig_dice", "draw_guess", "blackjack", "undercover"].includes(room.game_type) || (isDuelGame(room) && !duelSoloSetup) || !(["waiting", "setup", "finished"].includes(room.status));
     action.hidden = false;
     action.disabled = busy;
     const identityRequired = !room.admin_room && !room.player_confirmed;
@@ -1697,6 +1718,8 @@
           : "玩家席已满，可向席内玩家申请交换。")
         : identityRequired
         ? "请先用页面令牌在 QQ 中绑定身份。"
+        : isDuelGame(room)
+        ? `玩家席 ${room.player_numbers?.length || 0} / ${capacity || 2}，加入后可以等对手，也能直接和花火对局。`
         : room.multiplayer_enabled
         ? `玩家席 ${room.player_numbers?.length || 0} / ${capacity || "不限"}，加入后按顺序轮流操作。`
         : room.player_number ? `${room.player_number} 号正在玩家席。` : "第一个加入玩家席的人开始对局。";
@@ -1714,6 +1737,18 @@
           ? ((capacity > 0 && current >= capacity) ? "，人满立即开始" : `，约 ${remain} 秒后自动开始（人满立即开）`)
           : "，等待开始...";
         note.textContent = `已入座${capacityText}${remainText}。`;
+      } else if (isDuelGame(room)) {
+        // 两人对弈：一个人坐着时，位置可以留给朋友，也可以直接约花火
+        const capacity = Number(room.player_capacity || 2);
+        const seated = roomSeats().length;
+        if (hasAiOpponent(room) || seated >= capacity) {
+          action.innerHTML = '<i data-lucide="play"></i><span>开始新一局</span>';
+          note.textContent = "花火已经就座，随时可以开局。";
+        } else {
+          action.innerHTML = '<i data-lucide="sparkles"></i><span>和花火对局</span>';
+          const mySideText = myColor(room) === 1 ? "黑" : "白";
+          note.textContent = `已就座（你执${mySideText}），还差一位对手；也可以直接和花火对局。`;
+        }
       } else {
         action.innerHTML = room.game_type === "turtle_soup"
           ? room.turtle_soup_mode === "player_host"
@@ -1729,10 +1764,16 @@
         note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不允许进入玩家席。";
       }
     } else if (room.status === "finished") {
-      action.innerHTML = room.game_type === "turtle_soup"
-        ? `<i data-lucide="rotate-ccw"></i><span>${room.turtle_soup_mode === "player_host" ? "申请再出一题" : "申请再来一道"}</span>`
-        : '<i data-lucide="rotate-ccw"></i><span>申请再来一局</span>';
-      note.textContent = "花火 会结合当前人格决定是否接受。";
+      if (isDuelGame(room)) {
+        // 两人对弈不需要花火批准，直接重开；座位保留、黑白互换
+        action.innerHTML = '<i data-lucide="rotate-ccw"></i><span>再来一局</span>';
+        note.textContent = "座位保留，再来一局双方换先（黑白互换）。";
+      } else {
+        action.innerHTML = room.game_type === "turtle_soup"
+          ? `<i data-lucide="rotate-ccw"></i><span>${room.turtle_soup_mode === "player_host" ? "申请再出一题" : "申请再来一道"}</span>`
+          : '<i data-lucide="rotate-ccw"></i><span>申请再来一局</span>';
+        note.textContent = "花火 会结合当前人格决定是否接受。";
+      }
     } else if (room.status === "rematch_pending") {
       action.innerHTML = '<i data-lucide="loader-circle"></i><span>等待 花火 回应</span>';
       action.disabled = true;
@@ -1742,15 +1783,31 @@
       note.textContent = room.player_confirmed ? "身份已确认。" : "请先在 QQ 中绑定页面令牌。";
     }
     renderSeatLeave();
+    renderSeatWait();
+  }
+
+  // 「等对手来」：把花火请下座位，把位置留给真人。只在两人对弈、局间、
+  // 且花火确实坐着时出现——界面上不出现「移除 AI」这类配置说法。
+  function renderSeatWait() {
+    const row = document.getElementById("seatWaitRow");
+    if (!row) return;
+    const visible = Boolean(
+      room?.is_player
+      && isDuelGame(room)
+      && hasAiOpponent(room)
+      && !["active", "paused"].includes(room.status),
+    );
+    row.hidden = !visible;
+    const button = document.getElementById("seatWaitButton");
+    if (button) button.disabled = Boolean(busy);
   }
 
   /**
    * 房间是否已开启玩家席（多人上座）。
    *
-   * 目前只有海龟汤 / 二十一点 / 谁是卧底为 true；棋类、骰子、你画我猜是
-   * 「玩家 vs AI」单人局。未来这些单人局开放上座（可多人入席，单人时仍可打 AI）时，
-   * 后端只需让 snapshot 的 player_mode 变成 "multiplayer"，座位 UI、退席策略
-   * 都会自动跟着切换 —— 前端不要再按 game_type 硬编码判断。
+   * 海龟汤 / 二十一点 / 谁是卧底，以及两人对弈的五子棋 / 黑白棋都返回 true；
+   * 象棋、井字棋、骰子、你画我猜仍是「玩家 vs AI」单人局。
+   * 前端不再按玩法名判断，只看快照里的 player_mode。
    */
   function roomSupportsSeats(target = room) {
     const mode = target?.player_mode;
@@ -1758,6 +1815,54 @@
     if (mode === "solo_ai") return false;
     // 兼容 0.5.15 之前的快照（只有 multiplayer_enabled 布尔值）
     return Boolean(target?.multiplayer_enabled);
+  }
+
+  // 两人对弈玩法（五子棋 / 黑白棋）：固定 2 席，座位顺序决定执色（1 号黑、2 号白），
+  // 空位可以等真人，也可以让花火坐下（对外只说「和花火对局」，不出现 AI 配置说法）。
+  const DUEL_GAMES = ["gomoku", "othello"];
+  function isDuelGame(target = room) {
+    return DUEL_GAMES.includes(target?.game_type);
+  }
+
+  function roomSeats(target = room) {
+    return Array.isArray(target?.player_seats) ? target.player_seats : [];
+  }
+
+  // 当前浏览器占的座位（观众返回 null）
+  function mySeat(target = room) {
+    return (
+      roomSeats(target).find(
+        (seat) => seat.visitor_token && seat.visitor_token === visitorToken,
+      ) || null
+    );
+  }
+
+  // 我在棋盘上执什么颜色（1 黑 / 2 白）：两人对弈按座位 side，其余回退引擎下发值
+  function myColor(target = room) {
+    const seat = mySeat(target);
+    if (seat?.side === "black") return 1;
+    if (seat?.side === "white") return 2;
+    return Number(target?.game?.human_color || 1);
+  }
+
+  function hasAiOpponent(target = room) {
+    return roomSeats(target).some((seat) => seat.is_ai);
+  }
+
+  // 对面是否坐着另一位真人：决定「对局中能不能退出」
+  function hasHumanOpponent(target = room) {
+    return roomSeats(target).some(
+      (seat) =>
+        !seat.is_ai && seat.visitor_token && seat.visitor_token !== visitorToken,
+    );
+  }
+
+  // 对局进行中是否禁止退席：两人对弈只有「对面是真人」才禁止；
+  // 卧底/黑杰克/海龟汤仍按多人玩法一律禁止。
+  function seatLeaveLocked(target = room) {
+    if (!target || target.status !== "active") return false;
+    if (isDuelGame(target)) return hasHumanOpponent(target);
+    return roomSupportsSeats(target);
   }
 
   // 「退出对局（回到观众席）」是所有玩法通用的次级操作。
@@ -1771,12 +1876,12 @@
     const inSeat = Boolean(room?.is_player) && room?.status !== "closed";
     row.hidden = !inSeat;
     if (!inSeat) return;
-    // 多人局中途退席会破坏发言/投票状态，后端会直接拒绝，这里提前置灰说明原因；
-    // 单人局对局中允许退出，但点击时会先弹二次确认（见 leavePlayerSeat）。
-    const locked = roomSupportsSeats(room) && room.status === "active";
+    // 对局进行中：两人对弈里「对面是真人」时禁止退席（会破坏棋局）；
+    // 和花火对局时允许退出，但点击时会先弹二次确认（见 leavePlayerSeat）。
+    const locked = seatLeaveLocked(room);
     button.disabled = Boolean(busy) || locked;
     button.title = locked
-      ? "本局游戏已开始，结束后才能退出对局"
+      ? "对手还在对局中，结束后才能退出"
       : "退出对局，回到观众席";
     const label = button.querySelector("span");
     if (label) {
@@ -1933,12 +2038,11 @@
   // 玩家主动从玩家席退到观众席
   async function leavePlayerSeat() {
     if (busy || !room?.is_player) return;
-    // 单人局对局中退席会让本局直接作废（后端清空棋局、房间回到 waiting），先确认。
-    // 暂停（paused）也保留着棋局，同样算进行中。多人局 active 时按钮已被
-    // renderSeatLeave 置灰；未来单人玩法开放上座后，这里会随 roomSupportsSeats()
-    // 自动改为「置灰」而不是「确认」。
+    // 对局中退席会让本局直接作废（后端清空棋局、房间回到等待），先确认。
+    // 暂停（paused）也保留着棋局，同样算进行中。对面是真人时按钮已被
+    // renderSeatLeave 置灰，走不到这里的确认。
     const inProgress = room.status === "active" || room.status === "paused";
-    if (inProgress && !roomSupportsSeats(room)) {
+    if (inProgress && !seatLeaveLocked(room)) {
       const confirmed = await askConfirm({
         title: "退出当前对局？",
         message: "退出后这一局立即作废，不记录胜负，房间会回到等待状态。",
@@ -3575,14 +3679,17 @@
     const othello = room.game_type === "othello";
     const humanSide = xiangqi
       ? room.game.human_side
-      : (tictactoe ? room.game.human_mark : room.game.human_color);
+      : (tictactoe ? room.game.human_mark : myColor());
     const humanTurn = room.game.turn === humanSide;
+    // 两人对弈时对手有名字，不再一律叫「花火」
+    const opponentLabel = hasHumanOpponent(room) ? "对手" : "花火";
+    const iWinText = hasHumanOpponent(room) ? "你赢了" : "玩家获胜";
     if (pendingMove) {
-      label.textContent = "花火 思考中";
+      label.textContent = `${opponentLabel} 思考中`;
     } else {
       label.textContent = room.game.winner
-        ? (room.game.winner === humanSide ? "玩家获胜" : "花火 获胜")
-        : (room.game.draw ? "平局" : (humanTurn ? "玩家走棋" : "花火 思考中"));
+        ? (room.game.winner === humanSide ? iWinText : `${opponentLabel}获胜`)
+        : (room.game.draw ? "平局" : (humanTurn ? "轮到你走棋" : `等待${opponentLabel}落子`));
     }
     if (xiangqi) {
       stone.classList.add(room.game.turn === "red" ? "red" : "black");
@@ -3594,12 +3701,12 @@
       const black = Number(room.game.black_count || 0);
       const white = Number(room.game.white_count || 0);
       if (room.game.winner || room.game.draw) {
-        label.textContent = `${room.game.draw ? "平局" : room.game.winner === humanSide ? "玩家获胜" : "花火 获胜"} · 黑 ${black} : 白 ${white}`;
+        label.textContent = `${room.game.draw ? "平局" : room.game.winner === humanSide ? iWinText : `${opponentLabel}获胜`} · 黑 ${black} : 白 ${white}`;
       } else if (pendingMove) {
-        label.textContent = `花火 思考中 · 黑 ${black} : 白 ${white}`;
+        label.textContent = `${opponentLabel} 思考中 · 黑 ${black} : 白 ${white}`;
       } else {
         const side = room.game.turn === 1 ? "黑" : "白";
-        label.textContent = `${room.game.turn === humanSide ? "玩家" : "花火"}走${side} · 黑 ${black} : 白 ${white}${room.game.last_passed ? " · 对方跳过" : ""}`;
+        label.textContent = `${room.game.turn === humanSide ? "你" : opponentLabel}走${side} · 黑 ${black} : 白 ${white}${room.game.last_passed ? " · 对方跳过" : ""}`;
       }
     } else {
       stone.classList.add(room.game.turn === 1 ? "black" : "white");
@@ -3638,7 +3745,7 @@
       if (color) drawOthelloDisk(rowIndex, columnIndex, color, margin, cell);
     }));
     const legal = Array.isArray(room?.game?.legal_moves) ? room.game.legal_moves : [];
-    if (!pendingMove && room.status === "active" && room.game.turn === room.game.human_color && room.is_player) {
+    if (!pendingMove && room.status === "active" && room.game.turn === myColor() && room.is_player) {
       legal.forEach(([row, column]) => {
         context.beginPath();
         context.arc(margin + (column + 0.5) * cell, margin + (row + 0.5) * cell, 5, 0, Math.PI * 2);
@@ -3953,12 +4060,49 @@
     try {
       if (!room.is_player) {
         await request("POST", "claim", { visitor_token: visitorToken, side: selectedSide });
+      } else if (
+        isDuelGame(room)
+        && room.status === "setup"
+        && !hasAiOpponent(room)
+        && roomSeats().length < Number(room.player_capacity || 2)
+      ) {
+        // 「和花火对局」：花火坐到空位上，凑齐两人立即开局
+        await request("POST", "seat/ai", {
+          visitor_token: visitorToken,
+          action: "add",
+          side: selectedSide,
+        });
       } else if (room.status === "setup") {
         await request("POST", "start", { visitor_token: visitorToken, side: selectedSide });
       } else if (room.status === "finished") {
-        await request("POST", "rematch", { visitor_token: visitorToken });
+        // 两人对弈不需要花火批准，直接重开一局；其余玩法仍走人格化回应
+        await request(
+          "POST",
+          isDuelGame(room) ? "start" : "rematch",
+          { visitor_token: visitorToken, side: selectedSide },
+        );
       }
       await loadState();
+    } catch (error) {
+      showToast(error?.message || "操作失败");
+    } finally {
+      busy = false;
+      renderSeat();
+    }
+  }
+
+  // 「等对手来」：请花火离座，把位置留给真人
+  async function waitForOpponent() {
+    if (busy || !room?.is_player || !isDuelGame(room)) return;
+    busy = true;
+    renderSeat();
+    try {
+      await request("POST", "seat/ai", {
+        visitor_token: visitorToken,
+        action: "remove",
+      });
+      await loadState();
+      showToast("已收起棋盘，等对手入座");
     } catch (error) {
       showToast(error?.message || "操作失败");
     } finally {
@@ -3977,7 +4121,7 @@
   }
 
   async function moveOthello(event) {
-    if (room.game.turn !== room.game.human_color) return;
+    if (room.game.turn !== myColor()) return;
     const rect = board.getBoundingClientRect();
     const scaleX = board.width / rect.width;
     const scaleY = board.height / rect.height;
@@ -3994,7 +4138,7 @@
       return;
     }
     busy = true;
-    pendingMove = { kind: "othello", row, column, color: room.game.human_color };
+    pendingMove = { kind: "othello", row, column, color: myColor() };
     render();
     try {
       const data = await request("POST", "move", { visitor_token: visitorToken, row, column });
@@ -4046,7 +4190,7 @@
   }
 
   async function moveGomoku(event) {
-    if (room.game.turn !== room.game.human_color) return;
+    if (room.game.turn !== myColor()) return;
     const rect = board.getBoundingClientRect();
     const scale = board.width / rect.width;
     const x = (event.clientX - rect.left) * scale;
@@ -4061,7 +4205,7 @@
       return;
     }
     busy = true;
-    pendingMove = { kind: "gomoku", row, column, color: room.game.human_color };
+    pendingMove = { kind: "gomoku", row, column, color: myColor() };
     render();
     try {
       const data = await request("POST", "move", { visitor_token: visitorToken, row, column });
@@ -4929,6 +5073,10 @@
   const ucLeaveSeatButton = document.getElementById("ucLeaveSeatButton");
   if (ucLeaveSeatButton) {
     ucLeaveSeatButton.addEventListener("click", leavePlayerSeat);
+  }
+  const seatWaitButton = document.getElementById("seatWaitButton");
+  if (seatWaitButton) {
+    seatWaitButton.addEventListener("click", waitForOpponent);
   }
   // 通用二次确认弹层：按钮 / 点击遮罩 / ESC 关闭
   const confirmOverlayEl = document.getElementById("confirmOverlay");

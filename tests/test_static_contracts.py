@@ -74,7 +74,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.15"
+    assert metadata["version"] == "0.5.16"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -112,7 +112,7 @@ def test_player_move_is_rendered_before_waiting_for_bot_response() -> None:
     script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
 
     optimistic_render = script.index(
-        'pendingMove = { kind: "gomoku", row, column, color: room.game.human_color };'
+        'pendingMove = { kind: "gomoku", row, column, color: myColor() };'
     )
     move_request = script.index(
         'await request("POST", "move", { visitor_token: visitorToken, row, column })',
@@ -160,7 +160,7 @@ def test_othello_webui_has_eight_by_eight_board_and_legal_move_feedback() -> Non
     assert '["human_black", "我执黑"], ["bot_black", "我执白"]' in script
     assert "function drawOthello()" in script
     assert "room.game.legal_moves" in script
-    assert 'pendingMove = { kind: "othello", row, column, color: room.game.human_color };' in script
+    assert 'pendingMove = { kind: "othello", row, column, color: myColor() };' in script
     assert ".board-stage.othello" in style
 
 
@@ -178,10 +178,12 @@ def test_every_game_exposes_leave_seat_outside_the_undercover_ready_area() -> No
     assert "function renderSeatLeave()" in script
     assert "renderSeatLeave();" in script
     assert 'document.getElementById("seatLeaveRow")' in script
-    # 多人局对局进行中置灰，避免中途退席破坏发言/投票状态；
-    # 判断走 roomSupportsSeats()，未来单人玩法开放上座后无需改前端
+    # 对局中是否置灰由 seatLeaveLocked() 统一判断：
+    # 两人对弈看「对面是不是真人」，其余上座玩法一律禁止中途退席；
+    # 判断不再按玩法名硬编码，也不再依赖 player_mode。
     assert "function roomSupportsSeats(target = room)" in script
-    assert 'roomSupportsSeats(room) && room.status === "active"' in script
+    assert "function seatLeaveLocked(target = room)" in script
+    assert "if (isDuelGame(target)) return hasHumanOpponent(target);" in script
 
 
 def test_solo_leave_during_active_game_requires_confirmation() -> None:
@@ -197,7 +199,7 @@ def test_solo_leave_during_active_game_requires_confirmation() -> None:
     assert "function askConfirm(" in script
     assert "await askConfirm({" in script
     assert 'room.status === "active" || room.status === "paused"' in script
-    assert "!roomSupportsSeats(room)" in script
+    assert "!seatLeaveLocked(room)" in script
     assert "退出后这一局立即作废" in script
     assert 'event.key === "Escape"' in script
 
@@ -206,6 +208,48 @@ def test_solo_leave_during_active_game_requires_confirmation() -> None:
     assert "SEAT_CAPABLE_GAMES: frozenset[GameType]" in manager
     assert "if room.game_type not in SEAT_CAPABLE_GAMES:" in manager
     assert "if room.game_type in SEAT_CAPABLE_GAMES:" in manager
+
+
+def test_board_games_support_two_human_seats_and_ai_opponent() -> None:
+    """五子棋 / 黑白棋：默认 2 席，可等真人，也可「和花火对局」。"""
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+
+    # 后端：两种棋类进入上座集合，并有独立的「两人对弈」集合与执色分配
+    assert (
+        '{"turtle_soup", "blackjack", "undercover", "gomoku", "othello"}'
+        in manager
+    )
+    assert 'DUEL_GAMES: frozenset[GameType] = frozenset({"gomoku", "othello"})' in manager
+    assert "def _assign_duel_sides(" in manager
+    assert "def _seat_color(" in manager
+    assert "async def add_ai_seat(" in manager
+    assert "async def remove_ai_seat(" in manager
+    # 胜负按座位归属：只给赢家记胜，输家与 AI 座位不记
+    assert "winner_tokens: set[str] | None = None" in manager
+    assert "self._bump_seat_win(room, winner_seat)" in manager
+    # 落子鉴权改成「当前座位」，两人对局不再只认主玩家 token
+    assert "seat = room.multiplayer.seat_for_token(visitor.token)" in manager
+    # 座位执色随快照下发，前端据此判断「我执黑还是执白」
+    assert '"side": seat.side,' in models
+
+    # 服务端新增 seat/ai（和花火对局 / 等对手来）
+    assert '"/api/room/{access_token}/seat/ai"' in server
+    assert "async def _seat_ai(" in server
+
+    # 前端：座位面板新增「等对手来」，两人对弈不再用 human_color 判断轮次
+    assert 'id="seatWaitRow"' in page
+    assert 'id="seatWaitButton"' in page
+    assert "function renderSeatWait()" in script
+    assert "和花火对局" in script
+    assert "等对手来" in script
+    assert "function myColor(target = room)" in script
+    assert "function hasHumanOpponent(target = room)" in script
+    assert "room.game.turn !== myColor()" in script
+    assert "room.game.turn === myColor()" in script
 
 
 def test_management_page_can_switch_games_and_install_engine() -> None:

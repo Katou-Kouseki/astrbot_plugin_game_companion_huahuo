@@ -67,7 +67,7 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.5.15"
+PLUGIN_VERSION = "0.5.16"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
@@ -2602,6 +2602,31 @@ class GameCompanionPlugin(Star):
                 if reveal_answer
                 else "用户负责作画，Bot 本轮未能猜中"
             )
+        # 两人对弈（五子棋 / 黑白棋）：胜负属于某个座位，不再套用「玩家 / Bot」文案
+        if (
+            room.game_type in {"gomoku", "othello"}
+            and room.multiplayer.enabled
+            and sum(1 for seat in room.multiplayer.seats if not seat.is_ai) > 1
+            and getattr(game, "winner", 0)
+        ):
+            side_colors = {"black": GOMOKU_BLACK, "white": 2}
+            winner_seat = next(
+                (
+                    seat
+                    for seat in room.multiplayer.seats
+                    if side_colors.get(seat.side) == game.winner
+                ),
+                None,
+            )
+            if winner_seat is not None:
+                name = (
+                    "花火"
+                    if winner_seat.is_ai
+                    else (winner_seat.display_name or "").strip()
+                    or f"{winner_seat.number}号"
+                )
+                color = "黑" if game.winner == GOMOKU_BLACK else "白"
+                return f"{name}执{color}获胜"
         return {
             "human_win": "玩家获胜",
             "bot_win": "Bot 获胜",
@@ -2620,7 +2645,24 @@ class GameCompanionPlugin(Star):
     ) -> str:
         game = room.game
         side = ""
-        if isinstance(game, GomokuGame):
+        # 两人对弈（五子棋 / 黑白棋）：按座位说执色，避免把真人对手写成「Bot」
+        duel_seats = [
+            seat
+            for seat in room.multiplayer.seats
+            if not seat.is_ai and seat.side
+        ] if room.multiplayer.enabled else []
+        if isinstance(game, (GomokuGame, OthelloGame)) and len(duel_seats) > 1:
+            parts = "、".join(
+                f"{(seat.display_name or '').strip() or f'{seat.number}号'}"
+                f"执{'黑' if seat.side == 'black' else '白'}"
+                for seat in duel_seats
+            )
+            side = f"本局 {parts}；"
+            if isinstance(game, OthelloGame):
+                side += (
+                    f"终局黑 {game.black_count} 子、白 {game.white_count} 子；"
+                )
+        elif isinstance(game, GomokuGame):
             human = "黑" if game.human_color == GOMOKU_BLACK else "白"
             bot = "黑" if game.bot_color == GOMOKU_BLACK else "白"
             side = f"本局玩家执{human}、Bot 执{bot}；"

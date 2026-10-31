@@ -53,6 +53,9 @@ class PlayerSeat:
     identity_confirmed: bool = False
     seated_at: float = field(default_factory=time.time)
     is_ai: bool = False
+    # 两人对弈类玩法的执色（"black" / "white"）；其余玩法留空。
+    # 由座位顺序决定，再来一局时可整体交换，用于实现先后手轮换。
+    side: str = ""
     ready: bool = False
     # 谁是卧底「藏品/护身符」徽章缓存（若 room.camp_wins_store 存在则以实时计算为准）
     undercover_badges: list[dict[str, object]] = field(default_factory=list)
@@ -585,6 +588,7 @@ class GameRoom:
                     "display_name": seat.display_name,
                     "identity_confirmed": bool(seat.identity_confirmed),
                     "is_ai": bool(seat.is_ai),
+                    "side": seat.side,
                     "seated_at": seat.seated_at,
                     "ready": bool(seat.ready),
                     # 藏品/护身符徽章：优先按当前阵营胜场即时计算，回退到游戏中缓存的 seat 值

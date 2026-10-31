@@ -161,6 +161,8 @@ class GameRoomServer:
             "/api/room/{access_token}/seat/swap/respond", self._seat_swap_respond
         )
         app.router.add_post("/api/room/{access_token}/seat/leave", self._seat_leave)
+        # 两人对弈：和花火对局（add）/ 等对手来（remove）
+        app.router.add_post("/api/room/{access_token}/seat/ai", self._seat_ai)
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
         app.router.add_post("/api/room/{access_token}/chat", self._chat)
         app.router.add_post("/api/room/{access_token}/leave", self._leave)
@@ -690,6 +692,40 @@ class GameRoomServer:
                 status=400,
             )
         return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+
+    async def _seat_ai(self, request: web.Request) -> web.Response:
+        """两人对弈：和花火对局（action=add）/ 等对手来（action=remove）。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        await self.manager.require_visitor_identity(room, visitor_token)
+        action = str(payload.get("action") or "add").strip().lower()
+        try:
+            if action == "remove":
+                result = await self.manager.remove_ai_seat(room, visitor_token)
+            else:
+                result = await self.manager.add_ai_seat(
+                    room,
+                    visitor_token,
+                    side=str(payload.get("side") or ""),
+                )
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=400,
+            )
+        return self._response(
+            {
+                **result,
+                "room": room.public_snapshot(
+                    visitor_token,
+                    global_leaderboard=self.manager.global_leaderboard(
+                        room.game_type
+                    ),
+                ),
+            }
+        )
 
     async def _undercover_add_ai_seat(self, request: web.Request) -> web.Response:
         """房主/管理员手动追加一位 AI 玩家（计入总数，不可超容量）。"""
