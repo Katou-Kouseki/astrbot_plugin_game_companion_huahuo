@@ -645,6 +645,12 @@
         "default": false,
         "hint": "仅「和花火对局」时生效：花火获胜则局末自动把战况发到群，无需手动点按钮；已自动通报的那一局，「通知到群」按钮会置灰。"
       },
+      "group_announce_auto_all": {
+        "description": "自动播报（所有对局）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后每局棋类对局结束都自动把战况发到群（含玩家与玩家、玩家与花火对局，谁赢都播报），无需手动点按钮；独立于「花火获胜自动播报」，两者同时开启也只会播报一次。"
+      },
       "group_announce_style": {
         "description": "群通报发送方式",
         "type": "string",

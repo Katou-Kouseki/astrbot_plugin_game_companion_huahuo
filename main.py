@@ -1414,6 +1414,9 @@ class GameCompanionPlugin(Star):
         self.board_group_announce_auto = self._cfg_bool(
             "board.group_announce_auto", False
         )
+        self.board_group_announce_auto_all = self._cfg_bool(
+            "board.group_announce_auto_all", False
+        )
         self.board_group_announce_style = (
             self._cfg_str("board.group_announce_style", "text") or "text"
         ).lower()
@@ -2911,16 +2914,25 @@ class GameCompanionPlugin(Star):
                 and self.group_announce_auto
             ):
                 self._spawn(self._auto_announce_undercover(room))
-            # 棋类：仅「和花火对局」且花火获胜时自动播报（board.group_announce_auto）
+            # 棋类自动播报（board 配置）：
+            # - group_announce_auto_all：所有对局结束都自动播报（玩家 vs 玩家 / 玩家 vs 花火，谁赢都播）
+            # - group_announce_auto：仅「和花火对局」且花火获胜时自动播报
             if (
                 room.game_type in DUEL_GAMES
                 and self.board_group_announce_enabled
-                and self.board_group_announce_auto
-                and room.multiplayer.enabled
-                and self.manager._ai_seat(room) is not None
             ):
-                winner_seat = self.manager._duel_winner_seat(room)
-                if winner_seat is not None and winner_seat.is_ai:
+                auto_all = self.board_group_announce_auto_all
+                auto_huahuo_win = False
+                if (
+                    self.board_group_announce_auto
+                    and room.multiplayer.enabled
+                    and self.manager._ai_seat(room) is not None
+                ):
+                    winner_seat = self.manager._duel_winner_seat(room)
+                    auto_huahuo_win = (
+                        winner_seat is not None and winner_seat.is_ai
+                    )
+                if auto_all or auto_huahuo_win:
                     self._spawn(self._auto_announce_board(room))
             self._spawn(
                 self._comment(

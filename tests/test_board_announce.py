@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +33,31 @@ async def _duel_room(manager: RoomManager, game_type: str = "gomoku"):
     await manager.assign_player(room, visitor.number, "10001")
     await manager.add_ai_seat(room, visitor.token, side="black")
     return room
+
+
+def _auto_announce_plugin(manager: RoomManager, *, auto_all: bool, auto: bool):
+    """构造一个仅用于验证自动播报触发条件的插件实例，mock 掉无关副作用。"""
+    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin.manager = manager
+    plugin.board_group_announce_enabled = True
+    plugin.board_group_announce_auto_all = auto_all
+    plugin.board_group_announce_auto = auto
+    plugin.group_announce_enabled = False
+    plugin.group_announce_auto = False
+    plugin.companion_afterglow_enabled = False
+    plugin.private_qq_game_context_enabled = False
+    plugin.undercover_failed_mute_seconds = 0
+    plugin._companion_round_event_tasks = {}
+    plugin.spawned: list[tuple] = []
+    plugin._spawn = lambda op: plugin.spawned.append(op)  # type: ignore[attr-defined]
+    plugin._comment = lambda room, prompt, **kw: ("COMMENT",)  # type: ignore[attr-defined]
+    plugin._auto_announce_board = lambda room: ("BOARD", room.room_id)  # type: ignore[attr-defined]
+    plugin._auto_announce_undercover = lambda room: ("UC",)  # type: ignore[attr-defined]
+    return plugin
+
+
+def _spawned_board(plugin: GameCompanionPlugin) -> bool:
+    return any(item and item[0] == "BOARD" for item in plugin.spawned)
 
 
 @pytest.mark.asyncio
@@ -170,4 +196,64 @@ async def test_board_poster_t2i_uses_html_render() -> None:
     assert result == base64.b64encode(b"FAKEPNG").decode("ascii")
     assert captured["title"] == "花火 获胜"
     assert captured["options"]["type"] == "png"
+
+
+@pytest.mark.asyncio
+async def test_board_auto_announce_all_covers_human_vs_human() -> None:
+    """group_announce_auto_all 开启时，玩家 vs 玩家对局结束也自动播报。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await manager.create_room(
+        source="private",
+        session_id="UMO:t:PM:2",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="小明",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    first = await manager.join(room)
+    second = await manager.join(room)
+    await manager.assign_player(room, first.number, "10001")
+    await manager.assign_player(room, second.number, "10002")
+    room.multiplayer.seats[0].side = "black"
+    room.multiplayer.seats[1].side = "white"
+    room.game = SimpleNamespace(winner=BLACK, draw=False, history=[])  # type: ignore[assignment]
+    room.status = "finished"
+
+    plugin = _auto_announce_plugin(manager, auto_all=True, auto=False)
+    await plugin._on_room_event("game_finished", room, {})
+
+    assert _spawned_board(plugin)
+
+
+@pytest.mark.asyncio
+async def test_board_auto_announce_huahuo_only_on_ai_win() -> None:
+    """花火获胜自动播报只对「花火赢」生效：玩家赢时不触发。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.winner = BLACK  # 玩家执黑胜
+    room.game.draw = False
+    room.status = "finished"
+
+    plugin = _auto_announce_plugin(manager, auto_all=False, auto=True)
+    await plugin._on_room_event("game_finished", room, {})
+
+    assert not _spawned_board(plugin)
+
+
+@pytest.mark.asyncio
+async def test_board_auto_announce_all_covers_human_win_vs_ai() -> None:
+    """group_announce_auto_all 开启时，玩家赢花火也自动播报。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.winner = BLACK  # 玩家执黑胜
+    room.game.draw = False
+    room.status = "finished"
+
+    plugin = _auto_announce_plugin(manager, auto_all=True, auto=False)
+    await plugin._on_room_event("game_finished", room, {})
+
+    assert _spawned_board(plugin)
 
