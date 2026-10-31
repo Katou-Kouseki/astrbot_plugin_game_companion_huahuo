@@ -1561,6 +1561,13 @@ class RoomManager:
                     )
             else:
                 raise ValueError("当前游戏不支持棋盘落子")
+            if seat is not None:
+                # 解说要知道这一手属于哪个座位：两位真人时说明「谁走的」，而非笼统的「玩家」
+                board_event.update(
+                    seat_number=seat.number,
+                    seat_name=self._seat_display(seat),
+                    side=self._seat_side(room, seat),
+                )
             room.touch()
             finished = room.game.finished
             if isinstance(room.game, (GomokuGame, OthelloGame, XiangqiGame)) and not finished:
@@ -2797,6 +2804,14 @@ class RoomManager:
                 game = room.game
                 if isinstance(game, (TurtleSoupGame, DrawGuessGame)):
                     return
+                ai_seat = self._ai_seat(room)
+                if ai_seat is not None:
+                    # 让解说能说「花火执白走了这一步」，而不是只有 human/bot 的二元信息
+                    board_event.update(
+                        seat_number=ai_seat.number,
+                        seat_name="花火",
+                        side=self._seat_side(room, ai_seat),
+                    )
                 if isinstance(game, XiangqiGame):
                     try:
                         await game.place_bot(self._require_xiangqi_engine())

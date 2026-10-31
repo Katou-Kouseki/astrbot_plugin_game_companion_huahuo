@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.18"
+    assert metadata["version"] == "0.5.19"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -506,3 +506,26 @@ def test_browser_reports_departure_with_heartbeat_fallback() -> None:
     assert 'endpoint("leave")' in script
     assert "FINISHED_PLAYER_LEAVE_GRACE_SECONDS = 8" in manager
     assert "FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS = 60" in manager
+
+
+def test_commentary_narrates_duel_as_spectator_and_supports_own_model() -> None:
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+    # 两位真人时花火只能旁观解说，不能把自己算成对局一方
+    assert "def _commentary_duel_room(" in main
+    assert "你不在棋盘上，也没有执任何一方" in main
+    assert "不要说自己下了哪一步" in main
+    # 解说提示词改用「谁执哪方 / 谁刚走完 / 轮到谁」，不再写死玩家 vs Bot
+    assert "def _commentary_facts(" in main
+    assert "刚走完这一步" in main
+    # 走子事件带上座位信息，解说才知道这一步是谁下的
+    assert "seat_name=self._seat_display(seat)" in manager
+    assert 'seat_name="花火"' in manager
+    # 解说可全局单独指定 Provider / 模型
+    assert '"commentary.provider_id"' in main
+    assert '"commentary.model"' in main
+    assert schema["commentary"]["items"]["provider_id"]["default"] == ""
+    assert schema["commentary"]["items"]["model"]["default"] == ""
+    assert "get_provider_by_id" in main

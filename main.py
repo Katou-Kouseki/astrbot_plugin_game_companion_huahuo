@@ -25,6 +25,7 @@ from astrbot.api.web import request
 from .blackjack import BlackjackGame
 from .draw_guess import DrawGuessGame
 from .gomoku import BLACK as GOMOKU_BLACK
+from .gomoku import WHITE as GOMOKU_WHITE
 from .gomoku import Difficulty, GomokuGame
 from .models import GameRoom, GameType, TurtleSoupMode, Visitor
 from .othello import BLACK as OTHELLO_BLACK
@@ -67,8 +68,102 @@ from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.5.18"
+PLUGIN_VERSION = "0.5.19"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
+
+# 棋盘执方的中文写法：象棋红/黑，棋类黑/白
+COMMENTARY_SIDE_LABELS = {"red": "红", "black": "黑", "white": "白"}
+# 先手或展示顺序：象棋红先，棋类黑先（white 只作为兜底）
+COMMENTARY_SIDE_ORDER = ("red", "black", "white")
+
+
+def _commentary_seat_map(room: GameRoom) -> dict[str, str]:
+    """执方（red/black/white）→ 坐在这一方的人；花火座位统一叫「花火」。"""
+    mapping: dict[str, str] = {}
+    state = room.multiplayer
+    if not state.enabled:
+        return mapping
+    for seat in state.seats:
+        side = str(seat.side or "")
+        if not side:
+            # 兼容尚未分配 side 的历史房间：按座位序号推断
+            try:
+                index = state.seats.index(seat)
+            except ValueError:
+                continue
+            if room.game_type == "xiangqi":
+                side = "red" if index % 2 == 0 else "black"
+            else:
+                side = "black" if index % 2 == 0 else "white"
+        mapping[side] = (
+            "花火"
+            if seat.is_ai
+            else ((seat.display_name or "").strip() or f"{seat.number}号位")
+        )
+    return mapping
+
+
+def _commentary_duel_room(room: GameRoom) -> bool:
+    """两位真人同房：花火只旁观解说，不执任何一方。"""
+    mapping = _commentary_seat_map(room)
+    return len(mapping) >= 2 and "花火" not in mapping.values()
+
+
+def _commentary_sides_text(room: GameRoom, *, actor_side: str = "") -> str:
+    """「小明执黑，阿花执白」；actor_side 标注刚走完这一步的一方。"""
+    mapping = _commentary_seat_map(room)
+    parts: list[str] = []
+    for side in COMMENTARY_SIDE_ORDER:
+        name = mapping.get(side)
+        if not name:
+            continue
+        label = COMMENTARY_SIDE_LABELS.get(side, side)
+        mark = "，刚走完这一步" if side == actor_side else ""
+        parts.append(f"{name}执{label}{mark}")
+    return "，".join(parts)
+
+
+def _commentary_side_name(room: GameRoom, side: str) -> str:
+    """某一方在这盘棋里的称呼：真人昵称 / 花火 / 「黑方」兜底。"""
+    name = _commentary_seat_map(room).get(side)
+    if name:
+        return name
+    return f"{COMMENTARY_SIDE_LABELS.get(side, side)}方"
+
+
+def _commentary_turn_text(room: GameRoom) -> str:
+    """当前轮到谁走；非棋类或已结束返回空串。"""
+    game = room.game
+    if game is None or getattr(game, "finished", False):
+        return "本局已经结束"
+    side = ""
+    if isinstance(game, GomokuGame):
+        side = "black" if int(game.turn) == GOMOKU_BLACK else "white"
+    elif isinstance(game, OthelloGame):
+        side = "black" if int(game.turn) == OTHELLO_BLACK else "white"
+    elif isinstance(game, XiangqiGame):
+        side = "red" if game.turn == XIANGQI_RED else "black"
+    if not side:
+        return ""
+    return f"现在轮到{_commentary_side_name(room, side)}走"
+
+
+def _commentary_facts(
+    room: GameRoom, payload: dict[str, Any] | None = None
+) -> str:
+    """拼出「谁执哪方 / 刚才是谁走的 / 现在轮到谁」，供解说拼提示词。"""
+    payload = payload or {}
+    side = str(payload.get("side") or "")
+    pieces: list[str] = []
+    sides = _commentary_sides_text(room, actor_side=side)
+    if sides:
+        pieces.append(sides)
+    elif side:
+        pieces.append(f"{COMMENTARY_SIDE_LABELS.get(side, side)}方刚走完一步")
+    turn = _commentary_turn_text(room)
+    if turn:
+        pieces.append(turn)
+    return "；".join(part for part in pieces if part)
 
 GAME_CATALOG: tuple[dict[str, Any], ...] = (
     {
@@ -1037,6 +1132,9 @@ class GameCompanionPlugin(Star):
         self.commentary_cooldown = self._cfg_int(
             "game.commentary_cooldown_seconds", 45, minimum=10, maximum=600
         )
+        # 解说可用独立模型：留空则跟随所在会话的聊天模型
+        self.commentary_provider_id = self._cfg_str("commentary.provider_id", "")
+        self.commentary_model = self._cfg_str("commentary.model", "")
         self.enabled_games: dict[GameType, bool] = {
             game_type: self._cfg_bool(f"{game_type}.enabled", True)
             for game_type in SUPPORTED_GAMES
@@ -2432,22 +2530,24 @@ class GameCompanionPlugin(Star):
                     "fork": "井字棋盘面刚出现了双重威胁",
                 }.get(tactical)
             elif room.game_type == "othello":
-                side = (
-                    room.game.human_color
-                    if payload.get("actor") == "human"
-                    else room.game.bot_color
-                )
+                side = int(payload.get("color") or room.game.human_color)
                 tactical = room.game.tactical_state(side)
-                tactical_prompt = {
-                    "major_capture": "黑白棋刚发生了一次较大的翻子",
-                    "win": "黑白棋刚结束一局",
+                event_text = {
+                    "major_capture": "刚发生了一次较大的翻子",
+                    "win": "这一局刚刚结束",
                 }.get(tactical)
+                tactical_prompt = self._board_commentary_prompt(
+                    room, payload, event_text
+                )
             else:
                 side = None
                 tactical = room.game.tactical_state(side)
-                tactical_prompt = {
-                    "major_capture": "棋盘上刚发生了一次重要吃子",
+                event_text = {
+                    "major_capture": "刚发生了一次重要吃子",
                 }.get(tactical)
+                tactical_prompt = self._board_commentary_prompt(
+                    room, payload, event_text
+                )
             if tactical_prompt and (
                 time.time() - room.last_commentary_at >= self.commentary_cooldown
             ):
@@ -2580,6 +2680,23 @@ class GameCompanionPlugin(Star):
     @classmethod
     def _opening_commentary_prompt(cls, room: GameRoom) -> str:
         game = room.game
+        if _commentary_duel_room(room):
+            # 两位真人：花火只是旁观者，开场白不能把自己算进棋局
+            mapping = _commentary_seat_map(room)
+            first_side = next(
+                (side for side in COMMENTARY_SIDE_ORDER if side in mapping), ""
+            )
+            first_name = mapping.get(first_side, "")
+            facts = (
+                "这是两位真人之间的对局，你不在棋盘上，也没有执任何一方，只负责旁观解说。"
+                f"{_commentary_sides_text(room)}；由{first_name}先行。"
+            )
+            return (
+                f"{cls._game_label(room.game_type)}开局事实：{facts}"
+                "请严格依据这些事实，用当前人格简短自然地说一句开场话；"
+                "用昵称或「执某方的一方」称呼两位玩家，不得说反执方与先后手，"
+                "不要说「我」「我的对手」这类把自己算进棋局的话，也不要复述完整规则。"
+            )
         if isinstance(game, GomokuGame):
             human = "黑" if game.human_color == GOMOKU_BLACK else "白"
             bot = "黑" if game.bot_color == GOMOKU_BLACK else "白"
@@ -2656,22 +2773,34 @@ class GameCompanionPlugin(Star):
                 if reveal_answer
                 else "用户负责作画，Bot 本轮未能猜中"
             )
-        # 两人对弈（五子棋 / 黑白棋）：胜负属于某个座位，不再套用「玩家 / Bot」文案
+        # 两人对弈（五子棋 / 黑白棋 / 象棋）：胜负属于某个座位，不再套用「玩家 / Bot」文案
         if (
-            room.game_type in {"gomoku", "othello"}
+            room.game_type in {"gomoku", "othello", "xiangqi"}
             and room.multiplayer.enabled
             and sum(1 for seat in room.multiplayer.seats if not seat.is_ai) > 1
-            and getattr(game, "winner", 0)
+            and getattr(game, "winner", None)
         ):
-            side_colors = {"black": GOMOKU_BLACK, "white": 2}
-            winner_seat = next(
-                (
-                    seat
-                    for seat in room.multiplayer.seats
-                    if side_colors.get(seat.side) == game.winner
-                ),
-                None,
-            )
+            winner = getattr(game, "winner")
+            if room.game_type == "xiangqi":
+                winner_side = str(winner)
+                winner_seat = next(
+                    (
+                        seat
+                        for seat in room.multiplayer.seats
+                        if seat.side == winner_side
+                    ),
+                    None,
+                )
+            else:
+                winner_side = "black" if winner == GOMOKU_BLACK else "white"
+                winner_seat = next(
+                    (
+                        seat
+                        for seat in room.multiplayer.seats
+                        if seat.side == winner_side
+                    ),
+                    None,
+                )
             if winner_seat is not None:
                 name = (
                     "花火"
@@ -2679,8 +2808,7 @@ class GameCompanionPlugin(Star):
                     else (winner_seat.display_name or "").strip()
                     or f"{winner_seat.number}号"
                 )
-                color = "黑" if game.winner == GOMOKU_BLACK else "白"
-                return f"{name}执{color}获胜"
+                return f"{name}执{COMMENTARY_SIDE_LABELS.get(winner_side, '')}获胜"
         return {
             "human_win": "玩家获胜",
             "bot_win": "Bot 获胜",
@@ -2705,10 +2833,13 @@ class GameCompanionPlugin(Star):
             for seat in room.multiplayer.seats
             if not seat.is_ai and seat.side
         ] if room.multiplayer.enabled else []
-        if isinstance(game, (GomokuGame, OthelloGame)) and len(duel_seats) > 1:
+        if (
+            isinstance(game, (GomokuGame, OthelloGame, XiangqiGame))
+            and len(duel_seats) > 1
+        ):
             parts = "、".join(
                 f"{(seat.display_name or '').strip() or f'{seat.number}号'}"
-                f"执{'黑' if seat.side == 'black' else '白'}"
+                f"执{COMMENTARY_SIDE_LABELS.get(seat.side, seat.side)}"
                 for seat in duel_seats
             )
             side = f"本局 {parts}；"
@@ -3663,7 +3794,7 @@ class GameCompanionPlugin(Star):
             room.record_chat_memory(visitor, "bot", text)
 
     async def _generate_persona_text(self, room: GameRoom, prompt: str) -> str:
-        provider = self.context.get_using_provider(room.session_id)
+        provider = self._commentary_provider(room)
         if provider is None or not callable(getattr(provider, "text_chat", None)):
             return ""
         persona = await self._persona_prompt(room)
@@ -3675,21 +3806,61 @@ class GameCompanionPlugin(Star):
                 "你画我猜中的角色固定为：用户始终负责作画，你（Bot）始终负责看图猜答案。"
                 "你没有参与绘画，任何时候都不得声称自己画得好或不好。"
             )
+        if _commentary_duel_room(room):
+            scene_line = (
+                f"你正在旁观两位真人玩{self._game_label(room.game_type)}，"
+                "你不在棋盘上，也没有执任何一方，只负责解说。"
+            )
+            role_constraint += (
+                "这盘棋是两位真人之间的对局：不要说自己下了哪一步，"
+                "不要替任何一方认输、宣称自己要赢，也不要把其中一位称作「你的对手」；"
+                "用昵称或「执黑的一方」这样的第三人称称呼双方。"
+            )
+        else:
+            scene_line = (
+                f"你正在与用户通过花火陪你玩 WebUI 玩{self._game_label(room.game_type)}。"
+            )
         system_prompt = (
             f"{persona}\n\n{companion_scene}\n\n{memory}\n\n"
-            f"你正在与用户通过花火陪你玩 WebUI 玩{self._game_label(room.game_type)}。保持原有人格和关系语气，"
+            f"{scene_line}保持原有人格和关系语气，"
             "只回应当前游戏事件，不输出规则说明或格式标签。"
             f"{role_constraint}海龟汤中绝不能猜测或泄露尚未公开的汤底。"
         ).strip()
+        kwargs: dict[str, Any] = {"prompt": prompt, "system_prompt": system_prompt}
+        model_name = (getattr(self, "commentary_model", "") or "").strip()
+        if model_name:
+            try:
+                if "model" in inspect.signature(provider.text_chat).parameters:
+                    kwargs["model"] = model_name
+                else:
+                    logger.debug(
+                        "[GameCompanion] 解说 Provider 不支持 model 参数，忽略 commentary.model"
+                    )
+            except (TypeError, ValueError):
+                logger.debug("[GameCompanion] 无法读取解说 Provider 签名，忽略 commentary.model")
         try:
             response = await asyncio.wait_for(
-                provider.text_chat(prompt=prompt, system_prompt=system_prompt),
+                provider.text_chat(**kwargs),
                 timeout=30,
             )
         except Exception as exc:
             logger.debug("[GameCompanion] 生成人格化游戏回复失败: %s", exc)
             return ""
         return str(getattr(response, "completion_text", "") or "").strip()[:500]
+
+    def _commentary_provider(self, room: GameRoom):
+        """解说使用的模型：优先全局配置的 Provider，缺失时回退会话模型。"""
+        provider_id = (getattr(self, "commentary_provider_id", "") or "").strip()
+        if provider_id:
+            getter = getattr(self.context, "get_provider_by_id", None)
+            if callable(getter):
+                provider = getter(provider_id)
+                if provider is not None:
+                    return provider
+                logger.warning(
+                    "[GameCompanion] 解说 Provider %s 不存在，回退当前会话模型", provider_id
+                )
+        return self.context.get_using_provider(room.session_id)
 
     async def _llm_gen_neutral(self, prompt: str, *, system_prompt: str = "") -> str:
         """管理台等无会话场景的中性 LLM 生成：不注入游戏人格与记忆。
@@ -3836,33 +4007,46 @@ class GameCompanionPlugin(Star):
         if threat.kind not in {"multiple", "single"}:
             return ""
 
-        actor_is_human = payload.get("actor") == "human"
-        actor = "玩家" if actor_is_human else "Bot"
-        opponent = "Bot" if actor_is_human else "玩家"
-        color_label = "黑" if color == GOMOKU_BLACK else "白"
-        opponent_color = game.bot_color if actor_is_human else game.human_color
-        opponent_color_label = "黑" if opponent_color == GOMOKU_BLACK else "白"
-        human_stones = sum(
-            cell == game.human_color for board_row in game.board for cell in board_row
+        actor_side = "black" if color == GOMOKU_BLACK else "white"
+        opponent_side = "white" if actor_side == "black" else "black"
+        actor_name = _commentary_side_name(room, actor_side)
+        opponent_name = _commentary_side_name(room, opponent_side)
+        actor_label = COMMENTARY_SIDE_LABELS[actor_side]
+        opponent_label = COMMENTARY_SIDE_LABELS[opponent_side]
+        black_stones = sum(
+            cell == GOMOKU_BLACK for board_row in game.board for cell in board_row
         )
-        bot_stones = sum(
-            cell == game.bot_color for board_row in game.board for cell in board_row
+        white_stones = sum(
+            cell == GOMOKU_WHITE for board_row in game.board for cell in board_row
         )
-        turn = "本局已经结束" if game.finished else (
-            "当前轮到玩家" if game.turn == game.human_color else "当前轮到 Bot"
-        )
+        turn = _commentary_turn_text(room)
         consequence = (
             f"刚才这步留下了 {len(threat.winning_points)} 个下一手即可连成五子的空位，"
-            f"{opponent}下一手无法全部封住。"
+            f"{opponent_name}下一手无法全部封住。"
             if threat.kind == "multiple"
-            else f"刚才这步留下了 1 个下一手即可连成五子的空位，{opponent}下一手仍可封住。"
+            else f"刚才这步留下了 1 个下一手即可连成五子的空位，{opponent_name}下一手仍可封住。"
         )
         return (
-            f"五子棋刚发生了一个值得回应的节点。触发者是{actor}，执{color_label}；"
-            f"对手是{opponent}，执{opponent_color_label}；最后落子在第 {row + 1} 行第 {column + 1} 列。"
-            f"当前玩家有 {human_stones} 颗棋子，Bot 有 {bot_stones} 颗棋子，{turn}。"
+            f"五子棋刚发生了一个值得回应的节点：{actor_name}（执{actor_label}）"
+            f"在第 {row + 1} 行第 {column + 1} 列落子；"
+            f"对手是{opponent_name}（执{opponent_label}）。"
+            f"当前黑方 {black_stones} 颗、白方 {white_stones} 颗，{turn}。"
             f"{consequence}只围绕这一步和当前情绪，用当前人格简短自然回应；"
             "避免使用专业棋型名称，不要虚构其他落子或胜负。"
+        )
+
+    def _board_commentary_prompt(
+        self, room: GameRoom, payload: dict[str, Any], event_text: str | None
+    ) -> str | None:
+        """黑白棋 / 象棋的关键节点提示：补上执方、刚走棋的人与轮次。"""
+        if not event_text:
+            return None
+        facts = _commentary_facts(room, payload)
+        head = f"{self._game_label(room.game_type)}关键节点：{event_text}"
+        body = f"{head}；{facts}。" if facts else f"{head}。"
+        return (
+            f"{body}只围绕这一步和当前局面，用当前人格简短自然回应；"
+            "不要虚构未发生的走子、吃子或胜负。"
         )
 
     async def _memory_context(self, room: GameRoom, query: str) -> str:
@@ -6012,6 +6196,8 @@ class GameCompanionPlugin(Star):
         self.manager.duel_offline_grace = self.duel_offline_grace
         self.manager.swap_request_cooldown = self.swap_request_cooldown
         self.manager.swap_request_expiry = self.swap_request_expiry
+        self.commentary_provider_id = self._cfg_str("commentary.provider_id", "")
+        self.commentary_model = self._cfg_str("commentary.model", "")
         self.manager.draw_guess_duration_seconds = self.draw_guess_duration_seconds
         self.manager.draw_guess_max_guesses = self.draw_guess_max_guesses
         self.manager.pig_dice_target_score = self.pig_dice_target_score

@@ -153,13 +153,12 @@ def test_gomoku_commentary_names_actor_color_coordinate_and_consequence() -> Non
         {"actor": "human", "row": 7, "column": 7, "color": BLACK},
     )
 
-    assert "触发者是玩家，执黑" in prompt
-    assert "对手是Bot，执白" in prompt
-    assert "第 8 行第 8 列" in prompt
-    assert "玩家有 4 颗棋子" in prompt
-    assert "当前轮到 Bot" in prompt
+    assert "黑方（执黑）在第 8 行第 8 列落子" in prompt
+    assert "对手是白方（执白）" in prompt
+    assert "当前黑方 4 颗、白方 0 颗" in prompt
+    assert "现在轮到白方走" in prompt
     assert "2 个下一手即可连成五子的空位" in prompt
-    assert "Bot下一手无法全部封住" in prompt
+    assert "白方下一手无法全部封住" in prompt
     assert all(term not in prompt for term in ("活四", "冲四", "死四"))
 
 
@@ -175,9 +174,9 @@ def test_gomoku_commentary_explains_single_bot_threat_without_jargon() -> None:
         {"actor": "bot", "row": 6, "column": 7, "color": WHITE},
     )
 
-    assert "触发者是Bot，执白" in prompt
-    assert "对手是玩家，执黑" in prompt
-    assert "第 7 行第 8 列" in prompt
+    assert "白方（执白）在第 7 行第 8 列落子" in prompt
+    assert "对手是黑方（执黑）" in prompt
+    assert "当前黑方 1 颗、白方 4 颗" in prompt
     assert "1 个下一手即可连成五子的空位" in prompt
-    assert "玩家下一手仍可封住" in prompt
+    assert "黑方下一手仍可封住" in prompt
     assert "专业棋型名称" in prompt

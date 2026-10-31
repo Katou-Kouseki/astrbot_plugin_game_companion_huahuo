@@ -179,6 +179,24 @@
       }
     }
   },
+  "commentary": {
+    "description": "花火解说",
+    "type": "object",
+    "items": {
+      "provider_id": {
+        "description": "解说模型 Provider ID",
+        "type": "string",
+        "default": "",
+        "hint": "留空跟随当前会话的聊天模型；填 AstrBot 里已配置的 Provider ID，可让所有房间的解说单独使用该模型。"
+      },
+      "model": {
+        "description": "解说模型名",
+        "type": "string",
+        "default": "",
+        "hint": "可选：在同一 Provider 下指定具体模型名；留空使用该 Provider 的默认模型。"
+      }
+    }
+  },
   "multiplayer": {
     "description": "多人席位",
     "type": "object",
