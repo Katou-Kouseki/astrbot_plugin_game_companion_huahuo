@@ -14,13 +14,18 @@ from .pig_dice import PigDiceGame
 from .tictactoe import TicTacToeGame
 from .turtle_soup import TurtleSoupGame
 from .undercover import UndercoverGame
+from .weiqi import WeiqiGame
 from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
 GameType = Literal[
-    "gomoku", "xiangqi", "tictactoe", "othello", "turtle_soup", "pig_dice",
-    "draw_guess", "blackjack", "undercover",
+    "gomoku", "xiangqi", "weiqi", "tictactoe", "othello", "turtle_soup",
+    "pig_dice", "draw_guess", "blackjack", "undercover",
 ]
+# 有「棋力档位」的玩法：管理台允许在这些房间上直接切换 easy/normal/hard。
+DIFFICULTY_GAME_TYPES: frozenset[str] = frozenset(
+    {"gomoku", "othello", "xiangqi", "weiqi", "tictactoe"}
+)
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
 ]
@@ -262,8 +267,13 @@ class Visitor:
         is_player: bool,
         is_current_player: bool = False,
         is_ai: bool = False,
+        include_qq_avatar: bool = False,
     ) -> dict[str, object]:
-        """Return fields safe to show to all room members."""
+        """Return fields safe to show to all room members.
+
+        QQ 头像地址里编码了 QQ 号，属于隐私数据：只有查看者本人已绑定身份
+        （identity_confirmed）时才下发，匿名观众拿到的 visitor 快照不含头像。
+        """
         return {
             "number": self.number,
             "online": self.connected and time.time() - self.last_seen_at < 15,
@@ -273,9 +283,11 @@ class Visitor:
             "is_ai": bool(is_ai),
             "display_name": self.display_name if self.identity_confirmed else "",
             "identity_confirmed": self.identity_confirmed,
-            # QQ 头像：仅已确认身份时下发
+            # QQ 头像：仅查看者已确认身份、且本人已确认身份时下发
             "avatar_url": (
-                _qq_avatar_url(self.qq) if self.qq and self.identity_confirmed else ""
+                _qq_avatar_url(self.qq)
+                if self.qq and self.identity_confirmed and include_qq_avatar
+                else ""
             ),
         }
 
@@ -296,6 +308,10 @@ class GameRoom:
     game_type: GameType
     difficulty: Difficulty
     turtle_soup_mode: TurtleSoupMode = "bot_host"
+    # 围棋盘路与贴目：房间级设置。首位入座的玩家可以在开局前自行调整，
+    # 调整后连空棋盘也一起重绘（见 RoomManager.set_weiqi_board）。
+    weiqi_size: int = 13
+    weiqi_komi: float = 7.5
     undercover_host_camp_scales: str | None = None
     undercover_ai_fill_enabled: bool = False
     undercover_min_players: int = 2
@@ -310,7 +326,10 @@ class GameRoom:
     recap_cache: dict[str, str] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     last_activity_at: float = field(default_factory=time.time)
-    player_empty_since: float | None = field(default_factory=time.time)
+    # 「玩家席无人」倒计时只在玩家离开后才开始计时；新建房间（还没有人入座）
+    # 不应一出生就被 empty_player_timeout 秒杀，否则管理台开房/LLM 开房后，
+    # 访客还没点开链接房间就被销毁了（表现为「链接进不去」「管理台没显示」）。
+    player_empty_since: float | None = None
     status: RoomStatus = "waiting"
     visitors: dict[str, Visitor] = field(default_factory=dict)
     next_visitor_number: int = 1
@@ -332,12 +351,14 @@ class GameRoom:
         | DrawGuessGame
         | BlackjackGame
         | UndercoverGame
+        | WeiqiGame
         | None
     ) = None
     scores: dict[GameType, GameScore] = field(
         default_factory=lambda: {
             "gomoku": GameScore(),
             "xiangqi": GameScore(),
+            "weiqi": GameScore(),
             "tictactoe": GameScore(),
             "othello": GameScore(),
             "turtle_soup": GameScore(),
@@ -354,6 +375,8 @@ class GameRoom:
     chat_transcripts: dict[str, list[dict[str, str]]] = field(default_factory=dict)
     close_reason: str = ""
     last_commentary_at: float = 0.0
+    # 正在生成的解说条数：>0 时网页显示「花火正在组织语言」占位并加快轮询
+    bot_typing_pending: int = 0
     # 房间内玩家获胜次数排行榜：visitor_token -> {"name": str, "wins": int}
     player_win_counts: dict[str, dict[str, object]] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -500,6 +523,23 @@ class GameRoom:
             if token in self.visitors
         ]
         current_player = self.visitors.get(current_token)
+        # 围棋盘路调整权：只给「最早落座的那位真人」。
+        # 第二位入座的人、观众、AI 都不该改棋盘大小。
+        weiqi_first_token = ""
+        if self.game_type == "weiqi":
+            if multiplayer.enabled:
+                humans = [seat for seat in multiplayer.seats if not seat.is_ai]
+            else:
+                humans = []
+            if humans:
+                weiqi_first_token = min(humans, key=lambda seat: seat.seated_at).visitor_token
+            elif not multiplayer.enabled:
+                weiqi_first_token = self.player_token
+        weiqi_moves = (
+            len(getattr(self.game, "history", []) or [])
+            if isinstance(self.game, WeiqiGame)
+            else 0
+        )
         # 象棋快照按「当前浏览器坐在哪个座位」下发可走法：两位真人同房时，
         # 对手的走法不该出现在自己页面上。
         my_seat = (
@@ -589,6 +629,8 @@ class GameRoom:
                 else 0
             ),
             "server_time": now,
+            # 花火正在生成解说：网页据此显示占位并把轮询提速到 400ms
+            "bot_typing": self.bot_typing_pending > 0,
             "player_confirmed": (
                 visitor.identity_confirmed
                 if visitor is not None
@@ -606,6 +648,21 @@ class GameRoom:
             ),
             "turtle_soup_mode": self.turtle_soup_mode,
             "difficulty": self.difficulty,
+            # 围棋盘路：房间级设置，首位落座的玩家在开局前可以自己改，
+            # 改完连空棋盘也一起换路数（前端按 size 重绘网格）。
+            "weiqi": {
+                "size": self.weiqi_size,
+                "komi": self.weiqi_komi,
+                "moves": weiqi_moves,
+                "adjustable": bool(
+                    self.game_type == "weiqi"
+                    and visitor is not None
+                    and weiqi_first_token
+                    and visitor.token == weiqi_first_token
+                    and (not weiqi_moves or self.status == "finished")
+                    and self.status != "closed"
+                ),
+            },
             "undercover_host_camp_scales": self.undercover_host_camp_scales,
             "undercover_ai_fill_enabled": self.undercover_ai_fill_enabled,
             "undercover_min_players": self.undercover_min_players,
@@ -640,6 +697,9 @@ class GameRoom:
                     is_player=item.token in player_tokens,
                     is_current_player=item.token == current_token,
                     is_ai=item.token in ai_tokens,
+                    include_qq_avatar=bool(
+                        visitor and visitor.identity_confirmed
+                    ),
                 )
                 for item in sorted(
                     self.visitors.values(), key=lambda value: value.number
@@ -678,6 +738,8 @@ class GameRoom:
                     {
                         "name": str(info.get("name") or "未知玩家"),
                         "wins": int(info.get("wins") or 0),
+                        "games": int(info.get("games") or 0),
+                        "winrate": float(info.get("winrate") or 0),
                     }
                     for info in global_leaderboard
                 ]
@@ -686,6 +748,8 @@ class GameRoom:
                     {
                         "name": str(info.get("name") or "未知玩家"),
                         "wins": int(info.get("wins") or 0),
+                        "games": int(info.get("games") or 0),
+                        "winrate": 0.0,
                     }
                     for _token, info in sorted(
                         self.player_win_counts.items(),
@@ -732,6 +796,8 @@ class GameRoom:
             "created_at": self.created_at,
             "last_activity_at": self.last_activity_at,
             "difficulty": self.difficulty,
+            # 只有棋类房间能中途改棋力（其余玩法的 difficulty 是内容等级/风格，不是棋力）
+            "difficulty_adjustable": self.game_type in DIFFICULTY_GAME_TYPES,
             "scores": {
                 game_type: {
                     "human": score.human_wins,
@@ -785,6 +851,9 @@ class GameRoom:
                         multiplayer.seat_for_token(item.token).qq
                         if multiplayer.enabled
                         and multiplayer.seat_for_token(item.token) is not None
+                        and multiplayer.seat_for_token(item.token).qq
+                        else item.qq
+                        if item.identity_confirmed
                         else self.player_qq
                         if item.token == self.player_token
                         else ""

@@ -10,6 +10,7 @@
   const gameOptions = [
     ["gomoku", "五子棋"],
     ["xiangqi", "中国象棋"],
+    ["weiqi", "围棋"],
     ["tictactoe", "井字棋"],
     ["othello", "黑白棋"],
     ["turtle_soup", "海龟汤"],
@@ -38,6 +39,33 @@
     toast.textContent = message;
     toast.hidden = false;
     toastTimer = window.setTimeout(() => { toast.hidden = true; }, 2600);
+  }
+
+  // 复制到剪贴板：插件页面常被嵌在 iframe 里，clipboard API 可能被拒，保留 textarea 兜底
+  async function copyText(text) {
+    const value = String(text || "");
+    if (!value) return false;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return true;
+      }
+    } catch (_) { /* 掉到下面的兜底方案 */ }
+    try {
+      const area = document.createElement("textarea");
+      area.value = value;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.top = "-1000px";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      return ok;
+    } catch (_) {
+      return false;
+    }
   }
 
   function resolveConfirmation(accepted) {
@@ -130,6 +158,59 @@
     return button;
   }
 
+  // 右上角「开新房间」玩法下拉：跟着 enabled_games 更新禁用态，全部关闭时按钮置灰
+  function renderNewRoomPicker() {
+    const select = document.getElementById("newRoomGame");
+    const button = document.getElementById("createRoomAction");
+    if (!select || !button) return;
+    if (!select.dataset.ready) {
+      gameOptions.forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.dataset.label = label;
+        option.textContent = label;
+        select.appendChild(option);
+      });
+      select.dataset.ready = "1";
+    }
+    Array.from(select.options).forEach((option) => {
+      const off = enabledGames[option.value] === false;
+      option.disabled = off;
+      option.textContent = off ? `${option.dataset.label}（已关闭）` : option.dataset.label;
+    });
+    const current = select.selectedOptions[0];
+    if (!current || current.disabled) {
+      const usable = Array.from(select.options).find((option) => !option.disabled);
+      if (usable) select.value = usable.value;
+    }
+    const anyEnabled = Array.from(select.options).some((option) => !option.disabled);
+    button.disabled = !anyEnabled;
+    button.title = anyEnabled ? "在管理台直接开一个链接房间" : "所有玩法都已在配置中关闭";
+  }
+
+  async function createRoomFromConsole() {
+    const select = document.getElementById("newRoomGame");
+    const button = document.getElementById("createRoomAction");
+    if (!select || !button) return;
+    button.disabled = true;
+    try {
+      const data = await endpoint("POST", "room/create", { game_type: select.value });
+      const url = String(data?.url || "");
+      if (url) {
+        const copied = await copyText(url);
+        showToast(copied ? "房间已创建，访问网址已复制" : `房间已创建：${url}`);
+      } else {
+        showToast("房间已创建，但外部访问地址还没就绪，请先启动临时访问或配置固定地址");
+      }
+      await loadRooms();
+    } catch (error) {
+      showToast(error?.message || "开房失败");
+    } finally {
+      button.disabled = false;
+      renderNewRoomPicker();
+    }
+  }
+
   function renderRooms() {
     body.replaceChildren();
     emptyState.hidden = rooms.length > 0;
@@ -182,8 +263,18 @@
       game.appendChild(gameSelect);
 
       const origin = document.createElement("td");
-      origin.append(createText("strong", room.source === "group" ? `群聊 ${room.group_id || ""}` : "私聊"));
-      origin.append(createText("small", `${room.creator_name || "创建者"} · ${room.creator_qq || "未知 QQ"}`));
+      // 管理台手动开的房间没有 QQ 会话，别显示成「私聊 · 未知 QQ」
+      const consoleRoom = String(room.session_id || "").startsWith("admin:");
+      origin.append(createText(
+        "strong",
+        consoleRoom ? "管理台开房" : (room.source === "group" ? `群聊 ${room.group_id || ""}` : "私聊"),
+      ));
+      origin.append(createText(
+        "small",
+        consoleRoom
+          ? "链接房间 · 访客由管理台安排入座"
+          : `${room.creator_name || "创建者"} · ${room.creator_qq || "未知 QQ"}`,
+      ));
 
       const members = document.createElement("td");
       const visitorList = document.createElement("div");
@@ -296,15 +387,63 @@
         state.append(createText("small", `${phaseLabel} · ${roundText}`));
       } else {
         state.append(createText("small", `棋力：${{ easy: "简单", normal: "普通", hard: "困难" }[room.difficulty] || "普通"}`));
+        // 只有棋类房间有棋力档位：直接在下拉里切换，下一手 Bot 立即按新棋力走子
+        if (room.difficulty_adjustable) {
+          const difficultySelect = document.createElement("select");
+          difficultySelect.className = "difficulty-select";
+          difficultySelect.title = "切换棋力";
+          difficultySelect.setAttribute("aria-label", "切换棋力");
+          [["easy", "简单"], ["normal", "普通"], ["hard", "困难"]].forEach(([value, label]) => {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            option.selected = (room.difficulty || "normal") === value;
+            difficultySelect.appendChild(option);
+          });
+          difficultySelect.addEventListener("change", async () => {
+            const target = difficultySelect.value;
+            difficultySelect.disabled = true;
+            try {
+              await endpoint("POST", "room/action", {
+                room_id: room.room_id,
+                action: "set_difficulty",
+                difficulty: target,
+              });
+              showToast("棋力已切换");
+              await loadRooms();
+            } catch (error) {
+              difficultySelect.value = room.difficulty || "normal";
+              difficultySelect.disabled = false;
+              showToast(error?.message || "切换棋力失败");
+            }
+          });
+          state.appendChild(difficultySelect);
+        }
       }
 
       const actions = document.createElement("td");
       const actionList = document.createElement("div");
       actionList.className = "row-actions";
+      if (room.url) {
+        // 每行都能直接复制本房访问网址，省得回去翻聊天记录
+        const copyLink = document.createElement("button");
+        copyLink.type = "button";
+        copyLink.className = "row-button";
+        copyLink.title = "复制访问网址";
+        copyLink.setAttribute("aria-label", "复制访问网址");
+        copyLink.innerHTML = '<i data-lucide="link"></i>';
+        copyLink.addEventListener("click", async () => {
+          const copied = await copyText(room.url);
+          showToast(copied ? "访问网址已复制" : room.url);
+        });
+        actionList.appendChild(copyLink);
+      }
       const assign = document.createElement("button");
       assign.type = "button";
       assign.className = "row-button";
-      assign.title = "安排玩家";
+      const hasAssignable = (room.visitors || []).some((visitor) => !visitor.is_player);
+      assign.disabled = !hasAssignable;
+      assign.title = hasAssignable ? "安排玩家" : "房间里还没有可安排的访客";
       assign.setAttribute("aria-label", "安排玩家");
       assign.innerHTML = '<i data-lucide="user-check"></i>';
       assign.addEventListener("click", () => openAssign(room));
@@ -321,7 +460,11 @@
 
   function renderMetrics(data) {
     const groupRooms = rooms.filter((room) => room.source === "group");
-    const privateRooms = rooms.filter((room) => room.source === "private");
+    // 管理台手动开的房间也归在 private 里，但不受私聊配额约束，单独计数免得看起来「超额」
+    const consoleRooms = rooms.filter((room) => String(room.session_id || "").startsWith("admin:"));
+    const privateRooms = rooms.filter(
+      (room) => room.source === "private" && !consoleRooms.includes(room),
+    );
     const online = rooms.reduce(
       (count, room) => count + (room.visitors || []).filter((visitor) => visitor.online).length,
       0,
@@ -331,7 +474,9 @@
     document.getElementById("privateCount").textContent = privateRooms.length;
     document.getElementById("visitorCount").textContent = online;
     document.getElementById("groupLimit").textContent = limitLabel(data.limits?.group);
-    document.getElementById("privateLimit").textContent = limitLabel(data.limits?.private);
+    document.getElementById("privateLimit").textContent = consoleRooms.length
+      ? `${limitLabel(data.limits?.private)} · 另有 ${consoleRooms.length} 个管理台房间`
+      : limitLabel(data.limits?.private);
   }
 
   function renderService(data) {
@@ -411,6 +556,7 @@
       const data = await endpoint("GET", "rooms");
       rooms = Array.isArray(data.rooms) ? data.rooms : [];
       enabledGames = data.enabled_games || {};
+      renderNewRoomPicker();
       renderMetrics(data);
       renderService(data);
       renderEngine(data);
@@ -427,22 +573,38 @@
 
   function openAssign(room) {
     const select = document.getElementById("assignVisitor");
+    const visitors = (room.visitors || []).slice().sort((a, b) => a.number - b.number);
+    // 没人在网页里就没什么可安排：直接提示，别弹一个空弹窗把人困住
+    if (!visitors.length) {
+      showToast("房间里还没有访客，先让对方打开房间链接");
+      return;
+    }
     select.replaceChildren();
-    (room.visitors || []).forEach((visitor) => {
+    visitors.forEach((visitor) => {
       const option = document.createElement("option");
       option.value = visitor.number;
-      option.textContent = `${visitor.display_name ? `${visitor.display_name}（${visitor.number}号）` : `${visitor.number}号`}${visitor.online ? " · 在线" : " · 离线"}`;
+      const name = (visitor.display_name || "").trim();
+      const state = [
+        visitor.online ? "在线" : "离线",
+        visitor.identity_confirmed ? "已绑定" : "未绑定",
+        visitor.is_player ? "在玩家席" : "",
+      ].filter(Boolean).join(" · ");
+      option.textContent = `${visitor.number} 号${name ? ` · ${name}` : " · 匿名"} · ${state}`;
+      option.disabled = Boolean(visitor.is_player);
       select.appendChild(option);
     });
+    const firstSelectable = visitors.find((visitor) => !visitor.is_player);
+    if (firstSelectable) select.value = firstSelectable.number;
     const syncQq = () => {
-      const selected = (room.visitors || []).find((visitor) => String(visitor.number) === select.value);
-      document.getElementById("assignQq").value = selected?.player_qq || "";
+      const selected = visitors.find((visitor) => String(visitor.number) === select.value);
+      document.getElementById("assignQq").value = selected?.player_qq || selected?.qq || "";
     };
     select.onchange = syncQq;
     document.getElementById("assignRoomId").value = room.room_id;
     document.getElementById("assignRoomLabel").textContent = `房间 ${room.room_id}`;
     syncQq();
-    document.getElementById("confirmAssign").disabled = !(room.visitors || []).length;
+    // 全都在玩家席时也没必要再安排，但至少能打开弹窗看状态并正常关闭
+    document.getElementById("confirmAssign").disabled = !firstSelectable;
     assignDialog.showModal();
     icons();
   }
@@ -1078,7 +1240,14 @@
     const rows = [];
     Object.entries(statsLeaderboard).forEach(([gtype, list]) => {
       (list || []).forEach((row, idx) => {
-        rows.push({ game_type: gtype, name: row.name, wins: Number(row.wins) || 0, rank: idx + 1 });
+        rows.push({
+          game_type: gtype,
+          name: row.name,
+          wins: Number(row.wins) || 0,
+          games: Number(row.games) || 0,
+          winrate: Number(row.winrate) || 0,
+          rank: idx + 1,
+        });
       });
     });
     document.getElementById("leaderboardEmpty").hidden = rows.length > 0;
@@ -1091,7 +1260,10 @@
       rankTd.className = "rank-cell";
       const nameTd = createText("td", row.name);
       const gameTd = createText("td", gameLabel(row.game_type));
-      const winsTd = createText("td", `${row.wins} 胜`);
+      const winsTd = createText(
+        "td",
+        row.games ? `${row.wins} 胜 · ${row.winrate.toFixed(0)}%` : `${row.wins} 胜`,
+      );
       winsTd.className = "wins-cell";
       const actTd = document.createElement("td");
       actTd.className = "actions-column";
@@ -1259,6 +1431,7 @@
   // ===== 战绩管理 END =====
 
   document.getElementById("refreshAction").addEventListener("click", loadRooms);
+  document.getElementById("createRoomAction").addEventListener("click", createRoomFromConsole);
   document.getElementById("tunnelAction").addEventListener("click", toggleTunnel);
   document.getElementById("engineAction").addEventListener("click", installEngine);
   document.getElementById("cloudflaredAction").addEventListener("click", installCloudflared);
@@ -1311,5 +1484,6 @@
     }
   });
   icons();
+  renderNewRoomPicker();
   loadRooms();
 })();

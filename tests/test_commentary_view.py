@@ -1,7 +1,7 @@
-"""花火解说的视角与模型选择。
+"""花火解说的视角与输出清洗。
 
 两位真人同房时花火只是旁观解说，不能把自己算成对局一方；
-解说还可以通过 commentary.provider_id / commentary.model 单独指定模型。
+解说使用 commentary.provider_id 指定的 Provider，且生成后要洗掉「角色名：」这类标签。
 """
 
 from __future__ import annotations
@@ -14,38 +14,22 @@ from astrbot_plugin_game_companion_huahuo.main import (
     GameCompanionPlugin,
     _commentary_duel_room,
     _commentary_sides_text,
+    _strip_role_prefix,
 )
 from astrbot_plugin_game_companion_huahuo.models import PlayerSeat
 from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 
 
-class _Response:
-    completion_text = "测试解说"
-
-
 class _Provider:
-    """记录调用参数的假 Provider；显式声明 model 参数以验证透传。"""
+    """记录调用参数的假 Provider。"""
 
-    def __init__(self, *, supports_model: bool = True) -> None:
+    def __init__(self, *, reply: str = "测试解说") -> None:
         self.calls: list[dict[str, object]] = []
-        self.supports_model = supports_model
-
-    async def text_chat(self, prompt, system_prompt=None, model=None):  # noqa: ANN001
-        self.calls.append(
-            {"prompt": prompt, "system_prompt": system_prompt, "model": model}
-        )
-        return _Response()
-
-
-class _LegacyProvider:
-    """老版本 Provider：text_chat 不接受 model 参数。"""
-
-    def __init__(self) -> None:
-        self.calls: list[dict[str, object]] = []
+        self.reply = reply
 
     async def text_chat(self, prompt, system_prompt=None):  # noqa: ANN001
         self.calls.append({"prompt": prompt, "system_prompt": system_prompt})
-        return _Response()
+        return types.SimpleNamespace(completion_text=self.reply)
 
 
 class _Context:
@@ -97,11 +81,10 @@ async def solo_room():
     return manager, room
 
 
-def plugin_for(manager: RoomManager, *, provider_id: str = "", model: str = ""):
+def plugin_for(manager: RoomManager, *, provider_id: str = ""):
     plugin = object.__new__(GameCompanionPlugin)
     plugin.manager = manager
     plugin.commentary_provider_id = provider_id
-    plugin.commentary_model = model
     return plugin
 
 
@@ -212,20 +195,25 @@ async def test_missing_provider_falls_back_to_session_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_commentary_model_is_passed_only_when_supported() -> None:
+async def test_commentary_reply_drops_role_name_prefix() -> None:
+    """模型偶尔会把 system 里的「角色名：花火」当成台词复述，生成后必须洗掉。"""
     manager, room = await two_human_room()
-    supported = _Provider()
-    plugin = plugin_for(manager, provider_id="cheap", model="fast-mini")
-    plugin.context = _Context(_Provider(), {"cheap": supported})
+    provider = _Provider(reply="【角色名：火花】这手棋下得很稳。")
+    plugin = plugin_for(manager, provider_id="cheap")
+    plugin.context = _Context(_Provider(), {"cheap": provider})
     stub_persona(plugin)
 
-    await plugin._generate_persona_text(room, "说点什么")
-    assert supported.calls[0]["model"] == "fast-mini"
+    text = await plugin._generate_persona_text(room, "说点什么")
+    assert text == "这手棋下得很稳。"
+    # 只认 commentary.provider_id，不再有单独的模型名配置
+    assert "model" not in provider.calls[0]
 
-    legacy = _LegacyProvider()
-    plugin.context = _Context(_Provider(), {"cheap": legacy})
-    await plugin._generate_persona_text(room, "说点什么")
-    assert "model" not in legacy.calls[0]
+
+def test_role_prefix_helper_only_touches_leading_labels() -> None:
+    assert _strip_role_prefix("角色名：火花\n开局了") == "开局了"
+    assert _strip_role_prefix("**角色名：花火**：这步有点意思") == "这步有点意思"
+    assert _strip_role_prefix("【姓名：花火】你好呀") == "你好呀"
+    assert _strip_role_prefix("这步棋不错") == "这步棋不错"
 
 
 def test_xiangqi_duel_result_names_the_seat() -> None:

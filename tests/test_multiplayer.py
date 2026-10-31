@@ -284,7 +284,7 @@ async def test_switching_to_single_player_game_keeps_only_primary_seat() -> None
     await manager.claim_and_start(room, first.token, "")
     await manager.claim_and_start(room, second.token, "")
 
-    await manager.switch_game(room, "gomoku", force=True)
+    await manager.switch_game(room, "tictactoe", force=True)
 
     assert not room.multiplayer.enabled
     assert room.player_token == first.token

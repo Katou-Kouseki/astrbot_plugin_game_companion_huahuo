@@ -184,16 +184,11 @@
     "type": "object",
     "items": {
       "provider_id": {
-        "description": "解说模型 Provider ID",
+        "description": "解说模型 Provider",
         "type": "string",
         "default": "",
-        "hint": "留空跟随当前会话的聊天模型；填 AstrBot 里已配置的 Provider ID，可让所有房间的解说单独使用该模型。"
-      },
-      "model": {
-        "description": "解说模型名",
-        "type": "string",
-        "default": "",
-        "hint": "可选：在同一 Provider 下指定具体模型名；留空使用该 Provider 的默认模型。"
+        "_special": "select_provider",
+        "hint": "下拉选择 AstrBot 里已配置的聊天模型 Provider；留空跟随当前会话的聊天模型。"
       }
     }
   },
@@ -280,6 +275,40 @@
       }
     }
   },
+  "weiqi": {
+    "description": "围棋",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用围棋",
+        "type": "bool",
+        "default": true
+      },
+      "board_size": {
+        "description": "棋盘路数",
+        "type": "string",
+        "default": "13",
+        "options": [
+          "9",
+          "13",
+          "19"
+        ],
+        "hint": "可选 9 / 13 / 19 路，只对新开的一局生效。"
+      },
+      "komi": {
+        "description": "黑贴目",
+        "type": "string",
+        "default": "7.5",
+        "options": [
+          "0.5",
+          "5.5",
+          "6.5",
+          "7.5"
+        ],
+        "hint": "中国规则数子法，贴目越高对白方越有利。"
+      }
+    }
+  },
   "tictactoe": {
     "description": "井字棋",
     "type": "object",
@@ -322,8 +351,16 @@
         "description": "题目内容等级",
         "type": "string",
         "default": "normal",
-        "options": ["all_ages", "normal", "unrestricted"],
-        "labels": ["全年龄", "普通", "不限制"],
+        "options": [
+          "all_ages",
+          "normal",
+          "unrestricted"
+        ],
+        "labels": [
+          "全年龄",
+          "普通",
+          "不限制"
+        ],
         "hint": "all_ages 为全年龄，normal 为普通悬疑，unrestricted 允许更沉重题材但仍遵守安全限制。"
       },
       "max_players": {
@@ -534,8 +571,16 @@
         "description": "群通报发送方式",
         "type": "string",
         "default": "text",
-        "options": ["text", "image", "both"],
-        "labels": ["仅文字", "仅图片", "文字+图片"],
+        "options": [
+          "text",
+          "image",
+          "both"
+        ],
+        "labels": [
+          "仅文字",
+          "仅图片",
+          "文字+图片"
+        ],
         "hint": "图片为前端生成的本局战报海报；「仅图片」模式可选附带复盘时，图片前会带一行标题、不发详情；需开启群通报后才生效。"
       },
       "group_announce_recap": {
@@ -554,8 +599,14 @@
         "description": "推送频率",
         "type": "string",
         "default": "daily",
-        "options": ["daily", "weekly"],
-        "labels": ["每日", "每周"],
+        "options": [
+          "daily",
+          "weekly"
+        ],
+        "labels": [
+          "每日",
+          "每周"
+        ],
         "hint": "weekly 时每天由 report_weekday 指定星期几推送一次。"
       },
       "report_time": {

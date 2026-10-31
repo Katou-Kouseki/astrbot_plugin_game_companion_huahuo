@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.19"
+    assert metadata["version"] == "0.5.21"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -224,10 +224,11 @@ def test_board_games_support_two_human_seats_and_ai_opponent() -> None:
 
     # 后端：两种棋类进入上座集合，并有独立的「两人对弈」集合与执色分配
     assert (
-        '{"turtle_soup", "blackjack", "undercover", "gomoku", "othello", "xiangqi"}'
+        '"turtle_soup",\n        "blackjack",\n        "undercover",\n        "gomoku",'
+        '\n        "othello",\n        "xiangqi",\n        "weiqi",'
         in manager
     )
-    assert 'frozenset({"gomoku", "othello", "xiangqi"})' in manager
+    assert 'frozenset(\n    {"gomoku", "othello", "xiangqi", "weiqi"}\n)' in manager
     assert "def _assign_duel_sides(" in manager
     assert "def _seat_color(" in manager
     assert "async def add_ai_seat(" in manager
@@ -265,8 +266,12 @@ def test_xiangqi_supports_two_human_seats() -> None:
 
     # 后端：象棋进入上座集合与两人对弈集合，固定 2 席
     assert '"xiangqi": 2,' in manager
-    assert '{"turtle_soup", "blackjack", "undercover", "gomoku", "othello", "xiangqi"}' in manager
-    assert 'frozenset({"gomoku", "othello", "xiangqi"})' in manager
+    assert '"weiqi": 2,' in manager
+    assert (
+        '"turtle_soup", "blackjack", "undercover", "gomoku", "othello", "xiangqi", "weiqi",'
+        in " ".join(manager.split())
+    )
+    assert '{"gomoku", "othello", "xiangqi", "weiqi"}' in manager
     # 执色按玩法区分：象棋红/黑，棋类黑/白
     assert '("red", "black") if room.game_type == "xiangqi" else ("black", "white")' in manager
     assert "def _seat_side(" in manager
@@ -280,7 +285,7 @@ def test_xiangqi_supports_two_human_seats() -> None:
     assert "viewer_side=my_seat.side if my_seat else None" in models
 
     # 前端：象棋属于两人对弈，轮次与棋盘朝向按座位执方判断
-    assert 'const DUEL_GAMES = ["gomoku", "othello", "xiangqi"];' in script
+    assert 'const DUEL_GAMES = ["gomoku", "othello", "xiangqi", "weiqi"];' in script
     assert "function mySide(target = room)" in script
     assert 'room?.game_type === "xiangqi" && mySide() === "black"' in script
     assert "if (room.game.turn !== mySide()) return;" in script
@@ -508,7 +513,7 @@ def test_browser_reports_departure_with_heartbeat_fallback() -> None:
     assert "FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS = 60" in manager
 
 
-def test_commentary_narrates_duel_as_spectator_and_supports_own_model() -> None:
+def test_commentary_narrates_duel_as_spectator_with_own_provider() -> None:
     main = (ROOT / "main.py").read_text(encoding="utf-8")
     manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
@@ -523,9 +528,234 @@ def test_commentary_narrates_duel_as_spectator_and_supports_own_model() -> None:
     # 走子事件带上座位信息，解说才知道这一步是谁下的
     assert "seat_name=self._seat_display(seat)" in manager
     assert 'seat_name="花火"' in manager
-    # 解说可全局单独指定 Provider / 模型
+    # 解说只配一个 Provider：Provider 自带默认模型，不再单独填模型名
     assert '"commentary.provider_id"' in main
-    assert '"commentary.model"' in main
+    assert '"commentary.model"' not in main
     assert schema["commentary"]["items"]["provider_id"]["default"] == ""
-    assert schema["commentary"]["items"]["model"]["default"] == ""
+    assert "model" not in schema["commentary"]["items"]
     assert "get_provider_by_id" in main
+
+
+def test_weiqi_ships_winrate_panel_and_admin_difficulty_switch() -> None:
+    """围棋：棋盘 + 停一手 + 右侧实时胜率；管理台只给棋类房间开放棋力切换。"""
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    manager_js = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(
+        encoding="utf-8"
+    )
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    weiqi = (ROOT / "weiqi.py").read_text(encoding="utf-8")
+
+    # 规则引擎：提子 / 劫 / 停一手 / 数子 / 胜率
+    assert "class WeiqiGame" in weiqi
+    assert "def territories(" in weiqi
+    assert "def area_score(" in weiqi
+    assert "def evaluate(" in weiqi
+    assert "def pass_turn(" in weiqi
+    assert '"kind": "weiqi"' in weiqi
+
+    # 后端：围棋进入对弈集合，停一手有独立接口
+    assert '"weiqi",' in manager
+    assert "async def player_pass(" in manager
+    assert '"/api/room/{access_token}/weiqi/pass"' in server
+    assert "async def _weiqi_pass(" in server
+
+    # 前端：围棋棋盘绘制、停一手按钮、右侧胜率面板
+    assert "function drawWeiqi()" in script
+    assert "function moveWeiqi(event)" in script
+    assert "function passWeiqi()" in script
+    assert "function renderEvalPanel()" in script
+    assert 'id="evalPanel"' in page
+    assert 'id="weiqiPassAction"' in page
+    assert 'id="evalBlackBar"' in page
+    assert 'weiqi: "围棋"' in script
+
+    # 解说：围棋会带上胜率与目差事实
+    assert "_weiqi_commentary_prompt" in main
+    assert "当前评估黑方胜率" in main
+
+    # 管理台：只有棋类房间出现棋力下拉
+    assert "DIFFICULTY_GAME_TYPES" in models
+    assert '"difficulty_adjustable": self.game_type in DIFFICULTY_GAME_TYPES' in models
+    assert "async def set_difficulty(" in manager
+    assert 'action: "set_difficulty"' in manager_js
+    assert 'className = "difficulty-select"' in manager_js
+    assert 'room.difficulty_adjustable' in manager_js
+
+
+def test_othello_reuses_the_same_winrate_panel_as_weiqi() -> None:
+    """黑白棋复用围棋那块胜率面板：子数差换算，别再写第二套 DOM。"""
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    othello = (ROOT / "othello.py").read_text(encoding="utf-8")
+
+    # 引擎：黑白棋自己算胜率，并随快照下发
+    assert "def evaluate(" in othello
+    assert '"eval": self.evaluate(),' in othello
+    assert '"empty": empty,' in othello
+
+    # 前端：一块面板两个棋类，其余玩法保持隐藏
+    assert 'id="evalPanel"' in page
+    assert 'id="weiqiEval"' not in page
+    assert "const isOthello = room?.game_type === \"othello\";" in script
+    assert "const supported = isWeiqi || isOthello;" in script
+    assert "子数差估算" in script
+    assert "中国规则数子" in script
+
+
+def test_console_create_room_and_ui_polish_contracts() -> None:
+    """管理台手动开房 + 解说 provider 下拉 + 停一手按钮 + 引擎图标居中。"""
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    style = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+    manager_js = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(
+        encoding="utf-8"
+    )
+    manager_page = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    manager_css = (ROOT / "pages" / "游戏管理台" / "manager.css").read_text(
+        encoding="utf-8"
+    )
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    # 解说模型：和新版插件一样用 select_provider 下拉，而不是手填 Provider ID
+    commentary = schema["commentary"]["items"]
+    assert commentary["provider_id"]["_special"] == "select_provider"
+    assert "select_provider" in json.dumps(schema, ensure_ascii=False)
+
+    # 管理台手动开房：后端有独立接口，且不受私聊并行上限约束
+    assert '"/room/create"' not in main  # 走 PAGE_API_PREFIX，不能写死绝对路径
+    assert 'f"{PAGE_API_PREFIX}/room/create"' in main
+    assert "async def page_create_room(" in main
+    assert "ADMIN_CONSOLE_SESSION" in main
+    assert "bypass_limit: bool = False" in manager
+    assert "not bypass_limit" in manager
+    assert '"url": self._room_url_safe(room)' in main
+
+    # 管理台 UI：玩法下拉 + 开新房间按钮 + 每行复制链接
+    assert 'id="newRoomGame"' in manager_page
+    assert 'id="createRoomAction"' in manager_page
+    assert "async function createRoomFromConsole()" in manager_js
+    assert 'endpoint("POST", "room/create"' in manager_js
+    assert "async function copyText(text)" in manager_js
+    assert "navigator.clipboard" in manager_js
+    assert "复制访问网址" in manager_js
+
+    # 停一手：挪进右侧操作面板，轮到自己时点亮
+    assert 'class="pass-action"' in page
+    assert page.index('id="weiqiActions"') > page.index('class="game-panel"')
+    assert page.index('id="weiqiActions"') > page.index('class="board-stage"')
+    assert ".board-actions.side-actions" in style
+    assert ".pass-action.is-ready" in style
+    assert 'passButton.classList.toggle("is-ready", myTurn)' in script
+
+    # 引擎图标居中：定位规则不能再被「文字块 span」规则命中
+    assert ".engine-identity > div > span" in manager_css
+    assert ".engine-identity span {" not in manager_css
+    assert "line-height: 0" in manager_css
+
+
+def test_eval_panel_collapses_and_duel_seats_show_both_players() -> None:
+    """胜率条默认收起（玩家）+ 数字取整，棋盘上方显示黑白双方头像。"""
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    style = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    # C 方案：可折叠，玩家默认收起、观众默认展开，展开 20 秒后自动收回
+    assert 'id="evalToggle"' in page
+    assert 'id="evalBody"' in page
+    assert 'class="eval-panel is-collapsed"' in page
+    assert "function setEvalCollapsed(" in script
+    assert "evalCollapsed = Boolean(room?.is_player)" in script
+    assert "}, 20000);" in script
+    assert ".eval-panel.is-collapsed .eval-body { display: none; }" in style
+
+    # A 方案：百分比取整、条形图按整数走、动画放慢、只在明显领先时变色
+    assert "const blackPct = Math.round(black);" in script
+    assert "const whitePct = Math.round(white);" in script
+    assert "transition: width .8s" in style
+    assert "is-black-ahead" in style and "is-black-ahead" in script
+
+    # 对局双方：棋盘上方的黑白（象棋红黑）座位卡，带头像与昵称
+    assert 'id="duelSeats"' in page
+    assert 'id="duelSeatAName"' in page and 'id="duelSeatBName"' in page
+    assert "function renderDuelSeats()" in script
+    assert "function duelSeatSideOrder()" in script
+    assert "ucSeatAvatarNode(seat.number" in script
+    assert page.index('id="duelSeats"') < page.index('id="weiqiActions"')
+    assert ".duel-seat.is-active" in style
+
+
+def test_opening_commentary_does_not_wait_on_memory_and_shows_typing() -> None:
+    """开局解说：跳过记忆检索、人格并发、网页显示「正在看棋盘」并把轮询提速。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    # 记忆检索与人格读取并发，别串行叠加在模型调用前面
+    assert "async def _generate_persona_text(" in main
+    assert "with_memory: bool = True" in main
+    assert "persona, memory = await asyncio.gather(" in main
+    # 开场白只讲棋局事实，跳过记忆检索
+    assert "with_memory=False," in main
+    # 生成期间挂「正在输入」标记
+    assert "room.bot_typing_pending += 1" in main
+    assert "room.bot_typing_pending = max(0, room.bot_typing_pending - 1)" in main
+    assert "bot_typing_pending: int = 0" in models
+    assert '"bot_typing": self.bot_typing_pending > 0,' in models
+    # 前端占位 + 快轮询 + 长句打字机加速
+    assert "花火正在看着棋盘" in script
+    assert ") || Boolean(room?.bot_typing);" in script
+    assert "function typingPace(length)" in script
+
+
+def test_weiqi_board_size_capture_fx_and_in_play_join_guard() -> None:
+    """围棋盘路自选 + 提子残影 + 局中不给「加入对局」入口。"""
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    style = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    weiqi = (ROOT / "weiqi.py").read_text(encoding="utf-8")
+
+    # 后端：房间级盘路 + 首位落座玩家的调整接口
+    assert "weiqi_size: int = 13" in models
+    assert '"adjustable": bool(' in models
+    assert "async def set_weiqi_board(" in manager
+    assert "def _is_first_seated_human(" in manager
+    assert "只有最先入座的玩家可以调整盘路" in manager
+    assert '"/api/room/{access_token}/weiqi/board"' in server
+    assert "async def _weiqi_board(" in server
+
+    # 引擎：提子坐标随快照下发
+    assert "last_captured_points" in weiqi
+    assert '"last_captured_points": [list(point) for point in self.last_captured_points]' in weiqi
+
+    # 前端：盘路选择器 + 空棋盘按房间设置重绘
+    assert 'id="weiqiBoardPanel"' in page
+    assert 'data-weiqi-size="19"' in page
+    assert "function renderWeiqiBoard()" in script
+    assert "async function changeWeiqiBoard(size)" in script
+    assert 'request("POST", "weiqi/board"' in script
+    assert "Number(room?.game?.size || room?.weiqi?.size || 13)" in script
+    assert ".weiqi-board-choices button.is-active" in style
+
+    # 前端：提子残影 + 「提 N 子」气泡
+    assert "function syncCaptureFx()" in script
+    assert "function drawCaptureFx(margin, gap)" in script
+    assert "captureFx.points" in script
+    assert "drawCaptureFx(margin, gap);" in script
+    assert 'id="captureBlack"' in page and 'id="captureWhite"' in page
+    assert ".capture-stone.black" in style
+
+    # 局中按钮：观战者看到的是禁用的「本局进行中」，玩家侧入口直接隐藏
+    assert 'const inPlay = room.status === "active" || room.status === "paused";' in script
+    assert 'action.innerHTML = \'<i data-lucide="eye"></i><span>本局进行中</span>\';' in script
+    assert "等这局结束后再加入玩家席" in script

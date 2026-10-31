@@ -46,11 +46,32 @@
     <section class="room-layout">
       <section id="gameWorkspace" class="game-workspace">
         <section class="game-layout">
-      <div class="board-stage">
-        <canvas id="board" width="760" height="760" aria-label="棋盘"></canvas>
-        <div id="boardOverlay" class="board-overlay" hidden>
-          <strong id="overlayTitle"></strong>
-          <span id="overlayText"></span>
+      <div class="board-column">
+        <!-- 对局双方：把「谁执黑、谁执白」直接摆到棋盘上方，带头像与昵称 -->
+        <div id="duelSeats" class="duel-seats" hidden aria-label="对局双方">
+          <div id="duelSeatA" class="duel-seat">
+            <span id="duelSeatAAvatar" class="duel-avatar">?</span>
+            <span class="duel-text">
+              <em id="duelSeatATag" class="duel-tag">黑</em>
+              <strong id="duelSeatAName">空位</strong>
+            </span>
+          </div>
+          <span class="duel-vs" aria-hidden="true">VS</span>
+          <div id="duelSeatB" class="duel-seat">
+            <span id="duelSeatBAvatar" class="duel-avatar">?</span>
+            <span class="duel-text">
+              <em id="duelSeatBTag" class="duel-tag">白</em>
+              <strong id="duelSeatBName">空位</strong>
+            </span>
+          </div>
+        </div>
+
+        <div class="board-stage">
+          <canvas id="board" width="760" height="760" aria-label="棋盘"></canvas>
+          <div id="boardOverlay" class="board-overlay" hidden>
+            <strong id="overlayTitle"></strong>
+            <span id="overlayText"></span>
+          </div>
         </div>
       </div>
 
@@ -374,6 +395,53 @@
             <strong id="turnLabel">等待开局</strong>
           </div>
           <span class="difficulty" id="difficulty">普通</span>
+        </section>
+
+        <!-- 围棋专用：停一手 + 盘路。放在操作面板里，和胜率、席位排在一起 -->
+        <footer id="weiqiActions" class="board-actions side-actions" hidden>
+          <button id="weiqiPassAction" class="pass-action" type="button" title="本手不下，选择停一手">
+            <i data-lucide="hand"></i><span>停一手</span>
+          </button>
+          <span id="weiqiSummary" class="board-summary">双方连续停手后按数子法结算</span>
+        </footer>
+
+        <section id="weiqiBoardPanel" class="weiqi-panel" hidden aria-label="围棋棋盘设置">
+          <div class="weiqi-panel-head">
+            <span class="label">棋盘路数</span>
+            <strong id="weiqiBoardText">13 路 · 黑贴 7.5 目</strong>
+          </div>
+          <div id="weiqiBoardChoices" class="weiqi-board-choices" role="group" aria-label="选择棋盘路数">
+            <button type="button" data-weiqi-size="9">9 路</button>
+            <button type="button" data-weiqi-size="13">13 路</button>
+            <button type="button" data-weiqi-size="19">19 路</button>
+          </div>
+          <!-- 提子数：两颗棋子图标 + 数字，比一行「黑提 3 / 白提 1」更容易扫到 -->
+          <div id="weiqiCaptures" class="weiqi-captures" aria-label="提子数">
+            <span class="capture-chip"><i class="capture-stone black" aria-hidden="true"></i>黑提 <strong id="captureBlack">0</strong></span>
+            <span class="capture-chip"><i class="capture-stone white" aria-hidden="true"></i>白提 <strong id="captureWhite">0</strong></span>
+          </div>
+          <p id="weiqiBoardHint" class="weiqi-hint">只有最先入座的玩家能在开局前调整。</p>
+        </section>
+
+        <!-- 实时胜率：围棋与黑白棋共用，其余玩法隐藏；数值只是形势估算
+             默认收起成一行「实时胜率 XX%」，玩家点开才展开条形图，避免一直动分散注意力 -->
+        <section id="evalPanel" class="eval-panel is-collapsed" hidden aria-label="实时胜率">
+          <button id="evalToggle" class="eval-head" type="button" aria-expanded="false" aria-controls="evalBody">
+            <span class="label">实时胜率</span>
+            <strong id="evalLead">形势不明</strong>
+            <i data-lucide="chevron-down" class="eval-chevron" aria-hidden="true"></i>
+          </button>
+          <div id="evalBody" class="eval-body">
+            <div class="eval-bar" role="img" aria-label="黑白双方胜率对比">
+              <div id="evalBlackBar" class="eval-bar-black"></div>
+              <div id="evalWhiteBar" class="eval-bar-white"></div>
+            </div>
+            <div class="eval-legend">
+              <span>黑 <strong id="evalBlack">50%</strong></span>
+              <span>白 <strong id="evalWhite">50%</strong></span>
+            </div>
+            <p id="evalNote" class="eval-note">形势估算，仅供观战参考</p>
+          </div>
         </section>
 
         <!-- 本局身份卡：位于当前回合下方；发放身份时由弹出卡自然飞入该面板 -->

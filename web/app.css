@@ -886,7 +886,8 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 .score-panel strong { display: block; margin-top: 2px; font-size: 20px; color: var(--text-strong); }
 
 .people-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; min-height: 26px; }
-.person-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border-radius: 4px; background: #eef1ef; font-size: 12px; }
+.person-chip { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border-radius: 4px; background: #eef1ef; font-size: 12px; max-width: 100%; }
+.person-name { min-width: 0; overflow-wrap: anywhere; word-break: break-word; line-height: 1.4; }
 .person-chip.player { background: #fbe9d9; color: #8c4616; }
 .person-chip::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #9da59f; }
 .person-chip.online::before { background: #2b8a5b; }
@@ -2691,6 +2692,7 @@ body.dark .uc-speech-box textarea:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex: 1 0 100%; /* 类别标头独占一行，别和上一组的成员挤在同一行 */
   margin: 10px 0 6px;
   padding-bottom: 4px;
   border-bottom: 1px dashed var(--border);
@@ -3182,3 +3184,292 @@ body.dark .uc-speech-box textarea:focus {
   border-color: var(--green);
   color: var(--green);
 }
+
+/* ========= 围棋：棋盘下方操作条 + 右侧实时胜率面板 ========= */
+/* 棋盘 + 操作条放进同一列，避免 grid 自动布局把操作条排到右栏下面 */
+.board-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.board-column .board-stage { width: 100%; }
+
+/* 对局双方：棋盘上方两位玩家的头像 + 执方，轮到谁就走谁的卡片发光 */
+.duel-seats {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 760px;
+}
+.duel-seats[hidden] { display: none; }
+.duel-seat {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 7px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  transition: border-color .18s ease, box-shadow .18s ease, background .18s ease;
+}
+.duel-seat.is-active {
+  border-color: #1f5a41;
+  background: #f2f8f4;
+  box-shadow: 0 0 0 3px rgba(31, 90, 65, .12);
+}
+body.dark .duel-seat.is-active {
+  border-color: #2f7d5b;
+  background: #1d2a24;
+  box-shadow: 0 0 0 3px rgba(47, 125, 91, .2);
+}
+.duel-avatar {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+}
+.duel-avatar.is-empty {
+  border: 1px dashed var(--border-strong);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+.duel-avatar .uc-avatar { width: 30px; height: 30px; font-size: 13px; }
+.duel-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.duel-text { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.duel-tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #ece7db;
+  color: #4a4133;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+.duel-seat[data-side="black"] .duel-tag { background: #23282a; color: #f4f6f4; }
+.duel-seat[data-side="white"] .duel-tag { background: #f2f3ef; color: #2b302c; border: 1px solid #cfd4cd; }
+.duel-seat[data-side="red"] .duel-tag { background: #8f2f24; color: #fdf2ef; }
+body.dark .duel-tag { background: #333c38; color: #dfe5e1; }
+.duel-text strong {
+  overflow: hidden;
+  color: var(--text-strong);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.duel-seat.is-empty .duel-text strong { color: var(--muted); font-weight: 600; }
+.duel-vs { flex: 0 0 auto; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .06em; }
+@media (max-width: 620px) {
+  .duel-seat { padding: 6px 8px; gap: 7px; }
+  .duel-avatar { width: 26px; height: 26px; }
+  .duel-text strong { font-size: 12px; }
+  .duel-vs { display: none; }
+}
+.board-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 760px;
+  margin-top: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.board-actions[hidden] { display: none; }
+/* 右侧操作面板里的同一块操作条：取消棋盘宽度限制，紧跟回合卡片 */
+.board-actions.side-actions {
+  max-width: none;
+  margin-top: 0;
+  padding: 10px 12px;
+  gap: 10px;
+}
+.board-actions.side-actions .pass-action { flex: 1 1 auto; }
+.board-actions.side-actions .board-summary { flex: 1 1 100%; }
+.board-summary { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.board-actions .secondary-action { flex: 0 0 auto; }
+
+/* 围棋盘路：只有最先入座的玩家能点，其余人看到的是只读状态 */
+.weiqi-panel {
+  margin-top: 0;
+  padding: 12px 14px 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.weiqi-panel[hidden] { display: none; }
+.weiqi-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 9px;
+}
+.weiqi-panel-head .label { font-size: 12px; color: var(--muted); }
+.weiqi-panel-head strong { font-size: 13px; color: var(--text-strong); }
+.weiqi-board-choices {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.weiqi-board-choices button {
+  min-height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color .16s ease, background .16s ease, color .16s ease;
+}
+.weiqi-board-choices button:hover:not(:disabled) { border-color: #8aa79a; }
+.weiqi-board-choices button.is-active {
+  border-color: #1f5a41;
+  background: #1f5a41;
+  color: #fff;
+}
+.weiqi-board-choices button:disabled { cursor: not-allowed; opacity: .55; }
+.weiqi-hint { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+body.dark .weiqi-board-choices button.is-active { border-color: #2f7d5b; background: #2f7d5b; }
+
+/* 提子数：棋子图标 + 数字，提过子才点亮 */
+.weiqi-captures {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.capture-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.capture-chip strong { color: var(--text-strong); font-size: 13px; }
+.capture-chip.is-live {
+  border-color: #a9bdae;
+  background: rgba(31, 90, 65, .08);
+  color: var(--text);
+}
+.capture-stone {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.capture-stone.black { background: radial-gradient(circle at 34% 30%, #525852, #0d0f0c); }
+.capture-stone.white { background: radial-gradient(circle at 34% 30%, #ffffff, #d5dad3); border: 1px solid #b9bfb8; }
+body.dark .capture-chip { background: var(--surface); }
+body.dark .capture-chip.is-live { background: rgba(47, 125, 91, .18); border-color: #3f6d58; }
+/* 停一手：默认低调，轮到自己时变成实心主按钮 + 外发光，别让人找不到 */
+.pass-action {
+  flex: 0 0 auto;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 20px;
+  border: 1px solid #c9d0cb;
+  border-radius: 6px;
+  background: var(--surface);
+  color: #39433d;
+  font-weight: 650;
+  font-size: 14px;
+  transition: background .18s ease, border-color .18s ease, color .18s ease, box-shadow .18s ease;
+}
+.pass-action svg { width: 17px; height: 17px; }
+.pass-action:disabled { opacity: .5; }
+.pass-action.is-ready {
+  border-color: #1f5a41;
+  background: #1f5a41;
+  color: #fff;
+  box-shadow: 0 0 0 3px rgba(31, 90, 65, .16);
+}
+.pass-action.is-ready:hover { background: #17452f; border-color: #17452f; }
+body.dark .pass-action { background: var(--surface); border-color: #4a5651; color: #dfe5e1; }
+body.dark .pass-action.is-ready { border-color: #2f7d5b; background: #2f7d5b; color: #fff; box-shadow: 0 0 0 3px rgba(47, 125, 91, .22); }
+
+.eval-panel {
+  margin-top: 0;
+  padding: 12px 14px 13px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.eval-panel[hidden] { display: none; }
+.eval-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.eval-head .label { flex: 0 0 auto; }
+.eval-head strong { margin-left: auto; font-size: 13px; color: var(--text-strong); }
+.eval-chevron { flex: 0 0 auto; width: 15px; height: 15px; color: var(--muted); transition: transform .18s ease; }
+.eval-panel.is-collapsed .eval-head { margin-bottom: 0; }
+.eval-panel.is-collapsed .eval-chevron { transform: rotate(-90deg); }
+.eval-panel.is-collapsed .eval-body { display: none; }
+/* 只在明确领先时才给数字上色，避免在 50% 附近来回跳色 */
+.eval-panel.is-black-ahead .eval-head strong { color: #1f5a41; }
+.eval-panel.is-white-ahead .eval-head strong { color: #8a5c1d; }
+body.dark .eval-panel.is-black-ahead .eval-head strong { color: #7fd0aa; }
+body.dark .eval-panel.is-white-ahead .eval-head strong { color: #e0b878; }
+.eval-bar {
+  display: flex;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--border);
+}
+.eval-bar-black {
+  width: 50%;
+  background: linear-gradient(90deg, #2c3230, #151a17);
+  transition: width .8s cubic-bezier(.4, 0, .2, 1);
+}
+.eval-bar-white {
+  width: 50%;
+  background: linear-gradient(90deg, #f3f5f2, #d7dcd7);
+  border-left: 1px solid var(--border-strong);
+  transition: width .8s cubic-bezier(.4, 0, .2, 1);
+}
+body.dark .eval-bar-white {
+  background: linear-gradient(90deg, #e6e9e5, #bcc2be);
+}
+.eval-legend {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.eval-legend strong { color: var(--text-strong); font-size: 13px; }
+.eval-note { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }

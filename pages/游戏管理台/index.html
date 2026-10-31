@@ -101,7 +101,13 @@
           <h2>全部房间</h2>
           <span id="lastUpdated">尚未读取</span>
         </div>
-        <span id="tunnelUrl" class="tunnel-url"></span>
+        <div class="section-tools">
+          <select id="newRoomGame" class="game-select" title="新房间玩法" aria-label="新房间玩法"></select>
+          <button id="createRoomAction" class="primary-button" type="button">
+            <i data-lucide="plus"></i><span>开新房间</span>
+          </button>
+          <span id="tunnelUrl" class="tunnel-url"></span>
+        </div>
       </header>
       <div class="table-wrap">
         <table class="wide-table">
@@ -237,13 +243,16 @@
       </header>
       <input id="assignRoomId" type="hidden" />
       <label>
-        <span>房间序号</span>
-        <select id="assignVisitor" required></select>
+        <span>选择访客（房间内序号）</span>
+        <select id="assignVisitor"></select>
       </label>
       <label>
         <span>玩家 QQ 号</span>
         <input id="assignQq" type="text" inputmode="numeric" pattern="[0-9]+" autocomplete="off" required />
       </label>
+      <p class="dialog-hint">
+        已绑定身份的访客可以在网页里自己点「加入对局」，这里只用于给还没绑定的匿名访客补身份。
+      </p>
       <footer>
         <button class="secondary-button" value="cancel" type="submit">取消</button>
         <button id="confirmAssign" class="primary-button" value="default" type="button">

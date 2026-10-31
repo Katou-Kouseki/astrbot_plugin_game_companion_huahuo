@@ -144,6 +144,28 @@
               whiteEdge: "#9da39e",
               lastMoveDot: "#b8483c",
             };
+      case "weiqi":
+        return dark
+          ? {
+              board: "#3a352d",
+              line: "#a99a7d",
+              star: "#948f7f",
+              blackStone: "#12140f",
+              whiteStone: "#eef1ec",
+              whiteEdge: "#7d857f",
+              lastMoveDot: "#e6857c",
+              hint: "rgba(190, 205, 195, .34)",
+            }
+          : {
+              board: "#dcc089",
+              line: "#6b5636",
+              star: "#5a472c",
+              blackStone: "#22251f",
+              whiteStone: "#fbfcf8",
+              whiteEdge: "#9aa19b",
+              lastMoveDot: "#b8483c",
+              hint: "rgba(74, 96, 84, .30)",
+            };
       case "xiangqi":
         return dark
           ? {
@@ -183,6 +205,11 @@
   // 每 tick 推进的字符数：1 时平稳，2 时偶尔加速，更有真人感
   const TYPING_BASE_MS = 22;
   const TYPING_JITTER_MS = 18;
+  // 长句按总时长压速：短句保持原来的手速，超过 ~90 字就逐步加速，
+  // 否则一条 200 字的解说要打 5 秒，看着就像「慢半拍」。
+  function typingPace(length) {
+    return Math.max(7, Math.min(TYPING_BASE_MS, 2000 / Math.max(1, length)));
+  }
   // 思考中占位超时阈值：最后一条玩家消息超过 N 秒还没有 bot 回复，就不再显示了
   const THINKING_TIMEOUT_SEC = 90;
 
@@ -215,6 +242,7 @@
   function runTypingTick(contentEl, key, fullText, onProgress) {
     const state = TYPED_PROGRESS.get(key);
     if (!state) return;
+    const pace = state.paceMs || TYPING_BASE_MS;
     if (state.shownChars >= fullText.length) {
       state.timerId = null;
       TYPED_DONE.add(key);
@@ -238,8 +266,8 @@
       return;
     }
     const delay = isPunctuation
-      ? TYPING_BASE_MS + 110 + Math.floor(Math.random() * TYPING_JITTER_MS)
-      : TYPING_BASE_MS + Math.floor(Math.random() * TYPING_JITTER_MS);
+      ? pace + 110 * (pace / TYPING_BASE_MS) + Math.floor(Math.random() * TYPING_JITTER_MS * (pace / TYPING_BASE_MS))
+      : pace + Math.floor(Math.random() * TYPING_JITTER_MS * (pace / TYPING_BASE_MS));
     state.timerId = setTimeout(() => runTypingTick(contentEl, key, fullText, onProgress), delay);
   }
 
@@ -724,6 +752,15 @@
         "可以两人同房各执一方，也能和花火对局（由 Pikafish 引擎走子）。",
       ],
     },
+    weiqi: {
+      name: "围棋",
+      rules: [
+        "黑白双方轮流在交叉点落子，黑方先行；被完全围住的棋子会被提走。",
+        "禁止自杀与全局同形（劫），被提后不能立刻原位反提。",
+        "双方连续「停一手」即终局，按中国规则数子（子 + 空，黑贴目）。",
+        "终局前请把死子吃净——这里不做死活标记，界面右侧胜率只是形势估算。",
+      ],
+    },
     tictactoe: {
       name: "井字棋",
       rules: [
@@ -808,7 +845,12 @@
       name.textContent = sanitizeDisplayText(String(row.name || "未知玩家"));
       const wins = document.createElement("span");
       wins.className = "uc-lb-wins";
-      wins.textContent = `${Number(row.wins) || 0} 胜`;
+      // 棋类玩法带胜率（games 与 winrate 由后端提供）；其余玩法只显示胜场
+      const games = Number(row.games) || 0;
+      const winrate = Number(row.winrate) || 0;
+      wins.textContent = games
+        ? `${Number(row.wins) || 0} 胜 · ${winrate.toFixed(0)}%`
+        : `${Number(row.wins) || 0} 胜`;
       el.appendChild(rank);
       el.appendChild(name);
       el.appendChild(wins);
@@ -1304,11 +1346,12 @@
     try {
       await loadState();
       setConnection("online", "已连接");
+      // 花火正在生成解说时也提速：否则开局第一句话最多要等 1 秒才被轮询捞到
       const fastPolling = (
         room?.game_type === "pig_dice" && room.game?.turn === "bot"
       ) || (
         room?.game_type === "blackjack" && room.game?.phase === "dealer_turn"
-      );
+      ) || Boolean(room?.bot_typing);
       const interval = fastPolling ? 300 : 1000;
       pollTimer = window.setTimeout(poll, interval);
     } catch (error) {
@@ -1405,6 +1448,7 @@
     return {
       gomoku: "五子棋",
       xiangqi: "中国象棋",
+      weiqi: "围棋",
       tictactoe: "井字棋",
       othello: "黑白棋",
       turtle_soup: "海龟汤",
@@ -1418,6 +1462,7 @@
   function syncGameUi() {
     if (!room) return;
     const xiangqi = room.game_type === "xiangqi";
+    const weiqi = room.game_type === "weiqi";
     const tictactoe = room.game_type === "tictactoe";
     const othello = room.game_type === "othello";
     const turtleSoup = room.game_type === "turtle_soup";
@@ -1429,7 +1474,7 @@
     document.getElementById("gameTitle").textContent = sanitizeDisplayText(gameLabel());
     document.getElementById("brandIcon").setAttribute(
       "data-lucide",
-      turtleSoup ? "shell" : (pigDice ? "dice-5" : (blackjack ? "spade" : (undercover ? "spy" : (drawGuess ? "paintbrush" : (xiangqi || othello ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")))))),
+      turtleSoup ? "shell" : (pigDice ? "dice-5" : (blackjack ? "spade" : (undercover ? "spy" : (drawGuess ? "paintbrush" : (xiangqi || othello || weiqi ? "circle-dot" : (tictactoe ? "badge-x" : "grid-3x3")))))),
     );
     boardStage.hidden = turtleSoup || pigDice || blackjack || drawGuess || undercover;
     const turnPanel = document.querySelector("section.turn-panel");
@@ -1443,6 +1488,7 @@
     drawStage.hidden = !drawGuess;
     undercoverStage.hidden = !undercover;
     boardStage.classList.toggle("xiangqi", xiangqi);
+    boardStage.classList.toggle("weiqi", weiqi);
     boardStage.classList.toggle("tictactoe", tictactoe);
     boardStage.classList.toggle("othello", othello);
     board.width = xiangqi ? 720 : 760;
@@ -1455,6 +1501,8 @@
         ? "贪心骰子操作区"
         : blackjack
         ? "二十一点牌桌"
+        : weiqi
+        ? "围棋棋盘"
         : xiangqi
         ? "九乘十中国象棋棋盘"
         : drawGuess
@@ -1467,7 +1515,7 @@
       values = [["human_red", "我执红"], ["human_black", "我执黑"], ["random", "随机"]];
     } else if (tictactoe) {
       values = [["human_x", "我执 X"], ["human_o", "我执 O"], ["random", "随机"]];
-    } else if (othello) {
+    } else if (othello || weiqi) {
       values = [["human_black", "我执黑"], ["bot_black", "我执白"], ["random", "随机"]];
     }
     selectedSide = values[0][0];
@@ -1498,7 +1546,11 @@
     const note = document.getElementById("peekTokenNote");
     if (room.admin_room) {
       challenge.hidden = true;
-      if (statusEl) statusEl.textContent = "管理员将在游戏管理台为你绑定 QQ，绑定成功后自动进入观众席。";
+      if (statusEl) {
+        statusEl.textContent = room.trusted_browser_available
+          ? "若此浏览器已登录 AstrBot，刷新页面会自动识别身份并允许自己入座；否则管理员可在游戏管理台为你绑定 QQ。"
+          : "管理员将在游戏管理台为你绑定 QQ，绑定成功后自动进入观众席。";
+      }
     } else if (!token) {
       challenge.hidden = false;
       note.textContent = "绑定码已过期，刷新页面后重新获取";
@@ -1516,6 +1568,8 @@
 
   function render() {
     if (!room) return;
+    // 提子动画按「手数变化」触发，必须在画棋盘之前同步状态
+    syncCaptureFx();
     // 谁是卧底房间：隐藏通用「玩家/平局/花火」比分（多人语音局不适用），右侧由战绩榜与阶段条接管
     document.body.classList.toggle("room-undercover", room.game_type === "undercover");
     // 右栏「游戏规则 + 全局战绩」面板：按当前游戏类型动态展示对应内容
@@ -1566,11 +1620,12 @@
           ? (seat.is_ai ? "花火" : (seat.display_name || "").trim() || `${seat.number}号`)
           : "空位"
       );
-      const blackSeat = seats.find((seat) => seat.side === "black") || seats[0];
-      const whiteSeat = seats.find((seat) => seat.side === "white") || seats[1];
-      // 象棋换先后红黑会换座位，比分列必须固定跟座位序号走，否则第二局后左右列会错位
-      const firstSeat = room.game_type === "xiangqi" ? seats[0] : blackSeat;
-      const secondSeat = room.game_type === "xiangqi" ? seats[1] : whiteSeat;
+      // 比分列固定跟「座位序号」走：后端 human_wins/bot_wins 按 1 号 / 2 号座位记分
+      // （见 room_manager._finish_game），前端列标题也必须对齐座位序号。
+      // 棋类换先或玩家执白时，若按执色（黑/白）定位列标题会跟记分错位，
+      // 出现「花火赢却记在玩家列」的错觉。
+      const firstSeat = seats[0];
+      const secondSeat = seats[1];
       document.getElementById("humanScoreLabel").textContent = seatLabel(firstSeat);
       document.getElementById("botScoreLabel").textContent = seatLabel(secondSeat);
       document.getElementById("drawScoreLabel").textContent = "平局";
@@ -1586,6 +1641,9 @@
     renderUndercover();
     drawBoard();
     renderTurn();
+    renderEvalPanel();
+    renderWeiqiBoard();
+    renderDuelSeats();
     icons();
   }
 
@@ -1706,26 +1764,40 @@
         identityTokenNote.textContent = `私聊里发送：/绑定玩家 ${token}；或点击上方「一键复制」直接粘贴发送即可。`;
       }
     }
-    if (!room.is_player && room.admin_room) {
+    if (!room.is_player && room.admin_room && !room.player_confirmed) {
+      // 管理台房间：没有身份的人才需要管理员手动安排；已绑定的访客可以自己入座
       action.innerHTML = '<i data-lucide="clock-3"></i><span>等待管理员安排</span>';
       action.disabled = true;
-      note.textContent = "管理员将在游戏管理台绑定玩家序号与 QQ。";
+      note.textContent = "管理员将在游戏管理台为你绑定玩家序号与 QQ；若你的浏览器已登录 AstrBot，刷新页面即可自动识别身份。";
     } else if (!room.is_player) {
-      action.innerHTML = '<i data-lucide="log-in"></i><span>加入对局</span>';
+      // 局中一律不给「加入对局」入口：哪怕席位看着没满（对局里坐着花火时
+      // 快照的座位数也可能对不上），也不能让人点进来把棋局打断。
+      const inPlay = room.status === "active" || room.status === "paused";
       const capacity = Number(room.player_capacity || 1);
-      const full = capacity > 0 && (room.player_numbers || []).length >= capacity;
-      action.disabled = busy || full || identityRequired;
-      note.textContent = full
-        ? (room.game_type === "undercover"
-          ? "玩家席已满，请等待有玩家离席后再加入。"
-          : "玩家席已满，可向席内玩家申请交换。")
-        : identityRequired
-        ? "请先用页面令牌在 QQ 中绑定身份。"
-        : isDuelGame(room)
-        ? `玩家席 ${room.player_numbers?.length || 0} / ${capacity || 2}，加入后可以等对手，也能直接和花火对局。`
-        : room.multiplayer_enabled
-        ? `玩家席 ${room.player_numbers?.length || 0} / ${capacity || "不限"}，加入后按顺序轮流操作。`
-        : room.player_number ? `${room.player_number} 号正在玩家席。` : "第一个加入玩家席的人开始对局。";
+      const seated = Math.max(
+        Number((room.player_numbers || []).length),
+        Number((room.player_seats || []).length),
+      );
+      const full = capacity > 0 && seated >= capacity;
+      if (inPlay) {
+        action.innerHTML = '<i data-lucide="eye"></i><span>本局进行中</span>';
+        action.disabled = true;
+        note.textContent = "这一局已经开始了，等这局结束后再加入玩家席。";
+      } else {
+        action.innerHTML = '<i data-lucide="log-in"></i><span>加入对局</span>';
+        action.disabled = busy || full || identityRequired;
+        note.textContent = full
+          ? (room.game_type === "undercover"
+            ? "玩家席已满，请等待有玩家离席后再加入。"
+            : "玩家席已满，可向席内玩家申请交换。")
+          : identityRequired
+          ? "请先用页面令牌在 QQ 中绑定身份。"
+          : isDuelGame(room)
+          ? `玩家席 ${seated} / ${capacity || 2}，加入后可以等对手，也能直接和花火对局。`
+          : room.multiplayer_enabled
+          ? `玩家席 ${seated} / ${capacity || "不限"}，加入后按顺序轮流操作。`
+          : room.player_number ? `${room.player_number} 号正在玩家席。` : "第一个加入玩家席的人开始对局。";
+      }
     } else if (room.status === "setup") {
       if (room.game_type === "undercover") {
         // 谁是卧底：倒计时自动开，不需要任何按钮
@@ -1744,7 +1816,12 @@
         // 两人对弈：一个人坐着时，位置可以留给朋友，也可以直接约花火
         const capacity = Number(room.player_capacity || 2);
         const seated = roomSeats().length;
-        if (hasAiOpponent(room) || seated >= capacity) {
+        // 兜底：setup 状态下如果对局其实已经落过子，就别再给「开局」入口
+        const running = Boolean(room.game) && Number(room.game?.move_count || 0) > 0;
+        if (running) {
+          action.hidden = true;
+          note.textContent = "对局进行中，走完这一局再开始新的一局。";
+        } else if (hasAiOpponent(room) || seated >= capacity) {
           action.innerHTML = '<i data-lucide="play"></i><span>开始新一局</span>';
           note.textContent = "花火已经就座，随时可以开局。";
         } else {
@@ -1822,7 +1899,7 @@
 
   // 两人对弈玩法（五子棋 / 黑白棋 / 中国象棋）：固定 2 席，座位顺序决定执方，
   // 空位可以等真人，也可以让花火坐下（对外只说「和花火对局」，不出现 AI 配置说法）。
-  const DUEL_GAMES = ["gomoku", "othello", "xiangqi"];
+  const DUEL_GAMES = ["gomoku", "othello", "xiangqi", "weiqi"];
   function isDuelGame(target = room) {
     return DUEL_GAMES.includes(target?.game_type);
   }
@@ -2005,8 +2082,12 @@
       group.members.forEach((visitor) => {
         const chip = document.createElement("span");
         chip.className = `person-chip ${visitor.online ? "online" : ""} ${group.label === "玩家" ? "player" : ""}`;
-        // 绑定了显示 QQ 昵称，未绑定显示“观众-<英文>”，不再显示座位号
-        chip.textContent = memberName(visitor);
+        // 绑定了显示 QQ 昵称，未绑定显示“观众-<英文>”，不再显示座位号；
+        // 名字单独包一层，长昵称在窄侧栏里能自动换行而不是溢出
+        const name = document.createElement("span");
+        name.className = "person-name";
+        name.textContent = memberName(visitor);
+        chip.appendChild(name);
         if (room.multiplayer_enabled && !room.is_player && visitor.is_player) {
           // 谁是卧底不提供席位交换（入座即按座位号发言/投票，交换无意义），隐藏入口；
           // 花火坐的座位后端不接受交换，也不显示按钮，避免点了才报错
@@ -2183,7 +2264,12 @@
           const startShown = cached ? cached.shownChars : 0;
           const safeStart = Math.max(0, Math.min(rawText.length, startShown));
           if (!cached) {
-            TYPED_PROGRESS.set(key, { shownChars: safeStart, timerId: null, fullText: rawText });
+            TYPED_PROGRESS.set(key, {
+              shownChars: safeStart,
+              timerId: null,
+              fullText: rawText,
+              paceMs: typingPace(rawText.length),
+            });
           } else {
             // 文本变化？（极少发生）强制重置进度
             if (cached.fullText !== rawText) {
@@ -2224,7 +2310,8 @@
 
     // —— 思考中占位：玩家刚发完消息，花火还没回复时显示
     const nowSec = Date.now() / 1000;
-    if (shouldShowThinking(messages, nowSec)) {
+    const thinking = shouldShowThinking(messages, nowSec);
+    if (thinking) {
       const think = document.createElement("article");
       think.className = "message bot chat thinking-wrap";
       const meta = document.createElement("span");
@@ -2235,6 +2322,22 @@
       indicator.className = "message-content typing-indicator";
       indicator.innerHTML = [
         "<span class=\"thinking-label\">花导思考中</span>",
+        "<span class=\"dots\"><b></b><b></b><b></b></span>",
+      ].join("");
+      think.appendChild(indicator);
+      list.appendChild(think);
+    } else if (room?.bot_typing) {
+      // 花火正在写解说（开局 / 关键局面）：先给一行占位，别让对话框空着等
+      const think = document.createElement("article");
+      think.className = "message bot chat thinking-wrap";
+      const meta = document.createElement("span");
+      meta.className = "message-meta";
+      meta.textContent = "花火";
+      think.appendChild(meta);
+      const indicator = document.createElement("p");
+      indicator.className = "message-content typing-indicator";
+      indicator.innerHTML = [
+        "<span class=\"thinking-label\">花火正在看着棋盘</span>",
         "<span class=\"dots\"><b></b><b></b><b></b></span>",
       ].join("");
       think.appendChild(indicator);
@@ -3754,11 +3857,287 @@
     }
     // 棋类对弈：追加回合倒计时 / 掉线暂停提示
     label.textContent += duelClockSuffix();
+    // 围棋提子数已挪到右侧「棋盘路数」卡片里，用棋子图标展示，这里不再重复文字
+  }
+
+  // —— 实时胜率面板：默认收起成一行「实时胜率 XX%」，点开才看完整条 ——
+  // 玩家默认收起（落子时条在动会抢注意力），观众默认展开；玩家手动展开 20 秒后自动收回。
+  let evalCollapsed = null;
+  let evalCollapseTimer = 0;
+  const evalPaint = { black: -1, white: -1, lead: "", ahead: "" };
+  let evalPaintRoom = "";
+  let evalWasPlayer = false;
+
+  function applyEvalCollapsed() {
+    const panel = document.getElementById("evalPanel");
+    const toggle = document.getElementById("evalToggle");
+    if (!panel) return;
+    panel.classList.toggle("is-collapsed", Boolean(evalCollapsed));
+    if (toggle) toggle.setAttribute("aria-expanded", evalCollapsed ? "false" : "true");
+  }
+
+  function setEvalCollapsed(collapsed, { auto = false } = {}) {
+    evalCollapsed = Boolean(collapsed);
+    applyEvalCollapsed();
+    window.clearTimeout(evalCollapseTimer);
+    if (!evalCollapsed && room?.is_player && !auto) {
+      evalCollapseTimer = window.setTimeout(() => {
+        evalCollapsed = true;
+        applyEvalCollapsed();
+      }, 20000);
+    }
+  }
+
+  // 围棋实时胜率面板：黑/白百分比 + 目差 + 提子进度
+  function renderEvalPanel() {
+    const panel = document.getElementById("evalPanel");
+    const actions = document.getElementById("weiqiActions");
+    const isWeiqi = room?.game_type === "weiqi";
+    const isOthello = room?.game_type === "othello";
+    // 只有「子数/目数能直接换算成胜率」的棋类才给胜率条：
+    // 五子棋、井字棋的胜负来自连成一线，没有连续量，硬套胜率反而误导。
+    const supported = isWeiqi || isOthello;
+    if (panel) panel.hidden = !supported;
+    if (actions) actions.hidden = !isWeiqi;
+    if (!supported || !panel) return;
+    // 换了房间就清掉缓存，避免旧房间的数值把新房间的条形图卡住不动
+    if (evalPaintRoom !== room?.room_id) {
+      evalPaintRoom = room?.room_id || "";
+      evalPaint.black = -1;
+      evalPaint.white = -1;
+      evalPaint.lead = "";
+      evalPaint.ahead = "";
+    }
+    // 首次出现时按身份决定默认状态，之后尊重用户自己的选择
+    if (room?.is_player) {
+      // 观众中途入座：自动收起，别让条一直在思考时晃
+      if (!evalWasPlayer) {
+        evalWasPlayer = true;
+        evalCollapsed = true;
+        window.clearTimeout(evalCollapseTimer);
+      }
+    } else {
+      evalWasPlayer = false;
+    }
+    if (evalCollapsed === null) evalCollapsed = Boolean(room?.is_player);
+    applyEvalCollapsed();
+    const data = room.game?.eval || {};
+    const black = Math.max(0, Math.min(100, Number(data.black ?? 50)));
+    const white = Math.max(0, Math.min(100, Number(data.white ?? (100 - black))));
+    // A 方案：数字只取整，条形图也按整数百分比走，避免「心电图式」微小抖动
+    const blackPct = Math.round(black);
+    const whitePct = Math.round(white);
+    if (blackPct !== evalPaint.black) {
+      evalPaint.black = blackPct;
+      const blackBar = document.getElementById("evalBlackBar");
+      if (blackBar) blackBar.style.width = `${blackPct}%`;
+      document.getElementById("evalBlack").textContent = `${blackPct}%`;
+    }
+    if (whitePct !== evalPaint.white) {
+      evalPaint.white = whitePct;
+      const whiteBar = document.getElementById("evalWhiteBar");
+      if (whiteBar) whiteBar.style.width = `${whitePct}%`;
+      document.getElementById("evalWhite").textContent = `${whitePct}%`;
+    }
+    const lead = Number(data.lead || 0);
+    const unit = isWeiqi ? "目" : "子";
+    // 围棋快照有 finished 字段；黑白棋用 winner/draw 表示终局，两者都收口到这里
+    const ended = isWeiqi
+      ? Boolean(room.game?.finished)
+      : Boolean(room.game?.winner || room.game?.draw);
+    const finishedText = room.game?.draw ? "和棋" : room.game?.winner === 1 ? "黑胜" : "白胜";
+    const leadText = ended
+      ? finishedText
+      : lead > 0.5
+      ? `黑领先 ${isWeiqi ? lead.toFixed(1) : Math.round(lead)} ${unit}`
+      : lead < -0.5
+      ? `白领先 ${isWeiqi ? Math.abs(lead).toFixed(1) : Math.round(Math.abs(lead))} ${unit}`
+      : "形势接近";
+    if (leadText !== evalPaint.lead) {
+      evalPaint.lead = leadText;
+      document.getElementById("evalLead").textContent = leadText;
+    }
+    // 只在明显领先时才给文字上色，50% 附近来回跳色比不动更烦
+    const ahead = ended ? "" : blackPct >= 58 ? "black" : blackPct <= 42 ? "white" : "";
+    if (ahead !== evalPaint.ahead) {
+      evalPaint.ahead = ahead;
+      panel.classList.toggle("is-black-ahead", ahead === "black");
+      panel.classList.toggle("is-white-ahead", ahead === "white");
+    }
+    document.getElementById("evalNote").textContent = isWeiqi
+      ? `中国规则数子 · 黑贴 ${room.game?.komi ?? 7.5} 目 · 未定区域按影响力估算`
+      : `子数差估算 · 还剩 ${Number(data.empty ?? 0)} 格可下 · 空格越多波动越大`;
+    const summary = document.getElementById("weiqiSummary");
+    if (summary && isWeiqi) {
+      const moves = Number(room.game?.move_count || 0);
+      // 路数已经在上面的「棋盘路数」卡片里写着了，这里只说手数与轮次
+      summary.textContent = room.status === "active" && room.game
+        ? `第 ${moves + 1} 手 · 轮到${room.game.turn === 1 ? "黑" : "白"}方`
+        : `已下 ${moves} 手 · ${statusLabel(room.status)}`;
+    }
+    const passButton = document.getElementById("weiqiPassAction");
+    if (passButton) {
+      const myTurn = room.status === "active"
+        && Boolean(room.is_player)
+        && room.game?.turn === myColor()
+        && !busy;
+      passButton.disabled = !myTurn;
+      // 轮到自己时才点亮：实心绿 + 外发光，避免「停一手」藏在角落没人注意到
+      passButton.classList.toggle("is-ready", myTurn);
+      passButton.title = myTurn ? "本手不下，选择停一手" : "只有轮到你时才能停手";
+    }
+  }
+
+  // 对局双方：棋盘上方显示「黑子是 X / 白子是 X」，头像复用座位面板的缓存头像
+  const duelSeatPaint = { a: "", b: "" };
+  let duelSeatPaintRoom = "";
+
+  // 围棋盘路：首位入座的玩家能在开局前换 9/13/19 路，换完空棋盘立刻重铺
+  let weiqiBoardSending = false;
+
+  function renderWeiqiBoard() {
+    const panel = document.getElementById("weiqiBoardPanel");
+    if (!panel) return;
+    const isWeiqi = room?.game_type === "weiqi";
+    panel.hidden = !isWeiqi;
+    if (!isWeiqi) return;
+    const info = room?.weiqi || {};
+    const size = Number(info.size || room?.game?.size || 13);
+    const komi = Number(info.komi ?? room?.game?.komi ?? 7.5);
+    const text = document.getElementById("weiqiBoardText");
+    if (text) text.textContent = `${size} 路 · 黑贴 ${Number.isInteger(komi) ? komi.toFixed(1) : komi} 目`;
+    const adjustable = Boolean(info.adjustable) && !weiqiBoardSending;
+    const choices = document.getElementById("weiqiBoardChoices");
+    if (choices) {
+      choices.querySelectorAll("button").forEach((button) => {
+        const active = Number(button.dataset.weiqiSize) === size;
+        button.classList.toggle("is-active", active);
+        button.disabled = !adjustable || active;
+        button.setAttribute("aria-pressed", active ? "true" : "false");
+      });
+    }
+    const hint = document.getElementById("weiqiBoardHint");
+    const captures = room?.game?.captures || {};
+    const blackCap = Number(captures.black || 0);
+    const whiteCap = Number(captures.white || 0);
+    const chipBlack = document.getElementById("captureBlack");
+    const chipWhite = document.getElementById("captureWhite");
+    if (chipBlack && chipBlack.textContent !== String(blackCap)) {
+      chipBlack.textContent = String(blackCap);
+    }
+    if (chipWhite && chipWhite.textContent !== String(whiteCap)) {
+      chipWhite.textContent = String(whiteCap);
+    }
+    chipBlack?.closest(".capture-chip")?.classList.toggle("is-live", blackCap > 0);
+    chipWhite?.closest(".capture-chip")?.classList.toggle("is-live", whiteCap > 0);
+    if (!hint) return;
+    if (adjustable) {
+      hint.textContent = Number(info.moves || 0) > 0
+        ? "上一局已经结束：换路数会在下一局生效。"
+        : "按你选的走向：换路数会立刻重铺空棋盘，落子后就不能再改。";
+    } else if (Number(info.moves || 0) > 0) {
+      hint.textContent = "对局已经开始，盘路只能在开局前调整。";
+    } else if (room?.is_player) {
+      hint.textContent = "只有最先入座的玩家可以调整盘路。";
+    } else {
+      hint.textContent = "入座后可以调整盘路（仅限最先入座的那位）。";
+    }
+  }
+
+  async function changeWeiqiBoard(size) {
+    if (weiqiBoardSending || busy) return;
+    if (room?.game_type !== "weiqi") return;
+    weiqiBoardSending = true;
+    renderWeiqiBoard();
+    try {
+      const data = await request("POST", "weiqi/board", {
+        visitor_token: visitorToken,
+        size: Number(size),
+      });
+      setRoom(data.room);
+      showToast(`棋盘已切到 ${Number(size)} 路`);
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "无法调整盘路");
+    } finally {
+      weiqiBoardSending = false;
+      render();
+    }
+  }
+
+  function duelSeatSideOrder() {
+    // 象棋每局换先，用「红先黑后」排；其余棋类固定黑左白右
+    return room?.game_type === "xiangqi" ? ["red", "black"] : ["black", "white"];
+  }
+
+  function renderDuelSeat(sideKey, seat, side, target) {
+    const box = document.getElementById(`duelSeat${sideKey}`);
+    if (!box) return;
+    box.dataset.side = side;
+    box.classList.toggle("is-empty", !seat);
+    // 轮到这一方：只有对局进行中才点亮
+    const turnSide = (() => {
+      if (!room?.game || room.status !== "active") return "";
+      const turn = room.game.turn;
+      if (room.game_type === "xiangqi") return turn === "red" || turn === 1 ? "red" : "black";
+      return Number(turn) === 1 ? "black" : "white";
+    })();
+    box.classList.toggle("is-active", Boolean(side) && turnSide === side);
+    const tag = document.getElementById(`duelSeat${sideKey}Tag`);
+    if (tag) tag.textContent = sideLabel(side);
+    const nameEl = document.getElementById(`duelSeat${sideKey}Name`);
+    const name = !seat
+      ? "空位"
+      : seat.is_ai
+      ? "花火"
+      : (String(seat.display_name || "").trim() || `${seat.number}号`);
+    if (nameEl && nameEl.textContent !== name) nameEl.textContent = name;
+    // 头像只在「座位/昵称/头像地址」变化时重绘，避免每秒轮询都重建 img
+    const avatarKey = seat
+      ? `${seat.number}|${seat.is_ai ? 1 : 0}|${seat.avatar_url || ""}|${name}`
+      : "";
+    if (duelSeatPaint[target] === avatarKey) return;
+    duelSeatPaint[target] = avatarKey;
+    const avatar = document.getElementById(`duelSeat${sideKey}Avatar`);
+    if (!avatar) return;
+    if (!seat) {
+      avatar.classList.add("is-empty");
+      avatar.textContent = "?";
+      return;
+    }
+    avatar.classList.remove("is-empty");
+    // 复用座位面板的头像节点（QQ 头像 / AI 首字占位都由它处理）
+    avatar.replaceChildren(ucSeatAvatarNode(seat.number, "small"));
+  }
+
+  function renderDuelSeats() {
+    const bar = document.getElementById("duelSeats");
+    if (!bar) return;
+    const duel = isDuelGame(room) && room.status !== "closed";
+    bar.hidden = !duel;
+    if (!duel) return;
+    if (duelSeatPaintRoom !== room?.room_id) {
+      duelSeatPaintRoom = room?.room_id || "";
+      duelSeatPaint.a = "";
+      duelSeatPaint.b = "";
+    }
+    const seats = roomSeats();
+    const [firstSide, secondSide] = duelSeatSideOrder();
+    let firstSeat = seats.find((seat) => seat.side === firstSide) || null;
+    let secondSeat = seats.find((seat) => seat.side === secondSide) || null;
+    // 还没开局时端上可能尚未写 side（管理台「安排玩家」只占座不分色），按座位顺序兜底
+    if (!firstSeat && !secondSeat && seats.length) {
+      firstSeat = seats[0] || null;
+      secondSeat = seats[1] || null;
+    }
+    renderDuelSeat("A", firstSeat, firstSide, "a");
+    renderDuelSeat("B", secondSeat, secondSide, "b");
   }
 
   function drawBoard() {
     if (["turtle_soup", "pig_dice", "draw_guess"].includes(room?.game_type)) return;
-    if (room?.game_type === "xiangqi") drawXiangqi();
+    if (room?.game_type === "weiqi") drawWeiqi();
+    else if (room?.game_type === "xiangqi") drawXiangqi();
     else if (room?.game_type === "tictactoe") drawTicTacToe();
     else if (room?.game_type === "othello") drawOthello();
     else drawGomoku();
@@ -3970,6 +4349,232 @@
     context.stroke();
   }
 
+  // ===== 围棋：棋盘几何（棋盘线数随房间配置变化） =====
+  function weiqiGeometry() {
+    // 开局前还没有对局对象，也要按房间设置的路数画空棋盘
+    const lines = Number(room?.game?.size || room?.weiqi?.size || 13);
+    const margin = lines >= 19 ? 40 : lines >= 13 ? 46 : 56;
+    const gap = (board.width - margin * 2) / (lines - 1);
+    return { lines, margin, gap };
+  }
+
+  function hasNearbyStone(cells, row, column, radius) {
+    for (let offsetRow = -radius; offsetRow <= radius; offsetRow += 1) {
+      for (let offsetColumn = -radius; offsetColumn <= radius; offsetColumn += 1) {
+        if (cells?.[row + offsetRow]?.[column + offsetColumn]) return true;
+      }
+    }
+    return false;
+  }
+
+  // —— 提子可视化 ——
+  // 后端在快照里给出被提棋子的坐标；这里按「手数变化」触发一段 1.5 秒的残影动画，
+  // 并在落点旁边飘一个「提 N 子」气泡。纯前端 diff 不可靠（一次轮询可能合并两手），
+  // 所以坐标一律以服务端为准。
+  const CAPTURE_FX_MS = 1500;
+  const captureFx = {
+    roomId: "",
+    moveCount: -1,
+    points: [],
+    anchor: null,
+    count: 0,
+    color: 0,
+    startedAt: 0,
+    raf: 0,
+  };
+
+  function syncCaptureFx() {
+    const moves = Number(room?.game?.move_count || 0);
+    if (captureFx.roomId !== (room?.room_id || "")) {
+      captureFx.roomId = room?.room_id || "";
+      captureFx.moveCount = moves;
+      captureFx.points = [];
+      captureFx.count = 0;
+      return;
+    }
+    if (moves === captureFx.moveCount) return;
+    const first = captureFx.moveCount < 0;
+    captureFx.moveCount = moves;
+    if (first) return;  // 刚进房间不要补播历史提子
+    const points = Array.isArray(room?.game?.last_captured_points)
+      ? room.game.last_captured_points
+      : [];
+    if (!points.length) {
+      captureFx.points = [];
+      captureFx.count = 0;
+      return;
+    }
+    captureFx.points = points
+      .map((point) => [Number(point?.[0]), Number(point?.[1])])
+      .filter(([row, column]) => Number.isInteger(row) && Number.isInteger(column));
+    captureFx.count = captureFx.points.length;
+    captureFx.color = Number(room?.game?.last_captured_color || 0);
+    captureFx.anchor = Array.isArray(room?.game?.last_move) ? room.game.last_move : null;
+    captureFx.startedAt = performance.now();
+    startCaptureLoop();
+  }
+
+  function startCaptureLoop() {
+    if (captureFx.raf) return;
+    const step = () => {
+      captureFx.raf = 0;
+      if (!captureFx.points.length) return;
+      if (room?.game_type === "weiqi") drawWeiqi();
+      if (performance.now() - captureFx.startedAt < CAPTURE_FX_MS) {
+        captureFx.raf = window.requestAnimationFrame(step);
+      } else {
+        captureFx.points = [];
+        captureFx.count = 0;
+        if (room?.game_type === "weiqi") drawWeiqi();
+      }
+    };
+    captureFx.raf = window.requestAnimationFrame(step);
+  }
+
+  function drawCaptureFx(margin, gap) {
+    if (!captureFx.points.length) return;
+    const elapsed = performance.now() - captureFx.startedAt;
+    if (elapsed > CAPTURE_FX_MS) {
+      captureFx.points = [];
+      return;
+    }
+    const progress = elapsed / CAPTURE_FX_MS;
+    const fade = 1 - progress;
+    // 残影用被提棋子的同色：白提黑画黑影、黑提白画白影，别总画白影，
+    // 否则「白提黑」会被看成「白在提自己的子」。
+    const ghostColor = captureFx.color === 1
+      ? `rgba(22, 24, 21, ${0.62 * fade})`
+      : `rgba(255, 255, 255, ${0.55 * fade})`;
+    // 被提位置：向内收的同色残影 + 向外扩散的红环，看得出「这几颗没了」
+    captureFx.points.forEach(([row, column]) => {
+      const x = margin + column * gap;
+      const y = margin + row * gap;
+      context.beginPath();
+      context.arc(x, y, gap * 0.46 * (1 - progress * 0.55), 0, Math.PI * 2);
+      context.fillStyle = ghostColor;
+      context.fill();
+      context.beginPath();
+      context.arc(x, y, gap * (0.46 + progress * 0.55), 0, Math.PI * 2);
+      context.strokeStyle = `rgba(206, 74, 62, ${0.9 * fade})`;
+      context.lineWidth = 2.6;
+      context.stroke();
+    });
+    // 「提 N 子」气泡：贴在刚落的那颗子旁边，1.5 秒里缓缓上浮
+    if (!captureFx.anchor) return;
+    const [row, column] = captureFx.anchor;
+    const text = `提 ${captureFx.count} 子`;
+    context.save();
+    context.font = "600 20px system-ui, -apple-system, 'PingFang SC', sans-serif";
+    const width = context.measureText(text).width + 26;
+    const height = 34;
+    let x = margin + column * gap + gap * 0.7;
+    let y = margin + row * gap - gap * 0.9 - progress * 14;
+    x = Math.min(Math.max(x, 6), board.width - width - 6);
+    y = Math.min(Math.max(y, 6), board.height - height - 6);
+    const radius = height / 2;
+    context.beginPath();
+    context.moveTo(x + radius, y);
+    context.lineTo(x + width - radius, y);
+    context.quadraticCurveTo(x + width, y, x + width, y + radius);
+    context.lineTo(x + width, y + height - radius);
+    context.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+    context.lineTo(x + radius, y + height);
+    context.quadraticCurveTo(x, y + height, x, y + height - radius);
+    context.lineTo(x, y + radius);
+    context.quadraticCurveTo(x, y, x + radius, y);
+    context.closePath();
+    context.fillStyle = `rgba(184, 58, 48, ${0.92 * fade})`;
+    context.fill();
+    context.fillStyle = `rgba(255, 255, 255, ${Math.min(1, fade * 1.6)})`;
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(text, x + width / 2, y + height / 2);
+    context.restore();
+  }
+
+  function drawWeiqi() {
+    const palette = getGamePalette("weiqi");
+    const size = board.width;
+    const { lines, margin, gap } = weiqiGeometry();
+    const game = room?.game || {};
+    context.clearRect(0, 0, size, size);
+    context.fillStyle = palette.board;
+    context.fillRect(0, 0, size, size);
+    context.strokeStyle = palette.line;
+    context.lineWidth = 1.3;
+    for (let index = 0; index < lines; index += 1) {
+      const point = margin + index * gap;
+      context.beginPath(); context.moveTo(margin, point); context.lineTo(size - margin, point); context.stroke();
+      context.beginPath(); context.moveTo(point, margin); context.lineTo(point, size - margin); context.stroke();
+    }
+    const starIndexes = lines >= 19 ? [3, 9, 15] : lines >= 13 ? [3, 6, 9] : [2, 4, 6];
+    context.fillStyle = palette.star;
+    starIndexes.forEach((row) => starIndexes.forEach((column) => {
+      context.beginPath();
+      context.arc(margin + column * gap, margin + row * gap, lines >= 19 ? 3 : 4, 0, Math.PI * 2);
+      context.fill();
+    }));
+    const cells = Array.isArray(game.board) ? game.board : [];
+    cells.forEach((row, rowIndex) => row.forEach((color, columnIndex) => {
+      if (color) drawWeiqiStone(rowIndex, columnIndex, color, margin, gap);
+    }));
+    if (pendingMove?.kind === "weiqi" && !cells?.[pendingMove.row]?.[pendingMove.column]) {
+      drawWeiqiStone(pendingMove.row, pendingMove.column, pendingMove.color, margin, gap);
+    }
+    // 合法落点只标在已有棋子附近，避免整盘小点盖住棋盘
+    if (!pendingMove && room?.status === "active" && room.is_player && game.turn === myColor()) {
+      const legal = Array.isArray(game.legal_moves) ? game.legal_moves : [];
+      context.fillStyle = palette.hint;
+      legal.forEach(([row, column]) => {
+        if (!hasNearbyStone(cells, row, column, 2)) return;
+        context.beginPath();
+        context.arc(margin + column * gap, margin + row * gap, Math.max(2.4, gap * 0.13), 0, Math.PI * 2);
+        context.fill();
+      });
+    }
+    const lastMove = pendingMove?.kind === "weiqi"
+      ? [pendingMove.row, pendingMove.column]
+      : game.last_move;
+    if (Array.isArray(lastMove)) {
+      context.beginPath();
+      context.arc(
+        margin + lastMove[1] * gap,
+        margin + lastMove[0] * gap,
+        Math.max(5, gap * 0.5),
+        0,
+        Math.PI * 2,
+      );
+      context.strokeStyle = palette.lastMoveDot;
+      context.lineWidth = 2.4;
+      context.stroke();
+    }
+    drawCaptureFx(margin, gap);
+  }
+
+  function drawWeiqiStone(row, column, color, margin, gap) {
+    const palette = getGamePalette("weiqi");
+    const x = margin + column * gap;
+    const y = margin + row * gap;
+    const radius = gap * 0.46;
+    const gradient = context.createRadialGradient(
+      x - radius * 0.32, y - radius * 0.36, radius * 0.1, x, y, radius,
+    );
+    if (color === 1) {
+      gradient.addColorStop(0, "#4a4f47");
+      gradient.addColorStop(1, "#0d0f0c");
+    } else {
+      gradient.addColorStop(0, "#ffffff");
+      gradient.addColorStop(1, "#d9ddd6");
+    }
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fillStyle = gradient;
+    context.fill();
+    context.strokeStyle = color === 1 ? "#0a0c09" : palette.whiteEdge;
+    context.lineWidth = 1.2;
+    context.stroke();
+  }
+
   function xiangqiFlipped() {
     // 我执黑时把棋盘转 180°，让自己的棋子始终在下方
     return room?.game_type === "xiangqi" && mySide() === "black";
@@ -4158,7 +4763,8 @@
   async function moveAt(event) {
     if (busy || !room?.is_player || room.status !== "active" || !room.game) return;
     if (room.game_type === "pig_dice") return;
-    if (room.game_type === "xiangqi") await moveXiangqi(event);
+    if (room.game_type === "weiqi") await moveWeiqi(event);
+    else if (room.game_type === "xiangqi") await moveXiangqi(event);
     else if (room.game_type === "tictactoe") await moveTicTacToe(event);
     else if (room.game_type === "othello") await moveOthello(event);
     else await moveGomoku(event);
@@ -4266,6 +4872,65 @@
     }
   }
 
+  async function moveWeiqi(event) {
+    if (room.game.turn !== myColor()) return;
+    const rect = board.getBoundingClientRect();
+    const scale = board.width / rect.width;
+    const x = (event.clientX - rect.left) * scale;
+    const y = (event.clientY - rect.top) * scale;
+    const { lines, margin, gap } = weiqiGeometry();
+    const column = Math.round((x - margin) / gap);
+    const row = Math.round((y - margin) / gap);
+    if (row < 0 || row >= lines || column < 0 || column >= lines) return;
+    if (Math.hypot(x - (margin + column * gap), y - (margin + row * gap)) > gap * 0.55) return;
+    if (room.game.board?.[row]?.[column]) {
+      showToast("这个交叉点已经有棋子了");
+      return;
+    }
+    const legal = Array.isArray(room.game.legal_moves) ? room.game.legal_moves : [];
+    if (!legal.some(([legalRow, legalColumn]) => legalRow === row && legalColumn === column)) {
+      showToast("这里不能落子（自杀或劫争禁着）");
+      return;
+    }
+    busy = true;
+    pendingMove = { kind: "weiqi", row, column, color: myColor() };
+    render();
+    try {
+      const data = await request("POST", "move", { visitor_token: visitorToken, row, column });
+      pendingMove = null;
+      setRoom(data.room);
+      render();
+    } catch (error) {
+      pendingMove = null;
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "无法落子");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  async function passWeiqi() {
+    if (busy || !room?.is_player || room.status !== "active" || room.game_type !== "weiqi") return;
+    if (!room.game || room.game.turn !== myColor()) {
+      showToast("还没轮到你");
+      return;
+    }
+    busy = true;
+    render();
+    try {
+      const data = await request("POST", "weiqi/pass", { visitor_token: visitorToken });
+      setRoom(data.room);
+      render();
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "无法停一手");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   async function moveXiangqi(event) {
     if (room.game.turn !== mySide()) return;
     const rect = board.getBoundingClientRect();
@@ -4354,6 +5019,16 @@
   document.getElementById("drawUndo").addEventListener("click", () => changeDrawing(drawStrokes.slice(0, -1)));
   document.getElementById("drawClear").addEventListener("click", () => changeDrawing([]));
   document.getElementById("drawGuessAction").addEventListener("click", guessDrawing);
+  document.getElementById("weiqiPassAction").addEventListener("click", passWeiqi);
+  document.getElementById("weiqiBoardChoices").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-weiqi-size]");
+    if (!button || button.disabled) return;
+    changeWeiqiBoard(Number(button.dataset.weiqiSize));
+  });
+  // 胜率面板折叠开关：玩家默认收起，点一下展开/收起
+  document.getElementById("evalToggle")?.addEventListener("click", () => {
+    setEvalCollapsed(!evalCollapsed);
+  });
   // 绑定码一键复制
   const copyBindCommand = document.getElementById("copyBindCommand");
   if (copyBindCommand) {

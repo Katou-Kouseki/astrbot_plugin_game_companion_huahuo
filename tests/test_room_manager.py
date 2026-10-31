@@ -104,6 +104,7 @@ async def test_disabling_game_does_not_interrupt_an_active_round() -> None:
     room = await create_room(manager, source="private")
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.add_ai_seat(room, visitor.token)
 
     manager.enabled_games["gomoku"] = False
     await manager.pause(room)
@@ -207,6 +208,7 @@ async def test_creator_correction_swaps_seat_and_resets_game() -> None:
     thief = await manager.join(room)
     creator = await manager.join(room)
     await manager.claim_and_start(room, thief.token, "human_black")
+    await manager.add_ai_seat(room, thief.token)
     assert room.game is not None
 
     await manager.correct_creator(room, "10001", creator.number)
@@ -240,11 +242,12 @@ async def test_identity_confirmation_emits_only_after_real_qq_confirmation() -> 
 
 
 @pytest.mark.asyncio
-async def test_rematch_reuses_room_player_identity_score_and_side() -> None:
+async def test_rematch_reuses_room_player_identity_score_and_rotates_side() -> None:
     manager = RoomManager()
     room = await create_room(manager, source="private", creator="10001")
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.add_ai_seat(room, visitor.token)
     await manager.confirm_creator(room, "10001")
     original_room_id = room.room_id
     original_access_token = room.access_token
@@ -267,8 +270,10 @@ async def test_rematch_reuses_room_player_identity_score_and_side() -> None:
     assert room.status == "active"
     assert room.difficulty == "hard"
     assert room.game is not None
-    assert room.game.human_color == original_human_color
-    assert room.game.history == []
+    # 两人对弈再来一局会换先，玩家执色与上一局相反
+    assert room.game.human_color != original_human_color
+    # 玩家换到执白后，执黑的花火先落第一手
+    assert room.game.history == [(7, 7, 1)]
 
 
 @pytest.mark.asyncio
@@ -277,6 +282,7 @@ async def test_rematch_does_not_reset_an_unfinished_game() -> None:
     room = await create_room(manager, source="private")
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.add_ai_seat(room, visitor.token)
     game = room.game
 
     with pytest.raises(ValueError, match="尚未结束"):
@@ -292,6 +298,7 @@ async def test_stale_web_rematch_decision_cannot_override_a_qq_restart() -> None
     room = await create_room(manager, source="private")
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.add_ai_seat(room, visitor.token)
     room.status = "rematch_pending"
 
     await manager.restart_finished_game(room, difficulty="hard")
@@ -320,6 +327,37 @@ async def test_non_creator_cannot_correct_identity() -> None:
 
     with pytest.raises(PermissionError):
         await manager.correct_creator(room, "99999", visitor.number)
+
+
+@pytest.mark.asyncio
+async def test_new_room_waits_for_first_player_without_empty_sweep() -> None:
+    """新建房间（还没有玩家）不应被 empty_player_timeout 秒杀，只受 idle_timeout 兜底。
+
+    否则 LLM 开房 / 管理台开房后，访客还没点开链接房间就被销毁（「管理台没显示」「链接进不去」）。
+    """
+    manager = RoomManager(empty_player_timeout=60, idle_timeout=300)
+    room = await create_room(manager, source="private")
+    assert room.player_empty_since is None
+    # 超过空房超时（60s）仍存活：还没人入座，不该进入「玩家席无人」倒计时
+    assert await manager.sweep_expired(now=room.created_at + 61) == []
+    assert room.room_id in manager.rooms
+    # 超过空闲超时（300s）才被兜底清理
+    assert await manager.sweep_expired(now=room.created_at + 301) == [room.room_id]
+
+
+@pytest.mark.asyncio
+async def test_empty_sweep_still_fires_after_player_leaves() -> None:
+    """玩家离席后，empty_player_timeout 仍然生效清理空房。"""
+    manager = RoomManager(empty_player_timeout=60, idle_timeout=0)
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.assign_player(room, visitor.number, "10001")
+    assert room.player_empty_since is None
+    await manager.remove_player(room, visitor.number)
+    assert room.player_empty_since is not None
+    assert await manager.sweep_expired(
+        now=room.player_empty_since + 61
+    ) == [room.room_id]
 
 
 @pytest.mark.asyncio
@@ -735,3 +773,36 @@ async def test_blackjack_action_resolves_at_once_when_remaining_players_are_offl
     assert room.status == "finished"
     assert room.game.hands[second.number].status == "stand"
     assert room.game.results == {first.number: "win", second.number: "loss"}
+
+
+@pytest.mark.asyncio
+async def test_board_game_leaderboard_credits_huahuo_with_winrate() -> None:
+    """棋类全局榜包含花火，并返回局数与胜率。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await create_room(manager, source="private", creator="10001")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.assign_player(room, visitor.number, "10001")
+    await manager.add_ai_seat(room, visitor.token, side="black")
+
+    # 花火赢一局：花火 +1 胜 +1 局，玩家 +1 局（不计胜）
+    manager._credit_board_game_global(room, winner_tokens=set(), ai_won=True)
+    rows = {row["name"]: row for row in manager.global_leaderboard("gomoku")}
+    assert rows["花火"]["wins"] == 1
+    assert rows["花火"]["games"] == 1
+    assert rows["花火"]["winrate"] == 100.0
+    assert rows["创建者"]["wins"] == 0
+    assert rows["创建者"]["games"] == 1
+    assert rows["创建者"]["winrate"] == 0.0
+
+    # 玩家赢一局：双方局数都到 2，胜率各 50%
+    manager._credit_board_game_global(
+        room, winner_tokens={visitor.token}, ai_won=False
+    )
+    rows = {row["name"]: row for row in manager.global_leaderboard("gomoku")}
+    assert rows["创建者"]["wins"] == 1
+    assert rows["创建者"]["games"] == 2
+    assert rows["创建者"]["winrate"] == 50.0
+    assert rows["花火"]["wins"] == 1
+    assert rows["花火"]["games"] == 2
+    assert rows["花火"]["winrate"] == 50.0

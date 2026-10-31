@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -88,6 +89,7 @@ async def test_switch_game_preserves_room_link_seat_and_independent_scores() -> 
     )
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.add_ai_seat(room, visitor.token)
     room.completed_games = 2
     room.human_wins = 1
     original = (room.room_id, room.access_token, room.player_token, visitor.number)
@@ -106,6 +108,10 @@ async def test_switch_game_preserves_room_link_seat_and_independent_scores() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows 无法直接执行 shebang 脚本，需真实 pikafish.exe 才能跑 UCI 进程",
+)
 async def test_pikafish_fake_uci_process(tmp_path: Path) -> None:
     engine = tmp_path / "pikafish-fake"
     engine.write_text(

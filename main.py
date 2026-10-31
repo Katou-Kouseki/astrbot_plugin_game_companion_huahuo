@@ -66,10 +66,14 @@ from .undercover_words import UndercoverWordStore
 from .xiangqi import BLACK as XIANGQI_BLACK
 from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
+from .weiqi import WeiqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.5.19"
+PLUGIN_VERSION = "0.5.20"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
+# 管理台手动开的房间没有 QQ 会话，用这个假 session 占位：
+# 版本/人格/解说回退到默认 Provider，主动发消息会被 _send_to_origin 静默吞掉。
+ADMIN_CONSOLE_SESSION = "admin:console"
 
 # 棋盘执方的中文写法：象棋红/黑，棋类黑/白
 COMMENTARY_SIDE_LABELS = {"red": "红", "black": "黑", "white": "白"}
@@ -109,6 +113,33 @@ def _commentary_duel_room(room: GameRoom) -> bool:
     return len(mapping) >= 2 and "花火" not in mapping.values()
 
 
+# 模型偶尔会把 system 里的人设字段当成台词复述出来，开头就带一行
+# 「角色名：花火」「【姓名：花火】」；这里把这层壳剥掉，只留真正要说的话。
+_ROLE_PREFIX_RE = re.compile(
+    r"""
+    ^[\s\*_#>·\-]*              # 行首的 markdown / 列表修饰
+    (?:【|\[|（|\()?             # 可选开括号
+    \s*
+    (?:角色名|角色名称|角色|人物名|姓名|名字|name)\s*[:：]\s*
+    [^\s】\]）\)\n\*:：]{0,30}   # 名字本身（不含空白与标点，避免把正文一起吃掉）
+    \s*(?:】|\]|）|\))?         # 可选闭括号
+    [\s\*_：:—\-]*
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _strip_role_prefix(text: str) -> str:
+    """去掉回复开头的「角色名：XXX」标签行，最多剥三层，避免误删正文。"""
+    cleaned = text or ""
+    for _ in range(3):
+        stripped = _ROLE_PREFIX_RE.sub("", cleaned, count=1)
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    return cleaned.lstrip("\n ")
+
+
 def _commentary_sides_text(room: GameRoom, *, actor_side: str = "") -> str:
     """「小明执黑，阿花执白」；actor_side 标注刚走完这一步的一方。"""
     mapping = _commentary_seat_map(room)
@@ -143,6 +174,8 @@ def _commentary_turn_text(room: GameRoom) -> str:
         side = "black" if int(game.turn) == OTHELLO_BLACK else "white"
     elif isinstance(game, XiangqiGame):
         side = "red" if game.turn == XIANGQI_RED else "black"
+    elif isinstance(game, WeiqiGame):
+        side = "black" if int(game.turn) == GOMOKU_BLACK else "white"
     if not side:
         return ""
     return f"现在轮到{_commentary_side_name(room, side)}走"
@@ -226,6 +259,62 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "maximum": 3600,
                 "unit": "秒",
                 "hint": "与五子棋 / 黑白棋共用；象棋两位真人同房时每步超时判负，和花火练习局不计时。",
+            },
+            {
+                "key": "duel_offline_grace_seconds",
+                "config_key": "multiplayer.duel_offline_grace_seconds",
+                "label": "掉线等待重连",
+                "type": "int",
+                "default": 90,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "轮到的一方掉线后暂停对局，超过该时间未回来则判负；0 表示掉线立即判负。",
+            },
+        ),
+    },
+    {
+        "game_type": "weiqi",
+        "label": "围棋",
+        "description": "9 / 13 / 19 路棋盘，中国规则数子，界面右侧实时显示黑白胜率。",
+        "fields": (
+            {
+                "key": "board_size",
+                "config_key": "weiqi.board_size",
+                "label": "棋盘路数",
+                "type": "select",
+                "default": "13",
+                "options": (
+                    {"value": "9", "label": "9 路"},
+                    {"value": "13", "label": "13 路"},
+                    {"value": "19", "label": "19 路"},
+                ),
+                "hint": "9 路最快，19 路最接近正式对局；只对新开局生效。",
+            },
+            {
+                "key": "komi",
+                "config_key": "weiqi.komi",
+                "label": "黑贴目",
+                "type": "select",
+                "default": "7.5",
+                "options": (
+                    {"value": "0.5", "label": "0.5 目"},
+                    {"value": "5.5", "label": "5.5 目"},
+                    {"value": "6.5", "label": "6.5 目"},
+                    {"value": "7.5", "label": "7.5 目"},
+                ),
+                "hint": "中国规则数子法，贴目越高对白方越有利。",
+            },
+            {
+                "key": "duel_turn_timeout_seconds",
+                "config_key": "multiplayer.duel_turn_timeout_seconds",
+                "label": "对弈每步时间",
+                "type": "int",
+                "default": 180,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "与其他棋类共用；两位真人同房时每步超时判负，和花火练习局不计时。",
             },
             {
                 "key": "duel_offline_grace_seconds",
@@ -1132,9 +1221,8 @@ class GameCompanionPlugin(Star):
         self.commentary_cooldown = self._cfg_int(
             "game.commentary_cooldown_seconds", 45, minimum=10, maximum=600
         )
-        # 解说可用独立模型：留空则跟随所在会话的聊天模型
+        # 解说可用独立 Provider：留空则跟随所在会话的聊天模型
         self.commentary_provider_id = self._cfg_str("commentary.provider_id", "")
-        self.commentary_model = self._cfg_str("commentary.model", "")
         self.enabled_games: dict[GameType, bool] = {
             game_type: self._cfg_bool(f"{game_type}.enabled", True)
             for game_type in SUPPORTED_GAMES
@@ -1270,6 +1358,11 @@ class GameCompanionPlugin(Star):
         self.duel_offline_grace = self._cfg_non_negative(
             "multiplayer.duel_offline_grace_seconds", 90
         )
+        # 围棋：盘路（9/13/19）与黑贴目；只作用于新开的一局
+        self.weiqi_board_size = self._cfg_int(
+            "weiqi.board_size", 13, minimum=9, maximum=19
+        )
+        self.weiqi_komi = self._safe_float(self._cfg("weiqi.komi", 7.5), 7.5)
         self.swap_request_cooldown = self._cfg_non_negative(
             "multiplayer.swap_request_cooldown_seconds", 30
         )
@@ -1328,6 +1421,8 @@ class GameCompanionPlugin(Star):
             undercover_ai_fill_min_players=self.undercover_ai_fill_min_players,
             undercover_word_store=self.undercover_word_store,
             enabled_games=self.enabled_games,
+            weiqi_board_size=self.weiqi_board_size,
+            weiqi_komi=self.weiqi_komi,
             xiangqi_engine=self.xiangqi_engine,
             global_stats_path=self.data_dir / "global_leaderboard.json",
             event_callback=self._on_room_event,
@@ -1353,6 +1448,9 @@ class GameCompanionPlugin(Star):
         self._watchdog_task: asyncio.Task | None = None
         self._tunnel_recovery_task: asyncio.Task | None = None
         self._next_tunnel_retry_at = 0.0
+        # 房间访问地址的 base（协议+主机+端口）缓存：首次解析成功后固定下来，
+        # 让管理台/群里的房间链接不会因为 Quick Tunnel 短暂抖动或局域网探测反复变化。
+        self._access_base_cache: str = ""
         self._background_tasks: set[asyncio.Task] = set()
         self._companion_round_event_tasks: dict[str, asyncio.Task] = {}
         self._recent_private_game_results: dict[str, _RecentPrivateGameResult] = {}
@@ -1563,7 +1661,7 @@ class GameCompanionPlugin(Star):
         """仅在用户明确想和 Bot 玩游戏时创建可视化游戏房间。
 
         难度必须由你结合当前人格、关系和用户请求自行决定，不能把难度选择交给网页用户。
-        支持 gomoku（五子棋）、xiangqi（中国象棋）、tictactoe（井字棋）、othello（黑白棋）、
+        支持 gomoku（五子棋）、xiangqi（中国象棋）、weiqi（围棋）、tictactoe（井字棋）、othello（黑白棋）、
         turtle_soup（海龟汤）、pig_dice（贪心骰子）、draw_guess（你画我猜）、
         blackjack（二十一点，Bot 当庄家）和 undercover（谁是卧底，多人社交推理）。
         不要因为普通聊天中偶然提到游戏名称就调用本工具。
@@ -1571,7 +1669,7 @@ class GameCompanionPlugin(Star):
         全部由用户进入 WebUI 后完成，不能在 QQ 中代替用户执行。
 
         Args:
-            game_type(string): 游戏类型，只能是 gomoku、xiangqi、tictactoe、othello、turtle_soup、pig_dice、draw_guess、blackjack 或 undercover。
+            game_type(string): 游戏类型，只能是 gomoku、xiangqi、weiqi、tictactoe、othello、turtle_soup、pig_dice、draw_guess、blackjack 或 undercover。
             difficulty(string): 你决定使用的难度，只能是 easy、normal、hard；贪心骰子中分别表示稳健、均衡和大胆，二十一点中影响庄家软 17 规则；谁是卧底时忽略。
             turtle_soup_mode(string): 海龟汤玩法；bot_host 表示 Bot 出题玩家猜，player_host 表示玩家给线索 Bot 猜。非海龟汤时忽略。
             admin_room(boolean): 仅当群聊中的游戏管理员明确要求创建管理员房间时传 true。普通群聊房间必须传 false；非游戏管理员不能创建管理员房间。
@@ -1708,6 +1806,7 @@ class GameCompanionPlugin(Star):
         descriptions = {
             "gomoku": "15×15 连成五子",
             "xiangqi": "使用 Pikafish 引擎",
+            "weiqi": "9/13/19 路棋盘，附带实时胜率",
             "tictactoe": "三连即可获胜",
             "othello": "8×8 棋盘，夹住对方棋子即可翻转；双方无合法步时棋子较多者获胜",
             "turtle_soup": "通过是非提问还原汤底",
@@ -1974,6 +2073,18 @@ class GameCompanionPlugin(Star):
             detail = (
                 f"玩家执{human}，Bot 执{bot}，红方固定先手；已走 {len(game.moves)} 手"
                 + ("。" if game.finished else f"，当前轮到{turn}。")
+            )
+        elif isinstance(game, WeiqiGame):
+            human = "黑" if game.human_color == GOMOKU_BLACK else "白"
+            bot = "黑" if game.bot_color == GOMOKU_BLACK else "白"
+            turn = "玩家" if game.turn == game.human_color else "Bot"
+            winrate = game.evaluate()
+            detail = (
+                f"{game.size} 路棋盘、黑贴 {game.komi} 目；玩家执{human}、Bot 执{bot}；"
+                f"已下 {len(game.history)} 手，黑提 {game.captures.get(GOMOKU_BLACK, 0)} 子、"
+                f"白提 {game.captures.get(GOMOKU_WHITE, 0)} 子；"
+                f"当前胜率 黑 {winrate['black']}% / 白 {winrate['white']}%"
+                + ("。" if game.finished else f"，轮到{turn}。")
             )
         elif isinstance(game, PigDiceGame):
             turn = "玩家" if game.turn == "human" else "Bot"
@@ -2366,10 +2477,24 @@ class GameCompanionPlugin(Star):
                 await self.room_server.stop()
             raise
 
-    def _room_url(self, room: GameRoom) -> str:
+    def _resolve_access_base(self) -> str:
+        """解析并缓存房间访问地址的 base（协议+主机+端口）。
+
+        首次解析成功后固定下来，后续直接复用：这样管理台/群里展示的房间链接不会
+        因为 Quick Tunnel 短暂抖动、`ready` 标记翻转或局域网探测在多次调用间返回
+        不同结果而「自己变来变去」。只有隧道重建（恢复）时才清缓存、换新地址。
+        """
+        if getattr(self, "_access_base_cache", ""):
+            return self._access_base_cache
         base = self._configured_access_base() or (
             self.quick_tunnel.url if bool(getattr(self.quick_tunnel, "ready", False)) else ""
         ) or self._local_access_base(allow_unresolved=True)
+        if base:
+            self._access_base_cache = base
+        return base
+
+    def _room_url(self, room: GameRoom) -> str:
+        base = self._resolve_access_base()
         if not base:
             raise RuntimeError("外部访问地址尚未就绪")
         return f"{base.rstrip('/')}/room/{quote(room.access_token, safe='')}"
@@ -2502,10 +2627,15 @@ class GameCompanionPlugin(Star):
             if room.player_identity_confirmed:
                 self._notify_companion_activity(room, "updated")
             opening = self._opening_commentary_prompt(room)
+            # 开场白本身算一次解说：把冷却时间从这里起算，
+            # 免得玩家手速快时先收到「刚落子」的解说、再收到开场白，看起来像串了半拍。
+            room.last_commentary_at = time.time()
             self._spawn(
                 self._comment(
                     room,
                     opening,
+                    # 开场白只需要棋局事实：跳过记忆检索，少一次 embedding/向量查询的等待
+                    with_memory=False,
                 )
             )
             return
@@ -2529,6 +2659,8 @@ class GameCompanionPlugin(Star):
                 tactical_prompt = {
                     "fork": "井字棋盘面刚出现了双重威胁",
                 }.get(tactical)
+            elif room.game_type == "weiqi":
+                tactical_prompt = self._weiqi_commentary_prompt(room, payload)
             elif room.game_type == "othello":
                 side = int(payload.get("color") or room.game.human_color)
                 tactical = room.game.tactical_state(side)
@@ -2711,6 +2843,14 @@ class GameCompanionPlugin(Star):
             facts = (
                 f"玩家执{human}，Bot 执{bot}；中国象棋固定由红方先手，因此本局由{first}先行。"
             )
+        elif isinstance(game, WeiqiGame):
+            human = "黑" if game.human_color == GOMOKU_BLACK else "白"
+            bot = "黑" if game.bot_color == GOMOKU_BLACK else "白"
+            first = "玩家" if game.human_color == GOMOKU_BLACK else "Bot"
+            facts = (
+                f"{game.size} 路棋盘，黑贴 {game.komi} 目；玩家执{human}，Bot 执{bot}，"
+                f"围棋固定由黑方先手，因此本局由{first}先行。"
+            )
         elif isinstance(game, TicTacToeGame):
             human = "X" if game.human_mark == TICTACTOE_X else "O"
             bot = "X" if game.bot_mark == TICTACTOE_X else "O"
@@ -2775,7 +2915,7 @@ class GameCompanionPlugin(Star):
             )
         # 两人对弈（五子棋 / 黑白棋 / 象棋）：胜负属于某个座位，不再套用「玩家 / Bot」文案
         if (
-            room.game_type in {"gomoku", "othello", "xiangqi"}
+            room.game_type in {"gomoku", "othello", "xiangqi", "weiqi"}
             and room.multiplayer.enabled
             and sum(1 for seat in room.multiplayer.seats if not seat.is_ai) > 1
             and getattr(game, "winner", None)
@@ -2834,7 +2974,7 @@ class GameCompanionPlugin(Star):
             if not seat.is_ai and seat.side
         ] if room.multiplayer.enabled else []
         if (
-            isinstance(game, (GomokuGame, OthelloGame, XiangqiGame))
+            isinstance(game, (GomokuGame, OthelloGame, XiangqiGame, WeiqiGame))
             and len(duel_seats) > 1
         ):
             parts = "、".join(
@@ -2846,6 +2986,11 @@ class GameCompanionPlugin(Star):
             if isinstance(game, OthelloGame):
                 side += (
                     f"终局黑 {game.black_count} 子、白 {game.white_count} 子；"
+                )
+            elif isinstance(game, WeiqiGame) and game.result:
+                side += (
+                    f"终局数子黑 {game.result.get('black')} 目（含贴目 "
+                    f"{game.result.get('komi')}）对白 {game.result.get('white')} 目；"
                 )
         elif isinstance(game, GomokuGame):
             human = "黑" if game.human_color == GOMOKU_BLACK else "白"
@@ -3462,8 +3607,18 @@ class GameCompanionPlugin(Star):
             logger.debug("[GameCompanion] 读取 WebUI 发言者陪伴场景失败: %s", exc)
             return ""
 
-    async def _comment(self, room: GameRoom, prompt: str) -> None:
-        text = await self._generate_persona_text(room, prompt)
+    async def _comment(
+        self, room: GameRoom, prompt: str, *, with_memory: bool = True
+    ) -> None:
+        # 先举起「正在输入」：网页立刻显示占位并把轮询提速，
+        # 否则从开局到第一句解说之间的 3~5 秒完全是死等。
+        room.bot_typing_pending += 1
+        try:
+            text = await self._generate_persona_text(
+                room, prompt, with_memory=with_memory
+            )
+        finally:
+            room.bot_typing_pending = max(0, room.bot_typing_pending - 1)
         if not text or room.status == "closed":
             return
         room.add_message("bot", text)
@@ -3793,12 +3948,21 @@ class GameCompanionPlugin(Star):
         if visitor is not None:
             room.record_chat_memory(visitor, "bot", text)
 
-    async def _generate_persona_text(self, room: GameRoom, prompt: str) -> str:
+    async def _generate_persona_text(
+        self, room: GameRoom, prompt: str, *, with_memory: bool = True
+    ) -> str:
         provider = self._commentary_provider(room)
         if provider is None or not callable(getattr(provider, "text_chat", None)):
             return ""
-        persona = await self._persona_prompt(room)
-        memory = await self._memory_context(room, prompt)
+        # 人格读取与记忆检索互不依赖，并发跑：串行等待会让模型调用前的空转翻倍，
+        # 开局第一句就会被这段等待拖成「慢半拍」。
+        if with_memory:
+            persona, memory = await asyncio.gather(
+                self._persona_prompt(room), self._memory_context(room, prompt)
+            )
+        else:
+            persona = await self._persona_prompt(room)
+            memory = ""
         companion_scene = self._companion_scene_prompt(room)
         role_constraint = ""
         if isinstance(room.game, DrawGuessGame):
@@ -3824,20 +3988,11 @@ class GameCompanionPlugin(Star):
             f"{persona}\n\n{companion_scene}\n\n{memory}\n\n"
             f"{scene_line}保持原有人格和关系语气，"
             "只回应当前游戏事件，不输出规则说明或格式标签。"
+            "直接说你要说的那句话：不要以「角色名：」「姓名：」这类标签开头，"
+            "也不要复述人格设定里的字段。"
             f"{role_constraint}海龟汤中绝不能猜测或泄露尚未公开的汤底。"
         ).strip()
         kwargs: dict[str, Any] = {"prompt": prompt, "system_prompt": system_prompt}
-        model_name = (getattr(self, "commentary_model", "") or "").strip()
-        if model_name:
-            try:
-                if "model" in inspect.signature(provider.text_chat).parameters:
-                    kwargs["model"] = model_name
-                else:
-                    logger.debug(
-                        "[GameCompanion] 解说 Provider 不支持 model 参数，忽略 commentary.model"
-                    )
-            except (TypeError, ValueError):
-                logger.debug("[GameCompanion] 无法读取解说 Provider 签名，忽略 commentary.model")
         try:
             response = await asyncio.wait_for(
                 provider.text_chat(**kwargs),
@@ -3846,7 +4001,8 @@ class GameCompanionPlugin(Star):
         except Exception as exc:
             logger.debug("[GameCompanion] 生成人格化游戏回复失败: %s", exc)
             return ""
-        return str(getattr(response, "completion_text", "") or "").strip()[:500]
+        text = str(getattr(response, "completion_text", "") or "")
+        return _strip_role_prefix(text).strip()[:500]
 
     def _commentary_provider(self, room: GameRoom):
         """解说使用的模型：优先全局配置的 Provider，缺失时回退会话模型。"""
@@ -3860,7 +4016,17 @@ class GameCompanionPlugin(Star):
                 logger.warning(
                     "[GameCompanion] 解说 Provider %s 不存在，回退当前会话模型", provider_id
                 )
-        return self.context.get_using_provider(room.session_id)
+        try:
+            provider = self.context.get_using_provider(room.session_id)
+        except Exception:
+            provider = None
+        if provider is not None:
+            return provider
+        # 管理台手动开的房间没有真实会话，取不到会话 Provider 时退回默认 Provider
+        try:
+            return self.context.get_using_provider()
+        except Exception:
+            return None
 
     async def _llm_gen_neutral(self, prompt: str, *, system_prompt: str = "") -> str:
         """管理台等无会话场景的中性 LLM 生成：不注入游戏人格与记忆。
@@ -4033,6 +4199,58 @@ class GameCompanionPlugin(Star):
             f"当前黑方 {black_stones} 颗、白方 {white_stones} 颗，{turn}。"
             f"{consequence}只围绕这一步和当前情绪，用当前人格简短自然回应；"
             "避免使用专业棋型名称，不要虚构其他落子或胜负。"
+        )
+
+    @staticmethod
+    def _weiqi_commentary_prompt(
+        room: GameRoom, payload: dict[str, Any]
+    ) -> str:
+        """围棋：只在提子 / 停一手这类节点说话，并带上实时胜率与目差。"""
+        game = room.game
+        if not isinstance(game, WeiqiGame):
+            return ""
+        try:
+            color = int(payload.get("color") or 0)
+        except (TypeError, ValueError):
+            color = 0
+        if color not in (GOMOKU_BLACK, GOMOKU_WHITE):
+            return ""
+        actor_side = "black" if color == GOMOKU_BLACK else "white"
+        opponent_side = "white" if actor_side == "black" else "black"
+        actor = _commentary_side_name(room, actor_side)
+        opponent = _commentary_side_name(room, opponent_side)
+        actor_label = COMMENTARY_SIDE_LABELS[actor_side]
+        opponent_label = COMMENTARY_SIDE_LABELS[opponent_side]
+        eval_data = payload.get("eval")
+        if not isinstance(eval_data, dict):
+            eval_data = game.evaluate()
+        black_rate = eval_data.get("black")
+        white_rate = eval_data.get("white")
+        lead = float(eval_data.get("lead") or 0)
+        lead_text = (
+            f"黑方领先约 {abs(lead):.1f} 目"
+            if lead > 0.4
+            else f"白方领先约 {abs(lead):.1f} 目"
+            if lead < -0.4
+            else "双方大致持平"
+        )
+        if payload.get("passed"):
+            event = f"{actor}（执{actor_label}）选择停一手"
+        else:
+            captured = int(payload.get("captured") or 0)
+            if captured <= 0:
+                return ""
+            row = int(payload.get("row") or 0) + 1
+            column = int(payload.get("column") or 0) + 1
+            event = (
+                f"{actor}（执{actor_label}）在第 {row} 行第 {column} 列落子，"
+                f"一提吃掉了 {captured} 颗{opponent_label}子"
+            )
+        return (
+            f"围棋关键节点：{event}；这是第 {len(game.history)} 手；"
+            f"当前评估黑方胜率 {black_rate}%、白方胜率 {white_rate}%，{lead_text}。"
+            f"只围绕这一手和当前形势，用当前人格简短自然回应；"
+            "不要虚构未发生的落子或胜负，也不要报出评估里没有的数字。"
         )
 
     def _board_commentary_prompt(
@@ -5474,6 +5692,8 @@ class GameCompanionPlugin(Star):
         finally:
             self._tunnel_recovery_task = None
         logger.warning("[GameCompanion] 临时访问通道已恢复，新地址: %s", url)
+        # 隧道重建后地址变了，清掉 base 缓存，让 _room_url 用新地址重新生成链接
+        self._access_base_cache = ""
         for room in list(self.manager.rooms.values()):
             await self._send_to_origin(
                 room,
@@ -5512,11 +5732,15 @@ class GameCompanionPlugin(Star):
             )
         else:
             instruction += "说明玩家进入后可选择执棋方。"
-        timeout = self.manager.empty_player_timeout
-        if timeout:
-            instruction += (
-                f"明确提醒玩家在 {timeout} 秒内进入玩家席，否则房间会自动销毁。"
-            )
+        # 管理台开的「链接房间」不会自动销毁，别给访客编造一个「X 秒内入席」的倒计时；
+        # 普通房间现在按 idle_timeout（无有效操作）兜底清理，也不再是「空房 60 秒即毁」。
+        if not room.admin_room:
+            timeout = self.manager.idle_timeout
+            if timeout:
+                instruction += (
+                    f"说明房间在长时间无人操作（约 {timeout} 秒）后会自动销毁，"
+                    "提醒玩家及时进入。"
+                )
         return instruction
 
     def _register_page_api(self) -> None:
@@ -5524,6 +5748,12 @@ class GameCompanionPlugin(Star):
         if not callable(register_api):
             return
         register_api(f"{PAGE_API_PREFIX}/rooms", self.page_rooms, ["GET"], "Game rooms")
+        register_api(
+            f"{PAGE_API_PREFIX}/room/create",
+            self.page_create_room,
+            ["POST"],
+            "Create a room from the console",
+        )
         register_api(
             f"{PAGE_API_PREFIX}/room/action",
             self.page_room_action,
@@ -5782,7 +6012,8 @@ class GameCompanionPlugin(Star):
             "status": "ok",
             "data": {
                 "rooms": [
-                    room.admin_snapshot() for room in self.manager.rooms.values()
+                    {**room.admin_snapshot(), "url": self._room_url_safe(room)}
+                    for room in self.manager.rooms.values()
                 ],
                 "server": {
                     "running": self.room_server.running,
@@ -5800,6 +6031,55 @@ class GameCompanionPlugin(Star):
                 "enabled_games": dict(self.manager.enabled_games),
             },
         }
+
+    async def page_create_room(self) -> dict[str, Any]:
+        """管理台手动开房：不用发 QQ 指令，直接建一个链接房间并回传访问网址。
+
+        建出来的是「管理员房间」（和群里由管理员创建的房间同一种）：
+        访客打开链接后由管理员在管理台「安排玩家」入座，不需要再走绑定码流程。
+        """
+        payload = await request.json(default={}) or {}
+        try:
+            game_type = self._game_type(payload.get("game_type") or "gomoku")
+        except (TypeError, ValueError) as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
+        difficulty = self._difficulty(payload.get("difficulty"))
+        try:
+            await self._ensure_public_access()
+            room = await self.manager.create_room(
+                source="private",
+                session_id=ADMIN_CONSOLE_SESSION,
+                platform="admin",
+                group_id="",
+                creator_qq="",
+                creator_name="游戏管理台",
+                admin_room=True,
+                game_type=game_type,
+                difficulty=difficulty,
+                bypass_limit=True,
+            )
+        except (ValueError, PermissionError, RuntimeError, OSError) as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
+        room.add_message(
+            "system", "管理员在游戏管理台创建了这个房间，把访问网址发给朋友即可开局。"
+        )
+        url = self._room_url_safe(room)
+        self.manager.record_operation(
+            "create_room",
+            f"管理台开房：{room.room_id}（{self._game_label(game_type)}）",
+        )
+        return {
+            "status": "ok",
+            "message": "" if url else "房间已创建，但外部访问地址还没就绪",
+            "data": {"room": room.admin_snapshot(), "url": url},
+        }
+
+    def _room_url_safe(self, room: GameRoom) -> str:
+        """取房间访问网址；地址还没就绪时返回空串而不是抛异常（管理台列表容忍缺失）。"""
+        try:
+            return self._room_url(room)
+        except (RuntimeError, ValueError):
+            return ""
 
     async def page_room_action(self) -> dict[str, Any]:
         payload = await request.json(default={}) or {}
@@ -5830,6 +6110,14 @@ class GameCompanionPlugin(Star):
                 await self.manager.kick_visitor(room, visitor_number)
                 self.manager.record_operation(
                     "kick", f"房间 {room.room_id}：将 {visitor_number} 号踢出房间"
+                )
+            elif action == "set_difficulty":
+                difficulty = self._difficulty(payload.get("difficulty"))
+                await self.manager.set_difficulty(room, difficulty)
+                self.manager.record_operation(
+                    "set_difficulty",
+                    f"房间 {room.room_id}：棋力改为"
+                    f"{self.manager._difficulty_label(difficulty)}",
                 )
             elif action == "pause":
                 await self.manager.pause(room)
@@ -6194,10 +6482,15 @@ class GameCompanionPlugin(Star):
         self.manager.multiplayer_turn_timeout = self.multiplayer_turn_timeout
         self.manager.duel_turn_timeout = self.duel_turn_timeout
         self.manager.duel_offline_grace = self.duel_offline_grace
+        self.weiqi_board_size = self._cfg_int(
+            "weiqi.board_size", 13, minimum=9, maximum=19
+        )
+        self.weiqi_komi = self._safe_float(self._cfg("weiqi.komi", 7.5), 7.5)
+        self.manager.weiqi_board_size = self.weiqi_board_size
+        self.manager.weiqi_komi = self.weiqi_komi
         self.manager.swap_request_cooldown = self.swap_request_cooldown
         self.manager.swap_request_expiry = self.swap_request_expiry
         self.commentary_provider_id = self._cfg_str("commentary.provider_id", "")
-        self.commentary_model = self._cfg_str("commentary.model", "")
         self.manager.draw_guess_duration_seconds = self.draw_guess_duration_seconds
         self.manager.draw_guess_max_guesses = self.draw_guess_max_guesses
         self.manager.pig_dice_target_score = self.pig_dice_target_score
@@ -6219,6 +6512,8 @@ class GameCompanionPlugin(Star):
             url = await self.quick_tunnel.start(timeout=40)
         except Exception as exc:
             return {"status": "error", "message": str(exc), "data": {}}
+        # 手动重启通道后地址可能变化，清缓存让后续链接用新地址
+        self._access_base_cache = ""
         return {
             "status": "ok",
             "data": {"url": url, "tunnel": self.quick_tunnel.status()},
@@ -6886,6 +7181,10 @@ class GameCompanionPlugin(Star):
             "xiangqi": "xiangqi",
             "象棋": "xiangqi",
             "中国象棋": "xiangqi",
+            "weiqi": "weiqi",
+            "go": "weiqi",
+            "围棋": "weiqi",
+            "圍棋": "weiqi",
             "tictactoe": "tictactoe",
             "tic-tac-toe": "tictactoe",
             "tic_tac_toe": "tictactoe",
@@ -6926,7 +7225,7 @@ class GameCompanionPlugin(Star):
             "谁是臥底": "undercover",
         }
         if normalized not in aliases:
-            raise ValueError("目前只支持五子棋、中国象棋、井字棋、黑白棋、海龟汤、贪心骰子、你画我猜、二十一点和谁是卧底")
+            raise ValueError("目前只支持五子棋、中国象棋、围棋、井字棋、黑白棋、海龟汤、贪心骰子、你画我猜、二十一点和谁是卧底")
         return aliases[normalized]  # type: ignore[return-value]
 
     @staticmethod
@@ -6934,6 +7233,7 @@ class GameCompanionPlugin(Star):
         return {
             "gomoku": "五子棋",
             "xiangqi": "中国象棋",
+            "weiqi": "围棋",
             "tictactoe": "井字棋",
             "othello": "黑白棋",
             "turtle_soup": "海龟汤",

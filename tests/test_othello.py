@@ -125,3 +125,36 @@ async def test_room_manager_starts_bot_when_human_chooses_white() -> None:
     assert len(room.game.history) == 1
     assert room.game.turn == WHITE
     assert room.status == "active"
+
+
+def test_evaluate_reports_winrate_that_tracks_disk_lead_and_empty_cells() -> None:
+    game = OthelloGame()
+
+    opening = game.evaluate()
+    # 开局 2:2 且黑先，先手只该带来极小偏移，不能出现一边倒
+    assert 45.0 <= float(opening["black"]) <= 60.0
+    assert opening["empty"] == 60
+    assert opening["scored"] is False
+    assert game.snapshot()["eval"] == opening
+
+    # 黑子越多胜率越高；同一子数差下空格越少越确定
+    game.board = [[BLACK] * 8 for _ in range(8)]
+    for row in range(4):
+        game.board[row][7] = WHITE
+    leading = game.evaluate()
+    assert float(leading["black"]) > 60.0
+    assert float(leading["lead"]) > 0
+    assert leading["empty"] == 0
+
+    # 终局：胜负已定，胜方必须明确站在 50% 以上
+    game.winner = BLACK
+    assert float(game.evaluate()["black"]) > 50.0
+    game.board = [[WHITE] * 8 for _ in range(8)]
+    for row in range(4):
+        game.board[row][7] = BLACK
+    game.winner = WHITE
+    assert float(game.evaluate()["black"]) < 50.0
+    game.board = [[EMPTY] * 8 for _ in range(8)]
+    game.winner = EMPTY
+    game.draw = True
+    assert float(game.evaluate()["black"]) == pytest.approx(50.0, abs=0.5)

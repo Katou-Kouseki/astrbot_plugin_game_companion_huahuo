@@ -32,12 +32,14 @@ def test_settings_snapshot_contains_every_game_and_editable_values() -> None:
     assert set(games) == {
         "gomoku",
         "xiangqi",
+        "weiqi",
         "tictactoe",
         "othello",
         "turtle_soup",
         "pig_dice",
         "draw_guess",
         "blackjack",
+        "undercover",
     }
     assert all(item["enabled"] is True for item in games.values())
     pig_fields = {item["key"]: item for item in games["pig_dice"]["fields"]}
@@ -48,6 +50,14 @@ def test_settings_snapshot_contains_every_game_and_editable_values() -> None:
     }
     assert blackjack_fields["max_players"]["value"] == 1
     assert blackjack_fields["max_players"]["maximum"] == 6
+    weiqi_fields = {item["key"]: item for item in games["weiqi"]["fields"]}
+    assert weiqi_fields["board_size"]["value"] == "13"
+    assert {option["value"] for option in weiqi_fields["board_size"]["options"]} == {
+        "9",
+        "13",
+        "19",
+    }
+    assert weiqi_fields["komi"]["value"] == "7.5"
 
 
 @pytest.mark.asyncio

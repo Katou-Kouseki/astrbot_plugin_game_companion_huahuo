@@ -223,6 +223,36 @@ class OthelloGame:
             "last_flipped_count": self.last_flipped_count,
             "black_count": self.black_count,
             "white_count": self.white_count,
+            "eval": self.evaluate(),
+        }
+
+    def evaluate(self) -> dict[str, object]:
+        """实时胜率估算：子数差 + 剩余空格带来的不确定度。
+
+        黑白棋的「子数」不等于「形势」——中盘领先十几子也可能被一手翻盘，
+        所以这里按剩余空位放大方差：空位多时同样的子数差只折算成很小胜率，
+        空位收干后才逐步贴近真实子数。终局直接按子数定胜负。
+        """
+        black = self.black_count
+        white = self.white_count
+        settled = black + white
+        empty = max(0, BOARD_SIZE * BOARD_SIZE - settled)
+        margin = float(black - white)
+        if not self.finished:
+            # 先手（黑）在黑白棋里天然略优，给一点点偏移，避免开局永远 50/50
+            margin += 0.8 if self.turn == BLACK else -0.8
+            spread = max(1.0, 2.4 * math.sqrt(max(1, settled)) * (0.6 + empty / 32.0))
+        else:
+            # 终局胜负已定，直接按子数差收敛，别让 33:31 显示成 46%
+            spread = 1.0
+        winrate = 1.0 / (1.0 + math.exp(-margin / spread))
+        winrate = min(0.98, max(0.02, winrate))
+        return {
+            "black": round(winrate * 100, 1),
+            "white": round((1.0 - winrate) * 100, 1),
+            "lead": round(margin, 1),
+            "empty": empty,
+            "scored": self.finished,
         }
 
     def _settle(self) -> None:

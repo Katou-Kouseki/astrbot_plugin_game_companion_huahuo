@@ -16,6 +16,7 @@ from .blackjack import BlackjackGame
 from .draw_guess import DrawGuessGame
 from .gomoku import BLACK, EMPTY, WHITE, Difficulty, GomokuGame
 from .models import (
+    DIFFICULTY_GAME_TYPES,
     GameRoom,
     GameType,
     MultiplayerState,
@@ -48,8 +49,16 @@ from .undercover_words import UndercoverWordStore
 from .xiangqi import BLACK as XIANGQI_BLACK
 from .xiangqi import RED as XIANGQI_RED
 from .xiangqi import XiangqiGame
+from .weiqi import DEFAULT_KOMI as WEIQI_DEFAULT_KOMI
+from .weiqi import DEFAULT_SIZE as WEIQI_DEFAULT_SIZE
+from .weiqi import SIZES as WEIQI_SIZES
+from .weiqi import WeiqiGame
 
 logger = logging.getLogger("astrbot_plugin_game_companion")
+
+# 棋盘对弈类：共用「回合倒计时 / 掉线暂停 / 按座位执方 / 双人席位」这套逻辑。
+# 新增棋类时把类加进来，其余分支只需补自己的走子与快照实现。
+BOARD_GAME_CLASSES = (GomokuGame, OthelloGame, XiangqiGame, WeiqiGame)
 
 # AI 玩家的性格形容词池（2 字），用于生成「火花·调皮(AI)」这类名称，并作为其答题人设
 _UC_AI_ADJECTIVES: tuple[str, ...] = (
@@ -78,6 +87,7 @@ RoomCallback = Callable[[str, GameRoom, dict[str, Any]], Awaitable[None]]
 SUPPORTED_GAMES: tuple[GameType, ...] = (
     "gomoku",
     "xiangqi",
+    "weiqi",
     "tictactoe",
     "othello",
     "turtle_soup",
@@ -101,19 +111,35 @@ _UC_GAME_TYPES: frozenset[str] = frozenset(SUPPORTED_GAMES)
 # 集合之一，并补齐该玩法的多方轮转/结算逻辑即可；前端只按座位状态判断，不再
 # 硬编码玩法名。
 SEAT_CAPABLE_GAMES: frozenset[GameType] = frozenset(
-    {"turtle_soup", "blackjack", "undercover", "gomoku", "othello", "xiangqi"}
+    {
+        "turtle_soup",
+        "blackjack",
+        "undercover",
+        "gomoku",
+        "othello",
+        "xiangqi",
+        "weiqi",
+    }
 )
 
 # 两人对弈类：座位顺序决定执色（棋类 1 号黑、2 号白；象棋 1 号红、2 号黑），
 # 对局中不允许增减座位。
-DUEL_GAMES: frozenset[GameType] = frozenset({"gomoku", "othello", "xiangqi"})
+DUEL_GAMES: frozenset[GameType] = frozenset(
+    {"gomoku", "othello", "xiangqi", "weiqi"}
+)
 
 # 各上座玩法的默认席位数；未列出的走 2 席。
 SEAT_CAPACITY: dict[str, int] = {
     "gomoku": 2,
     "othello": 2,
     "xiangqi": 2,
+    "weiqi": 2,
 }
+
+# 棋类全局榜里花火的稳定键与展示名：AI 座位每次都是随机 token，这里用固定键累计，
+# 让花火也能在棋类排行榜里拥有自己的局数与胜率排名（而不是被当成散落的「火花·XX(AI)」）。
+AI_LEADERBOARD_KEY = "__huahuo_ai__"
+AI_LEADERBOARD_NAME = "花火"
 
 
 def _parse_camp_scales(raw: object) -> tuple[int, int, int]:
@@ -171,6 +197,8 @@ class RoomManager:
         multiplayer_turn_timeout: int = 60,
         duel_turn_timeout: int = 180,
         duel_offline_grace: int = 90,
+        weiqi_board_size: int = WEIQI_DEFAULT_SIZE,
+        weiqi_komi: float = WEIQI_DEFAULT_KOMI,
         swap_request_cooldown: int = 30,
         swap_request_expiry: int = 20,
         draw_guess_max_guesses: int = 5,
@@ -210,6 +238,11 @@ class RoomManager:
         # 棋类对弈：每步倒计时（0 关闭）与掉线后等待重连的宽限秒数
         self.duel_turn_timeout = max(0, int(duel_turn_timeout))
         self.duel_offline_grace = max(0, int(duel_offline_grace))
+        # 围棋盘路与贴目：只允许 9 / 13 / 19 路，贴目按 0.5 的整数倍保存
+        self.weiqi_board_size = (
+            int(weiqi_board_size) if int(weiqi_board_size) in {9, 13, 19} else WEIQI_DEFAULT_SIZE
+        )
+        self.weiqi_komi = round(max(0.0, min(float(weiqi_komi), 30.0)) * 2) / 2
         self.swap_request_cooldown = max(0, int(swap_request_cooldown))
         self.swap_request_expiry = max(1, int(swap_request_expiry))
         self.draw_guess_max_guesses = max(1, min(int(draw_guess_max_guesses), 10))
@@ -288,23 +321,39 @@ class RoomManager:
 
         AI 座位的 qq 是每次对局新建的随机 token，会导致同一个 AI 名（如「花火·调皮(AI)」）
         被记成多条。这里按「名字」合并累计，使同名 AI 只显示一条、胜场累加。
+        棋类玩法同时返回 `games`（总局数）与 `winrate`（胜率，百分比），供前端展示。
         """
         bucket = self.global_player_wins.get(game_type or "") or {}
         merged: dict[str, dict[str, object]] = {}
         for _qq, info in bucket.items():
             name = str(info.get("name") or "未知玩家").strip() or "未知玩家"
-            merged.setdefault(name, {"name": name, "wins": 0})
+            merged.setdefault(name, {"name": name, "wins": 0, "games": 0})
             merged[name]["wins"] = int(merged[name]["wins"] or 0) + int(
                 info.get("wins") or 0
             )
-        return [
-            {"name": str(info["name"]), "wins": int(info["wins"] or 0)}
-            for info in sorted(
-                merged.values(),
-                key=lambda info: int(info.get("wins") or 0),
-                reverse=True,
+            merged[name]["games"] = int(merged[name]["games"] or 0) + int(
+                info.get("games") or 0
             )
-        ][:max(0, int(limit))]
+        rows: list[dict[str, object]] = []
+        for info in sorted(
+            merged.values(),
+            key=lambda item: (
+                int(item.get("wins") or 0),
+                int(item.get("games") or 0),
+            ),
+            reverse=True,
+        ):
+            wins = int(info.get("wins") or 0)
+            games = int(info.get("games") or 0)
+            rows.append(
+                {
+                    "name": str(info["name"]),
+                    "wins": wins,
+                    "games": games,
+                    "winrate": round(wins * 100 / games, 1) if games else 0.0,
+                }
+            )
+        return rows[: max(0, int(limit))]
 
     @staticmethod
     def _is_known_game_type(key: str) -> bool:
@@ -339,6 +388,7 @@ class RoomManager:
                 cleaned[gtype][qq.strip()] = {
                     "name": str(info.get("name") or ""),
                     "wins": max(0, int(info.get("wins") or 0)),
+                    "games": max(0, int(info.get("games") or 0)),
                 }
         return cleaned
 
@@ -545,15 +595,20 @@ class RoomManager:
         game_type: GameType = "gomoku",
         difficulty: Difficulty,
         turtle_soup_mode: TurtleSoupMode = "bot_host",
+        bypass_limit: bool = False,
     ) -> GameRoom:
-        """Create a room atomically under the source-wide quota."""
+        """Create a room atomically under the source-wide quota.
+
+        bypass_limit 只给游戏管理台「手动开房间」用：管理员在控制台开链接房间时，
+        不该被群聊/私聊的并行上限挡住（那两项限制是给普通用户创建房间用的）。
+        """
         self.require_game_enabled(game_type)
         async with self._lock:
             limit = (
                 self.max_group_rooms if source == "group" else self.max_private_rooms
             )
             active_count = sum(room.source == source for room in self.rooms.values())
-            if limit and active_count >= limit:
+            if limit and not bypass_limit and active_count >= limit:
                 label = "群聊" if source == "group" else "私聊"
                 raise ValueError(f"{label}房间已达到并行上限 {limit}")
             room_id = secrets.token_hex(4)
@@ -573,6 +628,9 @@ class RoomManager:
                 game_type=game_type,
                 difficulty=difficulty,
                 turtle_soup_mode=turtle_soup_mode,
+                # 围棋盘路跟房间走：建好之后首位入座的玩家还能再改
+                weiqi_size=self.weiqi_board_size,
+                weiqi_komi=self.weiqi_komi,
             )
             self._configure_multiplayer(room)
             room.camp_wins_store = self.undercover_camp_wins  # 让座位徽章按实时阵营胜场计算
@@ -779,7 +837,10 @@ class RoomManager:
         start_required = False
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
-            if room.admin_room:
+            # 管理台开出来的房间没有 QQ 会话，历史设计只能由管理员安排座位；
+            # 若访客已经带着身份（受信任浏览器 / 已绑定 QQ），就让他自己入座，
+            # 否则管理台每来一个人都要手动点一次「安排玩家」。
+            if room.admin_room and not visitor.identity_confirmed:
                 raise ValueError("这个房间需要管理员从游戏管理台安排玩家")
             if room.multiplayer.enabled:
                 duel = room.game_type in DUEL_GAMES
@@ -1249,6 +1310,45 @@ class RoomManager:
                     difficulty=room.difficulty,
                 )
                 side_label = "红" if human_side == XIANGQI_RED else "黑"
+            elif room.game_type == "weiqi":
+                # 围棋：与五子棋同构（1 号黑、2 号白），只是多了盘路与贴目
+                if room.multiplayer.enabled:
+                    if len(room.multiplayer.seats) < 2:
+                        self._append_ai_seat_locked(room)
+                    rotate = bool(room.completed_games)
+                    if rotate or any(
+                        not seat.side for seat in room.multiplayer.seats
+                    ):
+                        self._assign_duel_sides(room, rotate=rotate)
+                    human_seats = self._human_seats(room)
+                    normalized_side = str(side or "").strip().lower()
+                    if normalized_side == "random":
+                        normalized_side = secrets.choice(("human_black", "bot_black"))
+                    if len(human_seats) == 1 and not room.completed_games and normalized_side:
+                        wants_white = normalized_side in {"bot_black", "human_white"}
+                        human_seats[0].side = "white" if wants_white else "black"
+                        for seat in room.multiplayer.seats:
+                            if seat.is_ai:
+                                seat.side = "black" if wants_white else "white"
+                    human_color = self._duel_human_color(room)
+                else:
+                    normalized_side = str(side or "human_black").strip().lower()
+                    if normalized_side not in {"human_black", "bot_black", "random"}:
+                        normalized_side = "human_black"
+                    if normalized_side == "random":
+                        normalized_side = secrets.choice(
+                            ("human_black", "bot_black")
+                        )
+                    human_color = (
+                        BLACK if normalized_side == "human_black" else WHITE
+                    )
+                room.game = WeiqiGame(
+                    human_color=human_color,
+                    difficulty=room.difficulty,
+                    size=room.weiqi_size,
+                    komi=room.weiqi_komi,
+                )
+                side_label = "黑" if human_color == BLACK else "白"
             elif room.game_type in DUEL_GAMES:
                 # 两人对弈：由座位决定执色（1 号黑、2 号白）。
                 # 只有一个座位时自动让花火补位；已有对局历史时换先（黑白互换）。
@@ -1459,7 +1559,7 @@ class RoomManager:
                         "words_assigned": True,
                     },
                 )
-        if isinstance(room.game, (GomokuGame, OthelloGame, XiangqiGame)):
+        if isinstance(room.game, BOARD_GAME_CLASSES):
             async with room.lock:
                 # 开局第一步就开始计时（轮到花火时倒计时会留空）
                 room.multiplayer.duel_paused = False
@@ -1518,6 +1618,23 @@ class RoomManager:
                     int(to_row),
                     int(to_column),
                 )
+            elif isinstance(room.game, WeiqiGame):
+                color = self._seat_color(room, seat) if seat else EMPTY
+                if not color:
+                    color = room.game.human_color
+                if room.game.turn != color:
+                    raise ValueError("还没轮到你落子")
+                captured = room.game.place(int(row), int(column), color)
+                board_event.update(
+                    row=int(row),
+                    column=int(column),
+                    color=color,
+                    captured=int(captured),
+                    captured_points=[
+                        list(point) for point in room.game.last_captured_points
+                    ],
+                    eval=room.game.evaluate(),
+                )
             elif isinstance(room.game, GomokuGame):
                 color = self._seat_color(room, seat) if seat else EMPTY
                 if not color:
@@ -1549,6 +1666,7 @@ class RoomManager:
                     column=int(column),
                     color=color,
                     passed_color=room.game.last_passed,
+                    eval=room.game.evaluate(),
                 )
                 if room.game.last_passed:
                     passed = (
@@ -1570,7 +1688,7 @@ class RoomManager:
                 )
             room.touch()
             finished = room.game.finished
-            if isinstance(room.game, (GomokuGame, OthelloGame, XiangqiGame)) and not finished:
+            if isinstance(room.game, BOARD_GAME_CLASSES) and not finished:
                 # 走子即代表本人回来了：解除掉线暂停，并把倒计时交给下一位
                 room.multiplayer.duel_paused = False
                 room.multiplayer.duel_pause_deadline = 0.0
@@ -1581,6 +1699,103 @@ class RoomManager:
             return
         if self._is_bot_turn(room):
             await self._bot_turn(room)
+
+    async def player_pass(self, room: GameRoom, visitor_token: str) -> None:
+        """围棋停一手：双方连续停手即按数子法结算。"""
+        board_event: dict[str, object] = {"actor": "human", "passed": True}
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            seat: PlayerSeat | None = None
+            if room.multiplayer.enabled:
+                seat = room.multiplayer.seat_for_token(visitor.token)
+                if seat is None or seat.is_ai:
+                    raise PermissionError("当前浏览器不在玩家席")
+            elif visitor.token != room.player_token:
+                raise PermissionError("当前浏览器不在玩家席")
+            if room.status != "active" or not isinstance(room.game, WeiqiGame):
+                raise ValueError("当前没有正在进行的围棋对局")
+            game = room.game
+            color = self._seat_color(room, seat) if seat else game.human_color
+            if game.turn != color:
+                raise ValueError("还没轮到你停手")
+            finished = game.pass_turn(color)
+            board_event.update(color=color, eval=game.evaluate())
+            if seat is not None:
+                board_event.update(
+                    seat_number=seat.number,
+                    seat_name=self._seat_display(seat),
+                    side=self._seat_side(room, seat),
+                )
+            room.touch()
+            if not finished:
+                room.multiplayer.duel_paused = False
+                room.multiplayer.duel_pause_deadline = 0.0
+                self._reset_turn_deadline(room)
+        await self._emit("board_changed", room, board_event)
+        if finished:
+            await self._finish_game(room)
+            return
+        if self._is_bot_turn(room):
+            await self._bot_turn(room)
+
+    async def set_weiqi_board(
+        self,
+        room: GameRoom,
+        visitor_token: str,
+        size: int,
+        komi: float | None = None,
+    ) -> None:
+        """调整围棋盘路（贴目可选）。
+
+        只有「最早落座的那位真人」能在开局前改：盘路一换，整盘重新铺，
+        所以已经落过子就不允许再改——半盘 13 路直接变 19 路会让棋谱失去意义。
+        """
+        if room.game_type != "weiqi":
+            raise ValueError("只有围棋房间可以调整盘路")
+        try:
+            normalized = int(size)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("盘路只能是 9 / 13 / 19") from exc
+        if normalized not in WEIQI_SIZES:
+            raise ValueError("盘路只能是 9 / 13 / 19")
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if not self._is_first_seated_human(room, visitor.token):
+                raise PermissionError("只有最先入座的玩家可以调整盘路")
+            game = room.game
+            if isinstance(game, WeiqiGame) and game.history and room.status != "finished":
+                raise ValueError("对局已经开始，盘路只能在开局前调整")
+            if room.weiqi_size == normalized and komi is None:
+                return
+            if komi is not None:
+                room.weiqi_komi = round(max(0.0, min(float(komi), 30.0)) * 2) / 2
+            room.weiqi_size = normalized
+            # 已经建好但还没落子的对局：就地换一块新棋盘，保留执色与棋力。
+            # 上一局刚结束时保留原棋盘（那是复盘用的结果），新盘路等再来一局生效。
+            if isinstance(game, WeiqiGame) and room.status != "finished":
+                room.game = WeiqiGame(
+                    human_color=game.human_color,
+                    difficulty=game.difficulty,
+                    size=normalized,
+                    komi=room.weiqi_komi,
+                )
+            room.touch()
+            room.add_message(
+                "system",
+                f"棋盘调整为 {normalized} 路（黑贴 {room.weiqi_komi:g} 目）。",
+            )
+        await self._emit("board_changed", room, {"actor": "system", "resized": True})
+
+    def _is_first_seated_human(self, room: GameRoom, visitor_token: str) -> bool:
+        """是不是房间里最早落座的那位真人（盘路只归他改）。"""
+        if not visitor_token:
+            return False
+        if room.multiplayer.enabled:
+            humans = [seat for seat in room.multiplayer.seats if not seat.is_ai]
+            if not humans:
+                return False
+            return min(humans, key=lambda seat: seat.seated_at).visitor_token == visitor_token
+        return visitor_token == room.player_token
 
     async def player_dice_action(
         self, room: GameRoom, visitor_token: str, action: str
@@ -1928,6 +2143,22 @@ class RoomManager:
                     difficulty=difficulty,
                 )
                 side_label = "红" if human_side == XIANGQI_RED else "黑"
+            elif isinstance(room.game, WeiqiGame):
+                if room.multiplayer.enabled:
+                    if len(room.multiplayer.seats) < 2:
+                        self._append_ai_seat_locked(room)
+                    # 再来一局换先：黑白互换
+                    self._assign_duel_sides(room, rotate=True)
+                    human_color = self._duel_human_color(room)
+                else:
+                    human_color = room.game.human_color
+                room.game = WeiqiGame(
+                    human_color=human_color,
+                    difficulty=difficulty,
+                    size=room.weiqi_size,
+                    komi=room.weiqi_komi,
+                )
+                side_label = "黑" if human_color == BLACK else "白"
             elif isinstance(room.game, (GomokuGame, OthelloGame)):
                 game_class = (
                     GomokuGame if isinstance(room.game, GomokuGame) else OthelloGame
@@ -2064,6 +2295,23 @@ class RoomManager:
         await self._emit("game_started", room, {"rematch": True})
         if self._is_bot_turn(room):
             await self._bot_turn(room)
+
+    async def set_difficulty(self, room: GameRoom, difficulty: Difficulty) -> None:
+        """管理台直接切换棋力：只对棋类房间生效，立即影响 Bot 接下来的走子。"""
+        if room.game_type not in DIFFICULTY_GAME_TYPES:
+            raise ValueError(f"{self._game_label(room.game_type)}没有可调的棋力档位")
+        if difficulty not in {"easy", "normal", "hard"}:
+            raise ValueError("棋力只能是简单、普通、困难")
+        async with room.lock:
+            room.difficulty = difficulty
+            game = room.game
+            if game is not None and hasattr(game, "difficulty"):
+                game.difficulty = difficulty
+            room.touch()
+            room.add_message(
+                "system",
+                f"管理员把棋力调整为{self._difficulty_label(difficulty)}。",
+            )
 
     async def undo(self, room: GameRoom) -> int:
         """Undo the latest complete player round after a QQ-side decision."""
@@ -2678,6 +2926,11 @@ class RoomManager:
             )
             if target_index < 0:
                 raise ValueError("目标玩家已经不在玩家席")
+            # 换座时把离席者（visitor/target）的 number 换成入席者（requester）原来的
+            # number：随后 _sync_visitor_numbers 只会同步「在座」访客的 number，
+            # 离席者借此保留一个独立编号，避免和入席者撞号（否则按编号定位访客会
+            # 错位，remove_player / kick_visitor 会失效）。
+            visitor.number = requester.number
             state.seats[target_index] = PlayerSeat(
                 visitor_token=requester.token,
                 qq=requester.qq if requester.identity_confirmed else "",
@@ -2768,6 +3021,11 @@ class RoomManager:
                     continue
             if isinstance(room.game, TurtleSoupGame) and room.game.phase == "preparing":
                 continue
+            # 管理台手动开出来的「链接房间」由管理员在管理台显式关闭，不参与
+            # 「玩家席无人」「长时间无操作」的自动销毁：管理员把链接发给朋友后，
+            # 对方可能过很久才点开，提前销毁就会变成「链接进不去」。
+            if room.admin_room:
+                continue
             if (
                 self.empty_player_timeout
                 and room.player_empty_since is not None
@@ -2828,6 +3086,28 @@ class RoomManager:
                     board_event.update(
                         row=move[0], column=move[1], color=game.bot_color
                     )
+                elif isinstance(game, WeiqiGame):
+                    move = await asyncio.to_thread(game.choose_bot_move)
+                    if move is None:
+                        # Bot 判断局面已经收官，停一手；双方连续停手由规则层结算
+                        game.pass_turn(game.bot_color)
+                        board_event.update(
+                            passed=True,
+                            color=game.bot_color,
+                            eval=game.evaluate(),
+                        )
+                    else:
+                        captured = game.place(move[0], move[1], game.bot_color)
+                        board_event.update(
+                            row=move[0],
+                            column=move[1],
+                            color=game.bot_color,
+                            captured=int(captured),
+                            captured_points=[
+                                list(point) for point in game.last_captured_points
+                            ],
+                            eval=game.evaluate(),
+                        )
                 elif isinstance(game, OthelloGame):
                     move = await asyncio.to_thread(game.choose_bot_move)
                     game.place(move[0], move[1], game.bot_color)
@@ -2836,6 +3116,7 @@ class RoomManager:
                         column=move[1],
                         color=game.bot_color,
                         passed_color=game.last_passed,
+                        eval=game.evaluate(),
                     )
                     if game.last_passed:
                         passed = (
@@ -2854,7 +3135,7 @@ class RoomManager:
                     )
                 finished = game.finished
                 if not finished and isinstance(
-                    game, (GomokuGame, OthelloGame, XiangqiGame)
+                    game, BOARD_GAME_CLASSES
                 ):
                     # 花火走完把倒计时还给真人座位
                     self._reset_turn_deadline(room)
@@ -2999,7 +3280,7 @@ class RoomManager:
             elif (
                 room.game_type in DUEL_GAMES
                 and room.multiplayer.enabled
-                and isinstance(room.game, (GomokuGame, OthelloGame, XiangqiGame))
+                and isinstance(room.game, BOARD_GAME_CLASSES)
             ):
                 # 两人对弈：胜负按「赢家座位」归属，输家不记胜。
                 duel_handled = True
@@ -3035,8 +3316,20 @@ class RoomManager:
             else:
                 room.bot_wins += 1
                 result = "bot_win"
-            # 非卧底游戏：全局战绩按当前游戏类型分桶；获胜方为已绑定玩家时 +1（AI 无绑定不记）
-            if duel_handled:
+            # 非卧底游戏全局战绩：棋类按「局数 + 胜场」统计（花火也有自己的胜率排名），
+            # 其余合作 / 单人玩法沿用「获胜方 +1」的旧逻辑（AI 不记）。
+            if room.game_type in DIFFICULTY_GAME_TYPES:
+                winner_tokens = (
+                    duel_credit
+                    if duel_handled
+                    else ({room.player_token} if result == "human_win" else set())
+                )
+                self._credit_board_game_global(
+                    room,
+                    winner_tokens=winner_tokens or set(),
+                    ai_won=(result == "bot_win"),
+                )
+            elif duel_handled:
                 # 两人对弈只给赢家记胜，AI 座位不计入全局榜
                 self._credit_human_global_wins(room, winner_tokens=duel_credit)
             elif (
@@ -3046,6 +3339,68 @@ class RoomManager:
                 self._credit_human_global_wins(room)
             room.touch()
         await self._emit("game_finished", room, {"result": result})
+
+    def _credit_board_game_global(
+        self,
+        room: GameRoom,
+        *,
+        winner_tokens: set[str],
+        ai_won: bool,
+    ) -> None:
+        """给棋类全局榜记「局数 + 胜场」，让花火也拥有自己的胜率排名。
+
+        每位真人参与者 +1 局；`winner_tokens` 里的获胜真人 +1 胜。花火在场时同样
+        +1 局，`ai_won` 为真时花火 +1 胜。平局只记局数、不记胜场。
+        谁是卧底等玩法不在这里统计（它们有各自的阵营胜场逻辑）。
+        """
+        if room.game_type not in DIFFICULTY_GAME_TYPES:
+            return
+        bucket = self.global_player_wins.setdefault(room.game_type, {})
+        winners = winner_tokens or set()
+        humans: list[tuple[str, str, str]] = []  # (qq, name, visitor_token)
+        ai_present = False
+        if room.multiplayer.enabled:
+            for seat in room.multiplayer.seats:
+                if seat.is_ai:
+                    ai_present = True
+                    continue
+                qq = (seat.qq or "").strip()
+                if seat.identity_confirmed and qq:
+                    humans.append(
+                        (
+                            qq,
+                            (seat.display_name or "").strip() or qq,
+                            seat.visitor_token,
+                        )
+                    )
+        else:
+            # 单人局（玩家 vs 花火）
+            qq = (room.player_qq or "").strip()
+            if qq and room.player_identity_confirmed:
+                name = ""
+                visitor = room.visitors.get(room.player_token or "")
+                if visitor and visitor.display_name:
+                    name = visitor.display_name.strip()
+                humans.append((qq, name or qq, room.player_token or ""))
+            ai_present = True
+        if not humans and not ai_present:
+            return
+        for qq, name, token in humans:
+            entry = bucket.setdefault(qq, {"name": "", "wins": 0, "games": 0})
+            entry["games"] = int(entry.get("games") or 0) + 1
+            if token in winners:
+                entry["wins"] = int(entry.get("wins") or 0) + 1
+            if name:
+                entry["name"] = name
+        if ai_present:
+            entry = bucket.setdefault(
+                AI_LEADERBOARD_KEY,
+                {"name": AI_LEADERBOARD_NAME, "wins": 0, "games": 0},
+            )
+            entry["games"] = int(entry.get("games") or 0) + 1
+            if ai_won:
+                entry["wins"] = int(entry.get("wins") or 0) + 1
+        self._save_global_stats()
 
     def _credit_human_global_wins(
         self,
@@ -3172,7 +3527,7 @@ class RoomManager:
             game = room.game
             if isinstance(game, BlackjackGame):
                 dealer_ready = self._tick_blackjack_locked(room, now)
-            elif isinstance(game, (GomokuGame, OthelloGame, XiangqiGame)):
+            elif isinstance(game, BOARD_GAME_CLASSES):
                 action = self._tick_duel_locked(room, now)
                 if action and "forfeit" in action:
                     duel_finished = self._forfeit_duel_locked(
@@ -3360,7 +3715,7 @@ class RoomManager:
     ) -> bool:
         """把还在思考的一方判负（对手获胜），返回是否真的结束了本局。"""
         game = room.game
-        if not isinstance(game, (GomokuGame, OthelloGame, XiangqiGame)) or game.finished:
+        if not isinstance(game, BOARD_GAME_CLASSES) or game.finished:
             return False
         if isinstance(game, XiangqiGame):
             loser_side = self._seat_side(room, seat)
@@ -3644,7 +3999,7 @@ class RoomManager:
         """当前该落子/走棋的座位；单人局 / 对局结束 / 非活跃局返回 None。"""
         game = room.game
         if (
-            not isinstance(game, (GomokuGame, OthelloGame, XiangqiGame))
+            not isinstance(game, BOARD_GAME_CLASSES)
             or game.finished
             or not room.multiplayer.enabled
             or room.status != "active"
@@ -3856,7 +4211,7 @@ class RoomManager:
             # 谁是卧底：按当前阶段设置正确的发言/投票时长，避免沿用匹配期的旧时长
             self._reset_undercover_deadline(room, now=now)
             return
-        if isinstance(game, (GomokuGame, OthelloGame, XiangqiGame)):
+        if isinstance(game, BOARD_GAME_CLASSES):
             # 棋类对弈：只有轮到真人座位时才走倒计时；掉线暂停期间保持不变，
             # 由 _tick_duel_locked 决定恢复或判负。
             if state.duel_paused:
@@ -4071,7 +4426,7 @@ class RoomManager:
         # 两人对弈：只有坐在 AI 座位上的那一方才是「花火的回合」。
         # 两个真人时不触发任何自动落子，否则会替对手走棋。
         if room.multiplayer.enabled and isinstance(
-            room.game, (GomokuGame, OthelloGame, XiangqiGame)
+            room.game, BOARD_GAME_CLASSES
         ):
             ai_seat = self._ai_seat(room)
             if ai_seat is None:
@@ -4098,9 +4453,7 @@ class RoomManager:
             return game.turn == "bot"
         if isinstance(game, XiangqiGame):
             return game.turn == game.bot_side
-        if isinstance(game, GomokuGame):
-            return game.turn == game.bot_color
-        if isinstance(game, OthelloGame):
+        if isinstance(game, (GomokuGame, OthelloGame, WeiqiGame)):
             return game.turn == game.bot_color
         return game.turn == game.bot_mark
 
@@ -4124,9 +4477,7 @@ class RoomManager:
             return game.solved
         if isinstance(game, XiangqiGame):
             return game.winner == game.human_side
-        if isinstance(game, GomokuGame):
-            return game.winner == game.human_color
-        if isinstance(game, OthelloGame):
+        if isinstance(game, (GomokuGame, OthelloGame, WeiqiGame)):
             return game.winner == game.human_color
         return game.winner == game.human_mark
 
@@ -4135,6 +4486,7 @@ class RoomManager:
         return {
             "gomoku": "五子棋",
             "xiangqi": "中国象棋",
+            "weiqi": "围棋",
             "tictactoe": "井字棋",
             "othello": "黑白棋",
             "turtle_soup": "海龟汤",

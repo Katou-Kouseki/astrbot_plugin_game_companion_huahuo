@@ -64,14 +64,20 @@ h2 { margin: 0; font-size: 16px; }
 
 .engine-bar { justify-content: space-between; gap: 18px; min-height: 64px; margin-bottom: 18px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 .engine-identity, .engine-actions { gap: 10px; min-width: 0; }
-.engine-icon { width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 5px; background: #efe7d6; color: #6d4a27; }
-.engine-icon svg { width: 18px; }
-.engine-identity strong, .engine-identity span { display: block; }
-.engine-identity span { max-width: 680px; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.engine-icon { width: 34px; height: 34px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 5px; background: #efe7d6; color: #6d4a27; line-height: 0; }
+.engine-icon svg { width: 18px; height: 18px; display: block; }
+/* 只作用于图标右侧的文字块：早先写成 .engine-identity span，会把 .engine-icon 也命中，
+   造成图标被 display:block + margin-top 顶下去 2px、颜色也跟着变灰 */
+.engine-identity > div > strong, .engine-identity > div > span { display: block; }
+.engine-identity > div > span { max-width: 680px; margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
 .rooms-section { border-top: 1px solid var(--line); padding-top: 16px; }
 .section-header { justify-content: space-between; gap: 18px; margin-bottom: 11px; }
 .section-header span { color: var(--muted); font-size: 12px; }
+/* 右上角「开新房间」工具条：玩法下拉 + 主按钮 + 隧道地址，窄屏自动换行 */
+.section-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
+.section-tools .game-select { min-height: 34px; font-size: 13px; }
+.section-tools .primary-button { white-space: nowrap; }
 .tunnel-url { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
 .table-wrap { position: relative; min-height: 160px; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
 table { width: 100%; border-collapse: collapse; }
@@ -98,8 +104,11 @@ td small { margin-top: 3px; color: var(--muted); }
 .status.finished { background: #f8eadc; color: #8c4616; }
 .row-actions { display: flex; flex-wrap: wrap; gap: 5px; min-width: 190px; }
 .row-button { width: 30px; min-height: 30px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+.row-button:disabled { opacity: .4; cursor: not-allowed; }
 .row-button.danger { border-color: #dbb4ae; color: var(--red); }
 .game-select { min-height: 30px; border: 1px solid var(--line); border-radius: 5px; padding: 0 25px 0 7px; background: var(--surface); color: var(--text); font-size: 12px; }
+/* 棋力切换：贴在「棋力：普通」下面，只对棋类房间出现 */
+.difficulty-select { margin-top: 6px; min-height: 26px; border: 1px solid var(--line); border-radius: 5px; padding: 0 22px 0 6px; background: var(--surface); color: var(--text); font-size: 12px; }
 .empty-state { min-height: 158px; display: grid; place-content: center; justify-items: center; gap: 8px; color: var(--muted); }
 .empty-state[hidden] { display: none; }
 .empty-state svg { width: 28px; }
@@ -159,6 +168,7 @@ dialog label { display: grid; gap: 6px; margin-top: 12px; color: var(--muted); f
 dialog input, dialog select { width: 100%; min-height: 40px; border: 1px solid var(--line); border-radius: 5px; padding: 0 10px; background: var(--surface); color: var(--text); }
 dialog footer { justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .dialog-message { margin: 0; color: var(--text); font-size: 14px; line-height: 1.65; }
+.dialog-hint { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .primary-button.danger { border-color: var(--red); background: var(--red); }
 .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); max-width: min(440px, calc(100% - 28px)); padding: 10px 14px; border-radius: 6px; background: #202522; color: #fff; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.2); z-index: 20; }
 
