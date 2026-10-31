@@ -144,6 +144,10 @@ class GameRoomServer:
             "/api/room/{access_token}/undercover/announce",
             self._undercover_announce,
         )
+        app.router.add_post(
+            "/api/room/{access_token}/board/announce",
+            self._board_announce,
+        )
         app.router.add_post("/api/room/{access_token}/ready", self._ready)
         app.router.add_post(
             "/api/room/{access_token}/undercover/add_ai",
@@ -699,6 +703,42 @@ class GameRoomServer:
             )
         if uid and text:
             room.last_announced_uid = uid
+            room.last_announced_text = text
+        return self._response({"announced": bool(text), "already": False, "text": text})
+
+    async def _board_announce(self, request: web.Request) -> web.Response:
+        """棋类结算卡「通知到群」：把本局胜负（谁赢了、执子、手数）发到开房群。
+
+        按 room.completed_games 幂等：同一局只通知一次，重复点击返回已通知而不重复发。
+        复用「通知到群」总开关与样式配置；只有棋类（五子棋/黑白棋/象棋/围棋）才支持。
+        """
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        if getattr(room, "game_type", "") not in {
+            "gomoku", "othello", "xiangqi", "weiqi",
+        }:
+            return web.json_response(
+                {"status": "error", "message": "当前玩法不支持通知到群"},
+                status=400,
+            )
+        key = f"board:{int(getattr(room, 'completed_games', 0) or 0)}"
+        if room.last_announced_uid == key:
+            return self._response({
+                "announced": bool(room.last_announced_text),
+                "already": True,
+                "text": room.last_announced_text,
+            })
+        image_data = str(payload.get("image") or "")
+        try:
+            text = await self.plugin.board_announce_result(room, image_data)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 棋类通知失败: %s", exc)
+            return web.json_response(
+                {"status": "error", "message": str(exc)}, status=400
+            )
+        if text:
+            room.last_announced_uid = key
             room.last_announced_text = text
         return self._response({"announced": bool(text), "already": False, "text": text})
 

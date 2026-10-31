@@ -2936,6 +2936,18 @@ body.dark .uc-speech-box textarea:focus {
 .uc-result-actions .secondary-action:hover { border-color: var(--green); color: var(--green); }
 .uc-result-actions .secondary-action svg { width: 17px; }
 
+/* 棋类结算弹窗里的终局棋盘缩略图：居中、圆角、带底纹 */
+.board-result-board {
+  display: block;
+  width: min(320px, 78vw);
+  height: auto;
+  margin: 14px auto 4px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.14);
+  background: #d4a85f;
+}
+
 /* ====== 谁是卧底：规则说明 & 战绩排行面板 ====== */
 .uc-info-panels {
   display: flex;

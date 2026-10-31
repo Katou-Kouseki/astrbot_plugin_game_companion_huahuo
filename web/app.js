@@ -21,6 +21,8 @@
   let ucLastResult = null;             // 本局结果快照，供「分享战报」canvas 生成 PNG
   let ucShownResultUid = "";           // 当前结算卡已展示的游戏 uid（用于跨轮询只在换局时重置按钮状态）
   let ucRecapCache = {};               // uid -> 复盘文案：同局缓存，不重复请求 LLM
+  let boardResultShownKey = "";        // 已展示过棋类结算弹窗的本局标识（game_type:completed_games）
+  let boardLastResult = null;          // 棋类本局结果快照，供「分享战报」「通知到群」使用
   let ucPrevMyOut = false;             // 上一帧本机是否已出局（用于触发出局提示）
   const ucRevealNodeCache = {};        // key `${gameUid}:${round}` -> {node, at}，让票数揭晓动画跨轮询存活
 
@@ -1649,6 +1651,7 @@
     renderEvalPanel();
     renderWeiqiBoard();
     renderDuelSeats();
+    renderBoardResult();
     icons();
   }
 
@@ -4139,6 +4142,303 @@
     renderDuelSeat("B", secondSeat, secondSide, "b");
   }
 
+  /* ============================================================
+     棋类结算弹窗：获胜后弹「分享战报 / 通知到群」，制造分享欲
+     ============================================================ */
+  function boardGameIcon(gt) {
+    return { gomoku: "⚫⚪", othello: "🌗", xiangqi: "🐎", weiqi: "⚪" }[gt] || "♟️";
+  }
+
+  // 把「谁赢了」映射成一句话 + 名字 + 执方（复用座位 side；单人历史房间走 human_color 兜底）
+  function buildBoardResult(target = room) {
+    const game = target?.game || {};
+    const gt = target?.game_type;
+    const seats = roomSeats(target);
+    const draw = !!game.draw;
+    const winner = game.winner;
+    const sideTextOf = (side) => (
+      gt === "xiangqi"
+        ? (side === "red" ? "红" : "黑")
+        : (side === "black" ? "黑" : "白")
+    );
+    let title = "平局";
+    let badge = "🤝";
+    let winnerName = "";
+    let winnerSideText = "";
+    if (!draw && winner !== null && winner !== undefined && winner !== 0 && winner !== "") {
+      let winnerSide = "";
+      if (gt === "xiangqi") winnerSide = winner;
+      else winnerSide = winner === 1 ? "black" : "white";
+      winnerSideText = sideTextOf(winnerSide);
+      const winnerSeat = seats.find((s) => s.side === winnerSide) || null;
+      badge = "🏆";
+      if (winnerSeat) {
+        winnerName = winnerSeat.is_ai
+          ? "花火"
+          : ((winnerSeat.display_name || "").trim() || `${winnerSeat.number}号`);
+        title = winnerSeat.is_ai
+          ? "花火 获胜"
+          : (winnerSeat.visitor_token && winnerSeat.visitor_token === visitorToken
+            ? "你赢了"
+            : `${winnerName} 获胜`);
+      } else {
+        // 单人历史房间兜底：human_color / human_side 判胜负
+        let humanWon;
+        if (gt === "xiangqi") humanWon = winner === game.human_side;
+        else humanWon = Number(winner) === Number(game.human_color);
+        winnerName = humanWon ? "玩家" : "花火";
+        title = humanWon ? "玩家获胜" : "花火 获胜";
+      }
+    }
+    const mySideText = target?.is_player ? sideTextOf(mySide(target)) : "";
+    const moveCount = Number(game.move_count || 0);
+    const opponent = hasAiOpponent(target) ? "花火" : (hasHumanOpponent(target) ? "对手" : "");
+    return {
+      game_type: gt,
+      label: gameLabel(),
+      icon: boardGameIcon(gt),
+      title,
+      badge,
+      winner_name: winnerName,
+      winner_side: winnerSideText,
+      draw,
+      move_count: moveCount,
+      my_side: mySideText,
+      opponent,
+      board: game.board || null,
+      size: game.size || (Array.isArray(game.board) ? game.board.length : 0),
+      kind: game.kind || gt,
+    };
+  }
+
+  // 在指定方形区域里画终局棋盘缩略图（弹窗与战报海报共用）
+  function paintBoardThumb(c, result, px, py, size) {
+    const cells = result.board || [];
+    const n = cells.length;
+    if (!n) {
+      c.fillStyle = "#d4a85f";
+      c.fillRect(px, py, size, size);
+      return;
+    }
+    const gt = result.game_type;
+    if (gt === "xiangqi") {
+      const cols = (cells[0] || []).length || 9;
+      const rows = n;
+      const m = size * 0.07;
+      const gx = (size - m * 2) / (cols - 1);
+      const gy = (size - m * 2) / (rows - 1);
+      c.fillStyle = "#d7a85d";
+      c.fillRect(px, py, size, size);
+      c.strokeStyle = "#563c23";
+      c.lineWidth = Math.max(1, size / 220);
+      for (let r = 0; r < rows; r += 1) {
+        const y = py + m + r * gy;
+        c.beginPath(); c.moveTo(px + m, y); c.lineTo(px + size - m, y); c.stroke();
+      }
+      for (let col = 0; col < cols; col += 1) {
+        const x = px + m + col * gx;
+        c.beginPath(); c.moveTo(x, py + m);
+        if (col === 0 || col === cols - 1) c.lineTo(x, py + size - m);
+        else { c.lineTo(x, py + m + 4 * gy); c.moveTo(x, py + m + 5 * gy); c.lineTo(x, py + size - m); }
+        c.stroke();
+      }
+      const labels = { K: "帅", A: "仕", B: "相", N: "马", R: "车", C: "炮", P: "兵", k: "将", a: "士", b: "象", n: "马", r: "车", c: "炮", p: "卒" };
+      cells.forEach((row, r) => row.forEach((piece, col) => {
+        if (piece === ".") return;
+        const x = px + m + col * gx;
+        const y = py + m + r * gy;
+        const isRed = piece === piece.toUpperCase();
+        const rad = Math.min(gx, gy) * 0.38;
+        c.beginPath(); c.arc(x, y, rad, 0, Math.PI * 2);
+        c.fillStyle = "#f1d49a"; c.fill();
+        c.strokeStyle = isRed ? "#8b2b24" : "#3a3a3a"; c.lineWidth = Math.max(1, size / 200); c.stroke();
+        c.fillStyle = isRed ? "#8b2b24" : "#1e2220";
+        c.font = `700 ${Math.floor(rad * 1.1)}px "Noto Serif SC","Songti SC",serif`;
+        c.textAlign = "center"; c.textBaseline = "middle";
+        c.fillText(labels[piece] || piece, x, y + 1);
+      }));
+      return;
+    }
+    if (gt === "othello") {
+      const cell = size / n;
+      c.fillStyle = "#27754f";
+      c.fillRect(px, py, size, size);
+      c.strokeStyle = "rgba(14, 51, 34, .78)";
+      c.lineWidth = Math.max(1, size / 200);
+      for (let i = 0; i <= n; i += 1) {
+        const p = px + i * cell;
+        c.beginPath(); c.moveTo(p, py); c.lineTo(p, py + size); c.stroke();
+        c.beginPath(); c.moveTo(px, p); c.lineTo(px + size, p); c.stroke();
+      }
+      cells.forEach((row, r) => row.forEach((v, col) => {
+        if (!v) return;
+        const x = px + col * cell + cell / 2;
+        const y = py + r * cell + cell / 2;
+        c.beginPath(); c.arc(x, y, cell * 0.4, 0, Math.PI * 2);
+        if (v === 1) { c.fillStyle = "#1a1a1a"; c.fill(); }
+        else { c.fillStyle = "#f4f4f2"; c.fill(); c.strokeStyle = "#9aa09b"; c.lineWidth = 1; c.stroke(); }
+      }));
+      return;
+    }
+    // gomoku / weiqi：网格 + 黑白子
+    const palette = getGamePalette(gt) || { board: "#d4a85f", line: "#5d472c", blackStone: "#242724", whiteStone: "#f7f8f5", whiteEdge: "#9da39e" };
+    const gap = (size - size * 0.1) / (n - 1);
+    const m = size * 0.05;
+    c.fillStyle = palette.board;
+    c.fillRect(px, py, size, size);
+    c.strokeStyle = palette.line;
+    c.lineWidth = Math.max(1, size / 240);
+    for (let i = 0; i < n; i += 1) {
+      const p = px + m + i * gap;
+      c.beginPath(); c.moveTo(px + m, p); c.lineTo(px + size - m, p); c.stroke();
+      c.beginPath(); c.moveTo(p, py + m); c.lineTo(p, py + size - m); c.stroke();
+    }
+    cells.forEach((row, r) => row.forEach((v, col) => {
+      if (!v) return;
+      const x = px + m + col * gap;
+      const y = py + m + r * gap;
+      c.beginPath(); c.arc(x, y, gap * 0.45, 0, Math.PI * 2);
+      if (v === 1) { c.fillStyle = palette.blackStone; c.fill(); }
+      else { c.fillStyle = palette.whiteStone; c.fill(); c.strokeStyle = palette.whiteEdge; c.lineWidth = 1; c.stroke(); }
+    }));
+  }
+
+  function drawBoardResultThumb(result) {
+    const canvas = document.getElementById("boardResultBoard");
+    if (!canvas) return;
+    const c = canvas.getContext("2d");
+    const W = canvas.width;
+    c.clearRect(0, 0, W, W);
+    paintBoardThumb(c, result, 0, 0, W);
+  }
+
+  function showBoardResult(result) {
+    const overlay = document.getElementById("boardResultOverlay");
+    if (!overlay) return;
+    const badgeEl = document.getElementById("boardResultBadge");
+    const titleEl = document.getElementById("boardResultTitle");
+    const messageEl = document.getElementById("boardResultMessage");
+    const announceBtn = document.getElementById("boardResultAnnounce");
+    if (badgeEl) badgeEl.textContent = result.badge || "🏆";
+    if (titleEl) {
+      titleEl.textContent = result.title || "本局结束";
+      titleEl.classList.toggle("is-undercover", false);
+      titleEl.classList.toggle("is-whiteboard", false);
+    }
+    const parts = [result.label];
+    if (result.my_side) parts.push(`你执${result.my_side}`);
+    if (result.opponent) parts.push(`对手：${result.opponent}`);
+    parts.push(`共 ${result.move_count} 手`);
+    if (messageEl) messageEl.textContent = parts.join(" · ");
+    if (announceBtn) {
+      // 通知到群：跟随「谁是卧底」的群通知总开关；未开启时隐藏（保持与卧底一致）
+      announceBtn.hidden = false;
+      announceBtn.disabled = false;
+      announceBtn.textContent = "📢 通知到群";
+    }
+    drawBoardResultThumb(result);
+    // 彩带
+    const confetti = document.getElementById("boardResultConfetti");
+    if (confetti) {
+      confetti.innerHTML = "";
+      const colors = ["var(--green)", "var(--red)", "var(--gold)", "#4f8ef7", "#c084fc"];
+      for (let i = 0; i < 28; i += 1) {
+        const piece = document.createElement("i");
+        piece.className = "uc-confetti";
+        piece.style.left = `${(Math.random() * 100).toFixed(2)}%`;
+        piece.style.setProperty("--cf-color", colors[i % colors.length]);
+        piece.style.setProperty("--cf-drift", `${(Math.random() * 120 - 60).toFixed(1)}px`);
+        piece.style.animationDelay = `${(Math.random() * 1.6).toFixed(2)}s`;
+        piece.style.animationDuration = `${(2.4 + Math.random() * 1.8).toFixed(2)}s`;
+        confetti.appendChild(piece);
+      }
+    }
+    const card = document.getElementById("boardResultCard");
+    if (card) {
+      card.style.animation = "none";
+      void card.offsetWidth;
+      card.style.animation = "";
+    }
+    overlay.hidden = false;
+  }
+
+  function renderBoardResult() {
+    const overlay = document.getElementById("boardResultOverlay");
+    if (!overlay) return;
+    const finished = isDuelGame(room) && room.status === "finished" && !!room.game;
+    if (!finished) {
+      if (boardResultShownKey) {
+        boardResultShownKey = "";
+        boardLastResult = null;
+        if (!overlay.hidden) overlay.hidden = true;
+      }
+      return;
+    }
+    const key = `${room.game_type}:${Number(room.score?.games || 0)}`;
+    if (boardResultShownKey === key) return;
+    boardResultShownKey = key;
+    boardLastResult = buildBoardResult(room);
+    showBoardResult(boardLastResult);
+  }
+
+  // 棋类「分享战报」PNG 卡片：头部战报标题 + 大号胜负 + 终局棋盘缩略图 + 底部落款
+  async function boardSharePosterUrl(result) {
+    if (!result) return "";
+    const scale = 2;
+    const W = 640;
+    const H = 820;
+    const cv = document.createElement("canvas");
+    cv.width = W * scale; cv.height = H * scale;
+    const c = cv.getContext("2d");
+    c.scale(scale, scale);
+    const font = (bold, px) => `${bold ? "bold " : ""}${px}px 'PingFang SC','Microsoft YaHei',sans-serif`;
+    const rr = (x, y, w, h, r) => {
+      c.beginPath(); c.moveTo(x + r, y);
+      c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+      c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+    };
+    // 背景：深色暖调渐变 + 顶部辉光
+    const g = c.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, "#1d3429"); g.addColorStop(1, "#101c16");
+    c.fillStyle = g; c.fillRect(0, 0, W, H);
+    const glow = c.createRadialGradient(W / 2, 0, 10, W / 2, 0, 460);
+    glow.addColorStop(0, "rgba(125, 211, 158, .16)"); glow.addColorStop(1, "rgba(125, 211, 158, 0)");
+    c.fillStyle = glow; c.fillRect(0, 0, W, H);
+    // 顶部横幅
+    const hg = c.createLinearGradient(0, 0, W, 170);
+    hg.addColorStop(0, "#1f5a41"); hg.addColorStop(1, "#143b2c");
+    c.fillStyle = hg; c.fillRect(0, 0, W, 170);
+    c.fillStyle = "#7fd0aa"; c.fillRect(0, 166, W, 4);
+    c.textAlign = "left";
+    c.fillStyle = "#9fd6bc"; c.font = font(false, 20);
+    c.fillText(`${result.icon || "♟️"} ${result.label} · 单局战报`, 26, 52);
+    c.fillStyle = "#ffffff"; c.font = font(true, 44);
+    c.fillText(result.title || "本局结束", 26, 122);
+    // 副信息行
+    c.fillStyle = "#cfe6d8"; c.font = font(false, 17);
+    const sub = [];
+    if (result.my_side) sub.push(`你执${result.my_side}`);
+    if (result.opponent) sub.push(`对手：${result.opponent}`);
+    sub.push(`共 ${result.move_count} 手`);
+    c.fillText(sub.join(" · "), 26, 196);
+    // 终局棋盘缩略图（居中，圆角卡片）
+    const boardSize = 460;
+    const bx = (W - boardSize) / 2;
+    const by = 236;
+    c.save();
+    rr(bx - 10, by - 10, boardSize + 20, boardSize + 20, 18);
+    c.fillStyle = "rgba(255,255,255,.06)"; c.fill();
+    c.restore();
+    paintBoardThumb(c, result, bx, by, boardSize);
+    // 底部落款
+    c.textAlign = "center";
+    c.fillStyle = "#7fd0aa"; c.font = font(true, 18);
+    c.fillText("花火陪你玩 · 再来一局，等你约", W / 2, H - 46);
+    c.fillStyle = "rgba(207,230,216,.6)"; c.font = font(false, 13);
+    c.fillText(new Date().toISOString().slice(0, 10), W / 2, H - 20);
+    return cv.toDataURL("image/png");
+  }
+
   function drawBoard() {
     if (["turtle_soup", "pig_dice", "draw_guess"].includes(room?.game_type)) return;
     if (room?.game_type === "weiqi") drawWeiqi();
@@ -5362,6 +5662,61 @@
       } catch (_imgError) { image = ""; }
       try {
         const data = await request("POST", "undercover/announce", { image });
+        if (data?.announced) {
+          btn.textContent = "✅ 已通知（本局一次）";
+          showToast(data?.already ? "本局已通知过，未重复发送" : "已通知到群");
+        } else {
+          btn.textContent = "📢 通知到群";
+          showToast("群通知未开启：请在插件配置开启 undercover.group_announce_enabled");
+          btn.disabled = false;
+        }
+      } catch (error) {
+        showToast(error?.message || "通知失败");
+        btn.textContent = "📢 通知到群";
+        btn.disabled = false;
+      }
+    });
+  }
+
+  // 棋类结算弹窗：关闭
+  const boardResultClose = document.getElementById("boardResultClose");
+  if (boardResultClose) {
+    boardResultClose.addEventListener("click", () => {
+      const overlay = document.getElementById("boardResultOverlay");
+      if (overlay) overlay.hidden = true;
+    });
+  }
+  // 棋类「分享战报」：画 PNG 卡片并保存/分享
+  const boardResultShare = document.getElementById("boardResultShare");
+  if (boardResultShare) {
+    boardResultShare.addEventListener("click", async () => {
+      const btn = boardResultShare;
+      btn.disabled = true;
+      try {
+        const url = await boardSharePosterUrl(boardLastResult);
+        if (!url) throw new Error("empty");
+        const label = boardLastResult?.label || "棋局";
+        savePosterImage(url, `${label}战报_${new Date().toISOString().slice(0, 10)}.png`);
+      } catch (error) {
+        showToast("生成战报失败：请稍后重试");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+  // 棋类「通知到群」：本局一次性（后端按 completed_games 幂等），可随图发送
+  const boardResultAnnounce = document.getElementById("boardResultAnnounce");
+  if (boardResultAnnounce) {
+    boardResultAnnounce.addEventListener("click", async () => {
+      const btn = boardResultAnnounce;
+      btn.disabled = true;
+      btn.textContent = "通知中…";
+      let image = "";
+      try {
+        image = await boardSharePosterUrl(boardLastResult) || "";
+      } catch (_imgError) { image = ""; }
+      try {
+        const data = await request("POST", "board/announce", { image });
         if (data?.announced) {
           btn.textContent = "✅ 已通知（本局一次）";
           showToast(data?.already ? "本局已通知过，未重复发送" : "已通知到群");

@@ -33,7 +33,7 @@ from .othello import WHITE as OTHELLO_WHITE
 from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
-from .room_manager import SUPPORTED_GAMES, RoomManager
+from .room_manager import BOARD_GAME_CLASSES, SUPPORTED_GAMES, RoomManager
 from .server import GameRoomServer
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
@@ -4869,6 +4869,64 @@ class GameCompanionPlugin(Star):
         if want_text:
             await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
         return text
+
+    async def board_announce_result(
+        self, room: GameRoom, image_data: str = ""
+    ) -> str:
+        """把棋类（五子棋/黑白棋/中国象棋/围棋）单局胜负发到开房群，返回已发送文案。
+
+        复用「通知到群」总开关与样式配置（undercover.group_announce_enabled /
+        group_announce_style）；棋类没有复盘环节，只发文字（可选随图）。
+        幂等由 server._board_announce 按 completed_games 保证。
+        """
+        if not getattr(self, "group_announce_enabled", False):
+            return ""
+        if getattr(room, "game_type", "") not in {
+            "gomoku", "othello", "xiangqi", "weiqi",
+        }:
+            return ""
+        text = self._board_announce_text(room)
+        if not text:
+            return ""
+        style = (getattr(self, "group_announce_style", "text") or "text").lower()
+        want_image = style in {"image", "both"}
+        want_text = style in {"text", "both"}
+        if not want_text and not want_image:
+            want_text = True
+        if want_image and image_data:
+            await self._send_to_origin_image(room, text if want_text else "", image_data)
+            return text
+        if want_text:
+            await self._send_to_origin(room, text)
+        return text
+
+    def _board_announce_text(self, room: GameRoom) -> str:
+        """棋类纯文字战报：游戏名 → 谁赢（执什么）→ 手数，供群通报使用。"""
+        game = room.game
+        if game is None or not isinstance(game, BOARD_GAME_CLASSES):
+            return ""
+        label = self.manager._game_label(room.game_type)
+        moves = len(getattr(game, "history", None) or [])
+        winner_seat = self.manager._duel_winner_seat(room)
+        if winner_seat is not None:
+            name = self.manager._seat_display(winner_seat)
+            side = self.manager._seat_side(room, winner_seat)
+            side_text = {
+                "red": "红", "black": "黑", "white": "白",
+            }.get(side, "")
+            result = f"🏆 {name}获胜" + (f"（执{side_text}）" if side_text else "")
+        elif getattr(game, "draw", False):
+            result = "🤝 平局"
+        else:
+            # 单人历史房间（未启用玩家席）的兜底：按 human_color/human_side 判胜负
+            if isinstance(game, XiangqiGame):
+                human_won = game.winner == game.human_side
+            else:
+                human_won = int(getattr(game, "winner", 0) or 0) == int(
+                    getattr(game, "human_color", 0) or 0
+                )
+            result = "🏆 玩家获胜" if human_won else "🏆 花火获胜"
+        return f"♟️ {label}战报\n{result}\n⏱️ 共 {moves} 手"
 
     @staticmethod
     def _undercover_announce_text(game: Any) -> str:
