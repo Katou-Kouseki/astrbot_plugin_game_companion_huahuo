@@ -919,6 +919,50 @@ _UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
 </body>
 </html>"""
 
+# 服务端「棋类战报」海报的 HTML/Jinja2 模板（深绿对弈卡风格：图标头 + 大字结果 +
+# 副信息 + 内嵌终局棋盘 SVG + 底部脚标）。board_svg 由 _board_svg 预生成，标记 safe。
+_BOARD_POSTER_TMPL = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=720">
+<style>
+  html, body { margin: 0; padding: 0; }
+  .poster {
+    min-width: 720px; min-height: 720px; box-sizing: border-box;
+    padding: 32px 46px 28px; display: flex; flex-direction: column; position: relative;
+    background: linear-gradient(135deg, #1e4334 0%, #0d1f17 100%);
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; color: #fff;
+  }
+  .poster::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.04) 0 2px, transparent 2px 36px);
+  }
+  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; background: {{ accent }}; }
+  .head { display: flex; justify-content: space-between; align-items: center; position: relative; }
+  .head .t { font-size: 22px; font-weight: 800; color: #ffe0a6; }
+  .head .r { font-size: 30px; }
+  .big { margin-top: 22px; text-align: center; font-size: 52px; font-weight: 900; line-height: 1.15;
+    color: {{ accent }}; -webkit-text-stroke: 6px rgba(0,0,0,.45); text-shadow: 0 4px 18px rgba(0,0,0,.3); position: relative; }
+  .sub { margin-top: 8px; text-align: center; font-size: 18px; font-weight: 600;
+    color: rgba(255,255,255,.8); position: relative; }
+  .boardwrap { margin-top: 24px; display: flex; justify-content: center; position: relative; }
+  .boardwrap svg { border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+  .wm { margin-top: auto; text-align: right; font-size: 14px; color: rgba(255,255,255,.4); position: relative; }
+</style>
+</head>
+<body>
+<div class="poster">
+  <div class="head"><span class="t">{{ icon }} {{ label }} · 战报</span><span class="r">{{ badge }}</span></div>
+  <div class="big">{{ title }}</div>
+  {% if sub %}<div class="sub">{{ sub }}</div>{% endif %}
+  <div class="boardwrap">{{ board_svg | safe }}</div>
+  <div class="wm">由 花火 生成</div>
+  <div class="bar"></div>
+</div>
+</body>
+</html>"""
+
 # 服务端「战绩日报/周报」排行榜海报的 HTML/Jinja2 模板（深蓝榜单卡风格：图标头、
 # 金色圆章奖牌 + 名字 + 进度条 + 胜场，前三名金色高亮）。
 _UNDERCOVER_REPORT_TMPL = """<!DOCTYPE html>
@@ -4944,10 +4988,10 @@ class GameCompanionPlugin(Star):
             want_text = True
         if want_image and image_data:
             await self._send_to_origin_image(
-                room, text if want_text else "", image_data, recap if want_text else ""
+                room, text if want_text else "", image_data, recap
             )
             return text
-        # 纯文字 / 「仅图片」但缺图（自动播报等无前端场景）：一律发文字兜底，保证群里能收到战况
+        # 纯文字 / 「仅图片」但缺图：一律发文字兜底，保证群里能收到战况
         await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
         return text
 
@@ -5035,6 +5079,343 @@ class GameCompanionPlugin(Star):
                 )
             result = "🏆 玩家获胜" if human_won else "🏆 花火获胜"
         return f"♟️ {label}战报\n{result}\n⏱️ 共 {moves} 手"
+
+    async def _board_announce_poster(self, room: GameRoom) -> str:
+        """生成「棋类战报」海报，返回 base64 PNG。
+
+        优先用 AstrBot 的 t2i（HTML/Jinja2 → 图片，样式精美、支持 emoji）；
+        t2i 服务不可用或超时时回退 Pillow 手绘。两者都失败则抛出异常，
+        由调用方回退纯文字播报。
+        """
+        try:
+            return await self._board_poster_t2i(room)
+        except Exception as exc:
+            logger.warning("[GameCompanion] t2i 渲染棋类战报海报失败，回退 Pillow: %s", exc)
+        return await asyncio.to_thread(self._board_poster_pillow, room)
+
+    async def _board_poster_t2i(self, room: GameRoom) -> str:
+        """用 AstrBot 的 t2i（HTML 渲染）生成棋类战报海报，返回 base64 PNG。"""
+        render = getattr(self, "html_render", None)
+        if not callable(render):
+            raise RuntimeError("当前 AstrBot 未提供 html_render（t2i）能力")
+        data = self._board_poster_data(room)
+        options = {
+            "type": "png",
+            "full_page": True,
+            "viewport_width": 720,
+            # 自建 t2i 服务下渲染开销低：用高分屏 DPR（1.8x）出更清晰的海报。
+            "device_scale_factor_level": "ultra",
+            "timeout": 20000,
+        }
+        url = await asyncio.wait_for(
+            render(_BOARD_POSTER_TMPL, data, options=options), timeout=8
+        )
+        if not url:
+            raise RuntimeError("t2i 渲染返回空结果")
+        return await self._download_image_base64(url)
+
+    def _board_poster_data(self, room: GameRoom) -> dict[str, Any]:
+        """提取棋类战报海报所需数据（标题/副信息/内嵌棋盘 SVG），供 t2i 模板与 Pillow 共用。"""
+        game = room.game
+        gt = room.game_type
+        label = self.manager._game_label(gt)
+        icon = {"gomoku": "🎯", "othello": "⚪", "xiangqi": "♟️", "weiqi": "⛰️"}.get(
+            gt, "♟️"
+        )
+        moves = len(getattr(game, "history", None) or [])
+        winner_seat = self.manager._duel_winner_seat(room)
+        draw = bool(getattr(game, "draw", False))
+        if winner_seat is not None:
+            name = self.manager._seat_display(winner_seat)
+            side = self.manager._seat_side(room, winner_seat)
+            side_text = {"red": "红", "black": "黑", "white": "白"}.get(side, "")
+            title = f"{name} 获胜"
+            sub = (
+                f"{label} · {name}执{side_text} · 共 {moves} 手"
+                if side_text
+                else f"{label} · 共 {moves} 手"
+            )
+            badge, accent = "🏆", "#ffd166"
+        elif draw:
+            title, sub, badge, accent = "平局", f"{label} · 共 {moves} 手", "🤝", "#9ccbff"
+        else:
+            # 单人历史房间兜底：按 human_color / human_side 判胜负
+            if isinstance(game, XiangqiGame):
+                human_won = game.winner == game.human_side
+            else:
+                human_won = int(getattr(game, "winner", 0) or 0) == int(
+                    getattr(game, "human_color", 0) or 0
+                )
+            title = "玩家获胜" if human_won else "花火 获胜"
+            sub, badge, accent = f"{label} · 共 {moves} 手", "🏆", "#ffd166"
+        return {
+            "icon": icon,
+            "label": label,
+            "title": title,
+            "sub": sub,
+            "badge": badge,
+            "accent": accent,
+            "board_svg": self._board_svg(room),
+        }
+
+    @staticmethod
+    def _board_svg(room: GameRoom) -> str:
+        """生成终局棋盘 SVG（服务端海报用），与前端 paintBoardThumb 视觉一致。"""
+        game = room.game
+        if game is None:
+            return ""
+        gt = room.game_type
+        if gt == "xiangqi":
+            return GameCompanionPlugin._xiangqi_svg(game)
+        board = getattr(game, "board", None)
+        if not board or not isinstance(board, list) or not board:
+            return ""
+        n = len(board)
+        size = 360
+        if gt == "othello":
+            cell = size / n
+            parts = [f'<rect width="{size}" height="{size}" fill="#27754f"/>']
+            line = 'stroke="rgba(14,51,34,.78)" stroke-width="1.5"'
+            for i in range(n + 1):
+                p = i * cell
+                parts.append(f'<line x1="{p:.2f}" y1="0" x2="{p:.2f}" y2="{size}" {line}/>')
+                parts.append(f'<line x1="0" y1="{p:.2f}" x2="{size}" y2="{p:.2f}" {line}/>')
+            r = cell * 0.4
+            for row in range(n):
+                for col in range(n):
+                    v = board[row][col]
+                    if not v:
+                        continue
+                    cx, cy = col * cell + cell / 2, row * cell + cell / 2
+                    if v == 1:
+                        parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" fill="#1a1a1a"/>')
+                    else:
+                        parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" fill="#f4f4f2" stroke="#9aa09b" stroke-width="1"/>')
+            return f'<svg width="360" height="360" viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg">{"".join(parts)}</svg>'
+        pal = {
+            "gomoku": ("#d4a85f", "#5d472c", "#242724", "#f7f8f5", "#9da39e"),
+            "weiqi": ("#dcc089", "#6b5636", "#22251f", "#fbfcf8", "#9aa19b"),
+        }.get(gt, ("#d4a85f", "#5d472c", "#242724", "#f7f8f5", "#9da39e"))
+        board_c, line_c, black_c, white_c, edge_c = pal
+        m = size * 0.05
+        gap = (size - size * 0.1) / (n - 1) if n > 1 else size
+        parts = [f'<rect width="{size}" height="{size}" fill="{board_c}"/>']
+        lw = max(1.0, size / 240)
+        line = f'stroke="{line_c}" stroke-width="{lw:.2f}"'
+        for i in range(n):
+            p = m + i * gap
+            parts.append(f'<line x1="{m:.2f}" y1="{p:.2f}" x2="{size - m:.2f}" y2="{p:.2f}" {line}/>')
+            parts.append(f'<line x1="{p:.2f}" y1="{m:.2f}" x2="{p:.2f}" y2="{size - m:.2f}" {line}/>')
+        rr = gap * 0.45
+        for row in range(n):
+            for col in range(n):
+                v = board[row][col]
+                if not v:
+                    continue
+                cx, cy = m + col * gap, m + row * gap
+                if v == 1:
+                    parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{rr:.2f}" fill="{black_c}"/>')
+                else:
+                    parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{rr:.2f}" fill="{white_c}" stroke="{edge_c}" stroke-width="1"/>')
+        return f'<svg width="360" height="360" viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg">{"".join(parts)}</svg>'
+
+    @staticmethod
+    def _xiangqi_svg(game: Any) -> str:
+        """中国象棋终局棋盘 SVG（10x9，含棋子汉字）。"""
+        board = game.board()
+        rows, cols = len(board), len(board[0]) if board else 9
+        size = 360
+        m = size * 0.07
+        gx = (size - 2 * m) / (cols - 1)
+        gy = (size - 2 * m) / (rows - 1)
+        parts = [f'<rect width="{size}" height="{size}" fill="#d7a85d"/>']
+        line = 'stroke="#563c23" stroke-width="1.5"'
+        for r in range(rows):
+            y = m + r * gy
+            parts.append(f'<line x1="{m:.2f}" y1="{y:.2f}" x2="{size - m:.2f}" y2="{y:.2f}" {line}/>')
+        for col in range(cols):
+            x = m + col * gx
+            if col == 0 or col == cols - 1:
+                parts.append(f'<line x1="{x:.2f}" y1="{m:.2f}" x2="{x:.2f}" y2="{size - m:.2f}" {line}/>')
+            else:
+                parts.append(f'<line x1="{x:.2f}" y1="{m:.2f}" x2="{x:.2f}" y2="{m + 4 * gy:.2f}" {line}/>')
+                parts.append(f'<line x1="{x:.2f}" y1="{m + 5 * gy:.2f}" x2="{x:.2f}" y2="{size - m:.2f}" {line}/>')
+        labels = {
+            "K": "帅", "A": "仕", "B": "相", "N": "马", "R": "车", "C": "炮", "P": "兵",
+            "k": "将", "a": "士", "b": "象", "n": "马", "r": "车", "c": "炮", "p": "卒",
+        }
+        rad = min(gx, gy) * 0.38
+        fsize = rad * 1.1
+        for r in range(rows):
+            for col in range(cols):
+                piece = board[r][col]
+                if piece == ".":
+                    continue
+                x, y = m + col * gx, m + r * gy
+                is_red = piece == piece.upper()
+                stroke = "#8b2b24" if is_red else "#3a3a3a"
+                fill = "#8b2b24" if is_red else "#1e2220"
+                label = labels.get(piece, piece)
+                parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{rad:.2f}" fill="#f1d49a" stroke="{stroke}" stroke-width="1.5"/>')
+                parts.append(f'<text x="{x:.2f}" y="{y:.2f}" font-size="{fsize:.2f}" font-family="Noto Serif SC, Songti SC, serif" font-weight="700" fill="{fill}" text-anchor="middle" dominant-baseline="central">{label}</text>')
+        return f'<svg width="360" height="360" viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg">{"".join(parts)}</svg>'
+
+    def _board_poster_pillow(self, room: GameRoom) -> str:
+        """Pillow 手绘「棋类战报」海报（t2i 不可用时的兜底），返回 base64 PNG。"""
+        from PIL import Image, ImageDraw  # 可选依赖，缺失时回退纯文字
+
+        import io
+
+        data = self._board_poster_data(room)
+        S = 1.5
+        W, H = int(720 * S), int(720 * S)
+        pad = int(46 * S)
+        img = Image.new("RGBA", (W, H), (13, 31, 23, 255))
+        d = ImageDraw.Draw(img, "RGBA")
+        # 深绿渐变背景
+        top_c, bottom_c = (30, 67, 52), (13, 31, 23)
+        for y in range(H):
+            t = y / max(1, H - 1)
+            d.line(
+                [(0, y), (W, y)],
+                fill=(
+                    round(top_c[0] + (bottom_c[0] - top_c[0]) * t),
+                    round(top_c[1] + (bottom_c[1] - top_c[1]) * t),
+                    round(top_c[2] + (bottom_c[2] - top_c[2]) * t),
+                    255,
+                ),
+            )
+        # 底部强调条
+        accent_hex = str(data["accent"]).lstrip("#")
+        accent = tuple(int(accent_hex[i : i + 2], 16) for i in (0, 2, 4)) + (255,)
+        d.rectangle([0, H - int(10 * S), W, H], fill=accent)
+        ef_h = _pillow_emoji_font(int(22 * S))
+        _pillow_draw_text(
+            d, pad, int(56 * S), f"{data['icon']} {data['label']} · 战报",
+            _pillow_font(True, int(22 * S)), (255, 224, 166, 255), efont=ef_h,
+        )
+        ef_b = _pillow_emoji_font(int(30 * S))
+        _pillow_draw_text(
+            d, W - pad, int(56 * S), data["badge"],
+            _pillow_font(True, int(30 * S)), (255, 255, 255, 255), anchor="rs", efont=ef_b,
+        )
+        # 大字结果
+        title = data["title"]
+        big_font = _pillow_font(True, int(58 * S))
+        if _pillow_font_length(d, title, big_font, ef_b) > W - 2 * pad:
+            big_font = _pillow_font(True, int(44 * S))
+        _pillow_draw_text(d, W / 2, int(160 * S), title, big_font, accent, anchor="mm", efont=ef_b)
+        # 副信息
+        _pillow_draw_text(
+            d, W / 2, int(228 * S), data["sub"],
+            _pillow_font(False, int(19 * S)), (255, 255, 255, 204), anchor="mm", efont=ef_b,
+        )
+        # 棋盘
+        board = int(560 * S)
+        bx, by = (W - board) // 2, int(264 * S)
+        GameCompanionPlugin._pillow_draw_board(d, room, bx, by, board)
+        # 脚标
+        _pillow_draw_text(
+            d, W - pad, H - int(34 * S), "由 花火 生成",
+            _pillow_font(False, int(14 * S)), (255, 255, 255, 102), anchor="rs", efont=ef_b,
+        )
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, "PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    @staticmethod
+    def _pillow_draw_board(d: Any, room: GameRoom, x0: float, y0: float, size: float) -> None:
+        """把终局棋盘画进 Pillow 海报指定方形区域（与 SVG / 前端视觉一致）。"""
+        game = room.game
+        gt = room.game_type
+        if gt == "xiangqi":
+            board = game.board()
+            rows, cols = len(board), len(board[0]) if board else 9
+            m = size * 0.07
+            gx = (size - 2 * m) / (cols - 1)
+            gy = (size - 2 * m) / (rows - 1)
+            d.rectangle([x0, y0, x0 + size, y0 + size], fill=(215, 168, 93))
+            ln, lw = (86, 60, 35), max(1, int(size / 220))
+            for r in range(rows):
+                y = y0 + m + r * gy
+                d.line([(x0 + m, y), (x0 + size - m, y)], fill=ln, width=lw)
+            for col in range(cols):
+                x = x0 + m + col * gx
+                if col == 0 or col == cols - 1:
+                    d.line([(x, y0 + m), (x, y0 + size - m)], fill=ln, width=lw)
+                else:
+                    d.line([(x, y0 + m), (x, y0 + m + 4 * gy)], fill=ln, width=lw)
+                    d.line([(x, y0 + m + 5 * gy), (x, y0 + size - m)], fill=ln, width=lw)
+            labels = {
+                "K": "帅", "A": "仕", "B": "相", "N": "马", "R": "车", "C": "炮", "P": "兵",
+                "k": "将", "a": "士", "b": "象", "n": "马", "r": "车", "c": "炮", "p": "卒",
+            }
+            rad = min(gx, gy) * 0.38
+            f = _pillow_font(True, max(1, int(rad * 1.1)))
+            for r in range(rows):
+                for col in range(cols):
+                    piece = board[r][col]
+                    if piece == ".":
+                        continue
+                    x, y = x0 + m + col * gx, y0 + m + r * gy
+                    is_red = piece == piece.upper()
+                    ec = (139, 43, 36) if is_red else (58, 58, 58)
+                    tc = (139, 43, 36) if is_red else (30, 34, 32)
+                    d.ellipse(
+                        [x - rad, y - rad, x + rad, y + rad],
+                        fill=(241, 212, 154), outline=ec, width=max(1, int(size / 200)),
+                    )
+                    d.text((x, y), labels.get(piece, piece), font=f, fill=tc, anchor="mm")
+            return
+        board = getattr(game, "board", None)
+        if not board:
+            return
+        n = len(board)
+        if gt == "othello":
+            cell = size / n
+            d.rectangle([x0, y0, x0 + size, y0 + size], fill=(39, 117, 79))
+            ln, lw = (14, 51, 34), max(1, int(size / 200))
+            for i in range(n + 1):
+                p = x0 + i * cell
+                d.line([(p, y0), (p, y0 + size)], fill=ln, width=lw)
+                d.line([(x0, p), (x0 + size, p)], fill=ln, width=lw)
+            r = cell * 0.4
+            for row in range(n):
+                for col in range(n):
+                    v = board[row][col]
+                    if not v:
+                        continue
+                    cx, cy = x0 + col * cell + cell / 2, y0 + row * cell + cell / 2
+                    if v == 1:
+                        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(26, 26, 26))
+                    else:
+                        d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(244, 244, 242), outline=(154, 160, 155), width=1)
+            return
+        pal = {
+            "gomoku": ((212, 168, 95), (93, 71, 44), (36, 39, 36), (247, 248, 245), (157, 163, 158)),
+            "weiqi": ((220, 192, 137), (107, 86, 54), (34, 37, 31), (251, 252, 248), (154, 161, 155)),
+        }.get(gt, ((212, 168, 95), (93, 71, 44), (36, 39, 36), (247, 248, 245), (157, 163, 158)))
+        board_c, line_c, black_c, white_c, edge_c = pal
+        m = size * 0.05
+        gap = (size - 2 * m) / (n - 1) if n > 1 else size
+        d.rectangle([x0, y0, x0 + size, y0 + size], fill=board_c)
+        lw = max(1, int(size / 240))
+        for i in range(n):
+            p = y0 + m + i * gap
+            d.line([(x0 + m, p), (x0 + size - m, p)], fill=line_c, width=lw)
+            p = x0 + m + i * gap
+            d.line([(p, y0 + m), (p, y0 + size - m)], fill=line_c, width=lw)
+        r = gap * 0.45
+        for row in range(n):
+            for col in range(n):
+                v = board[row][col]
+                if not v:
+                    continue
+                cx, cy = x0 + m + col * gap, y0 + m + row * gap
+                if v == 1:
+                    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=black_c)
+                else:
+                    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=white_c, outline=edge_c, width=1)
 
     @staticmethod
     def _undercover_announce_text(game: Any) -> str:
@@ -5149,12 +5530,21 @@ class GameCompanionPlugin(Star):
     async def _auto_announce_board(self, room: GameRoom) -> None:
         """花火获胜自动播报（board.group_announce_auto）。
 
-        自动播报发生在服务端、没有前端可生成战报海报，所以先发文字战况；
-        「仅图片」模式下缺图会自动回退纯文字。发送成功后写入与手动通知一致的
-        幂等标记，避免随后手动点「通知到群」重复发送。
+        与「群通报发送方式」配置保持一致：仅文字 → 纯文字；仅图片/文字+图片 → 服务端
+        用 AstrBot t2i（回退 Pillow）生成「棋类战报」海报随通报发送，无前端页面也能出图
+        （缺 t2i / Pillow / 中文字体时回退纯文字）。发送成功后写入与手动通知一致的幂等
+        标记，避免随后手动点「通知到群」重复发送。
         """
         try:
-            announce_text = await self.board_announce_result(room, "")
+            style = (getattr(self, "board_group_announce_style", "text") or "text").lower()
+            image_data = ""
+            if style in {"image", "both"}:
+                try:
+                    image_data = await self._board_announce_poster(room)
+                except Exception as exc:
+                    logger.warning("[GameCompanion] 棋类自动播报生成海报失败，回退纯文字: %s", exc)
+                    image_data = ""
+            announce_text = await self.board_announce_result(room, image_data)
             if announce_text:
                 room.last_announced_uid = (
                     f"board:{int(getattr(room, 'completed_games', 0) or 0)}"

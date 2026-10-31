@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 import pytest
 
 from astrbot_plugin_game_companion_huahuo.gomoku import BLACK, WHITE
@@ -115,4 +117,57 @@ async def test_snapshot_reports_board_announced_flag() -> None:
     room.last_announced_uid = f"board:{int(room.completed_games or 0)}"
     snap = room.public_snapshot(visitor.token)
     assert snap["board_announced"] is True
+
+
+@pytest.mark.asyncio
+async def test_board_poster_data_ai_win() -> None:
+    """花火（AI 白）获胜时，战报海报数据点名「花火」并带执白，且内嵌棋盘 SVG 非空。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.board[7][7] = BLACK
+    room.game.board[7][8] = WHITE
+    room.game.winner = WHITE
+    room.game.draw = False
+    room.game.history = [(7, 7, BLACK), (7, 8, WHITE)]
+    room.status = "finished"
+
+    data = _plugin(manager)._board_poster_data(room)
+
+    assert data["title"] == "花火 获胜"
+    assert "执白" in data["sub"]
+    assert data["badge"] == "🏆"
+    assert data["board_svg"].startswith("<svg")
+    assert '<circle' in data["board_svg"]
+
+
+@pytest.mark.asyncio
+async def test_board_poster_t2i_uses_html_render() -> None:
+    """服务端海报优先走 AstrBot 的 html_render（t2i），并返回 base64 PNG。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.winner = WHITE
+    room.game.draw = False
+    room.game.history = [(7, 7, BLACK)]
+    room.status = "finished"
+
+    plugin = _plugin(manager)
+    captured: dict[str, object] = {}
+
+    async def fake_render(tmpl: str, data: dict, options: object = None) -> str:
+        captured["title"] = data["title"]
+        captured["options"] = options
+        return "https://example.com/board.png"
+
+    plugin.html_render = fake_render  # type: ignore[attr-defined]
+
+    async def fake_download(_url: str) -> str:
+        return base64.b64encode(b"FAKEPNG").decode("ascii")
+
+    GameCompanionPlugin._download_image_base64 = staticmethod(fake_download)  # type: ignore[method-assign]
+
+    result = await plugin._board_poster_t2i(room)
+
+    assert result == base64.b64encode(b"FAKEPNG").decode("ascii")
+    assert captured["title"] == "花火 获胜"
+    assert captured["options"]["type"] == "png"
 
