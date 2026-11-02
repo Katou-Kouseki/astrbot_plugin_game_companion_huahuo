@@ -400,7 +400,7 @@ async def test_finished_room_expires_shortly_after_player_leaves() -> None:
 @pytest.mark.asyncio
 async def test_finished_room_survives_while_spectator_is_present() -> None:
     """一局结束后玩家离开，但只要还有观众在线，房间就不应被自动销毁。"""
-    manager = RoomManager(empty_player_timeout=0, idle_timeout=0)
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=300)
     room = await create_room(manager, source="private")
     player = await manager.join(room)
     spectator = await manager.join(room)
@@ -423,6 +423,24 @@ async def test_finished_room_survives_while_spectator_is_present() -> None:
     spectator.left_at = 200.0
     spectator.last_seen_at = 200.0
     assert await manager.sweep_expired(now=208.0) == [room.room_id]
+
+
+@pytest.mark.asyncio
+async def test_finished_room_survives_when_both_timeouts_disabled() -> None:
+    """两个自动销毁配置都设为 0 时，finished 房间也不得自动回收。"""
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=0)
+    room = await create_room(manager, source="private")
+    player = await manager.join(room)
+    await manager.claim_and_start(room, player.token, "human_black")
+    room.status = "finished"
+    # 玩家离开且房间无任何在线访客
+    player.connected = False
+    player.left_at = 100.0
+    player.last_seen_at = 100.0
+
+    assert await manager.sweep_expired(now=1000.0) == []
+    assert await manager.sweep_expired(now=86400.0) == []
+    assert room.room_id in manager.rooms
 
 
 @pytest.mark.asyncio

@@ -3044,7 +3044,13 @@ class RoomManager:
                 )
                 # 玩家都离开了，但房间里还有观众（或其他真人访客）在线时，
                 # 不能当作「本局结束、人去房空」销毁——观众可能还在看、或等下一局。
-                if all_departed and not self._has_present_visitors(room, current):
+                # 另外：两个自动销毁配置都设为 0（用户明确关闭自动销毁）时，
+                # 这条快速回收也要一并停用，否则「都设 0 仍会被销毁」不符合直觉。
+                if (
+                    all_departed
+                    and not self._has_present_visitors(room, current)
+                    and (self.empty_player_timeout or self.idle_timeout)
+                ):
                     expired.append(
                         (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
                     )
