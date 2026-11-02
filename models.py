@@ -690,6 +690,8 @@ class GameRoom:
             ),
             "turtle_soup_mode": self.turtle_soup_mode,
             "difficulty": self.difficulty,
+            # 棋类/贪心骰子/二十一点可中途改难度（其余玩法的 difficulty 是内容等级，不是强度）
+            "difficulty_adjustable": self.game_type in DIFFICULTY_GAME_TYPES,
             # 房间内自选的换边方式（None = 跟随插件配置）；前端据此渲染「每局换边/保持执色」
             "ai_side_rotation": self.ai_side_rotation,
             # 围棋盘路：房间级设置，首位落座的玩家在开局前可以自己改，

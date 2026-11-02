@@ -129,6 +129,26 @@ async def test_admin_can_switch_difficulty_for_adjustable_games() -> None:
 
 
 @pytest.mark.asyncio
+async def test_public_snapshot_exposes_difficulty_adjustable() -> None:
+    """前端房间载荷用 public_snapshot（非 admin_snapshot），难度选择器依赖这个字段。
+
+    回归：难度按钮曾因字段只加在 admin_snapshot、public_snapshot 缺失而始终隐藏。
+    """
+    manager = RoomManager(max_private_rooms=5, weiqi_board_size=9)
+    pascal = await make_room(manager, game_type="pig_dice")
+    visitor = await manager.join(pascal)
+    assert pascal.public_snapshot(visitor.token)["difficulty_adjustable"] is True
+
+    bj = await make_room(manager, game_type="blackjack")
+    visitor_bj = await manager.join(bj)
+    assert bj.public_snapshot(visitor_bj.token)["difficulty_adjustable"] is True
+
+    soup = await make_room(manager, game_type="turtle_soup")
+    visitor_soup = await manager.join(soup)
+    assert soup.public_snapshot(visitor_soup.token)["difficulty_adjustable"] is False
+
+
+@pytest.mark.asyncio
 async def test_difficulty_switch_reaches_the_live_game() -> None:
     manager = RoomManager(max_private_rooms=5, weiqi_board_size=9)
     room = await make_room(manager)
