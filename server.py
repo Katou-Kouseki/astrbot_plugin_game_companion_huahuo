@@ -179,6 +179,10 @@ class GameRoomServer:
         app.router.add_post(
             "/api/room/{access_token}/difficulty", self._set_difficulty
         )
+        # 棋类房间：玩家自选「再来一局」换边还是保持执色（仅人机对局）
+        app.router.add_post(
+            "/api/room/{access_token}/side-rotation", self._set_side_rotation
+        )
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
         app.router.add_post("/api/room/{access_token}/chat", self._chat)
         app.router.add_post("/api/room/{access_token}/leave", self._leave)
@@ -303,7 +307,7 @@ class GameRoomServer:
         store = getattr(self.plugin, "trusted_identity_store", None)
         if store is not None and raw_token:
             await store.revoke_token(raw_token)
-        snapshot = room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))
+        snapshot = self._room_payload(room, visitor_token)
         snapshot.update(self._trusted_browser_snapshot(active=False, expires_at=0))
         response = self._response({"room": snapshot, "forgotten": True})
         response.del_cookie(
@@ -324,7 +328,7 @@ class GameRoomServer:
             str(payload.get("side") or "human_black"),
         )
         return self._response(
-            {"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))}
+            {"room": self._room_payload(room, visitor_token)}
         )
 
     async def _start_game(self, request: web.Request) -> web.Response:
@@ -336,7 +340,7 @@ class GameRoomServer:
         await self.manager.start_game(
             room, visitor_token, str(payload.get("side") or "human_black")
         )
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _move(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -353,7 +357,7 @@ class GameRoomServer:
             to_row=int(payload.get("to_row", -1)),
             to_column=int(payload.get("to_column", -1)),
         )
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _weiqi_pass(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -361,7 +365,7 @@ class GameRoomServer:
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.player_pass(room, visitor_token)
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _weiqi_resign(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -369,7 +373,7 @@ class GameRoomServer:
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.resign(room, visitor_token=visitor_token)
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _weiqi_board(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -382,7 +386,7 @@ class GameRoomServer:
             int(payload.get("size") or 0),
             None if payload.get("komi") in (None, "") else float(payload["komi"]),
         )
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _rematch(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -390,7 +394,7 @@ class GameRoomServer:
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.request_rematch(room, visitor_token)
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _chat(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -402,7 +406,7 @@ class GameRoomServer:
             str(payload.get("text") or ""),
             visitor_token=visitor_token,
         )
-        return self._response({**result, "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({**result, "room": self._room_payload(room, visitor_token)})
 
     async def _dice_action(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -412,7 +416,7 @@ class GameRoomServer:
         await self.manager.player_dice_action(
             room, visitor_token, str(payload.get("action") or "")
         )
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _blackjack_action(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -422,7 +426,7 @@ class GameRoomServer:
         await self.manager.player_blackjack_action(
             room, visitor_token, str(payload.get("action") or "")
         )
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _draw_strokes(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -432,7 +436,7 @@ class GameRoomServer:
         await self.manager.update_drawing(
             room, visitor_token, payload.get("strokes")
         )
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _draw_guess(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -445,7 +449,7 @@ class GameRoomServer:
             image_data_url=str(payload.get("image_data_url") or ""),
         )
         return self._response(
-            {**result, "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))}
+            {**result, "room": self._room_payload(room, visitor_token)}
         )
 
     async def _soup_question(self, request: web.Request) -> web.Response:
@@ -459,7 +463,7 @@ class GameRoomServer:
             source="web",
             visitor_token=visitor_token,
         )
-        return self._response({**result, "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({**result, "room": self._room_payload(room, visitor_token)})
 
     async def _soup_answer(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -472,7 +476,7 @@ class GameRoomServer:
             source="web",
             visitor_token=visitor_token,
         )
-        return self._response({**result, "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({**result, "room": self._room_payload(room, visitor_token)})
 
     async def _soup_hint(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -487,7 +491,7 @@ class GameRoomServer:
         return self._response(
             {
                 "hint": hint,
-                "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type)),
+                "room": self._room_payload(room, visitor_token),
             }
         )
 
@@ -502,7 +506,7 @@ class GameRoomServer:
             source="web",
             visitor_token=visitor_token,
         )
-        return self._response({**result, "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({**result, "room": self._room_payload(room, visitor_token)})
 
     async def _soup_correct(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -512,7 +516,7 @@ class GameRoomServer:
         await self.manager.confirm_reverse_turtle_soup_guess(
             room, source="web", visitor_token=visitor_token
         )
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _seat_swap_request(self, request: web.Request) -> web.Response:
         self._require_origin(request)
@@ -527,7 +531,7 @@ class GameRoomServer:
         return self._response(
             {
                 "request_id": request_id,
-                "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type)),
+                "room": self._room_payload(room, visitor_token),
             }
         )
 
@@ -544,7 +548,7 @@ class GameRoomServer:
             accepted=accepted,
         )
         return self._response(
-            {"accepted": accepted, "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))}
+            {"accepted": accepted, "room": self._room_payload(room, visitor_token)}
         )
 
     async def _leave(self, request: web.Request) -> web.Response:
@@ -561,7 +565,7 @@ class GameRoomServer:
         visitor_token = str(payload.get("visitor_token") or "")
         content = str(payload.get("content") or "")
         await self.manager.player_undercover_speech(room, visitor_token, content)
-        resp = {"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))}
+        resp = {"room": self._room_payload(room, visitor_token)}
         if getattr(room.game, "last_speech_masked", False):
             resp["notice"] = "发言中包含你的词条，已自动打码为「***」并发出。"
         return self._response(resp)
@@ -584,7 +588,7 @@ class GameRoomServer:
         return self._response(
             {
                 **result,
-                "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type)),
+                "room": self._room_payload(room, visitor_token),
             }
         )
 
@@ -602,7 +606,7 @@ class GameRoomServer:
                 status=400,
             )
         await self.manager.continue_undercover_pk(room, visitor_token, targets)
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _undercover_set_camp_scales(self, request: web.Request) -> web.Response:
         """房主（1号玩家）在游戏开始前自定义阵营比例。"""
@@ -628,7 +632,7 @@ class GameRoomServer:
                     "whiteboard": parsed[2],
                     "raw": "{} {} {}".format(*parsed),
                 },
-                "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type)),
+                "room": self._room_payload(room, visitor_token),
             }
         )
 
@@ -653,7 +657,7 @@ class GameRoomServer:
         return self._response(
             {
                 "reveal_identity": room.undercover_reveal_identity,
-                "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type)),
+                "room": self._room_payload(room, visitor_token),
             }
         )
 
@@ -671,7 +675,7 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _undercover_recap(self, request: web.Request) -> web.Response:
         """结算卡「花火复盘」：按局缓存，同局只请求一次 LLM，点击即取缓存。"""
@@ -783,7 +787,7 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
-        return self._response({"room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _seat_ai(self, request: web.Request) -> web.Response:
         """两人对弈：和花火对局（action=add）/ 等对手来（action=remove）。"""
@@ -810,12 +814,7 @@ class GameRoomServer:
         return self._response(
             {
                 **result,
-                "room": room.public_snapshot(
-                    visitor_token,
-                    global_leaderboard=self.manager.global_leaderboard(
-                        room.game_type
-                    ),
-                ),
+                "room": self._room_payload(room, visitor_token),
             }
         )
 
@@ -837,14 +836,48 @@ class GameRoomServer:
             )
         return self._response(
             {
-                "room": room.public_snapshot(
-                    visitor_token,
-                    global_leaderboard=self.manager.global_leaderboard(
-                        room.game_type
-                    ),
-                ),
+                "room": self._room_payload(room, visitor_token),
             }
         )
+
+    async def _set_side_rotation(self, request: web.Request) -> web.Response:
+        """玩家在房间内自选「再来一局」换边方式（仅棋类、仅人机对局）。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        mode = str(payload.get("mode") or "").strip().lower()
+        try:
+            await self.manager.player_set_side_rotation(room, visitor_token, mode)
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=400,
+            )
+        return self._response({"room": self._room_payload(room, visitor_token)})
+
+    def _room_payload(self, room: GameRoom, visitor_token: str) -> dict[str, Any]:
+        """房间快照 + 前端需要的实时配置（换边状态、动态提醒开关）。
+
+        所有返回房间的接口都走这里，避免「点完按钮那一帧按钮状态跳回默认、
+        要等下一次轮询才对」的闪烁。
+        """
+        snapshot = room.public_snapshot(
+            visitor_token,
+            global_leaderboard=self.manager.global_leaderboard(room.game_type),
+        )
+        try:
+            snapshot["side_rotation"] = self.manager.side_rotation_state(
+                room, visitor_token
+            )
+        except Exception:
+            snapshot["side_rotation"] = {
+                "configurable": False,
+                "mode": "auto",
+                "explicit": False,
+            }
+        snapshot["activity_toast"] = self._activity_toast_snapshot()
+        return snapshot
 
     async def _undercover_add_ai_seat(self, request: web.Request) -> web.Response:
         """房主/管理员手动追加一位 AI 玩家（计入总数，不可超容量）。"""
@@ -861,7 +894,7 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
-        return self._response({**result, "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({**result, "room": self._room_payload(room, visitor_token)})
 
     async def _undercover_remove_ai_seat(self, request: web.Request) -> web.Response:
         """房主/管理员手动移除一位 AI 玩家（每次一个，编号最大的优先）。"""
@@ -878,7 +911,7 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
-        return self._response({**result, "room": room.public_snapshot(visitor_token, global_leaderboard=self.manager.global_leaderboard(room.game_type))})
+        return self._response({**result, "room": self._room_payload(room, visitor_token)})
 
     async def _undercover_batch_words(self, request: web.Request) -> web.Response:
         """通过管理台快捷批量导入词条（每行一对 词1 词2），普通玩家调用会失败。"""
@@ -984,7 +1017,7 @@ class GameRoomServer:
                 active = True
         if enrollment_pending:
             visitor.trusted_browser_enrollment_pending = False
-        snapshot = room.public_snapshot(visitor.token, global_leaderboard=self.manager.global_leaderboard(room.game_type))
+        snapshot = self._room_payload(room, visitor.token)
         snapshot.update(
             self._trusted_browser_snapshot(
                 active=active,
@@ -993,7 +1026,6 @@ class GameRoomServer:
                 else 0,
             )
         )
-        snapshot["activity_toast"] = self._activity_toast_snapshot()
         response = self._response({**data, "room": snapshot})
         if issued_token:
             ttl_days = int(

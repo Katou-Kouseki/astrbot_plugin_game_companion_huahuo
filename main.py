@@ -1483,6 +1483,15 @@ class GameCompanionPlugin(Star):
         self.duel_side_rotation = self._cfg_bool(
             "multiplayer.duel_side_rotation", True
         )
+        # 花火整体思考延迟（秒）：简单/普通/困难在此基础上小幅增减，
+        # 调这一个值就能整体变快或变慢，避免 AI 先手时一开局就落子。
+        self.ai_think_delay = max(
+            0.0,
+            min(
+                5.0,
+                self._safe_float(self._cfg("game.ai_think_delay_seconds", 0.8), 0.8),
+            ),
+        )
 
         # 谁是卧底 AI 动作节流：同一房间同一时刻只允许一个 AI 动作（发言/投票）在途，
         # 避免大量 AI 玩家连续触发时对模型供应商并发/高频请求导致限流（429）而卡局。
@@ -1516,6 +1525,7 @@ class GameCompanionPlugin(Star):
             swap_request_cooldown=self.swap_request_cooldown,
             swap_request_expiry=self.swap_request_expiry,
             duel_side_rotation=self.duel_side_rotation,
+            ai_think_delay=self.ai_think_delay,
             draw_guess_max_guesses=self.draw_guess_max_guesses,
             draw_guess_duration_seconds=self.draw_guess_duration_seconds,
             pig_dice_target_score=self.pig_dice_target_score,
@@ -7581,6 +7591,9 @@ class GameCompanionPlugin(Star):
         self.manager.swap_request_expiry = self.swap_request_expiry
         self.manager.duel_side_rotation = bool(
             getattr(self, "duel_side_rotation", True)
+        )
+        self.manager.ai_think_delay = max(
+            0.0, min(5.0, self._safe_float(getattr(self, "ai_think_delay", 0.8), 0.8))
         )
         self.commentary_provider_id = self._cfg_str("commentary.provider_id", "")
         self.manager.draw_guess_duration_seconds = self.draw_guess_duration_seconds

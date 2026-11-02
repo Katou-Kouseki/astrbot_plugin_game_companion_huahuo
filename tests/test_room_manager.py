@@ -259,6 +259,7 @@ async def test_rematch_reuses_room_player_identity_score_and_rotates_side() -> N
     room.bot_wins = 1
 
     await manager.restart_finished_game(room, difficulty="hard")
+    await manager.wait_bot_turns()
 
     assert room.room_id == original_room_id
     assert room.access_token == original_access_token

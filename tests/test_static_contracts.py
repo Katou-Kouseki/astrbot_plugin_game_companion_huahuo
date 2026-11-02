@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.39"
+    assert metadata["version"] == "0.5.40"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -896,3 +896,81 @@ def test_duel_side_rotation_is_relative_and_configurable() -> None:
     assert "duel_seat_signature" in manager
     # 不能再靠「固定偏移」换先，否则每局算出来都一样
     assert "_assign_duel_sides(room, rotate=True)" not in manager
+
+
+def test_side_rotation_override_is_ai_only_and_wired_to_ui() -> None:
+    """房间内换边设置：仅人机对局可改，服务端下发状态，前端有独立开关。"""
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "ai_side_rotation: bool | None = None" in models
+    assert "def _ai_side_rotation_active(" in manager
+    assert "def side_rotation_state(" in manager
+    assert "def player_set_side_rotation(" in manager
+    # 真人对局里房间级设置必须被忽略
+    assert "not self._duel_human_pair(room)" in manager
+    assert "/api/room/{access_token}/side-rotation" in server
+    assert 'snapshot["side_rotation"] = self.manager.side_rotation_state(' in server
+    # 所有返回房间的接口都走同一个 helper，避免按钮状态闪一下
+    assert "def _room_payload(" in server
+
+    assert 'id="rematchChoice"' in page
+    assert 'data-rotation="auto"' in page and 'data-rotation="fixed"' in page
+    assert "function setSideRotation(" in script
+    assert (
+        'request("POST", "side-rotation", {' in script
+    )
+
+
+def test_side_banner_shows_color_at_game_start() -> None:
+    """开局换边提醒：棋盘上方一条醒目胶囊，鼠标穿透、每局只弹一次。"""
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    style = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    assert 'id="sideBanner"' in page
+    assert 'id="sideBannerStone"' in page
+    block = style[style.index(".side-banner {") : style.index(".side-banner[hidden]")]
+    assert "position: absolute;" in block
+    assert "pointer-events: none;" in block
+    assert "transform: translate(-50%, 0)" in style
+
+    assert "function showSideBanner(" in script
+    assert "function maybeShowSideBanner(" in script
+    assert "SIDE_BANNER_MS" in script
+    assert "sideBannerPrimed" in script
+    assert "你执${sideLabel(side)} · ${first ? \"先行\" : \"后行\"}" in script
+    render = script[script.index("function render() {"):]
+    assert "maybeShowSideBanner();" in render
+
+
+def test_activity_leave_uses_explicit_left_at() -> None:
+    """「离开房间」只认服务端下发的 left_at，心跳超时不再误报离开/回来。"""
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert '"left_at": float(self.left_at or 0.0),' in models
+    collect = script[script.index("function collectRosterEvents("):]
+    collect = collect[: collect.index("function handleRosterActivity(")]
+    assert "Number(visitor.left_at) > 0" in collect
+    assert "Number(before.left_at) > 0" in collect
+
+
+def test_ai_think_delay_is_configurable() -> None:
+    """花火整体思考延迟：一个配置项，难度只做小幅增减。"""
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert schema["game"]["items"]["ai_think_delay_seconds"]["default"] == 0.8
+    assert "def bot_think_delay(" in manager
+    assert "def _spawn_bot_turn(" in manager
+    assert "def wait_bot_turns(" in manager
+    assert 'self._cfg("game.ai_think_delay_seconds", 0.8)' in main
+    assert "ai_think_delay=self.ai_think_delay" in main
+    # 棋类 AI 回合一律后台执行，玩家不用等「花火想完」才看到自己的落子；
+    # 只有贪心骰子那种多步可见回合还保持同步（一次性播完更顺）
+    assert manager.count("await self._bot_turn(room)") == 1

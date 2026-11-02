@@ -172,15 +172,20 @@ async def test_xiangqi_engine_failure_pauses_game_after_human_move() -> None:
     await manager.add_ai_seat(room, visitor.token, side="human_red")
     assert room.status == "active"
 
-    with pytest.raises(RuntimeError, match="引擎测试退出"):
-        await manager.player_move(
-            room,
-            visitor.token,
-            from_row=6,
-            from_column=0,
-            to_row=5,
-            to_column=0,
-        )
+    # 花火（红先）的回合在后台执行；等它跑完才能断言引擎异常把房间置为暂停
+    await manager.wait_bot_turns()
+
+    # 花火应手改在后台跑：引擎挂掉不会把异常抛回玩家的落子请求，
+    # 而是由后台任务把房间置为「已暂停」并留下系统提示
+    await manager.player_move(
+        room,
+        visitor.token,
+        from_row=6,
+        from_column=0,
+        to_row=5,
+        to_column=0,
+    )
+    await manager.wait_bot_turns()
 
     assert room.status == "paused"
     assert room.game is not None

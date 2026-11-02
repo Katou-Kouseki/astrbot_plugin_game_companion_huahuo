@@ -600,6 +600,61 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .board-overlay strong { font-size: 22px; }
 .board-overlay span { color: #5f6862; }
 
+/* 开局「换边提醒」：浮在棋盘上方的一条醒目胶囊，3 秒多自动消失。
+   pointer-events: none —— 提示期间也能正常落子。 */
+.side-banner {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: calc(100% - 24px);
+  padding: 9px 18px 9px 10px;
+  border: 1px solid rgba(255, 255, 255, .3);
+  border-radius: 999px;
+  background: rgba(24, 32, 28, .84);
+  color: #fff;
+  box-shadow: 0 10px 26px rgba(16, 22, 18, .3), 0 0 0 1px rgba(212, 175, 55, .18);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transform: translate(-50%, -10px) scale(.92);
+  pointer-events: none;
+  transition: opacity .3s ease, transform .3s ease;
+}
+.side-banner[hidden] { display: none; }
+.side-banner.show {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+.side-banner-stone {
+  flex: 0 0 auto;
+  width: 25px;
+  height: 25px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .28);
+}
+.side-banner-stone.black { background: radial-gradient(circle at 34% 30%, #6d766f, #0e1310 72%); }
+.side-banner-stone.white { background: radial-gradient(circle at 34% 30%, #ffffff, #d3d7d2 72%); }
+.side-banner-stone.red { background: radial-gradient(circle at 34% 30%, #ff9a86, #b3241a 72%); }
+.side-banner-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; line-height: 1.2; }
+.side-banner-body strong {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: .02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.side-banner-body span {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, .8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .game-panel { display: grid; gap: 12px; }
 .turn-panel, .seat-panel, .score-panel, .people-panel {
   border: 1px solid var(--border);
@@ -694,6 +749,18 @@ body.dark .difficulty-picker button.is-active { background: #2f7d5b; color: #fff
 .side-choice[hidden] { display: none; }
 .side-choice button { border: 0; border-radius: 4px; padding: 8px 4px; background: transparent; color: #5b635e; font-size: 12px; }
 .side-choice button.is-active { background: #fff; color: #202522; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+/* 「再来一局」换边方式：紧跟在先后手下面，只在和花火对局时出现 */
+.rematch-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.rematch-choice[hidden] { display: none; }
+.rematch-choice .label { flex: 0 0 auto; color: var(--muted, #7b837e); font-size: 11.5px; }
+.rematch-choice .side-choice { flex: 1; margin: 0; }
+.rematch-choice .side-choice button { padding: 6px 4px; font-size: 11.5px; }
+.side-choice.compact { grid-template-columns: repeat(2, 1fr); }
 .primary-action {
   width: 100%;
   min-height: 40px;
@@ -3650,3 +3717,11 @@ body.dark .eval-bar-white {
 }
 .eval-legend strong { color: var(--text-strong); font-size: 13px; }
 .eval-note { margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+/* 开局换边提醒：窄屏棋盘本身占满宽度，胶囊缩小但仍保证字号可读 */
+@media (max-width: 640px) {
+  .side-banner { top: 8px; padding: 7px 13px 7px 8px; gap: 7px; }
+  .side-banner-stone { width: 21px; height: 21px; }
+  .side-banner-body strong { font-size: 14px; }
+  .side-banner-body span { font-size: 11px; }
+}

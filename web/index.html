@@ -68,6 +68,14 @@
 
         <div class="board-stage">
           <canvas id="board" width="760" height="760" aria-label="棋盘"></canvas>
+          <!-- 开局换边提醒：每局开始时短暂浮在棋盘上方，明确「你执什么颜色」 -->
+          <div id="sideBanner" class="side-banner" hidden aria-live="polite">
+            <span id="sideBannerStone" class="side-banner-stone black"></span>
+            <span class="side-banner-body">
+              <strong id="sideBannerTitle">你执黑 · 先行</strong>
+              <span id="sideBannerNote">花火执白</span>
+            </span>
+          </div>
           <div id="boardOverlay" class="board-overlay" hidden>
             <strong id="overlayTitle"></strong>
             <span id="overlayText"></span>
@@ -536,6 +544,14 @@
             <button type="button" data-side="human_black" class="is-active">我先手</button>
             <button type="button" data-side="bot_black">花火先手</button>
             <button type="button" data-side="random">随机</button>
+          </div>
+          <!-- 只对「一位真人 + 花火」显示：决定以后每局是否换边 -->
+          <div id="rematchChoice" class="rematch-choice" hidden>
+            <span class="label">再来一局</span>
+            <div class="side-choice compact" role="group" aria-label="再来一局换边方式">
+              <button type="button" data-rotation="auto">每局换边</button>
+              <button type="button" data-rotation="fixed">保持执色</button>
+            </div>
           </div>
           <button id="seatAction" class="primary-action" type="button" disabled>
             <i data-lucide="log-in"></i><span>加入对局</span>

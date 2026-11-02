@@ -100,6 +100,7 @@ async def test_ai_seat_answers_after_human_move(
     assert room.multiplayer.seats[1].is_ai
 
     await manager.player_move(room, visitor.token, row=4, column=4)
+    await manager.wait_bot_turns()
     # 花火用本地启发式应一手，棋盘上应出现白子
     assert len(room.game.history) >= 2
     assert any(cell == WHITE for row in room.game.board for cell in row)

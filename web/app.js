@@ -98,6 +98,10 @@
   let drawSyncPromise = null;
   let drawDirty = false;
   let drawRevision = -1;
+  // 开局换边提醒：按「玩法 + 已完成局数 + 我的执色」去重，保证一局只弹一次
+  let sideBannerKey = "";
+  let sideBannerPrimed = false;
+  let sideBannerTimer = 0;
 
   /* ============================================================
      Canvas 游戏（五子棋/井字棋/象棋/你画我猜）深/浅配色
@@ -738,12 +742,19 @@
         return;
       }
       if (!before.online && visitor.online) {
-        // 之前掉线/关掉页面，现在又能收到心跳：回来了（不是新访客）
-        events.push({ visitor, kind: "return" });
+        // 只有「之前确认离开过」才提示回来了；切后台被节流的那次不提示，
+        // 否则每次切回来都要弹一遍
+        if (Number(before.left_at) > 0) {
+          events.push({ visitor, kind: "return" });
+        }
         return;
       }
       if (before.online && !visitor.online) {
-        events.push({ visitor, kind: "leave" });
+        // 服务端只在「显式离开」（关页面 / 点离开）时写 left_at。
+        // 没有 left_at 说明只是心跳超时（切后台/断网），静默处理，不再误报离开。
+        if (Number(visitor.left_at) > 0) {
+          events.push({ visitor, kind: "leave" });
+        }
         return;
       }
       if (!visitor.online) return;
@@ -756,6 +767,7 @@
     previousMap.forEach((visitor) => {
       if (rosterKey(visitor) === selfKey || visitor.is_ai) return;
       if (!visitor.online) return;
+      // 不再出现在名册里：只要上一帧还在线，就当作离开
       events.push({ visitor, kind: "leave" });
     });
     return events;
@@ -1828,6 +1840,7 @@
         });
     }
     difficultyBadge.hidden = canPickDifficulty;
+    renderRematchChoice();
     document.getElementById("humanScore").textContent = room.score?.human ?? 0;
     document.getElementById("botScore").textContent = room.score?.bot ?? 0;
     document.getElementById("drawScore").textContent = room.score?.draws ?? 0;
@@ -1870,6 +1883,7 @@
     renderWeiqiBoard();
     renderDuelSeats();
     renderBoardResult();
+    maybeShowSideBanner();
     icons();
   }
 
@@ -2073,7 +2087,12 @@
       if (isDuelGame(room)) {
         // 两人对弈不需要花火批准，直接重开；座位保留、黑白互换
         action.innerHTML = '<i data-lucide="rotate-ccw"></i><span>再来一局</span>';
-        note.textContent = "座位保留，再来一局双方换先（黑白互换）。";
+        // 文案跟着「换边方式」走：保持执色时不要再说「双方换先」
+        note.textContent = room.side_rotation?.mode === "fixed"
+          ? "座位保留，再来一局保持执色（不自动换边）。"
+          : hasHumanOpponent(room)
+            ? "座位保留，再来一局双方换先（黑白互换）。"
+            : "座位保留，再来一局换边（你会改执对方的颜色）。";
       } else {
         action.innerHTML = room.game_type === "turtle_soup"
           ? `<i data-lucide="rotate-ccw"></i><span>${room.turtle_soup_mode === "player_host" ? "申请再出一题" : "申请再来一道"}</span>`
@@ -4128,6 +4147,93 @@
     }
   }
 
+  // 「再来一局」换边方式：只有坐着的玩家、且对面不是真人时才能改。
+  // 真人对局里这一行不出现，规则始终按插件配置走。
+  function renderRematchChoice() {
+    const wrap = document.getElementById("rematchChoice");
+    if (!wrap) return;
+    const show = Boolean(room) && isDuelGame(room) && Boolean(room.side_rotation?.configurable);
+    wrap.hidden = !show;
+    if (!show) return;
+    const mode = room.side_rotation?.mode === "fixed" ? "fixed" : "auto";
+    wrap.querySelectorAll("[data-rotation]").forEach((btn) => {
+      const selected = btn.getAttribute("data-rotation") === mode;
+      btn.classList.toggle("is-active", selected);
+      btn.setAttribute("aria-pressed", selected ? "true" : "false");
+      btn.disabled = busy;
+    });
+  }
+
+  // —— 开局「换边提醒」：每局开始时告诉玩家这一局执什么颜色 ——
+  const SIDE_BANNER_MS = 3600;
+
+  function hideSideBanner() {
+    const banner = document.getElementById("sideBanner");
+    if (!banner) return;
+    banner.classList.remove("show");
+    window.clearTimeout(sideBannerTimer);
+    sideBannerTimer = window.setTimeout(() => { banner.hidden = true; }, 320);
+  }
+
+  function showSideBanner(side, first, note) {
+    const banner = document.getElementById("sideBanner");
+    const stone = document.getElementById("sideBannerStone");
+    const title = document.getElementById("sideBannerTitle");
+    const noteEl = document.getElementById("sideBannerNote");
+    if (!banner || !stone || !title || !noteEl) return;
+    const tone = side === "red" ? "red" : (side === "white" ? "white" : "black");
+    stone.className = `side-banner-stone ${tone}`;
+    title.textContent = `你执${sideLabel(side)} · ${first ? "先行" : "后行"}`;
+    noteEl.textContent = note;
+    banner.hidden = false;
+    window.clearTimeout(sideBannerTimer);
+    // 从 hidden 切到可见要给浏览器一帧，动画才会生效
+    void banner.offsetWidth;
+    banner.classList.add("show");
+    sideBannerTimer = window.setTimeout(hideSideBanner, SIDE_BANNER_MS);
+  }
+
+  function maybeShowSideBanner() {
+    if (!room) return;
+    const inGame = isDuelGame(room)
+      && room.is_player
+      && room.status === "active"
+      && Boolean(room.game);
+    const side = inGame ? mySide() : "";
+    // 还没开局时 key 留空：这样「刚坐下→开局」也能正常弹，不会被当成已经在局中
+    const key = side
+      ? `${room.game_type}:${Number(room.score?.games || 0)}:${side}`
+      : "";
+    if (!sideBannerPrimed) {
+      // 进入页面时如果已经在局中，不补弹（避免每次刷新都弹一次）
+      sideBannerPrimed = true;
+      sideBannerKey = key;
+      return;
+    }
+    if (!key || key === sideBannerKey) return;
+    sideBannerKey = key;
+    const firstSide = room.game_type === "xiangqi" ? "red" : "black";
+    const otherSide = side === "red"
+      ? "black"
+      : side === "black"
+        ? "white"
+        : side === "white"
+          ? "black"
+          : "red";
+    const otherSeat = roomSeats().find((seat) => seat.side === otherSide);
+    const otherLabel = otherSeat
+      ? (otherSeat.is_ai
+        ? "花火"
+        : (otherSeat.display_name || "").trim() || "对手")
+      : (hasHumanOpponent(room) ? "对手" : "花火");
+    const modeText = room.side_rotation?.mode === "fixed" ? "保持执色" : "每局换边";
+    showSideBanner(
+      side,
+      side === firstSide,
+      `${otherLabel}执${sideLabel(otherSide)} · ${modeText}`
+    );
+  }
+
   // 围棋实时胜率面板：黑/白百分比 + 目差 + 提子进度
   function renderEvalPanel() {
     const panel = document.getElementById("evalPanel");
@@ -5554,6 +5660,40 @@
     }
   }
 
+  async function setSideRotation(mode) {
+    // 仅棋类、本人在玩家席、且对面不是真人时才能改「再来一局」的换边方式
+    if (
+      busy
+      || !room
+      || !isDuelGame(room)
+      || !room.side_rotation?.configurable
+    ) {
+      return;
+    }
+    const current = room.side_rotation?.mode === "fixed" ? "fixed" : "auto";
+    if (current === mode) return;
+    busy = true;
+    render();
+    try {
+      const data = await request("POST", "side-rotation", {
+        visitor_token: visitorToken,
+        mode,
+      });
+      setRoom(data.room);
+      showToast(
+        mode === "fixed"
+          ? "再来一局保持执色（不再自动换边）"
+          : "再来一局自动换边（黑白互换）"
+      );
+      render();
+    } catch (error) {
+      showToast(error?.message || "调整换边方式失败");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   async function moveXiangqi(event) {
     if (room.game.turn !== mySide()) return;
     const rect = board.getBoundingClientRect();
@@ -5648,6 +5788,11 @@
     const button = event.target.closest("button[data-difficulty]");
     if (!button || button.disabled) return;
     setDifficulty(button.getAttribute("data-difficulty"));
+  });
+  document.getElementById("rematchChoice").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-rotation]");
+    if (!button || button.disabled) return;
+    setSideRotation(button.getAttribute("data-rotation"));
   });
   document.getElementById("weiqiBoardChoices").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-weiqi-size]");

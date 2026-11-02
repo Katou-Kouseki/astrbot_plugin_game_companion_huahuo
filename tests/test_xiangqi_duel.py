@@ -149,6 +149,7 @@ async def test_xiangqi_play_with_bot_seat_puts_bot_on_the_other_side() -> None:
     payload = await manager.add_ai_seat(room, player.token, side="human_black")
     assert payload["started"] is True
     assert room.status == "active"
+    await manager.wait_bot_turns()
 
     seat = room.multiplayer.seat_for_token(player.token)
     assert seat is not None and seat.side == "black"

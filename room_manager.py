@@ -202,6 +202,7 @@ class RoomManager:
         swap_request_cooldown: int = 30,
         swap_request_expiry: int = 20,
         duel_side_rotation: bool = True,
+        ai_think_delay: float = 0.8,
         draw_guess_max_guesses: int = 5,
         draw_guess_duration_seconds: int = 120,
         pig_dice_target_score: int = 50,
@@ -248,6 +249,9 @@ class RoomManager:
         self.swap_request_expiry = max(1, int(swap_request_expiry))
         # 再来一局是否换先：开着每局互换黑白（象棋红黑）；关掉就固定按座位号执色
         self.duel_side_rotation = bool(duel_side_rotation)
+        # 花火「思考」的基础延迟（秒）：各难度在此基础上做小幅增减，
+        # 避免 AI 先手时一开局就落子，看起来像没在想。
+        self.ai_think_delay = max(0.0, min(float(ai_think_delay), 5.0))
         self.draw_guess_max_guesses = max(1, min(int(draw_guess_max_guesses), 10))
         self.draw_guess_duration_seconds = max(
             10, min(int(draw_guess_duration_seconds), 600)
@@ -288,6 +292,8 @@ class RoomManager:
         self.xiangqi_engine = xiangqi_engine
         self.event_callback = event_callback
         self.rooms: dict[str, GameRoom] = {}
+        # 后台执行的 AI 回合任务：开局/落子后先返回给浏览器，AI 想好了再推过去
+        self._bot_tasks: set[asyncio.Task] = set()
         self._access_index: dict[str, str] = {}
         self._closed_access: dict[str, tuple[str, float]] = {}
         self._lock = asyncio.Lock()
@@ -1528,7 +1534,7 @@ class RoomManager:
                 self._reset_turn_deadline(room)
         await self._emit("game_started", room, {})
         if self._is_bot_turn(room):
-            await self._bot_turn(room)
+            self._spawn_bot_turn(room)
 
     async def player_move(
         self,
@@ -1659,7 +1665,8 @@ class RoomManager:
             await self._finish_game(room)
             return
         if self._is_bot_turn(room):
-            await self._bot_turn(room)
+            # 后台执行：玩家自己的落子先回给浏览器，花火「想」完再落
+            self._spawn_bot_turn(room)
 
     async def player_pass(self, room: GameRoom, visitor_token: str) -> None:
         """围棋停一手：双方连续停手即按数子法结算。"""
@@ -1697,7 +1704,8 @@ class RoomManager:
             await self._finish_game(room)
             return
         if self._is_bot_turn(room):
-            await self._bot_turn(room)
+            # 后台执行：玩家自己的落子先回给浏览器，花火「想」完再落
+            self._spawn_bot_turn(room)
 
     async def set_weiqi_board(
         self,
@@ -2255,7 +2263,7 @@ class RoomManager:
                 )
         await self._emit("game_started", room, {"rematch": True})
         if self._is_bot_turn(room):
-            await self._bot_turn(room)
+            self._spawn_bot_turn(room)
 
     async def set_difficulty(self, room: GameRoom, difficulty: Difficulty) -> None:
         """管理台直接切换棋力：只对棋类房间生效，立即影响 Bot 接下来的走子。"""
@@ -2307,6 +2315,41 @@ class RoomManager:
                 "system",
                 f"{self._visitor_label(visitor)}把花火棋力调整为"
                 f"{self._difficulty_label(difficulty)}。",
+            )
+
+    async def player_set_side_rotation(
+        self, room: GameRoom, visitor_token: str, mode: str
+    ) -> None:
+        """玩家自选「再来一局」是每局换边还是保持执色。
+
+        仅棋类、仅本人坐在玩家席、且对面不是另一位真人时允许：
+        真人对真人的换边规则属于双方约定，不能由一方在页面上单方面改掉。
+        """
+        normalized = str(mode or "").strip().lower()
+        if normalized not in {"auto", "fixed"}:
+            raise ValueError("换边方式只能是「每局换边」或「保持执色」")
+        if room.game_type not in DUEL_GAMES:
+            raise ValueError(f"{self._game_label(room.game_type)}没有先后手可换")
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            seat = (
+                room.multiplayer.seat_for_token(visitor.token)
+                if room.multiplayer.enabled
+                else None
+            )
+            if seat is None or seat.is_ai:
+                raise PermissionError("请你先入座，再调整换边方式")
+            if self._duel_human_pair(room):
+                raise PermissionError("和真人对局时不能改换边方式")
+            auto = normalized == "auto"
+            if room.ai_side_rotation is auto:
+                return
+            room.ai_side_rotation = auto
+            room.touch()
+            room.add_message(
+                "system",
+                f"{self._visitor_label(visitor)}把再来一局的方式改为"
+                f"「{'每局换边' if auto else '保持执色'}」。",
             )
 
     async def undo(self, room: GameRoom) -> int:
@@ -2521,7 +2564,7 @@ class RoomManager:
             await self._blackjack_dealer_turn(room)
             return
         if bot_turn:
-            await self._bot_turn(room)
+            self._spawn_bot_turn(room)
 
     async def switch_game(
         self,
@@ -3073,16 +3116,49 @@ class RoomManager:
         for room_id in list(self.rooms):
             await self.destroy(room_id, reason)
 
+    def bot_think_delay(self, room: GameRoom) -> float:
+        """花火这一步要「想」多久。
+
+        统一由插件配置的基础延迟决定，各难度做小幅增减（简单更急、困难更慢），
+        所以调「整体思考延迟」就能整体变慢/变快，不用逐档改代码。
+        """
+        base = max(0.0, float(getattr(self, "ai_think_delay", 0.8) or 0.0))
+        bonus = {"easy": -0.15, "normal": 0.05, "hard": 0.3}.get(
+            room.difficulty, 0.05
+        )
+        return max(0.15, base + bonus)
+
+    def _spawn_bot_turn(self, room: GameRoom) -> asyncio.Task:
+        """把花火的回合丢到后台执行。
+
+        以前 start_game 会 await 完 AI 再返回，浏览器拿到响应时棋盘上已经有子了，
+        看起来像「花火秒落子」。改成后台任务后，页面先看到空棋盘/自己的落子，
+        过一会儿才出现花火的应手，和真人思考的节奏一致。
+        """
+        task = asyncio.create_task(self._bot_turn(room))
+        self._bot_tasks.add(task)
+        task.add_done_callback(self._bot_tasks.discard)
+        return task
+
+    async def wait_bot_turns(self) -> None:
+        """等所有在途的 AI 回合结束（测试与关房清理用）。"""
+        pending = [task for task in list(self._bot_tasks) if not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     async def _bot_turn(self, room: GameRoom) -> None:
+        # 记下这一局：睡眠期间玩家可能「再来一局」或退席，room.game 会被换掉，
+        # 旧任务醒来后不能再往新棋盘上落子。
+        game_at_start = room.game
         while True:
-            await asyncio.sleep(
-                {"easy": 0.55, "normal": 0.85, "hard": 1.05}[room.difficulty]
-            )
+            await asyncio.sleep(self.bot_think_delay(room))
             if isinstance(room.game, PigDiceGame):
                 await self._pig_dice_bot_turn(room)
                 return
             board_event: dict[str, object] = {"actor": "bot"}
             async with room.lock:
+                if room.game is not game_at_start:
+                    return
                 if room.status != "active" or room.game is None or room.game.finished:
                     return
                 game = room.game
@@ -4054,6 +4130,39 @@ class RoomManager:
             if seat.side:
                 seat.side = self._other_duel_side(room, seat.side)
 
+    def _ai_side_rotation_active(self, room: GameRoom) -> bool:
+        """再来一局是否换边：房间内自选优先，但只在人机对局里生效。
+
+        两位真人开局后，房间级的自选项一律忽略——换边规则不能由其中一方
+        在自己页面上悄悄改掉，否则对面会觉得「明明说好换先怎么没换」。
+        """
+        if room.ai_side_rotation is not None and not self._duel_human_pair(room):
+            return bool(room.ai_side_rotation)
+        return bool(self.duel_side_rotation)
+
+    def side_rotation_state(
+        self, room: GameRoom, visitor_token: str = ""
+    ) -> dict[str, object]:
+        """给前端的「再来一局换边」状态：能不能改 + 当前是哪种。"""
+        rotation = self._ai_side_rotation_active(room)
+        seat = (
+            room.multiplayer.seat_for_token(visitor_token)
+            if room.multiplayer.enabled
+            else None
+        )
+        configurable = bool(
+            room.game_type in DUEL_GAMES
+            and seat is not None
+            and not seat.is_ai
+            and not self._duel_human_pair(room)
+            and room.status != "closed"
+        )
+        return {
+            "configurable": configurable,
+            "mode": "auto" if rotation else "fixed",
+            "explicit": room.ai_side_rotation is not None,
+        }
+
     def _apply_requested_duel_side(self, room: GameRoom, requested_side: str) -> None:
         """首局按入座时选的先后手定色（象棋：我执红 / 我执黑）。"""
         desired = str(requested_side or "").strip().lower()
@@ -4104,7 +4213,7 @@ class RoomManager:
             if room.completed_games == 0:
                 self._apply_requested_duel_side(room, requested_side)
             return
-        if self.duel_side_rotation:
+        if self._ai_side_rotation_active(room):
             self._swap_duel_sides(room)
 
     def _seat_side(self, room: GameRoom, seat: PlayerSeat | None) -> str:

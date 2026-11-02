@@ -119,6 +119,8 @@ async def test_room_manager_starts_bot_when_human_chooses_white() -> None:
     await manager.claim_and_start(room, visitor.token, "bot_black")
     assert room.status == "setup"
     await manager.start_game(room, visitor.token, "bot_black")
+    # 花火的回合改在后台跑：开局接口先返回空棋盘，AI 想好了才落子
+    await manager.wait_bot_turns()
 
     assert isinstance(room.game, OthelloGame)
     assert room.game.human_color == WHITE

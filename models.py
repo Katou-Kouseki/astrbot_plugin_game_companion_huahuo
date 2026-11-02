@@ -290,6 +290,9 @@ class Visitor:
             # 稳定身份（座位重编号 / 号码重复时也不会混淆）
             "uid": _visitor_uid(self.token),
             "online": self.connected and time.time() - self.last_seen_at < 15,
+            # 显式离开（关页面 / 点离开）才会写入；切后台导致的心跳超时不写。
+            # 前端据此区分「真的走了」和「只是标签页被节流」，不再误报离开/回来。
+            "left_at": float(self.left_at or 0.0),
             "is_player": is_player,
             "is_current_player": is_current_player,
             # 花火占的座位不接受换座申请，前端据此隐藏按钮
@@ -365,6 +368,9 @@ class GameRoom:
     pending_board_flush_at: float = 0.0
     # 换先序列：记录上次开局时的座位成员；成员一变就重新起序列（按座位号定色）
     duel_seat_signature: tuple[str, ...] = ()
+    # 房间内「再来一局换边」：None = 跟随插件配置；True/False = 玩家在房间页里自己选的。
+    # 只对「一位真人 + 花火」的人机对局生效，两位真人对局一律按插件配置，避免改到别人。
+    ai_side_rotation: bool | None = None
     confirmed_participant_qqs: set[str] = field(default_factory=set)
     participant_names: dict[str, str] = field(default_factory=dict)
     round_participant_qqs: set[str] = field(default_factory=set)
@@ -677,6 +683,8 @@ class GameRoom:
             ),
             "turtle_soup_mode": self.turtle_soup_mode,
             "difficulty": self.difficulty,
+            # 房间内自选的换边方式（None = 跟随插件配置）；前端据此渲染「每局换边/保持执色」
+            "ai_side_rotation": self.ai_side_rotation,
             # 围棋盘路：房间级设置，首位落座的玩家在开局前可以自己改，
             # 改完连空棋盘也一起换路数（前端按 size 重绘网格）。
             "weiqi": {
