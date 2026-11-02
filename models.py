@@ -340,6 +340,11 @@ class GameRoom:
     # 玩家在房间里自己选过花火棋力：再战时不接受 LLM 的难度改写，
     # 否则「我选了简单，再来一局又被模型改回普通」。
     difficulty_chosen_by_player: bool = False
+    # 棋类终局快照：播报 / 复盘 / 海报都读这里。玩家可能立刻点「再来一局」，
+    # room.game 会被新对局替换，异步任务若直接读 room.game 就会播成新局的 0/1 手。
+    last_board_result: dict[str, object] | None = None
+    # 上一次自动播报的时间戳（0 = 从未播报），用于刷屏节流
+    last_board_announce_at: float = 0.0
     confirmed_participant_qqs: set[str] = field(default_factory=set)
     participant_names: dict[str, str] = field(default_factory=dict)
     round_participant_qqs: set[str] = field(default_factory=set)

@@ -257,3 +257,80 @@ async def test_board_auto_announce_all_covers_human_win_vs_ai() -> None:
 
     assert _spawned_board(plugin)
 
+
+
+def _announce_plugin(
+    manager: RoomManager, *, min_moves: int = 5, cooldown: int = 30
+):
+    """只测节流逻辑的插件：mock 掉真正的群发送，只记录是否发过。"""
+    plugin = _plugin(manager)
+    plugin.board_group_announce_style = "text"
+    plugin.board_group_announce_min_moves = min_moves
+    plugin.board_group_announce_cooldown = cooldown
+    plugin.sent: list[str] = []
+
+    async def fake_announce(room, image_data=""):
+        plugin.sent.append("SENT")
+        return "TEXT"
+
+    plugin.board_announce_result = fake_announce  # type: ignore[attr-defined]
+    return plugin
+
+
+@pytest.mark.asyncio
+async def test_board_result_snapshot_survives_rematch() -> None:
+    """终局快照：玩家立刻再战，播报仍读上一局的真实手数（不再是 0/1 手）。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 12
+    room.game.winner = BLACK
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    assert room.last_board_result is not None
+    assert room.last_board_result["moves"] == 12
+
+    await manager.restart_finished_game(room, difficulty="normal")  # 新局 history 归零
+
+    plugin = _plugin(manager)
+    text = plugin._board_announce_text(room)
+    assert "共 12 手" in text
+    assert "共 1 手" not in text
+
+
+@pytest.mark.asyncio
+async def test_auto_announce_skips_below_min_moves() -> None:
+    """手数少于「自动播报最少手数」时不发群（避免 0 手速战刷屏）。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 3
+    room.game.winner = BLACK
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=5, cooldown=0)
+    await plugin._auto_announce_board(room)
+
+    assert plugin.sent == []
+
+
+@pytest.mark.asyncio
+async def test_auto_announce_respects_cooldown() -> None:
+    """冷却期内不重复发群，冷却过后恢复。"""
+    import time
+
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 12
+    room.game.winner = BLACK
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=0, cooldown=30)
+    room.last_board_announce_at = time.time()
+    await plugin._auto_announce_board(room)
+    assert plugin.sent == []
+
+    room.last_board_announce_at = time.time() - 31
+    await plugin._auto_announce_board(room)
+    assert len(plugin.sent) == 1

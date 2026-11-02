@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.33"
+    assert metadata["version"] == "0.5.34"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -781,3 +781,24 @@ def test_weiqi_board_size_capture_fx_and_in_play_join_guard() -> None:
     assert 'const inPlay = room.status === "active" || room.status === "paused";' in script
     assert 'action.innerHTML = \'<i data-lucide="eye"></i><span>本局进行中</span>\';' in script
     assert "等这局结束后再加入玩家席" in script
+
+
+def test_board_report_uses_frozen_snapshot_and_throttles() -> None:
+    """棋类播报读终局快照（避免再战后变 0 手），并带节流与解说防丢。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    schema = (ROOT / "_conf_schema.json").read_text(encoding="utf-8")
+
+    # 终局快照
+    assert "last_board_result" in models
+    assert "last_board_announce_at" in models
+    assert "_snapshot_board_result" in manager
+    assert "def _board_result_payload" in main
+    # 播报节流
+    assert "board_group_announce_min_moves" in main
+    assert "board_group_announce_cooldown" in main
+    assert '"group_announce_cooldown_seconds"' in schema
+    assert '"group_announce_min_moves"' in schema
+    # 解说防丢
+    assert "expect_game_uid" in main

@@ -1423,6 +1423,13 @@ class GameCompanionPlugin(Star):
         self.board_group_announce_recap = self._cfg_bool(
             "board.group_announce_recap", True
         )
+        # 播报节流：连续速战时避免每局刷群
+        self.board_group_announce_cooldown = self._cfg_non_negative(
+            "board.group_announce_cooldown_seconds", 30
+        )
+        self.board_group_announce_min_moves = self._cfg_non_negative(
+            "board.group_announce_min_moves", 5
+        )
         self.board_report_enabled = self._cfg_bool(
             "board.report_enabled", False
         )
@@ -2934,10 +2941,12 @@ class GameCompanionPlugin(Star):
                     )
                 if auto_all or auto_huahuo_win:
                     self._spawn(self._auto_announce_board(room))
+            current_uid = str(getattr(room.game, "game_uid", "") or "")
             self._spawn(
                 self._comment(
                     room,
                     f"{game_label}本局结果是：{result}。请用当前人格简短回应。",
+                    expect_game_uid=current_uid,
                 )
             )
             return
@@ -3763,7 +3772,12 @@ class GameCompanionPlugin(Star):
             return ""
 
     async def _comment(
-        self, room: GameRoom, prompt: str, *, with_memory: bool = True
+        self,
+        room: GameRoom,
+        prompt: str,
+        *,
+        with_memory: bool = True,
+        expect_game_uid: str = "",
     ) -> None:
         # 先举起「正在输入」：网页立刻显示占位并把轮询提速，
         # 否则从开局到第一句解说之间的 3~5 秒完全是死等。
@@ -3775,6 +3789,12 @@ class GameCompanionPlugin(Star):
         finally:
             room.bot_typing_pending = max(0, room.bot_typing_pending - 1)
         if not text or room.status == "closed":
+            return
+        # 生成期间玩家可能已经开了下一局：局号变了就丢弃这条过时解说，
+        # 否则上一局的点评会冒到新对局里（频繁速战时尤其明显）。
+        if expect_game_uid and (
+            str(getattr(room.game, "game_uid", "") or "") != expect_game_uid
+        ):
             return
         room.add_message("bot", text)
 
@@ -5074,10 +5094,11 @@ class GameCompanionPlugin(Star):
         依据本局结果（谁赢、执子、手数、终局局面）生成 2-3 句要点；
         LLM 不可用或超时时返回本地兜底文案。
         """
-        game = room.game
-        if game is None or not isinstance(game, BOARD_GAME_CLASSES):
+        payload = self._board_result_payload(room)
+        if payload is None:
             return ""
-        key = f"board:{int(getattr(room, 'completed_games', 0) or 0)}"
+        # 按「快照里的局号」缓存：玩家立刻再战后仍能取回上一局的复盘
+        key = f"board:{int(payload.get('completed_games') or 0)}"
         cache = getattr(room, "recap_cache", None) or {}
         if key in cache:
             return str(cache[key] or "")
@@ -5104,19 +5125,64 @@ class GameCompanionPlugin(Star):
             room.recap_cache[key] = text
         return text
 
+    def _board_result_payload(self, room: GameRoom) -> dict[str, object] | None:
+        """棋类本局结果：优先读终局快照，没有快照再退回当前 room.game。
+
+        快照由 room_manager._finish_game 在换局前冻结，专门解决「玩家秒点再来一局，
+        异步播报读到新局 → 0 手」的问题。
+        """
+        snap = getattr(room, "last_board_result", None)
+        if isinstance(snap, dict) and snap:
+            return snap
+        game = room.game
+        if game is None or not isinstance(game, BOARD_GAME_CLASSES):
+            return None
+        raw_board = getattr(game, "board", None)
+        board = raw_board() if callable(raw_board) else raw_board
+        payload: dict[str, object] = {
+            "game_uid": str(getattr(game, "game_uid", "") or ""),
+            "completed_games": int(getattr(room, "completed_games", 0) or 0),
+            "game_type": room.game_type,
+            "moves": len(getattr(game, "history", None) or []),
+            "draw": bool(getattr(game, "draw", False)),
+            "winner_token": "",
+            "winner_name": "",
+            "winner_side": "",
+            "board": [list(row) for row in board] if board else None,
+        }
+        winner_seat = self.manager._duel_winner_seat(room)
+        if winner_seat is not None:
+            payload["winner_token"] = winner_seat.visitor_token
+            payload["winner_name"] = self.manager._seat_display(winner_seat)
+            payload["winner_side"] = self.manager._seat_side(room, winner_seat)
+        # 单人历史房间（未启用玩家席）的兜底胜负
+        if not payload["draw"] and not payload["winner_name"]:
+            if isinstance(game, XiangqiGame):
+                payload["human_won"] = game.winner == getattr(
+                    game, "human_side", None
+                )
+            else:
+                winner = int(getattr(game, "winner", 0) or 0)
+                human_color = int(getattr(game, "human_color", 0) or 0)
+                if winner and human_color:
+                    payload["human_won"] = winner == human_color
+        return payload
+
     def _board_game_summary(self, room: GameRoom) -> str:
         """把一局棋类的关键信息拼成可读文本，供复盘使用。"""
         try:
-            game = room.game
+            payload = self._board_result_payload(room)
+            if payload is None:
+                return ""
             label = self.manager._game_label(room.game_type)
-            moves = len(getattr(game, "history", None) or [])
-            winner_seat = self.manager._duel_winner_seat(room)
-            if winner_seat is not None:
-                name = self.manager._seat_display(winner_seat)
-                side = self.manager._seat_side(room, winner_seat)
-                side_text = {"red": "红", "black": "黑", "white": "白"}.get(side, "")
+            moves = int(payload.get("moves") or 0)
+            name = str(payload.get("winner_name") or "")
+            side_text = {"red": "红", "black": "黑", "white": "白"}.get(
+                str(payload.get("winner_side") or ""), ""
+            )
+            if name:
                 outcome = f"{name}获胜" + (f"（执{side_text}）" if side_text else "")
-            elif getattr(game, "draw", False):
+            elif payload.get("draw"):
                 outcome = "平局"
             else:
                 outcome = "胜负已定"
@@ -5126,30 +5192,25 @@ class GameCompanionPlugin(Star):
 
     def _board_announce_text(self, room: GameRoom) -> str:
         """棋类纯文字战报：游戏名 → 谁赢（执什么）→ 手数，供群通报使用。"""
-        game = room.game
-        if game is None or not isinstance(game, BOARD_GAME_CLASSES):
+        payload = self._board_result_payload(room)
+        if payload is None:
             return ""
         label = self.manager._game_label(room.game_type)
-        moves = len(getattr(game, "history", None) or [])
-        winner_seat = self.manager._duel_winner_seat(room)
-        if winner_seat is not None:
-            name = self.manager._seat_display(winner_seat)
-            side = self.manager._seat_side(room, winner_seat)
-            side_text = {
-                "red": "红", "black": "黑", "white": "白",
-            }.get(side, "")
+        moves = int(payload.get("moves") or 0)
+        name = str(payload.get("winner_name") or "")
+        side_text = {"red": "红", "black": "黑", "white": "白"}.get(
+            str(payload.get("winner_side") or ""), ""
+        )
+        if name:
             result = f"🏆 {name}获胜" + (f"（执{side_text}）" if side_text else "")
-        elif getattr(game, "draw", False):
+        elif payload.get("draw"):
             result = "🤝 平局"
+        elif payload.get("human_won") is True:
+            result = "🏆 玩家获胜"
+        elif payload.get("human_won") is False:
+            result = "🏆 花火获胜"
         else:
-            # 单人历史房间（未启用玩家席）的兜底：按 human_color/human_side 判胜负
-            if isinstance(game, XiangqiGame):
-                human_won = game.winner == game.human_side
-            else:
-                human_won = int(getattr(game, "winner", 0) or 0) == int(
-                    getattr(game, "human_color", 0) or 0
-                )
-            result = "🏆 玩家获胜" if human_won else "🏆 花火获胜"
+            result = "🏁 本局结束"
         return f"♟️ {label}战报\n{result}\n⏱️ 共 {moves} 手"
 
     async def _board_announce_poster(self, room: GameRoom) -> str:
@@ -5188,21 +5249,20 @@ class GameCompanionPlugin(Star):
 
     def _board_poster_data(self, room: GameRoom) -> dict[str, Any]:
         """提取棋类战报海报所需数据（标题/副信息/内嵌棋盘 SVG），供 t2i 模板与 Pillow 共用。"""
-        game = room.game
+        payload = self._board_result_payload(room) or {}
         gt = room.game_type
         label = self.manager._game_label(gt)
         icon = {"gomoku": "🎯", "othello": "⚪", "xiangqi": "♟️", "weiqi": "⛰️"}.get(
             gt, "♟️"
         )
-        moves = len(getattr(game, "history", None) or [])
-        winner_seat = self.manager._duel_winner_seat(room)
-        draw = bool(getattr(game, "draw", False))
-        if winner_seat is not None:
-            name = self.manager._seat_display(winner_seat)
+        moves = int(payload.get("moves") or 0)
+        name = str(payload.get("winner_name") or "")
+        side = str(payload.get("winner_side") or "")
+        draw = bool(payload.get("draw"))
+        if name:
             # 昵称过长时截断，避免战报标题/副信息溢出画布「显示不全」
             if len(name) > 10:
                 name = name[:10] + "…"
-            side = self.manager._seat_side(room, winner_seat)
             side_text = {"red": "红", "black": "黑", "white": "白"}.get(side, "")
             title = f"{name} 获胜"
             sub = (
@@ -5213,16 +5273,27 @@ class GameCompanionPlugin(Star):
             badge, accent = "🏆", "#ffd166"
         elif draw:
             title, sub, badge, accent = "平局", f"{label} · 共 {moves} 手", "🤝", "#9ccbff"
+        elif payload.get("human_won") is True:
+            title, sub, badge, accent = (
+                "玩家获胜",
+                f"{label} · 共 {moves} 手",
+                "🏆",
+                "#ffd166",
+            )
+        elif payload.get("human_won") is False:
+            title, sub, badge, accent = (
+                "花火 获胜",
+                f"{label} · 共 {moves} 手",
+                "🏆",
+                "#ffd166",
+            )
         else:
-            # 单人历史房间兜底：按 human_color / human_side 判胜负
-            if isinstance(game, XiangqiGame):
-                human_won = game.winner == game.human_side
-            else:
-                human_won = int(getattr(game, "winner", 0) or 0) == int(
-                    getattr(game, "human_color", 0) or 0
-                )
-            title = "玩家获胜" if human_won else "花火 获胜"
-            sub, badge, accent = f"{label} · 共 {moves} 手", "🏆", "#ffd166"
+            title, sub, badge, accent = (
+                "本局结束",
+                f"{label} · 共 {moves} 手",
+                "🏁",
+                "#9ccbff",
+            )
         return {
             "icon": icon,
             "label": label,
@@ -5235,16 +5306,23 @@ class GameCompanionPlugin(Star):
 
     @staticmethod
     def _board_svg(room: GameRoom) -> str:
-        """生成终局棋盘 SVG（服务端海报用），与前端 paintBoardThumb 视觉一致。"""
-        game = room.game
-        if game is None:
+        """生成终局棋盘 SVG（服务端海报用），与前端 paintBoardThumb 视觉一致。
+
+        盘面优先取终局快照，避免玩家立刻再战导致海报画成新开局。
+        """
+        payload = getattr(room, "last_board_result", None)
+        board = payload.get("board") if isinstance(payload, dict) else None
+        if not board:
+            game = room.game
+            if game is None:
+                return ""
+            raw = getattr(game, "board", None)
+            board = raw() if callable(raw) else raw
+        if not board or not isinstance(board, list) or not board:
             return ""
         gt = room.game_type
         if gt == "xiangqi":
-            return GameCompanionPlugin._xiangqi_svg(game)
-        board = getattr(game, "board", None)
-        if not board or not isinstance(board, list) or not board:
-            return ""
+            return GameCompanionPlugin._xiangqi_svg_from_board(board)
         n = len(board)
         size = 360
         if gt == "othello":
@@ -5295,9 +5373,8 @@ class GameCompanionPlugin(Star):
         return f'<svg width="360" height="360" viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg">{"".join(parts)}</svg>'
 
     @staticmethod
-    def _xiangqi_svg(game: Any) -> str:
+    def _xiangqi_svg_from_board(board: list[list[str]]) -> str:
         """中国象棋终局棋盘 SVG（10x9，含棋子汉字）。"""
-        board = game.board()
         rows, cols = len(board), len(board[0]) if board else 9
         size = 360
         m = size * 0.07
@@ -5406,10 +5483,18 @@ class GameCompanionPlugin(Star):
     @staticmethod
     def _pillow_draw_board(d: Any, room: GameRoom, x0: float, y0: float, size: float) -> None:
         """把终局棋盘画进 Pillow 海报指定方形区域（与 SVG / 前端视觉一致）。"""
-        game = room.game
+        payload = getattr(room, "last_board_result", None)
         gt = room.game_type
+        board = payload.get("board") if isinstance(payload, dict) else None
+        if not board:
+            game = room.game
+            if game is None:
+                return
+            raw = getattr(game, "board", None)
+            board = raw() if callable(raw) else raw
+        if not board:
+            return
         if gt == "xiangqi":
-            board = game.board()
             rows, cols = len(board), len(board[0]) if board else 9
             m = size * 0.07
             gx = (size - 2 * m) / (cols - 1)
@@ -5446,9 +5531,6 @@ class GameCompanionPlugin(Star):
                         fill=(241, 212, 154), outline=ec, width=max(1, int(size / 200)),
                     )
                     d.text((x, y), labels.get(piece, piece), font=f, fill=tc, anchor="mm")
-            return
-        board = getattr(game, "board", None)
-        if not board:
             return
         n = len(board)
         if gt == "othello":
@@ -5617,6 +5699,24 @@ class GameCompanionPlugin(Star):
         标记，避免随后手动点「通知到群」重复发送。
         """
         try:
+            # 先读终局快照：玩家可能已点「再来一局」，room.game 已换成新局
+            payload = self._board_result_payload(room)
+            if payload is None:
+                return
+            # 节流：太短的速战不发，避免「0 手速战速决」刷群
+            moves = int(payload.get("moves") or 0)
+            if (
+                self.board_group_announce_min_moves
+                and moves < self.board_group_announce_min_moves
+            ):
+                return
+            cooldown = self.board_group_announce_cooldown
+            if (
+                cooldown
+                and room.last_board_announce_at
+                and time.time() - room.last_board_announce_at < cooldown
+            ):
+                return
             style = (getattr(self, "board_group_announce_style", "text") or "text").lower()
             image_data = ""
             if style in {"image", "both"}:
@@ -5631,6 +5731,7 @@ class GameCompanionPlugin(Star):
                     f"board:{int(getattr(room, 'completed_games', 0) or 0)}"
                 )
                 room.last_announced_text = announce_text
+                room.last_board_announce_at = time.time()
         except Exception as exc:
             logger.warning("[GameCompanion] 棋类自动播报失败: %s", exc)
 

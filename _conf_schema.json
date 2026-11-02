@@ -673,6 +673,18 @@
         "default": true,
         "hint": "开启后随通报附带「花火复盘」（图文模式时放在图片之后）；关闭则只发战报本身。"
       },
+      "group_announce_cooldown_seconds": {
+        "description": "自动播报最小间隔（秒）",
+        "type": "int",
+        "default": 30,
+        "hint": "同一房间两次自动播报至少间隔多少秒，避免连续速战刷屏；0 表示不限制。手动点「通知到群」不受此限制。"
+      },
+      "group_announce_min_moves": {
+        "description": "自动播报最少手数",
+        "type": "int",
+        "default": 5,
+        "hint": "对局手数少于该值时不自动播报（避免「0 手速战速决」这类无意义战报）；0 表示不限制。"
+      },
       "report_enabled": {
         "description": "开启棋类战绩日报/周报",
         "type": "bool",

@@ -3409,8 +3409,54 @@ class RoomManager:
                 and room.game_type != "undercover"
             ):
                 self._credit_human_global_wins(room)
+            # 棋类终局快照：在 room.game 被下一局替换前冻结本局数据，
+            # 供异步播报 / 复盘 / 海报使用（否则玩家秒点再战会播成 0 手）。
+            if room.game_type in DUEL_GAMES and isinstance(
+                room.game, BOARD_GAME_CLASSES
+            ):
+                self._snapshot_board_result(room)
             room.touch()
         await self._emit("game_finished", room, {"result": result})
+
+    def _snapshot_board_result(self, room: GameRoom) -> None:
+        """冻结棋类本局结果，供播报 / 复盘 / 海报读取。
+
+        播报是异步任务，玩家可能在它跑完前就点了「再来一局」；届时 room.game
+        已换成新对局，手数、终局盘面都会变成 0/1 手，播报就会说谎。
+        """
+        game = room.game
+        if game is None:
+            return
+        raw_board = getattr(game, "board", None)
+        board = raw_board() if callable(raw_board) else raw_board
+        payload: dict[str, object] = {
+            "game_uid": str(getattr(game, "game_uid", "") or ""),
+            "completed_games": int(room.completed_games),
+            "game_type": room.game_type,
+            "moves": len(getattr(game, "history", None) or []),
+            "draw": bool(getattr(game, "draw", False)),
+            "winner_token": "",
+            "winner_name": "",
+            "winner_side": "",
+            "board": [list(row) for row in board] if board else None,
+        }
+        winner_seat = self._duel_winner_seat(room)
+        if winner_seat is not None:
+            payload["winner_token"] = winner_seat.visitor_token
+            payload["winner_name"] = self._seat_display(winner_seat)
+            payload["winner_side"] = self._seat_side(room, winner_seat)
+        elif not payload["draw"]:
+            # 未启用玩家席的单人房间：按执方判胜负，供播报文案兜底
+            if isinstance(game, XiangqiGame):
+                payload["human_won"] = game.winner == getattr(
+                    game, "human_side", None
+                )
+            else:
+                winner = int(getattr(game, "winner", 0) or 0)
+                human_color = int(getattr(game, "human_color", 0) or 0)
+                if winner and human_color:
+                    payload["human_won"] = winner == human_color
+        room.last_board_result = payload
 
     def _credit_board_game_global(
         self,
