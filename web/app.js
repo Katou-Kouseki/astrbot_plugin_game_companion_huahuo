@@ -2730,6 +2730,9 @@
     button.classList.toggle("is-visible", away);
   }
 
+  // 海龟汤问答记录签名：内容没变化时跳过重建，避免每秒 replaceChildren 打断复制
+  let lastSoupHistorySignature = "";
+
   function renderTurtleSoup() {
     if (room?.game_type !== "turtle_soup") return;
     const game = room.game;
@@ -2784,41 +2787,55 @@
       : "等待玩家加入";
 
     const history = document.getElementById("soupHistory");
-    const soupPrevScrollTop = history.scrollTop;
-    const soupWasNearBottom = history.scrollHeight - history.scrollTop - history.clientHeight < 48;
-    history.replaceChildren();
-    const entries = Array.isArray(game?.entries) ? game.entries.slice() : [];
-    if (!entries.length) {
-      const empty = document.createElement("span");
-      empty.className = "soup-empty";
-      empty.textContent = game?.preparing ? "题目生成并校验后会显示在这里" : "还没有公开问答";
-      history.appendChild(empty);
-    } else {
-      entries.forEach((entry) => {
-        const item = document.createElement("article");
-        item.className = `soup-entry ${entry.kind || "question"} ${entry.pending ? "pending" : ""}`;
-        const prompt = document.createElement("p");
-        prompt.className = "prompt";
-        prompt.textContent = entry.kind === "reverse"
-          ? `${entry.player_number || "?"} 号线索/回答：${entry.prompt || ""}`
-          : entry.kind === "hint"
-          ? "玩家申请了提示"
-          : `${entry.player_number ? `${entry.player_number} 号` : "玩家"}${entry.kind === "answer" ? "猜测" : "问题"}：${entry.prompt || ""}`;
-        const response = document.createElement("p");
-        response.className = "response";
-        response.textContent = entry.kind === "reverse" && entry.pending
-          ? sanitizeDisplayText(entry.response || "花火 推理中")
-          : entry.kind === "reverse"
-          ? `花火 ${entry.bot_action === "guess" ? "猜测" : "提问"}：${sanitizeDisplayText(entry.response || "")}`
-          : sanitizeDisplayText(entry.response || "花火 判断中");
-        item.append(prompt, response);
-        history.appendChild(item);
-      });
-      // 和聊天窗一致：在底部才跟随滚到底，上滑翻历史则原地恢复，别把「爬楼」拽回底部
-      if (soupWasNearBottom) {
-        history.scrollTop = history.scrollHeight;
+    const entries = Array.isArray(game?.entries) ? game.entries : [];
+    const sig = JSON.stringify({
+      p: game?.preparing ? 1 : 0,
+      e: entries.map((entry) => [
+        entry.kind ?? "",
+        entry.pending ? 1 : 0,
+        entry.player_number ?? "",
+        entry.bot_action ?? "",
+        entry.prompt ?? "",
+        entry.response ?? "",
+      ]),
+    });
+    if (sig !== lastSoupHistorySignature) {
+      lastSoupHistorySignature = sig;
+      const soupPrevScrollTop = history.scrollTop;
+      const soupWasNearBottom = history.scrollHeight - history.scrollTop - history.clientHeight < 48;
+      history.replaceChildren();
+      if (!entries.length) {
+        const empty = document.createElement("span");
+        empty.className = "soup-empty";
+        empty.textContent = game?.preparing ? "题目生成并校验后会显示在这里" : "还没有公开问答";
+        history.appendChild(empty);
       } else {
-        history.scrollTop = soupPrevScrollTop;
+        entries.forEach((entry) => {
+          const item = document.createElement("article");
+          item.className = `soup-entry ${entry.kind || "question"} ${entry.pending ? "pending" : ""}`;
+          const prompt = document.createElement("p");
+          prompt.className = "prompt";
+          prompt.textContent = entry.kind === "reverse"
+            ? `${entry.player_number || "?"} 号线索/回答：${entry.prompt || ""}`
+            : entry.kind === "hint"
+            ? "玩家申请了提示"
+            : `${entry.player_number ? `${entry.player_number} 号` : "玩家"}${entry.kind === "answer" ? "猜测" : "问题"}：${entry.prompt || ""}`;
+          const response = document.createElement("p");
+          response.className = "response";
+          response.textContent = entry.kind === "reverse" && entry.pending
+            ? sanitizeDisplayText(entry.response || "花火 推理中")
+            : entry.kind === "reverse"
+            ? `花火 ${entry.bot_action === "guess" ? "猜测" : "提问"}：${sanitizeDisplayText(entry.response || "")}`
+            : sanitizeDisplayText(entry.response || "花火 判断中");
+          item.append(prompt, response);
+          history.appendChild(item);
+        });
+        // 和聊天窗一致：在底部才跟随滚到底，上滑翻历史则原地恢复，别把「爬楼」拽回底部
+        if (soupWasNearBottom) {
+          history.scrollTop = history.scrollHeight;
+        } else {
+          history.scrollTop = soupPrevScrollTop;
+        }
       }
     }
 
