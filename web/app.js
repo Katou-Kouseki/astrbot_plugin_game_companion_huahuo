@@ -2550,6 +2550,7 @@
     const list = document.getElementById("messages");
     // 全量重绘前必须清掉旧 DOM 上的打字机定时器，避免泄漏
     teardownAllTypingTimers();
+    const prevScrollTop = list.scrollTop;
     const wasNearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 48;
     list.replaceChildren();
     const messages = Array.isArray(room.messages) ? room.messages : [];
@@ -2626,7 +2627,7 @@
                   // 进度回调：刷新文本 + 用户没手动滑上去就跟随滚动
                   content.textContent = done ? rawText : _shown;
                   if (done) content.classList.remove("typing-active");
-                  if (userStaysNearBottom() || activeRoomView === "chat") {
+                  if (userStaysNearBottom()) {
                     list.scrollTop = list.scrollHeight;
                   }
                 });
@@ -2670,15 +2671,27 @@
       think.appendChild(meta);
       const indicator = document.createElement("p");
       indicator.className = "message-content typing-indicator";
+      const botTypingLabel = {
+        blackjack: "花火正在思考要不要牌",
+        pig_dice: "花火正在掷骰",
+        turtle_soup: "花火正在思考",
+        draw_guess: "花火正在看图",
+        undercover: "花火正在思考",
+      }[room.game_type] || "花火正在看着棋盘";
       indicator.innerHTML = [
-        "<span class=\"thinking-label\">花火正在看着棋盘</span>",
+        `<span class="thinking-label">${botTypingLabel}</span>`,
         "<span class=\"dots\"><b></b><b></b><b></b></span>",
       ].join("");
       think.appendChild(indicator);
       list.appendChild(think);
     }
 
-    if (wasNearBottom || activeRoomView === "chat") list.scrollTop = list.scrollHeight;
+    // 保持用户滚动位置：本来就在底部则跟随新消息滚到底；往上翻了就原地恢复，别把「爬楼」拽回底部
+    if (wasNearBottom) {
+      list.scrollTop = list.scrollHeight;
+    } else {
+      list.scrollTop = prevScrollTop;
+    }
     if (activeRoomView === "chat") lastSeenMessageId = latestMessageId(room);
   }
 
