@@ -2693,6 +2693,15 @@
       list.scrollTop = prevScrollTop;
     }
     if (activeRoomView === "chat") lastSeenMessageId = latestMessageId(room);
+    updateChatScrollButton();
+  }
+
+  function updateChatScrollButton() {
+    const list = document.getElementById("messages");
+    const button = document.getElementById("chatScrollBottom");
+    if (!list || !button) return;
+    const away = list.scrollHeight - list.scrollTop - list.clientHeight > 80;
+    button.classList.toggle("is-visible", away);
   }
 
   function renderTurtleSoup() {
@@ -5904,6 +5913,12 @@
   });
   document.getElementById("forgetIdentity").addEventListener("click", forgetTrustedIdentity);
   document.getElementById("chatComposer").addEventListener("submit", submitChat);
+  document.getElementById("messages").addEventListener("scroll", updateChatScrollButton);
+  document.getElementById("chatScrollBottom").addEventListener("click", () => {
+    const list = document.getElementById("messages");
+    list.scrollTop = list.scrollHeight;
+    updateChatScrollButton();
+  });
   chatInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();

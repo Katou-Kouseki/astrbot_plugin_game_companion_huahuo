@@ -1075,6 +1075,29 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 .chat-composer textarea:focus { outline: 2px solid color-mix(in srgb, var(--green) 22%, transparent); border-color: var(--green); }
 .chat-send { width: 42px; height: 42px; display: grid; place-items: center; border: 0; border-radius: 5px; background: var(--green); color: #fff; }
 .chat-send svg { width: 18px; }
+.chat-scroll-bottom {
+  position: absolute;
+  right: 12px;
+  bottom: 76px;
+  z-index: 3;
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-solid);
+  color: var(--text);
+  box-shadow: var(--card-shadow);
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity .18s ease, transform .18s ease, color .3s ease, border-color .3s ease, background .3s ease;
+}
+.chat-scroll-bottom.is-visible { opacity: 1; transform: translateY(0); pointer-events: auto; }
+.chat-scroll-bottom:hover { border-color: var(--green); color: var(--green); }
+.chat-scroll-bottom svg { width: 16px; height: 16px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
 .toast {
