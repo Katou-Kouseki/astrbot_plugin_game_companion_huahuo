@@ -175,6 +175,10 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/seat/leave", self._seat_leave)
         # 两人对弈：和花火对局（add）/ 等对手来（remove）
         app.router.add_post("/api/room/{access_token}/seat/ai", self._seat_ai)
+        # 棋类房间：玩家自选花火棋力（仅落座玩家、对手非真人）
+        app.router.add_post(
+            "/api/room/{access_token}/difficulty", self._set_difficulty
+        )
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
         app.router.add_post("/api/room/{access_token}/chat", self._chat)
         app.router.add_post("/api/room/{access_token}/leave", self._leave)
@@ -806,6 +810,33 @@ class GameRoomServer:
         return self._response(
             {
                 **result,
+                "room": room.public_snapshot(
+                    visitor_token,
+                    global_leaderboard=self.manager.global_leaderboard(
+                        room.game_type
+                    ),
+                ),
+            }
+        )
+
+    async def _set_difficulty(self, request: web.Request) -> web.Response:
+        """玩家在房间内自选花火棋力（仅棋类、仅落座玩家、对手非真人）。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        difficulty = str(payload.get("difficulty") or "").strip().lower()
+        try:
+            await self.manager.player_set_difficulty(
+                room, visitor_token, difficulty
+            )
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)},
+                status=400,
+            )
+        return self._response(
+            {
                 "room": room.public_snapshot(
                     visitor_token,
                     global_leaderboard=self.manager.global_leaderboard(

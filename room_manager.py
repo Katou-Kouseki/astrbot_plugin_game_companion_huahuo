@@ -2320,6 +2320,41 @@ class RoomManager:
                 f"管理员把棋力调整为{self._difficulty_label(difficulty)}。",
             )
 
+    async def player_set_difficulty(
+        self, room: GameRoom, visitor_token: str, difficulty: Difficulty
+    ) -> None:
+        """玩家在房间里自选花火棋力。
+
+        仅棋类房间、仅「本人在玩家席」、且对面不是另一位真人时允许——
+        真人对真人没有花火可调，这时改档会让人误以为在调对手强度。
+        开局前选好即用于本局；对局中改则立即影响花火接下来的走子。
+        """
+        if room.game_type not in DIFFICULTY_GAME_TYPES:
+            raise ValueError(f"{self._game_label(room.game_type)}没有可调的棋力档位")
+        if difficulty not in {"easy", "normal", "hard"}:
+            raise ValueError("棋力只能是简单、普通、困难")
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if room.multiplayer.enabled:
+                if room.multiplayer.seat_for_token(visitor.token) is None:
+                    raise PermissionError("请你先入座，再调整花火棋力")
+                if self._duel_human_pair(room):
+                    raise PermissionError("和真人对局时不能调整花火棋力")
+            elif visitor.token != room.player_token:
+                raise PermissionError("请你先入座，再调整花火棋力")
+            room.difficulty = difficulty
+            # 玩家手动选过就锁定，再战时不让模型把难度改回去
+            room.difficulty_chosen_by_player = True
+            game = room.game
+            if game is not None and hasattr(game, "difficulty"):
+                game.difficulty = difficulty
+            room.touch()
+            room.add_message(
+                "system",
+                f"{self._visitor_label(visitor)}把花火棋力调整为"
+                f"{self._difficulty_label(difficulty)}。",
+            )
+
     async def undo(self, room: GameRoom) -> int:
         """Undo the latest complete player round after a QQ-side decision."""
         async with room.lock:

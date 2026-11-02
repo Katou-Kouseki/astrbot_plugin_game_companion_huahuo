@@ -864,3 +864,49 @@ async def test_board_game_leaderboard_credits_huahuo_with_winrate() -> None:
     assert rows["花火"]["wins"] == 1
     assert rows["花火"]["games"] == 2
     assert rows["花火"]["winrate"] == 50.0
+
+
+@pytest.mark.asyncio
+async def test_player_can_pick_huahuo_difficulty_when_playing_ai() -> None:
+    """玩家在玩家席且对手是花火时，可以自选棋力，并对当前对局立即生效。"""
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=0)
+    room = await create_room(manager, source="private")
+    player = await manager.join(room)
+    await manager.claim_and_start(room, player.token, "human_black")
+    await manager.add_ai_seat(room, player.token, side="black")
+
+    await manager.player_set_difficulty(room, player.token, "easy")
+
+    assert room.difficulty == "easy"
+    assert room.game.difficulty == "easy"
+    # 玩家手动选过之后，再战不再让模型把难度改回去
+    assert room.difficulty_chosen_by_player is True
+
+
+@pytest.mark.asyncio
+async def test_player_cannot_pick_difficulty_against_human() -> None:
+    """两位真人对局没有花火可调，改档应被拒绝。"""
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=0)
+    room = await create_room(manager, source="private")
+    first = await manager.join(room)
+    second = await manager.join(room)
+    await manager.claim_and_start(room, first.token, "human_black")
+    await manager.claim_and_start(room, second.token, "human_white")
+
+    with pytest.raises(PermissionError):
+        await manager.player_set_difficulty(room, first.token, "hard")
+    assert room.difficulty == "normal"
+
+
+@pytest.mark.asyncio
+async def test_spectator_cannot_pick_difficulty() -> None:
+    """没落座的观众不能调花火棋力。"""
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=0)
+    room = await create_room(manager, source="private")
+    player = await manager.join(room)
+    spectator = await manager.join(room)
+    await manager.claim_and_start(room, player.token, "human_black")
+    await manager.add_ai_seat(room, player.token, side="black")
+
+    with pytest.raises(PermissionError):
+        await manager.player_set_difficulty(room, spectator.token, "hard")

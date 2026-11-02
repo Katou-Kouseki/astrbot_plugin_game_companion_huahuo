@@ -38,7 +38,7 @@
         <i data-lucide="gamepad-2"></i><span>游戏</span>
       </button>
       <button type="button" data-room-view="chat">
-        <i data-lucide="message-circle"></i><span>对话</span>
+        <i data-lucide="message-circle"></i><span>聊天</span>
         <span id="chatUnread" class="unread-dot" hidden></span>
       </button>
     </nav>
@@ -426,6 +426,18 @@
             <strong id="turnLabel">等待开局</strong>
           </div>
           <span class="difficulty" id="difficulty">普通</span>
+          <!-- 棋类房间：玩家可自选花火棋力（仅落座玩家、对手不是真人时显示） -->
+          <div
+            id="difficultyPicker"
+            class="difficulty-picker"
+            hidden
+            role="group"
+            aria-label="花火棋力"
+          >
+            <button type="button" data-difficulty="easy">简单</button>
+            <button type="button" data-difficulty="normal">普通</button>
+            <button type="button" data-difficulty="hard">困难</button>
+          </div>
         </section>
 
         <!-- 围棋专用：停一手 + 盘路。放在操作面板里，和胜率、席位排在一起 -->
@@ -605,7 +617,7 @@
         </section>
       </section>
 
-      <aside id="chatPanel" class="chat-panel" aria-label="花火 对话">
+      <aside id="chatPanel" class="chat-panel" aria-label="聊天">
         <header class="chat-header">
           <div>
             <span class="label">房间对话</span>

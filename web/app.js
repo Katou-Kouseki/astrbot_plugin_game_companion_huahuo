@@ -1619,6 +1619,23 @@
     document.getElementById("difficulty").textContent = pigDice
       ? ({ easy: "稳健", normal: "均衡", hard: "大胆" }[room.difficulty] || "均衡")
       : difficultyLabel(room.difficulty);
+    // 棋类房间：落座玩家 + 对面不是真人时，把「棋力」徽章换成可点选的三档
+    const difficultyPicker = document.getElementById("difficultyPicker");
+    const difficultyBadge = document.getElementById("difficulty");
+    const canPickDifficulty =
+      isDuelGame(room) && Boolean(room.is_player) && !hasHumanOpponent(room);
+    if (difficultyPicker) {
+      difficultyPicker.hidden = !canPickDifficulty;
+      difficultyPicker
+        .querySelectorAll("[data-difficulty]")
+        .forEach((btn) => {
+          const selected = btn.getAttribute("data-difficulty") === room.difficulty;
+          btn.classList.toggle("is-active", selected);
+          btn.setAttribute("aria-pressed", selected ? "true" : "false");
+          btn.disabled = busy;
+        });
+    }
+    difficultyBadge.hidden = canPickDifficulty;
     document.getElementById("humanScore").textContent = room.score?.human ?? 0;
     document.getElementById("botScore").textContent = room.score?.bot ?? 0;
     document.getElementById("drawScore").textContent = room.score?.draws ?? 0;
@@ -5315,6 +5332,36 @@
     }
   }
 
+  async function setDifficulty(difficulty) {
+    // 只有棋类、本人在玩家席、且对面不是真人时才能调花火棋力
+    if (
+      busy
+      || !room
+      || !isDuelGame(room)
+      || !room.is_player
+      || hasHumanOpponent(room)
+    ) {
+      return;
+    }
+    if (room.difficulty === difficulty) return;
+    busy = true;
+    render();
+    try {
+      const data = await request("POST", "difficulty", {
+        visitor_token: visitorToken,
+        difficulty,
+      });
+      setRoom(data.room);
+      showToast(`花火棋力已切换为${difficultyLabel(difficulty)}`);
+      render();
+    } catch (error) {
+      showToast(error?.message || "调整棋力失败");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   async function moveXiangqi(event) {
     if (room.game.turn !== mySide()) return;
     const rect = board.getBoundingClientRect();
@@ -5405,6 +5452,11 @@
   document.getElementById("drawGuessAction").addEventListener("click", guessDrawing);
   document.getElementById("weiqiPassAction").addEventListener("click", passWeiqi);
   document.getElementById("weiqiResignAction").addEventListener("click", resignWeiqi);
+  document.getElementById("difficultyPicker").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-difficulty]");
+    if (!button || button.disabled) return;
+    setDifficulty(button.getAttribute("data-difficulty"));
+  });
   document.getElementById("weiqiBoardChoices").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-weiqi-size]");
     if (!button || button.disabled) return;

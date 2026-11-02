@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.32"
+    assert metadata["version"] == "0.5.33"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -588,6 +588,24 @@ def test_weiqi_ships_winrate_panel_and_admin_difficulty_switch() -> None:
     assert 'action: "set_difficulty"' in manager_js
     assert 'className = "difficulty-select"' in manager_js
     assert 'room.difficulty_adjustable' in manager_js
+
+
+def test_player_picks_huahuo_difficulty_inside_room() -> None:
+    """棋类房间：落座玩家（对手非真人）可自选花火棋力。"""
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+
+    assert "difficulty_chosen_by_player" in models
+    assert "async def player_set_difficulty(" in manager
+    assert "和真人对局时不能调整花火棋力" in manager
+    assert '"/api/room/{access_token}/difficulty"' in server
+    assert "async def _set_difficulty(" in server
+    assert 'id="difficultyPicker"' in page
+    assert "function setDifficulty(" in script
+    assert "canPickDifficulty" in script
 
 
 def test_othello_reuses_the_same_winrate_panel_as_weiqi() -> None:

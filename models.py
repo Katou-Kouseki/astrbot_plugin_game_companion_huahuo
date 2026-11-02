@@ -337,6 +337,9 @@ class GameRoom:
     player_qq: str = ""
     player_identity_confirmed: bool = False
     player_seat_locked: bool = False
+    # 玩家在房间里自己选过花火棋力：再战时不接受 LLM 的难度改写，
+    # 否则「我选了简单，再来一局又被模型改回普通」。
+    difficulty_chosen_by_player: bool = False
     confirmed_participant_qqs: set[str] = field(default_factory=set)
     participant_names: dict[str, str] = field(default_factory=dict)
     round_participant_qqs: set[str] = field(default_factory=set)

@@ -3799,7 +3799,10 @@ class GameCompanionPlugin(Star):
                 continue
             accept = bool(data.get("accept"))
             reply = str(data.get("reply") or reply).strip()[:300]
-            difficulty = self._difficulty(data.get("difficulty") or room.difficulty)
+            # 玩家在房间里手动选过棋力 → 再战保持玩家选择，不被模型的
+            # difficulty 改写（否则「选了简单，再来一局又变回普通」）。
+            if not getattr(room, "difficulty_chosen_by_player", False):
+                difficulty = self._difficulty(data.get("difficulty") or room.difficulty)
             break
         if room.room_id not in self.manager.rooms:
             return
