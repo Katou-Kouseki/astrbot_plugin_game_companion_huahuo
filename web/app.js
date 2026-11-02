@@ -3092,6 +3092,7 @@
         const total = document.createElement("strong");
         total.textContent = `${hand.value} 点`;
         const result = document.createElement("span");
+        result.className = `hand-result ${hand.result || "none"}`;
         result.textContent = resultLabels[hand.result] || "";
         footer.append(total, result);
         item.append(header, cards, footer);
@@ -3162,6 +3163,22 @@
     );
     document.getElementById("blackjackHitAction").disabled = !canAct;
     document.getElementById("blackjackStandAction").disabled = !canAct;
+
+    // 结算横幅：针对「自己」的手牌结果，结算时在牌桌顶部醒目提示输赢
+    const banner = document.getElementById("blackjackResultBanner");
+    if (banner) {
+      const ownResult = hand?.result || "";
+      if (game.finished && ownResult) {
+        const isWin = ownResult === "win" || ownResult === "blackjack_win";
+        const isPush = ownResult === "push";
+        const text = isWin ? "你赢了！" : isPush ? "平局" : "你输了";
+        banner.hidden = false;
+        banner.className = `blackjack-result-banner ${ownResult}`;
+        banner.textContent = text;
+      } else {
+        banner.hidden = true;
+      }
+    }
   }
 
   async function blackjackAction(action) {

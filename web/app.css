@@ -533,6 +533,42 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 }
 .hand-status.bust { background: #f9e6e3; color: #9b4036; }
 .hand-status.blackjack { background: #e4f3e9; color: #1f6d51; }
+.hand-result {
+  padding: 3px 9px;
+  border-radius: 11px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.hand-result.none { display: none; }
+.hand-result.win, .hand-result.blackjack_win { background: var(--red-soft, #f9e6e3); color: var(--red, #b23b33); }
+.hand-result.loss { background: var(--surface-alt, #eef1ef); color: var(--muted, #6a746e); }
+.hand-result.push { background: var(--gold-soft, #f5ecd7); color: var(--gold, #b27b1e); }
+.blackjack-result-banner {
+  margin: 14px 26px 0;
+  padding: 13px 16px;
+  border-radius: 8px;
+  font-size: 18px;
+  font-weight: 800;
+  text-align: center;
+  animation: banner-in .35s ease-out;
+}
+.blackjack-result-banner[hidden] { display: none; }
+.blackjack-result-banner.win, .blackjack-result-banner.blackjack_win {
+  background: var(--red-soft, #f9e6e3);
+  color: var(--red, #b23b33);
+}
+.blackjack-result-banner.loss {
+  background: var(--surface-alt, #eef1ef);
+  color: var(--muted, #5d665f);
+}
+.blackjack-result-banner.push {
+  background: var(--gold-soft, #f5ecd7);
+  color: var(--gold, #b27b1e);
+}
+@keyframes banner-in {
+  0% { opacity: 0; transform: translateY(-8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
 .playing-cards { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; min-height: 74px; }
 .playing-card {
   position: relative;
