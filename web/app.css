@@ -374,27 +374,28 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   35% { transform: scale(1.7); }
   100% { transform: scale(1); }
 }
-.score-bump {
+.dice-scores .score-bump {
   position: absolute;
   left: 50%;
-  top: -10px;
-  transform: translateX(-50%);
-  padding: 2px 8px;
+  top: 0;
+  transform: translate(-50%, -120%);
+  display: inline-block;
+  padding: 2px 9px;
   border-radius: 10px;
-  background: var(--gold);
+  background: #1c2420;
   color: #fff;
   font-size: 14px;
   font-weight: 800;
   line-height: 1.4;
   pointer-events: none;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, .18);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .22);
   animation: score-bump 1.4s ease-out forwards;
 }
 @keyframes score-bump {
-  0% { opacity: 0; transform: translate(-50%, 8px); }
-  20% { opacity: 1; transform: translate(-50%, 0); }
+  0% { opacity: 0; transform: translate(-50%, -70%); }
+  20% { opacity: 1; transform: translate(-50%, -120%); }
   78% { opacity: 1; }
-  100% { opacity: 0; transform: translate(-50%, -20px); }
+  100% { opacity: 0; transform: translate(-50%, -200%); }
 }
 .dice-table {
   min-height: 245px;
