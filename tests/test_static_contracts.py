@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.38"
+    assert metadata["version"] == "0.5.39"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -880,3 +880,19 @@ def test_board_series_waits_for_idle_and_flushes_on_seat_leave() -> None:
     assert "self._flush_board_series_when_seats_empty(room)" in main
     # 防抖：新对局要把旧的等待任务取消重排
     assert "existing.cancel()" in main
+
+
+def test_duel_side_rotation_is_relative_and_configurable() -> None:
+    """再来一局换先：就地互换（不是固定偏移），并可通过配置固定执色。"""
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+    assert schema["multiplayer"]["items"]["duel_side_rotation"]["default"] is True
+    assert 'self._cfg_bool(\n            "multiplayer.duel_side_rotation", True' in main
+    assert "duel_side_rotation=self.duel_side_rotation" in main
+    assert "def _prepare_duel_sides(" in manager
+    assert "def _swap_duel_sides(" in manager
+    assert "duel_seat_signature" in manager
+    # 不能再靠「固定偏移」换先，否则每局算出来都一样
+    assert "_assign_duel_sides(room, rotate=True)" not in manager

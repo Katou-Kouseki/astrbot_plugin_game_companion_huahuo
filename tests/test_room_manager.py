@@ -948,3 +948,121 @@ async def test_leaving_seat_after_finished_clears_ai_and_waits_for_side_choice()
 
     assert room.status == "setup"
     assert room.game is None
+
+
+async def _duel_room_with_ai(manager: RoomManager):
+    room = await manager.create_room(
+        source="group",
+        session_id="aiocqhttp:group:session",
+        platform="aiocqhttp",
+        group_id="20001",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.add_ai_seat(room, visitor.token, side="white")
+    return room, visitor
+
+
+@pytest.mark.asyncio
+async def test_duel_sides_alternate_every_rematch() -> None:
+    """再来一局严格换先：黑 / 白 / 黑 / 白 …，不再「只换一次然后卡住」。"""
+    manager = RoomManager(max_private_rooms=0)
+    room, visitor = await _duel_room_with_ai(manager)
+    colors = [room.game.human_color]
+
+    for _ in range(4):
+        room.game.winner = room.game.bot_color
+        await manager._finish_game(room)
+        await manager.start_game(room, visitor.token, "human_black")
+        colors.append(room.game.human_color)
+
+    assert colors == [1, 2, 1, 2, 1]
+    sides = [seat.side for seat in room.multiplayer.seats]
+    assert sides == ["black", "white"]
+
+
+@pytest.mark.asyncio
+async def test_duel_sides_fixed_by_seat_when_rotation_disabled() -> None:
+    """关掉「再来一局换先」：固定按座位号执色，永远不换。"""
+    manager = RoomManager(max_private_rooms=0, duel_side_rotation=False)
+    room, visitor = await _duel_room_with_ai(manager)
+
+    for _ in range(3):
+        assert [seat.side for seat in room.multiplayer.seats] == ["black", "white"]
+        room.game.winner = room.game.bot_color
+        await manager._finish_game(room)
+        await manager.start_game(room, visitor.token, "human_black")
+
+    assert room.game.human_color == 1
+
+
+@pytest.mark.asyncio
+async def test_duel_sides_restart_sequence_when_roster_changes() -> None:
+    """玩家席成员变化后重新起序列：按座位号定色，而不是接着上一局的交替。"""
+    manager = RoomManager(max_private_rooms=0)
+    room, visitor = await _duel_room_with_ai(manager)
+    room.game.winner = room.game.bot_color
+    await manager._finish_game(room)
+    await manager.start_game(room, visitor.token, "human_black")
+    assert room.game.human_color == 2  # 第 2 局玩家执白
+
+    room.game.winner = room.game.bot_color
+    await manager._finish_game(room)
+    await manager.remove_ai_seat(room, visitor.token)
+    rival = await manager.join(room)
+    await manager.claim_and_start(room, rival.token, "human_black")
+
+    assert [seat.side for seat in room.multiplayer.seats] == ["black", "white"]
+    assert room.game.human_color == 1
+
+
+def test_xiangqi_sides_swap_red_and_black() -> None:
+    """象棋换先：红黑互换（不能和黑/白词表混用）。"""
+    from astrbot_plugin_game_companion_huahuo.models import GameRoom, MultiplayerState, PlayerSeat
+
+    manager = RoomManager.__new__(RoomManager)
+    manager.duel_side_rotation = True
+    room = GameRoom(
+        room_id="r1",
+        access_token="t",
+        source="group",
+        session_id="UMO:t:Group:1",
+        platform="aiocqhttp",
+        group_id="1",
+        creator_qq="1",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="xiangqi",
+        difficulty="normal",
+        multiplayer=MultiplayerState(enabled=True),
+    )
+    room.multiplayer.seats = [
+        PlayerSeat(visitor_token="a", side="red"),
+        PlayerSeat(visitor_token="b", side="black"),
+    ]
+
+    manager._swap_duel_sides(room)
+
+    assert [seat.side for seat in room.multiplayer.seats] == ["black", "red"]
+
+
+@pytest.mark.asyncio
+async def test_restart_finished_game_also_rotates_sides() -> None:
+    """群里/LLM 触发的再来一局同样换先（不再固定 rotate=True 卡死）。"""
+    manager = RoomManager(max_private_rooms=0)
+    room, _visitor = await _duel_room_with_ai(manager)
+
+    room.game.winner = room.game.bot_color
+    await manager._finish_game(room)
+    await manager.restart_finished_game(room, difficulty="normal")
+    assert room.game.human_color == 2
+
+    room.game.winner = room.game.bot_color
+    await manager._finish_game(room)
+    await manager.restart_finished_game(room, difficulty="normal")
+    assert room.game.human_color == 1

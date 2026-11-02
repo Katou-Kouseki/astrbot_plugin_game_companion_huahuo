@@ -1479,6 +1479,10 @@ class GameCompanionPlugin(Star):
         self.swap_request_expiry = self._cfg_int(
             "multiplayer.swap_request_expiry_seconds", 20, minimum=1, maximum=600
         )
+        # 再来一局是否换先（黑/白、象棋红/黑互换）
+        self.duel_side_rotation = self._cfg_bool(
+            "multiplayer.duel_side_rotation", True
+        )
 
         # 谁是卧底 AI 动作节流：同一房间同一时刻只允许一个 AI 动作（发言/投票）在途，
         # 避免大量 AI 玩家连续触发时对模型供应商并发/高频请求导致限流（429）而卡局。
@@ -1511,6 +1515,7 @@ class GameCompanionPlugin(Star):
             duel_offline_grace=self.duel_offline_grace,
             swap_request_cooldown=self.swap_request_cooldown,
             swap_request_expiry=self.swap_request_expiry,
+            duel_side_rotation=self.duel_side_rotation,
             draw_guess_max_guesses=self.draw_guess_max_guesses,
             draw_guess_duration_seconds=self.draw_guess_duration_seconds,
             pig_dice_target_score=self.pig_dice_target_score,
@@ -7574,6 +7579,9 @@ class GameCompanionPlugin(Star):
         self.manager.weiqi_komi = self.weiqi_komi
         self.manager.swap_request_cooldown = self.swap_request_cooldown
         self.manager.swap_request_expiry = self.swap_request_expiry
+        self.manager.duel_side_rotation = bool(
+            getattr(self, "duel_side_rotation", True)
+        )
         self.commentary_provider_id = self._cfg_str("commentary.provider_id", "")
         self.manager.draw_guess_duration_seconds = self.draw_guess_duration_seconds
         self.manager.draw_guess_max_guesses = self.draw_guess_max_guesses

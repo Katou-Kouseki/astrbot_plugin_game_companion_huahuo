@@ -363,6 +363,8 @@ class GameRoom:
     pending_board_announces: list[dict[str, object]] = field(default_factory=list)
     # 计划中的合并播报时间点（0 = 当前没有排队任务）
     pending_board_flush_at: float = 0.0
+    # 换先序列：记录上次开局时的座位成员；成员一变就重新起序列（按座位号定色）
+    duel_seat_signature: tuple[str, ...] = ()
     confirmed_participant_qqs: set[str] = field(default_factory=set)
     participant_names: dict[str, str] = field(default_factory=dict)
     round_participant_qqs: set[str] = field(default_factory=set)

@@ -245,6 +245,12 @@
         "default": 30,
         "hint": "按申请者计时；0 表示不限制发送频率，但仍只能有一条待处理申请。"
       },
+      "duel_side_rotation": {
+        "description": "再来一局换先",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后每局重开时黑白（象棋红黑）互换，保证先手公平；首局仍按入座时选的先后手。关闭后固定由座位号决定执色（1 号执黑 / 执红），永远不换。玩家席成员发生变化时会重新起序列。"
+      },
       "swap_request_expiry_seconds": {
         "description": "交换申请有效秒数",
         "type": "int",

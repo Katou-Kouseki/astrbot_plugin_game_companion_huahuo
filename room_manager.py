@@ -201,6 +201,7 @@ class RoomManager:
         weiqi_komi: float = WEIQI_DEFAULT_KOMI,
         swap_request_cooldown: int = 30,
         swap_request_expiry: int = 20,
+        duel_side_rotation: bool = True,
         draw_guess_max_guesses: int = 5,
         draw_guess_duration_seconds: int = 120,
         pig_dice_target_score: int = 50,
@@ -245,6 +246,8 @@ class RoomManager:
         self.weiqi_komi = round(max(0.0, min(float(weiqi_komi), 30.0)) * 2) / 2
         self.swap_request_cooldown = max(0, int(swap_request_cooldown))
         self.swap_request_expiry = max(1, int(swap_request_expiry))
+        # 再来一局是否换先：开着每局互换黑白（象棋红黑）；关掉就固定按座位号执色
+        self.duel_side_rotation = bool(duel_side_rotation)
         self.draw_guess_max_guesses = max(1, min(int(draw_guess_max_guesses), 10))
         self.draw_guess_duration_seconds = max(
             10, min(int(draw_guess_duration_seconds), 600)
@@ -1281,30 +1284,12 @@ class RoomManager:
                     # 两位真人同房：1 号执红先走、2 号执黑；只有一个人时花火补位。
                     if len(room.multiplayer.seats) < 2:
                         self._append_ai_seat_locked(room)
-                    rotate = bool(room.completed_games)
-                    if rotate or any(
-                        not seat.side for seat in room.multiplayer.seats
-                    ):
-                        self._assign_duel_sides(room, rotate=rotate)
+                    # 换先：上一局执红的下局执黑；首局/换人后按入座时选的红黑
+                    self._prepare_duel_sides(room, requested_side=normalized_side)
                     human_seats = self._human_seats(room)
-                    # 首局只有一位真人时，按入座时选的「我执红/我执黑」定色；
-                    # 已经下过一局之后统一换先，不再保留上一次的选择
-                    if len(human_seats) == 1 and not room.completed_games and normalized_side:
-                        wanted = (
-                            XIANGQI_RED
-                            if normalized_side == "human_red"
-                            else XIANGQI_BLACK
-                        )
-                        human_seats[0].side = wanted
-                        for seat in room.multiplayer.seats:
-                            if seat.is_ai:
-                                seat.side = (
-                                    XIANGQI_BLACK
-                                    if wanted == XIANGQI_RED
-                                    else XIANGQI_RED
-                                )
-                    first_seat = room.multiplayer.seats[0]
-                    human_side = self._seat_side(room, first_seat) or XIANGQI_RED
+                    human_side = self._seat_side(
+                        room, human_seats[0] if human_seats else None
+                    ) or XIANGQI_RED
                 else:
                     human_side = (
                         XIANGQI_BLACK
@@ -1322,21 +1307,8 @@ class RoomManager:
                 if room.multiplayer.enabled:
                     if len(room.multiplayer.seats) < 2:
                         self._append_ai_seat_locked(room)
-                    rotate = bool(room.completed_games)
-                    if rotate or any(
-                        not seat.side for seat in room.multiplayer.seats
-                    ):
-                        self._assign_duel_sides(room, rotate=rotate)
-                    human_seats = self._human_seats(room)
-                    normalized_side = str(side or "").strip().lower()
-                    if normalized_side == "random":
-                        normalized_side = secrets.choice(("human_black", "bot_black"))
-                    if len(human_seats) == 1 and not room.completed_games and normalized_side:
-                        wants_white = normalized_side in {"bot_black", "human_white"}
-                        human_seats[0].side = "white" if wants_white else "black"
-                        for seat in room.multiplayer.seats:
-                            if seat.is_ai:
-                                seat.side = "black" if wants_white else "white"
+                    # 换先：上一局执黑的下局执白；首局/换人后按入座选的先后手
+                    self._prepare_duel_sides(room, requested_side=str(side or ""))
                     human_color = self._duel_human_color(room)
                 else:
                     normalized_side = str(side or "human_black").strip().lower()
@@ -1365,26 +1337,8 @@ class RoomManager:
                 if room.multiplayer.enabled:
                     if len(room.multiplayer.seats) < 2:
                         self._append_ai_seat_locked(room)
-                    # 已有对局历史时换先；首局保留入座时选好的先后手
-                    rotate = bool(room.completed_games)
-                    if rotate or any(
-                        not seat.side for seat in room.multiplayer.seats
-                    ):
-                        self._assign_duel_sides(room, rotate=rotate)
-                    # 首局只有一位真人时，按入座时选的先后手决定执色
-                    # （「花火先手」= 玩家执白）；两位真人时由座位顺序决定
-                    human_seats = [
-                        seat for seat in room.multiplayer.seats if not seat.is_ai
-                    ]
-                    normalized_side = str(side or "").strip().lower()
-                    if normalized_side == "random":
-                        normalized_side = secrets.choice(("human_black", "bot_black"))
-                    if len(human_seats) == 1 and not room.completed_games and normalized_side:
-                        wants_white = normalized_side in {"bot_black", "human_white"}
-                        human_seats[0].side = "white" if wants_white else "black"
-                        for seat in room.multiplayer.seats:
-                            if seat.is_ai:
-                                seat.side = "black" if wants_white else "white"
+                    # 换先：上一局执黑的下局执白；首局/换人后按入座选的先后手
+                    self._prepare_duel_sides(room, requested_side=str(side or ""))
                     human_color = self._duel_human_color(room)
                 else:
                     # 兼容未启用玩家席的历史房间
@@ -2137,8 +2091,8 @@ class RoomManager:
                 if room.multiplayer.enabled:
                     if len(room.multiplayer.seats) < 2:
                         self._append_ai_seat_locked(room)
-                    # 再来一局换先：红黑互换，避免同一方连着先走
-                    self._assign_duel_sides(room, rotate=True)
+                    # 再来一局换先：就地互换（阵容变了则重新起序列）
+                    self._prepare_duel_sides(room)
                     human_side = (
                         self._seat_side(room, room.multiplayer.seats[0]) or XIANGQI_RED
                     )
@@ -2154,8 +2108,8 @@ class RoomManager:
                 if room.multiplayer.enabled:
                     if len(room.multiplayer.seats) < 2:
                         self._append_ai_seat_locked(room)
-                    # 再来一局换先：黑白互换
-                    self._assign_duel_sides(room, rotate=True)
+                    # 再来一局换先：就地互换（阵容变了则重新起序列）
+                    self._prepare_duel_sides(room)
                     human_color = self._duel_human_color(room)
                 else:
                     human_color = room.game.human_color
@@ -2173,8 +2127,8 @@ class RoomManager:
                 if room.multiplayer.enabled:
                     if len(room.multiplayer.seats) < 2:
                         self._append_ai_seat_locked(room)
-                    # 再来一局换先：黑白互换，避免同一方连续执黑
-                    self._assign_duel_sides(room, rotate=True)
+                    # 再来一局换先：就地互换（阵容变了则重新起序列）
+                    self._prepare_duel_sides(room)
                     human_color = self._duel_human_color(room)
                 else:
                     human_color = room.game.human_color
@@ -4063,6 +4017,9 @@ class RoomManager:
 
         象棋用「红 / 黑」描述执方，五子棋与黑白棋用「黑 / 白」，两套词表不能混用，
         所以这里按玩法决定写进座位的 side 值。
+
+        注意：这是「从固定座位顺序重新算」，同一个座位顺序下 rotate=True 恒等，
+        不能拿它做每局换先（换先请走 _swap_duel_sides / _prepare_duel_sides）。
         """
         if room.game_type not in DUEL_GAMES:
             return
@@ -4072,6 +4029,83 @@ class RoomManager:
         offset = 1 if rotate else 0
         for idx, seat in enumerate(room.multiplayer.seats):
             seat.side = first if (idx + offset) % 2 == 0 else second
+
+    @staticmethod
+    def _other_duel_side(room: GameRoom, side: str) -> str:
+        if room.game_type == "xiangqi":
+            return "black" if side == "red" else "red"
+        return "white" if side == "black" else "black"
+
+    def _duel_sides_ready(self, room: GameRoom) -> bool:
+        """每个座位都有合法执色且互不重复。"""
+        allowed = (
+            {"red", "black"} if room.game_type == "xiangqi" else {"black", "white"}
+        )
+        sides = [seat.side for seat in room.multiplayer.seats]
+        return (
+            bool(sides)
+            and all(side in allowed for side in sides)
+            and len(set(sides)) == len(sides)
+        )
+
+    def _swap_duel_sides(self, room: GameRoom) -> None:
+        """真正的换先：就地互换每个座位的执色，不依赖座位序号。"""
+        for seat in room.multiplayer.seats:
+            if seat.side:
+                seat.side = self._other_duel_side(room, seat.side)
+
+    def _apply_requested_duel_side(self, room: GameRoom, requested_side: str) -> None:
+        """首局按入座时选的先后手定色（象棋：我执红 / 我执黑）。"""
+        desired = str(requested_side or "").strip().lower()
+        if not desired:
+            return
+        human_seats = [seat for seat in room.multiplayer.seats if not seat.is_ai]
+        if len(human_seats) != 1:
+            return
+        if room.game_type == "xiangqi":
+            if desired == "random":
+                desired = secrets.choice(("human_red", "human_black"))
+            if desired not in {"human_red", "human_black"}:
+                return
+            human_side = "red" if desired == "human_red" else "black"
+        else:
+            if desired == "random":
+                desired = secrets.choice(("human_black", "bot_black"))
+            if desired not in {"human_black", "bot_black", "human_white"}:
+                return
+            human_side = "white" if desired in {"bot_black", "human_white"} else "black"
+        human_seats[0].side = human_side
+        other = self._other_duel_side(room, human_side)
+        for seat in room.multiplayer.seats:
+            if seat is not human_seats[0]:
+                seat.side = other
+
+    def _prepare_duel_sides(
+        self, room: GameRoom, *, requested_side: str = ""
+    ) -> None:
+        """开局前决定双方执色。
+
+        - 玩家席成员变了（有人入座/退席/花火让位）或首局：重新按座位顺序定色，
+          首局还会尊重入座时选的先后手；
+        - 阵容没变：按「换先」配置决定是互换还是固定不变。
+        """
+        if room.game_type not in DUEL_GAMES or not room.multiplayer.seats:
+            return
+        signature = tuple(seat.visitor_token for seat in room.multiplayer.seats)
+        reset = (
+            signature != room.duel_seat_signature
+            or room.completed_games == 0
+            or not self._duel_sides_ready(room)
+        )
+        if reset:
+            if not self._duel_sides_ready(room):
+                self._assign_duel_sides(room)
+            room.duel_seat_signature = signature
+            if room.completed_games == 0:
+                self._apply_requested_duel_side(room, requested_side)
+            return
+        if self.duel_side_rotation:
+            self._swap_duel_sides(room)
 
     def _seat_side(self, room: GameRoom, seat: PlayerSeat | None) -> str:
         """座位执方：象棋返回 red/black，棋类返回 black/white。"""
