@@ -385,6 +385,8 @@ async def test_finished_room_expires_shortly_after_player_leaves() -> None:
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "human_black")
     room.status = "finished"
+    # 真实 leave 会把 connected 置为 False（玩家已退出房间）
+    visitor.connected = False
     visitor.left_at = 100.0
     visitor.last_seen_at = 100.0
 
@@ -393,6 +395,34 @@ async def test_finished_room_expires_shortly_after_player_leaves() -> None:
     assert manager.closed_reason_by_access_token(room.access_token) == (
         "本局结束后玩家已离开，房间已自动销毁"
     )
+
+
+@pytest.mark.asyncio
+async def test_finished_room_survives_while_spectator_is_present() -> None:
+    """一局结束后玩家离开，但只要还有观众在线，房间就不应被自动销毁。"""
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=0)
+    room = await create_room(manager, source="private")
+    player = await manager.join(room)
+    spectator = await manager.join(room)
+    await manager.claim_and_start(room, player.token, "human_black")
+    room.status = "finished"
+
+    # 玩家离开（connected=False），观众仍在线（connected=True、心跳新鲜）
+    player.connected = False
+    player.left_at = 100.0
+    player.last_seen_at = 100.0
+    spectator.connected = True
+    spectator.last_seen_at = 200.0
+
+    # 玩家早已超过离开宽限，但观众还在 → 不销毁
+    assert await manager.sweep_expired(now=200.0) == []
+    assert room.room_id in manager.rooms
+
+    # 观众也离开后 → 房间才销毁
+    spectator.connected = False
+    spectator.left_at = 200.0
+    spectator.last_seen_at = 200.0
+    assert await manager.sweep_expired(now=208.0) == [room.room_id]
 
 
 @pytest.mark.asyncio
@@ -435,9 +465,13 @@ async def test_finished_room_uses_heartbeat_loss_when_leave_signal_is_missing() 
     room.status = "finished"
     visitor.left_at = None
     visitor.last_seen_at = 100.0
+    # 崩溃/断网：connected 仍为 True，只能靠心跳超时判定「已离开」。
+    # 观众在线判定（_has_present_visitors）用 90 秒心跳阈值，因此这里要到
+    # last_seen_at + 90s 才真正销毁（比 finished 的 60s 判定多留 30s 缓冲）。
 
     assert await manager.sweep_expired(now=159.9) == []
-    assert await manager.sweep_expired(now=160.0) == [room.room_id]
+    assert await manager.sweep_expired(now=189.9) == []
+    assert await manager.sweep_expired(now=190.0) == [room.room_id]
 
 
 @pytest.mark.asyncio

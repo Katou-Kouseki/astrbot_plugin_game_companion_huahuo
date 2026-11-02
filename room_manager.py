@@ -3042,7 +3042,9 @@ class RoomManager:
                     >= self.FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS
                     for visitor in seated_visitors
                 )
-                if all_departed:
+                # 玩家都离开了，但房间里还有观众（或其他真人访客）在线时，
+                # 不能当作「本局结束、人去房空」销毁——观众可能还在看、或等下一局。
+                if all_departed and not self._has_present_visitors(room, current):
                     expired.append(
                         (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
                     )
