@@ -327,6 +327,17 @@
   const EMOTICON_REGEX = /&+([A-Za-z0-9_\u4e00-\u9fa5]{1,16})&+/g;
 
   /** 清洗显示文本：表情、Bot 字样、旧品牌名。对非字符串安全返回原值 */
+  // 插进 innerHTML 的文本必须转义：sanitizeDisplayText 会把 &lt; 还原成 "<"（那是给
+  // textContent 用的），直接拼进 HTML 就变成注入点（QQ 昵称可改成 <img onerror=…>）。
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
   function sanitizeDisplayText(value) {
     if (value == null) return value;
     if (typeof value !== "string") return value;
@@ -1521,8 +1532,25 @@
     ucAutoFollowTimeline(document.getElementById("ucTimeline"));
   }, 1000);
 
+  // fetch 默认没有超时：网络半死时请求会一直挂着，界面停在上一帧、busy 永远不释放
+  const REQUEST_TIMEOUT_MS = 12000;
+
+  async function timedFetch(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+    if (typeof AbortController !== "function") return window.fetch(url, init);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await window.fetch(url, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error("请求超时，请检查网络");
+      throw error;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  }
+
   async function request(method, action, payload = {}) {
-    const response = await window.fetch(endpoint(action), {
+    const response = await timedFetch(endpoint(action), {
       method,
       headers: method === "POST" ? { "Content-Type": "application/json" } : {},
       body: method === "POST" ? JSON.stringify(payload) : undefined,
@@ -1550,12 +1578,33 @@
     render();
   }
 
+  // 轮询失败时的遮罩只是「临时提示」：网络恢复后必须自己撤掉。
+  // 以前设了 hidden=false 就没有任何地方设回去，网络抖一下棋盘会被永久盖住。
+  function showTransientOverlay(title, text) {
+    const overlay = document.getElementById("boardOverlay");
+    const titleEl = document.getElementById("overlayTitle");
+    const textEl = document.getElementById("overlayText");
+    if (titleEl) titleEl.textContent = title;
+    if (textEl) textEl.textContent = text;
+    if (!overlay) return;
+    overlay.dataset.transient = "1";
+    overlay.hidden = false;
+  }
+
+  function clearTransientOverlay() {
+    const overlay = document.getElementById("boardOverlay");
+    if (!overlay || overlay.dataset.transient !== "1") return;
+    overlay.hidden = true;
+    delete overlay.dataset.transient;
+  }
+
   async function poll() {
     window.clearTimeout(pollTimer);
     if (!visitorToken) return;
     try {
       await loadState();
       setConnection("online", "已连接");
+      clearTransientOverlay();
       // 花火正在生成解说时也提速：否则开局第一句话最多要等 1 秒才被轮询捞到
       const fastPolling = (
         room?.game_type === "pig_dice" && room.game?.turn === "bot"
@@ -1566,23 +1615,30 @@
       pollTimer = window.setTimeout(poll, interval);
     } catch (error) {
       setConnection("error", "连接中断");
-      document.getElementById("overlayTitle").textContent = "房间不可用";
-      document.getElementById("overlayText").textContent = error?.message || "链接已失效";
-      document.getElementById("boardOverlay").hidden = false;
+      showTransientOverlay("房间不可用", error?.message || "链接已失效");
       pollTimer = window.setTimeout(poll, 3000);
     }
   }
 
   async function loadState() {
-    const response = await window.fetch(
+    const response = await timedFetch(
       endpoint(
         "state",
         `?visitor_token=${encodeURIComponent(visitorToken)}&remember_identity=${rememberIdentity() ? "1" : "0"}`,
       ),
       { cache: "no-store" },
     );
-    const data = await response.json();
-    if (!response.ok) throw new Error(data?.message || "房间状态不可用");
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_error) {
+      throw new Error("房间状态返回异常，正在重试");
+    }
+    // 服务端可能用 200 + status:"error" 表示房间已失效：不校验会把 room 置空，
+    // 名册差量会误报「全员离开房间」
+    if (!response.ok || data?.status === "error") {
+      throw new Error(data?.message || data?.error || "房间状态不可用");
+    }
     const previousType = room?.game_type;
     const previousMessageId = latestMessageId(room);
     const previousVisitors = Array.isArray(room?.visitors) ? room.visitors : [];
@@ -1787,6 +1843,16 @@
   }
 
   function render() {
+    // 渲染内部任何一处抛错都会被这层吃掉：以前 render() 在 busy=true 和
+    // try/finally 之间调用，抛错会让 busy 永远为 true，之后所有按钮都点不动。
+    try {
+      renderInner();
+    } catch (error) {
+      console.error("[room] 渲染失败", error);
+    }
+  }
+
+  function renderInner() {
     if (!room) return;
     // 提子动画按「手数变化」触发，必须在画棋盘之前同步状态
     syncCaptureFx();
@@ -1896,7 +1962,7 @@
       const seats = Array.isArray(room.player_seats) ? room.player_seats : [];
       // 优先按访客 token 匹配本人座位：观众/离席后 visitor_number 可能残留旧座位号，
       // 若直接按号匹配，会把该座位上「别人」的头像当成自己的显示出来
-      const mySeat = seats.find((s) => s.visitor_token && s.visitor_token === visitorToken)
+      const mySeat = seats.find((s) => isMySeat(s))
         || (room.is_player ? seats.find((s) => Number(s.number) === vNum) : null);
       const vName = room.visitor_display_name || "";
       // 头像曾加载失败（本轮回退首字占位），避免反复请求破图/空白；刷新页面后重试
@@ -2175,13 +2241,18 @@
     return remain > 0 ? ` · 剩余 ${remain} 秒` : "";
   }
 
+  // 某个座位是不是我：服务端不下发原始 visitor_token（那是身份凭证），
+  // 只给不可逆的 short uid，按 uid 和自己的 room.visitor_uid 比。
+  function isMySeat(seat, target = room) {
+    if (!seat) return false;
+    const mine = String(target?.visitor_uid || "");
+    const seatUid = String(seat.uid || "");
+    return Boolean(mine) && Boolean(seatUid) && mine === seatUid;
+  }
+
   // 当前浏览器占的座位（观众返回 null）
   function mySeat(target = room) {
-    return (
-      roomSeats(target).find(
-        (seat) => seat.visitor_token && seat.visitor_token === visitorToken,
-      ) || null
-    );
+    return roomSeats(target).find((seat) => isMySeat(seat, target)) || null;
   }
 
   // 我在棋盘上执什么颜色（1 黑 / 2 白）：两人对弈按座位 side，其余回退引擎下发值
@@ -2214,8 +2285,7 @@
   // 对面是否坐着另一位真人：决定「对局中能不能退出」
   function hasHumanOpponent(target = room) {
     return roomSeats(target).some(
-      (seat) =>
-        !seat.is_ai && seat.visitor_token && seat.visitor_token !== visitorToken,
+      (seat) => !seat.is_ai && Boolean(seat.uid) && !isMySeat(seat, target),
     );
   }
 
@@ -2260,7 +2330,7 @@
     area.hidden = !(inSetup && room.is_player);
     if (!inSetup || !room.is_player) return;
     const seats = Array.isArray(room.player_seats) ? room.player_seats : [];
-    const mySeat = seats.find((s) => s.visitor_token === visitorToken)
+    const mySeat = seats.find((s) => isMySeat(s))
       || seats.find((s) => Number(s.number) === Number(room.visitor_number))
       || null;
     const myReady = !!mySeat?.ready;
@@ -2973,7 +3043,7 @@
       } else {
         hostSeat = seats.find((s) => !s.is_ai && !!s.identity_confirmed) || null;
       }
-      const amHost = !!hostSeat && (hostSeat.visitor_token === visitorToken);
+      const amHost = !!hostSeat && isMySeat(hostSeat);
       hostCard.hidden = !(waiting && (canCustomize || !!room.admin_room) && amHost);
       if (!hostCard.hidden) {
         const hostHint = document.getElementById("ucHostCampHint");
@@ -3687,7 +3757,7 @@
         const numCls = revealed ? "uc-vote-num" : "uc-vote-num is-placeholder";
         const numText = revealed ? `${votedCount}` : "？";
         if (!revealed && votedCount > 0) card.classList.add("has-votes");
-        card.innerHTML = `<strong>${p.player_number}号</strong><span>${sanitizeDisplayText(p.display_name || "")}</span><em class="${numCls}">${numText}</em>`;
+        card.innerHTML = `<strong>${Number(p.player_number) || 0}号</strong><span>${escapeHtml(sanitizeDisplayText(p.display_name || ""))}</span><em class="${numCls}">${numText}</em>`;
         voteGrid.appendChild(card);
       });
       if (alreadyVoted) {
@@ -4523,9 +4593,7 @@
           : ((winnerSeat.display_name || "").trim() || `${winnerSeat.number}号`);
         title = winnerSeat.is_ai
           ? "花火 获胜"
-          : (winnerSeat.visitor_token && winnerSeat.visitor_token === visitorToken
-            ? "你赢了"
-            : `${winnerName} 获胜`);
+          : (isMySeat(winnerSeat) ? "你赢了" : `${winnerName} 获胜`);
       } else {
         // 单人历史房间兜底：human_color / human_side 判胜负
         let humanWon;
@@ -6105,7 +6173,7 @@
       btn.disabled = true;
       btn.textContent = "复盘生成中…";
       try {
-        const data = await request("POST", "undercover/recap", {});
+        const data = await request("POST", "undercover/recap", { visitor_token: visitorToken });
         const text = String(data?.recap || "").trim() || "暂未生成复盘，稍后再试试。";
         if (uid) ucRecapCache[uid] = text;
         if (recapBox) { recapBox.textContent = text; recapBox.hidden = false; }
@@ -6130,7 +6198,7 @@
         image = await undercoverAnnouncePosterUrl(ucLastResult) || "";
       } catch (_imgError) { image = ""; }
       try {
-        const data = await request("POST", "undercover/announce", { image });
+        const data = await request("POST", "undercover/announce", { image, visitor_token: visitorToken });
         if (data?.announced) {
           btn.textContent = "✅ 已通知（本局一次）";
           showToast(data?.already ? "本局已通知过，未重复发送" : "已通知到群");
@@ -6164,7 +6232,7 @@
       btn.disabled = true;
       btn.textContent = "复盘生成中…";
       try {
-        const data = await request("POST", "board/recap", {});
+        const data = await request("POST", "board/recap", { visitor_token: visitorToken });
         const text = String(data?.recap || "").trim() || "暂未生成复盘，稍后再试试。";
         if (recapBox) { recapBox.textContent = text; recapBox.hidden = false; }
         btn.textContent = "✨ 花火复盘";
@@ -6206,7 +6274,7 @@
         image = await boardSharePosterUrl(boardLastResult) || "";
       } catch (_imgError) { image = ""; }
       try {
-        const data = await request("POST", "board/announce", { image });
+        const data = await request("POST", "board/announce", { image, visitor_token: visitorToken });
         if (data?.announced) {
           btn.textContent = "✅ 已通知（本局一次）";
           showToast(data?.already ? "本局已通知过，未重复发送" : "已通知到群");

@@ -776,6 +776,24 @@ class RoomManager:
                 return room, visitor
         raise ValueError("身份令牌无效、已使用或已过期")
 
+    def require_visitor(self, room: GameRoom, visitor_token: str) -> Visitor:
+        """校验访客令牌确实属于这个房间（拿到链接的人不能凭链接代别人操作）。"""
+        return self._visitor(room, visitor_token)
+
+    def require_seated_player(self, room: GameRoom, visitor_token: str) -> Visitor:
+        """校验调用者本人正坐在玩家席上（观众 / 无效令牌一律拒绝）。
+
+        用于「通知到群」「复盘」这类会产生群消息或 LLM 花费的操作：
+        仅凭房间链接即可调用的接口，等于把房间的群发能力开放给了任何拿到链接的人。
+        """
+        visitor = self._visitor(room, visitor_token)
+        if room.multiplayer.enabled:
+            if room.multiplayer.seat_for_token(visitor_token) is None:
+                raise PermissionError("只有玩家席上的玩家可以操作")
+        elif room.player_token and visitor_token != room.player_token:
+            raise PermissionError("只有玩家可以操作")
+        return visitor
+
     async def require_visitor_identity(
         self, room: GameRoom, visitor_token: str
     ) -> Visitor:
@@ -2377,6 +2395,9 @@ class RoomManager:
         async with room.lock:
             if room.status != "active" or room.game is None:
                 raise ValueError("当前没有正在进行的对局")
+            # 只有坐在玩家席上的本人可以认输。以前没有这层校验、还会用
+            # room.player_token 兜底，任何拿到链接的人 POST 一次就能替玩家认输。
+            self.require_seated_player(room, visitor_token)
             if isinstance(room.game, BlackjackGame):
                 game = room.game
                 if game.finished or game.phase != "player_turns":
@@ -2406,8 +2427,6 @@ class RoomManager:
                 loser_side = ""
                 if room.multiplayer.enabled:
                     seat = room.multiplayer.seat_for_token(visitor_token)
-                    if seat is None and room.player_token:
-                        seat = room.multiplayer.seat_for_token(room.player_token)
                     if seat is not None:
                         loser_side = self._seat_side(room, seat)
                 if loser_side == XIANGQI_RED:
@@ -2421,8 +2440,6 @@ class RoomManager:
                 loser_color = EMPTY
                 if room.multiplayer.enabled:
                     seat = room.multiplayer.seat_for_token(visitor_token)
-                    if seat is None and room.player_token:
-                        seat = room.multiplayer.seat_for_token(room.player_token)
                     if seat is not None:
                         loser_color = self._seat_color(room, seat)
                 room.game.winner = (
@@ -3042,74 +3059,93 @@ class RoomManager:
         current = time.time() if now is None else float(now)
         expired: list[tuple[str, str]] = []
         for room in list(self.rooms.values()):
-            await self._tick_multiplayer_room(room, current)
-            if (
-                room.status == "active"
-                and isinstance(room.game, DrawGuessGame)
-                and not room.game.processing
-                and room.game.is_expired(current)
-            ):
-                async with room.lock:
-                    room.game.timeout()
-                    room.touch()
-                await self._finish_game(room)
-            player = room.player
-            if room.status == "finished" and player is not None:
-                seated_visitors = (
-                    [
-                        room.visitors[seat.visitor_token]
-                        for seat in room.multiplayer.seats
-                        if seat.visitor_token in room.visitors
-                    ]
-                    if room.multiplayer.enabled
-                    else [player]
+            try:
+                hit = await self._sweep_room(room, current)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 一个房间出错不能拖垮整轮清扫
+                # 以前这里没有 try：任意一个房间 tick 抛异常（竞态、字段缺失、
+                # 引擎异常）都会中断整轮清扫，后面的房间永远轮不到判负/销毁。
+                logger.warning(
+                    "[GameCompanion] 房间 %s 超时检查失败，本轮跳过: %s",
+                    getattr(room, "room_id", "?"),
+                    exc,
                 )
-                all_departed = bool(seated_visitors) and all(
-                    (
-                        visitor.left_at is not None
-                        and current - visitor.left_at
-                        >= self.FINISHED_PLAYER_LEAVE_GRACE_SECONDS
-                    )
-                    or current - visitor.last_seen_at
-                    >= self.FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS
-                    for visitor in seated_visitors
-                )
-                # 玩家都离开了，但房间里还有观众（或其他真人访客）在线时，
-                # 不能当作「本局结束、人去房空」销毁——观众可能还在看、或等下一局。
-                # 另外：两个自动销毁配置都设为 0（用户明确关闭自动销毁）时，
-                # 这条快速回收也要一并停用，否则「都设 0 仍会被销毁」不符合直觉。
-                if (
-                    all_departed
-                    and not self._has_present_visitors(room, current)
-                    and (self.empty_player_timeout or self.idle_timeout)
-                ):
-                    expired.append(
-                        (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
-                    )
-                    continue
-            if isinstance(room.game, TurtleSoupGame) and room.game.phase == "preparing":
                 continue
-            # 管理台手动开出来的「链接房间」由管理员在管理台显式关闭，不参与
-            # 「玩家席无人」「长时间无操作」的自动销毁：管理员把链接发给朋友后，
-            # 对方可能过很久才点开，提前销毁就会变成「链接进不去」。
-            if room.admin_room:
-                continue
-            if (
-                self.empty_player_timeout
-                and room.player_empty_since is not None
-                and current - room.player_empty_since >= self.empty_player_timeout
-                and not self._has_present_visitors(room, current)
-            ):
-                expired.append((room.room_id, "玩家席长时间无人，房间已自动销毁"))
-                continue
-            if (
-                self.idle_timeout
-                and current - room.last_activity_at >= self.idle_timeout
-            ):
-                expired.append((room.room_id, "房间长时间无操作，已自动销毁"))
+            if hit is not None:
+                expired.append(hit)
         for room_id, reason in expired:
-            await self.destroy(room_id, reason)
+            try:
+                await self.destroy(room_id, reason)
+            except Exception as exc:  # noqa: BLE001 - 销毁失败不影响其它房间
+                logger.warning(
+                    "[GameCompanion] 销毁房间 %s 失败: %s", room_id, exc
+                )
         return [room_id for room_id, _reason in expired]
+
+    async def _sweep_room(
+        self, room: GameRoom, current: float
+    ) -> tuple[str, str] | None:
+        """检查单个房间；命中销毁规则时返回 (room_id, 原因)，否则 None。"""
+        await self._tick_multiplayer_room(room, current)
+        if (
+            room.status == "active"
+            and isinstance(room.game, DrawGuessGame)
+            and not room.game.processing
+            and room.game.is_expired(current)
+        ):
+            async with room.lock:
+                room.game.timeout()
+                room.touch()
+            await self._finish_game(room)
+        player = room.player
+        if room.status == "finished" and player is not None:
+            seated_visitors = (
+                [
+                    room.visitors[seat.visitor_token]
+                    for seat in room.multiplayer.seats
+                    if seat.visitor_token in room.visitors
+                ]
+                if room.multiplayer.enabled
+                else [player]
+            )
+            all_departed = bool(seated_visitors) and all(
+                (
+                    visitor.left_at is not None
+                    and current - visitor.left_at
+                    >= self.FINISHED_PLAYER_LEAVE_GRACE_SECONDS
+                )
+                or current - visitor.last_seen_at
+                >= self.FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS
+                for visitor in seated_visitors
+            )
+            # 玩家都离开了，但房间里还有观众（或其他真人访客）在线时，
+            # 不能当作「本局结束、人去房空」销毁——观众可能还在看、或等下一局。
+            # 另外：两个自动销毁配置都设为 0（用户明确关闭自动销毁）时，
+            # 这条快速回收也要一并停用，否则「都设 0 仍会被销毁」不符合直觉。
+            if (
+                all_departed
+                and not self._has_present_visitors(room, current)
+                and (self.empty_player_timeout or self.idle_timeout)
+            ):
+                return (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
+        if isinstance(room.game, TurtleSoupGame) and room.game.phase == "preparing":
+            return None
+        # 管理台手动开出来的「链接房间」由管理员在管理台显式关闭，不参与
+        # 「玩家席无人」「长时间无操作」的自动销毁：管理员把链接发给朋友后，
+        # 对方可能过很久才点开，提前销毁就会变成「链接进不去」。
+        if room.admin_room:
+            return None
+        if (
+            self.empty_player_timeout
+            and room.player_empty_since is not None
+            and current - room.player_empty_since >= self.empty_player_timeout
+            and not self._has_present_visitors(room, current)
+        ):
+            return (room.room_id, "玩家席长时间无人，房间已自动销毁")
+        if self.idle_timeout and current - room.last_activity_at >= self.idle_timeout:
+            return (room.room_id, "房间长时间无操作，已自动销毁")
+        return None
 
     async def close_all(self, reason: str = "插件已重载") -> None:
         """Destroy every in-memory room without persistence."""

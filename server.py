@@ -372,7 +372,12 @@ class GameRoomServer:
         room = self._room(request)
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
-        await self.manager.resign(room, visitor_token=visitor_token)
+        try:
+            await self.manager.resign(room, visitor_token=visitor_token)
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)}, status=400
+            )
         return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _weiqi_board(self, request: web.Request) -> web.Response:
@@ -681,6 +686,13 @@ class GameRoomServer:
         """结算卡「花火复盘」：按局缓存，同局只请求一次 LLM，点击即取缓存。"""
         self._require_origin(request)
         room = self._room(request)
+        payload = await self._payload(request)
+        try:
+            self.manager.require_visitor(
+                room, str(payload.get("visitor_token") or "")
+            )
+        except PermissionError as exc:
+            return self._forbidden(exc)
         game = getattr(room, "game", None)
         uid = str(getattr(game, "game_uid", "") or "") if game else ""
         cache = room.recap_cache or {}
@@ -714,7 +726,15 @@ class GameRoomServer:
                 "already": True,
                 "text": room.last_announced_text,
             })
-        image_data = str(payload.get("image") or "")
+        try:
+            # 只允许玩家席上的玩家触发：这个接口会往开房群发消息，仅凭链接即可调用
+            # 等于把群发能力开放给任何拿到链接的人（还能写死幂等标记卡死真玩家）
+            self.manager.require_seated_player(
+                room, str(payload.get("visitor_token") or "")
+            )
+        except PermissionError as exc:
+            return self._forbidden(exc)
+        image_data = self._image_payload(payload)
         try:
             text = await self.plugin.undercover_announce_result(room, image_data)
         except Exception as exc:
@@ -744,13 +764,19 @@ class GameRoomServer:
                 status=400,
             )
         key = f"board:{int(getattr(room, 'completed_games', 0) or 0)}"
+        try:
+            self.manager.require_seated_player(
+                room, str(payload.get("visitor_token") or "")
+            )
+        except PermissionError as exc:
+            return self._forbidden(exc)
         if room.last_announced_uid == key:
             return self._response({
                 "announced": bool(room.last_announced_text),
                 "already": True,
                 "text": room.last_announced_text,
             })
-        image_data = str(payload.get("image") or "")
+        image_data = self._image_payload(payload)
         try:
             text = await self.plugin.board_announce_result(room, image_data)
         except Exception as exc:
@@ -767,6 +793,13 @@ class GameRoomServer:
         """棋类结算卡「花火复盘」：按局（completed_games）缓存，同局只请求一次 LLM。"""
         self._require_origin(request)
         room = self._room(request)
+        payload = await self._payload(request)
+        try:
+            self.manager.require_visitor(
+                room, str(payload.get("visitor_token") or "")
+            )
+        except PermissionError as exc:
+            return self._forbidden(exc)
         try:
             recap = await self.plugin.board_recap(room)
         except Exception as exc:
@@ -855,6 +888,56 @@ class GameRoomServer:
                 status=400,
             )
         return self._response({"room": self._room_payload(room, visitor_token)})
+
+    @staticmethod
+    def _forbidden(exc: Exception) -> web.Response:
+        """身份校验失败：403 + 可读提示（不回显任何内部细节）。"""
+        return web.json_response(
+            {"status": "error", "message": str(exc) or "没有权限执行该操作"},
+            status=403,
+        )
+
+    @staticmethod
+    def _image_payload(payload: dict[str, Any], field: str = "image") -> str:
+        """校验前端传来的战报图 data URL：只接受 png/jpeg/webp，且体积有上限。
+
+        这个值会被原样发到开房群（`base64://…`），不过滤等于让任何拿到链接的人
+        往群里塞任意二进制内容，顺带把 `last_announced_uid` 写死让真玩家发不出去。
+        """
+        raw = payload.get(field)
+        if not isinstance(raw, str):
+            return ""
+        text = raw.strip()
+        if not text.lower().startswith("data:image/"):
+            return ""
+        header, sep, b64 = text.partition(",")
+        if not sep:
+            return ""
+        if header.lower() not in {
+            "data:image/png;base64",
+            "data:image/jpeg;base64",
+            "data:image/jpg;base64",
+            "data:image/webp;base64",
+        }:
+            return ""
+        # base64 长度上限 ≈ 解码后 2.5MB：战报海报实测 200~600KB，够用且能挡住滥用
+        if len(b64) > 3_500_000:
+            return ""
+        try:
+            import base64 as _b64
+            import binascii
+
+            head = _b64.b64decode(b64[:64] + "=" * (-len(b64[:64]) % 4), validate=True)
+            _b64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError):
+            return ""
+        if not (
+            head.startswith(b"\x89PNG\r\n\x1a\n")
+            or head.startswith(b"\xff\xd8\xff")
+            or (head[:4] == b"RIFF" and head[8:12] == b"WEBP")
+        ):
+            return ""
+        return text
 
     def _room_payload(self, room: GameRoom, visitor_token: str) -> dict[str, Any]:
         """房间快照 + 前端需要的实时配置（换边状态、动态提醒开关）。

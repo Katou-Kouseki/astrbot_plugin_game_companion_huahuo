@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.40"
+    assert metadata["version"] == "0.5.41"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -974,3 +974,84 @@ def test_ai_think_delay_is_configurable() -> None:
     # 棋类 AI 回合一律后台执行，玩家不用等「花火想完」才看到自己的落子；
     # 只有贪心骰子那种多步可见回合还保持同步（一次性播完更顺）
     assert manager.count("await self._bot_turn(room)") == 1
+
+
+def test_room_page_does_not_depend_on_seat_visitor_token() -> None:
+    """座位快照只下发 uid：前端不能再用 player_seats[].visitor_token 判身份。"""
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert '"visitor_token": seat.visitor_token' not in models
+    assert '"uid": _visitor_uid(seat.visitor_token)' in models
+    assert "seat.visitor_token" not in script
+    assert "s.visitor_token" not in script
+    assert "function isMySeat(" in script
+    # 比对的是自己的 room.visitor_uid
+    assert "String(target?.visitor_uid || \"\")" in script
+
+
+def test_announce_and_resign_endpoints_require_identity() -> None:
+    """通知到群/复盘/认输都必须校验访客身份，且图片要过白名单。"""
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert "def require_seated_player(" in manager
+    assert "self.require_seated_player(room, visitor_token)" in manager  # resign
+    # 两处 announce 都要 seated 校验，两处 recap 至少要求是房间访客
+    announce_block = server[
+        server.index("async def _undercover_announce(") : server.index(
+            "async def _board_recap("
+        )
+    ]
+    assert announce_block.count("require_seated_player") == 2
+    recap_block = server[
+        server.index("async def _undercover_recap(") : server.index(
+            "async def _undercover_announce("
+        )
+    ]
+    assert "require_visitor(" in recap_block
+    board_recap = server[
+        server.index("async def _board_recap(") : server.index(
+            "async def _seat_leave("
+        )
+    ]
+    assert "require_visitor(" in board_recap
+    # 前端必须带上令牌，否则会被 403 挡掉
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    for action in ("undercover/recap", "board/recap", "undercover/announce", "board/announce"):
+        call = script[script.index(f'"{action}"') :][:120]
+        assert "visitor_token: visitorToken" in call
+
+    assert "def _image_payload(" in server
+    assert "_image_payload(payload)" in server
+    assert "def _forbidden(" in server
+
+
+def test_frontend_recovers_from_transient_errors() -> None:
+    """轮询失败只弹临时遮罩，恢复后必须撤掉；请求要有超时；渲染异常不能锁死按钮。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "function showTransientOverlay(" in script
+    assert "function clearTransientOverlay(" in script
+    assert 'overlay.dataset.transient = "1"' in script
+    assert "clearTransientOverlay();" in script
+    # 不在 catch 里直接写 hidden = false
+    assert 'document.getElementById("boardOverlay").hidden = false;\n      pollTimer' not in script
+
+    assert "async function timedFetch(" in script
+    assert "AbortController" in script
+    assert 'data?.status === "error"' in script
+
+    # render 包一层 try，renderInner 才是真正实现
+    assert "function renderInner()" in script
+    render_block = script[script.index("  function render() {") :][:420]
+    assert "try {" in render_block and "renderInner();" in render_block
+
+
+def test_vote_card_nickname_is_html_escaped() -> None:
+    """昵称会先被 sanitizeDisplayText 解码实体，拼进 innerHTML 前必须再转义。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "function escapeHtml(" in script
+    card = script[script.index('card.className = "uc-vote-card"') :][:1200]
+    assert "escapeHtml(sanitizeDisplayText(p.display_name" in card

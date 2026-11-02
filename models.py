@@ -26,7 +26,11 @@ def _visitor_uid(token: str) -> str:
     前端用它做「谁进谁出」的差量判断——`number` 会随入座重排（seat.number 1..N）
     并且可能与观众号重复（花火座位就是 2 号），不能当身份用。
     """
-    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()[:10]
+    token = str(token or "")
+    if not token:
+        # 空 token（AI 座位）返回空串：前端用「有没有 uid」判断该座位是否有人
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
 
 
 GameType = Literal[
@@ -711,7 +715,9 @@ class GameRoom:
             "player_seats": [
                 {
                     "number": seat.number,
-                    "visitor_token": seat.visitor_token,
+                    # 只下发不可逆的短 uid：快照对全房间可见，绝不能带原始 token
+                    # （token 就是整套接口的身份凭证，泄露等于把座位让给别人）
+                    "uid": _visitor_uid(seat.visitor_token),
                     "display_name": seat.display_name,
                     "identity_confirmed": bool(seat.identity_confirmed),
                     "is_ai": bool(seat.is_ai),

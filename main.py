@@ -6753,14 +6753,23 @@ class GameCompanionPlugin(Star):
         return True
 
     async def _watchdog(self) -> None:
-        try:
-            while True:
+        """每 2 秒扫一遍房间：判负、超时、销毁、隧道自愈。
+
+        try 必须在 while 里面：以前包在循环外，任意一个房间 tick 抛一次异常
+        就会让整个看门狗永久退出——之后所有房间不再判负、不再自动销毁，
+        而且没有任何提示（插件看起来一切正常，其实定时逻辑已经死了）。
+        """
+        while True:
+            try:
                 await asyncio.sleep(2)
                 await self.manager.sweep_expired()
                 self._schedule_tunnel_recovery()
                 self._register_companion_invite_ability()
-        except asyncio.CancelledError:
-            raise
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - 看门狗必须活到插件卸载
+                logger.warning("[GameCompanion] 房间看门狗本轮执行失败，稍后重试: %s", exc)
+                await asyncio.sleep(1)
 
     def _schedule_tunnel_recovery(self) -> None:
         if (
