@@ -1268,7 +1268,12 @@
       ucShownResultUid = uid;
       if (recapBtn) { recapBtn.hidden = false; recapBtn.disabled = false; recapBtn.textContent = "✨ 花火复盘"; }
       if (recapBox) { recapBox.hidden = true; recapBox.textContent = ""; }
-      if (announceBtn) { announceBtn.hidden = false; announceBtn.disabled = false; announceBtn.textContent = "📢 通知到群"; }
+      if (announceBtn) {
+        // 只有玩家席上的玩家能往群里发（后端同样校验），观众不显示这个按钮
+        announceBtn.hidden = !room?.is_player;
+        announceBtn.disabled = false;
+        announceBtn.textContent = "📢 通知到群";
+      }
       // 本局已有缓存的复盘则直接展示
       if (recapBox && uid && ucRecapCache[uid]) {
         recapBox.textContent = ucRecapCache[uid];
@@ -1614,6 +1619,20 @@
       const interval = fastPolling ? 300 : 1000;
       pollTimer = window.setTimeout(poll, interval);
     } catch (error) {
+      const message = String(error?.message || "");
+      // 访客记录被回收（长时间离线后房间访客表清理）时，旧令牌已经不存在了：
+      // 自动重新入房拿一个新身份，不要让用户看着「房间不可用」干等。
+      if (message.includes("访客身份")) {
+        try {
+          await join();
+          setConnection("online", "已连接");
+          clearTransientOverlay();
+          pollTimer = window.setTimeout(poll, 600);
+          return;
+        } catch (_error) {
+          /* 连 join 都失败：按普通错误处理 */
+        }
+      }
       setConnection("error", "连接中断");
       showTransientOverlay("房间不可用", error?.message || "链接已失效");
       pollTimer = window.setTimeout(poll, 3000);
@@ -4755,7 +4774,8 @@
     if (recapBtn) { recapBtn.hidden = false; recapBtn.disabled = false; recapBtn.textContent = "✨ 花火复盘"; }
     if (recapBox) { recapBox.hidden = true; recapBox.textContent = ""; }
     if (announceBtn) {
-      announceBtn.hidden = false;
+      // 观众没有群发权限（后端会 403），干脆不显示
+      announceBtn.hidden = !room?.is_player;
       // 花火获胜已自动通报过的这一局，「通知到群」置灰（再点会重复刷群）
       if (room?.board_announced) {
         announceBtn.disabled = true;
@@ -6204,7 +6224,11 @@
           showToast(data?.already ? "本局已通知过，未重复发送" : "已通知到群");
         } else {
           btn.textContent = "📢 通知到群";
-          showToast("群通知未开启：请在插件配置开启 undercover.group_announce_enabled");
+          showToast(
+            data?.disabled === false
+              ? "群发送失败（可能被禁言或机器人不在群里），稍后可以重试"
+              : "群通知未开启：请在插件配置开启 undercover.group_announce_enabled"
+          );
           btn.disabled = false;
         }
       } catch (error) {
@@ -6280,7 +6304,11 @@
           showToast(data?.already ? "本局已通知过，未重复发送" : "已通知到群");
         } else {
           btn.textContent = "📢 通知到群";
-          showToast("群通知未开启：请在插件配置开启 board.group_announce_enabled");
+          showToast(
+            data?.disabled === false
+              ? "群发送失败（可能被禁言或机器人不在群里），稍后可以重试"
+              : "群通知未开启：请在插件配置开启 board.group_announce_enabled"
+          );
           btn.disabled = false;
         }
       } catch (error) {

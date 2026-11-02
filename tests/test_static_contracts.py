@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.43"
+    assert metadata["version"] == "0.5.44"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -1055,3 +1055,12 @@ def test_vote_card_nickname_is_html_escaped() -> None:
     assert "function escapeHtml(" in script
     card = script[script.index('card.className = "uc-vote-card"') :][:1200]
     assert "escapeHtml(sanitizeDisplayText(p.display_name" in card
+
+
+def test_poll_recovers_from_pruned_visitor() -> None:
+    """访客被回收后旧令牌失效：前端要自动重新入房，而不是一直显示「房间不可用」。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    poll = script[script.index("async function poll() {") :]
+    poll = poll[: poll.index("async function loadState()")]
+    assert 'message.includes("访客身份")' in poll
+    assert "await join();" in poll

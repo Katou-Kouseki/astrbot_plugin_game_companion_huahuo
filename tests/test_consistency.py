@@ -309,3 +309,48 @@ async def test_destroy_releases_room_level_caches() -> None:
     assert room.pending_board_announces == []
     assert room.last_board_result is None
     assert room.room_id not in manager.rooms
+
+
+@pytest.mark.asyncio
+async def test_idle_grace_is_bounded_so_quota_is_released() -> None:
+    """有人守着可以宽限，但不能永久宽限：群聊只有 1 个房间配额。
+
+    一局结束后把结算页挂着不管，以前（宽限期无限）会让同一个群的第二个人
+    开新房时报「群聊房间已达到并行上限」。
+    """
+    manager = RoomManager(
+        max_group_rooms=1, max_private_rooms=0, idle_timeout=300, empty_player_timeout=60
+    )
+    room = await manager.create_room(
+        source="group",
+        session_id="aiocqhttp:group:1",
+        platform="aiocqhttp",
+        group_id="1",
+        creator_qq="10001",
+        creator_name="小明",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    player = await manager.join(room)
+    await manager.claim_and_start(room, player.token, "human_black")
+    await manager.add_ai_seat(room, player.token, side="white")
+    await manager.wait_bot_turns()
+    room.game.winner = room.game.bot_color
+    await manager._finish_game(room)
+
+    now = time.time()
+    player.connected = True
+    player.last_seen_at = now
+    room.last_activity_at = now - 360  # 6 分钟：超过 idle 但在宽限内
+
+    assert await manager.sweep_expired(now=now) == []
+    assert room.room_id in manager.rooms
+
+    # 挂一个小时后必须回收，否则群聊房间配额永远被占
+    room.last_activity_at = now - 3600
+    player.last_seen_at = now
+    expired = await manager.sweep_expired(now=now)
+
+    assert room.room_id in expired
+    assert room.room_id not in manager.rooms

@@ -745,7 +745,14 @@ class GameRoomServer:
         if uid and text:
             room.last_announced_uid = uid
             room.last_announced_text = text
-        return self._response({"announced": bool(text), "already": False, "text": text})
+        # announced=False 有两种原因：开关没开 / 发送失败。
+        # 前端要能区分提示，否则发送失败会被说成「去开开关」。
+        return self._response({
+            "announced": bool(text),
+            "already": False,
+            "text": text,
+            "disabled": not bool(getattr(self.plugin, "group_announce_enabled", False)),
+        })
 
     async def _board_announce(self, request: web.Request) -> web.Response:
         """棋类结算卡「通知到群」：把本局胜负（谁赢了、执子、手数）发到开房群。
@@ -787,7 +794,14 @@ class GameRoomServer:
         if text:
             room.last_announced_uid = key
             room.last_announced_text = text
-        return self._response({"announced": bool(text), "already": False, "text": text})
+        return self._response({
+            "announced": bool(text),
+            "already": False,
+            "text": text,
+            "disabled": not bool(
+                getattr(self.plugin, "board_group_announce_enabled", False)
+            ),
+        })
 
     async def _board_recap(self, request: web.Request) -> web.Response:
         """棋类结算卡「花火复盘」：按局（completed_games）缓存，同局只请求一次 LLM。"""

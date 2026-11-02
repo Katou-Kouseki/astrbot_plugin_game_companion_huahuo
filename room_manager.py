@@ -174,6 +174,10 @@ class RoomManager:
     FINISHED_PLAYER_LEAVE_GRACE_SECONDS = 8
     # 访客表回收：房间可能被反复打开（群链接长期有效），离线访客只增不减会让
     # 每次快照都越来越大。超过阈值后清理「长时间离线且没占座」的访客。
+    # 有人守着房间但一直没操作（挂机看结算页 / 长时间思考）时的宽限上限。
+    # 不能无限宽限：群聊默认只有 1 个房间配额，一个挂着的页面会把配额永久占死，
+    # 别人再开房就报「群聊房间已达到并行上限」。
+    AFK_IDLE_GRACE_SECONDS = 1800
     VISITOR_PRUNE_MIN_IDLE_SECONDS = 1800
     VISITOR_PRUNE_THRESHOLD = 40
     FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS = 60
@@ -3244,17 +3248,16 @@ class RoomManager:
             and not self._has_present_visitors(room, current)
         ):
             return (room.room_id, "玩家席长时间无人，房间已自动销毁")
-        # 对局/结算阶段只要还有人（心跳新鲜）在看，就不按「无操作」销毁：
-        # 玩家可能只是长时间思考或走开一会儿，中途销毁会直接丢掉这一局。
-        watching = room.status in {"active", "paused", "finished"} and (
-            self._has_present_visitors(room, current)
-        )
-        if (
-            self.idle_timeout
-            and current - room.last_activity_at >= self.idle_timeout
-            and not watching
-        ):
-            return (room.room_id, "房间长时间无操作，已自动销毁")
+        # 「无操作」销毁：有人守着时给足宽限（思考 / 看结算页），但必须有上限——
+        # 群聊默认只有 1 个房间配额，无限宽限会让一个挂着的页面永久占死配额。
+        if self.idle_timeout:
+            threshold = self.idle_timeout
+            if room.status in {"active", "paused", "finished"} and (
+                self._has_present_visitors(room, current)
+            ):
+                threshold = max(self.idle_timeout, self.AFK_IDLE_GRACE_SECONDS)
+            if current - room.last_activity_at >= threshold:
+                return (room.room_id, "房间长时间无操作，已自动销毁")
         return None
 
     async def close_all(self, reason: str = "插件已重载") -> None:
