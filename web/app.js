@@ -596,6 +596,169 @@
     toastTimer = window.setTimeout(() => { toast.hidden = true; }, Math.max(800, Number(duration) || 2600));
   }
 
+  /* ============================================================
+     房间动态提醒（顶部窄条浮层）
+     - 事件：进入房间 / 离开房间 / 从观众席入座 / 从玩家席退回观众席
+     - 只做一个 20px 头像 + 名字 + 一句话的细条，pointer-events:none，不遮棋盘点击
+     - 同一访客同一类动作用 CD 兜住（默认 15 秒），频繁进出不会刷屏
+     ============================================================ */
+  const ACTIVITY_COOLDOWN_MS = 15000;
+  const ACTIVITY_GAP_MS = 800;
+  const ACTIVITY_LIFE_MS = 3400;
+  const ACTIVITY_MAX_VISIBLE = 3;
+  const ACTIVITY_TEXT = {
+    join: "进入了房间",
+    leave: "离开了房间",
+    return: "回到了房间",
+    "seat-in": "坐上了玩家席",
+    "seat-out": "退回了观众席",
+  };
+  // 进场/离场/回场共用一个桶，入座/退席共用一个桶：既不会漏掉「刚进来又坐下」，
+  // 也不会被同一人反复进出刷屏
+  const ACTIVITY_BUCKET = {
+    join: "presence",
+    leave: "presence",
+    return: "presence",
+    "seat-in": "seat",
+    "seat-out": "seat",
+  };
+  let activityCooldown = new Map();
+  let activityQueue = [];
+  let activityTimer = 0;
+  let activityPrimed = false;
+
+  function activityAllowed(visitor, kind) {
+    const key = `${Number(visitor?.number)}:${ACTIVITY_BUCKET[kind] || kind}`;
+    const now = Date.now();
+    const last = activityCooldown.get(key) || 0;
+    if (now - last < ACTIVITY_COOLDOWN_MS) return false;
+    activityCooldown.set(key, now);
+    if (activityCooldown.size > 240) {
+      activityCooldown.forEach((stamp, mapKey) => {
+        if (now - stamp > ACTIVITY_COOLDOWN_MS) activityCooldown.delete(mapKey);
+      });
+    }
+    return true;
+  }
+
+  function activityName(visitor) {
+    const raw = sanitizeDisplayText(memberName(visitor)) || "观众";
+    return { text: raw, initial: raw.slice(0, 1) || "观" };
+  }
+
+  function enqueueActivity(visitor, kind) {
+    if (!ACTIVITY_TEXT[kind]) return;
+    if (activityQueue.length >= 4) return;
+    activityQueue.push({ visitor, kind });
+    drainActivity();
+  }
+
+  function drainActivity() {
+    if (activityTimer) return;
+    const container = document.getElementById("roomActivity");
+    if (!container || !activityQueue.length) return;
+    if (container.childElementCount >= ACTIVITY_MAX_VISIBLE) {
+      activityTimer = window.setTimeout(() => {
+        activityTimer = 0;
+        drainActivity();
+      }, ACTIVITY_GAP_MS);
+      return;
+    }
+    const item = activityQueue.shift();
+    mountActivity(container, item);
+    activityTimer = window.setTimeout(() => {
+      activityTimer = 0;
+      drainActivity();
+    }, ACTIVITY_GAP_MS);
+  }
+
+  function mountActivity(container, item) {
+    const name = activityName(item.visitor);
+    const node = document.createElement("div");
+    node.className = `room-activity-item ${item.kind}`;
+    const avatar = document.createElement("span");
+    avatar.className = "room-activity-avatar";
+    const avatarUrl = String(item.visitor?.avatar_url || "");
+    if (avatarUrl) {
+      const img = document.createElement("img");
+      img.alt = "";
+      img.loading = "lazy";
+      img.addEventListener("error", () => {
+        img.remove();
+        avatar.textContent = name.initial;
+      });
+      img.src = avatarUrl;
+      avatar.appendChild(img);
+    } else {
+      avatar.textContent = name.initial;
+    }
+    const text = document.createElement("span");
+    text.className = "room-activity-text";
+    const who = document.createElement("strong");
+    who.textContent = name.text;
+    who.title = name.text;
+    const action = document.createElement("span");
+    action.textContent = ACTIVITY_TEXT[item.kind];
+    text.append(who, action);
+    node.append(avatar, text);
+    container.appendChild(node);
+    window.requestAnimationFrame(() => node.classList.add("show"));
+    window.setTimeout(() => {
+      node.classList.remove("show");
+      window.setTimeout(() => node.remove(), 240);
+    }, ACTIVITY_LIFE_MS);
+  }
+
+  function collectRosterEvents(previous, current) {
+    if (!activityPrimed) {
+      activityPrimed = true;
+      return [];
+    }
+    if (!Array.isArray(previous) || !Array.isArray(current)) return [];
+    const selfNumber = Number(room?.visitor_number);
+    const events = [];
+    const previousMap = new Map(previous.map((item) => [Number(item.number), item]));
+    current.forEach((visitor) => {
+      const number = Number(visitor.number);
+      const before = previousMap.get(number);
+      previousMap.delete(number);
+      // 自己的进出/落座由自己的界面变化体现，机器人（花火）不提醒
+      if (number === selfNumber || visitor.is_ai) return;
+      if (!before) {
+        if (visitor.online) events.push({ visitor, kind: "join" });
+        return;
+      }
+      if (!before.online && visitor.online) {
+        // 之前掉线/关掉页面，现在又能收到心跳：回来了（不是新访客）
+        events.push({ visitor, kind: "return" });
+        return;
+      }
+      if (before.online && !visitor.online) {
+        events.push({ visitor, kind: "leave" });
+        return;
+      }
+      if (!visitor.online) return;
+      if (!before.is_player && visitor.is_player) {
+        events.push({ visitor, kind: "seat-in" });
+      } else if (before.is_player && !visitor.is_player) {
+        events.push({ visitor, kind: "seat-out" });
+      }
+    });
+    previousMap.forEach((visitor) => {
+      if (Number(visitor.number) === selfNumber || visitor.is_ai) return;
+      if (!visitor.online) return;
+      events.push({ visitor, kind: "leave" });
+    });
+    return events;
+  }
+
+  function handleRosterActivity(previous, current) {
+    collectRosterEvents(previous, current).forEach(({ visitor, kind }) => {
+      if (!activityAllowed(visitor, kind)) return;
+      enqueueActivity(visitor, kind);
+    });
+  }
+
   /* 通用二次确认弹层：返回 Promise<boolean>，取消 / ESC / 点遮罩都算 false。
      以后新增不可逆操作（认输、清空战绩等）直接复用，不要再弹 window.confirm。 */
   let confirmResolver = null;
@@ -1387,7 +1550,12 @@
     if (!response.ok) throw new Error(data?.message || "房间状态不可用");
     const previousType = room?.game_type;
     const previousMessageId = latestMessageId(room);
+    const previousVisitors = Array.isArray(room?.visitors) ? room.visitors : [];
     setRoom(data?.data?.room);
+    handleRosterActivity(
+      previousVisitors,
+      Array.isArray(room?.visitors) ? room.visitors : [],
+    );
     if (previousType !== room?.game_type) {
       selectedPiece = null;
       pendingMove = null;

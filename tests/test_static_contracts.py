@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.35"
+    assert metadata["version"] == "0.5.36"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -802,3 +802,30 @@ def test_board_report_uses_frozen_snapshot_and_throttles() -> None:
     assert '"group_announce_min_moves"' in schema
     # 解说防丢
     assert "expect_game_uid" in main
+
+
+def test_room_activity_toasts_are_compact_and_throttled() -> None:
+    """房间动态提醒：细条浮层（鼠标穿透、长昵称省略）+ 同一访客 CD，避免刷屏。"""
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    style = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    assert 'id="roomActivity"' in page
+    assert ".room-activity {" in style
+    # 浮层不能吃掉棋盘的点击
+    activity_block = style[style.index(".room-activity {") : style.index(".room-activity-item {")]
+    assert "pointer-events: none;" in activity_block
+    # 长昵称自动省略
+    assert ".room-activity-text strong" in style
+    assert "text-overflow: ellipsis;" in style[style.index(".room-activity-text strong") :]
+
+    # 四类事件都在
+    for kind in ('"join"', '"leave"', '"seat-in"', '"seat-out"'):
+        assert kind in script
+    # 同一访客同类动作有 CD，且轮询后做 diff
+    assert "ACTIVITY_COOLDOWN_MS = 15000" in script
+    assert "activityAllowed(" in script
+    load_state = script[script.index("async function loadState()") :]
+    assert "handleRosterActivity(" in load_state
+    # 不提醒自己与花火
+    assert "number === selfNumber || visitor.is_ai" in script
