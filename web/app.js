@@ -2883,7 +2883,7 @@
     bump.className = "score-bump";
     bump.textContent = `+${delta}`;
     el.appendChild(bump);
-    window.setTimeout(() => bump.remove(), 1300);
+    window.setTimeout(() => bump.remove(), 1400);
   }
 
   // 掷骰：先快速轮换随机点数模拟滚动，约 630ms 后定格到最终点数
@@ -2917,16 +2917,24 @@
     const botEl = document.getElementById("diceBotScore");
     const hs = game?.human_score ?? 0;
     const bs = game?.bot_score ?? 0;
-    humanEl.textContent = hs;
-    botEl.textContent = bs;
-    // 收手存分：分数上涨时放大高亮 + 浮动「+N」
+    // 只在分数变化时更新文本 + 触发动效；其余帧不碰 textContent，
+    // 否则会把正在往上飘的「+N」标签一并清掉（导致动效时有时无）
     if (game) {
-      if (dicePrevHumanScore !== null && hs > dicePrevHumanScore) {
-        flashDiceScore(humanEl, hs - dicePrevHumanScore);
+      if (dicePrevHumanScore === null) {
+        humanEl.textContent = hs;
+      } else if (hs !== dicePrevHumanScore) {
+        humanEl.textContent = hs;
+        if (hs > dicePrevHumanScore) flashDiceScore(humanEl, hs - dicePrevHumanScore);
       }
-      if (dicePrevBotScore !== null && bs > dicePrevBotScore) {
-        flashDiceScore(botEl, bs - dicePrevBotScore);
+      if (dicePrevBotScore === null) {
+        botEl.textContent = bs;
+      } else if (bs !== dicePrevBotScore) {
+        botEl.textContent = bs;
+        if (bs > dicePrevBotScore) flashDiceScore(botEl, bs - dicePrevBotScore);
       }
+    } else {
+      humanEl.textContent = 0;
+      botEl.textContent = 0;
     }
     dicePrevHumanScore = game ? hs : null;
     dicePrevBotScore = game ? bs : null;

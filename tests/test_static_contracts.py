@@ -979,9 +979,12 @@ def test_ai_think_delay_is_configurable() -> None:
     assert "def wait_bot_turns(" in manager
     assert 'self._cfg("game.ai_think_delay_seconds", 0.8)' in main
     assert "ai_think_delay=self.ai_think_delay" in main
-    # 棋类 AI 回合一律后台执行，玩家不用等「花火想完」才看到自己的落子；
-    # 只有贪心骰子那种多步可见回合还保持同步（一次性播完更顺）
-    assert manager.count("await self._bot_turn(room)") == 1
+    # 棋类 / 贪心骰子 / 二十一点庄家的 AI 回合一律后台执行（spawn），
+    # 玩家不用等「花火想完 / 掷完 / 补完牌」才看到自己的操作结果，
+    # 前端靠轮询逐帧看到 AI 的每一步（掷骰、补牌），观感更接近真人节奏。
+    assert manager.count("await self._bot_turn(room)") == 0
+    assert manager.count("await self._blackjack_dealer_turn(room)") == 0
+    assert manager.count("self._spawn_blackjack_dealer_turn(room)") >= 1
 
 
 def test_room_page_does_not_depend_on_seat_visitor_token() -> None:

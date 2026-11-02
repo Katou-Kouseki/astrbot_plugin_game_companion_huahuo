@@ -636,6 +636,7 @@ async def test_blackjack_actions_rotate_turns_and_settle_hands() -> None:
     await manager.player_blackjack_action(room, first.token, "stand")
     assert room.multiplayer.current_token == second.token
     await manager.player_blackjack_action(room, second.token, "stand")
+    await manager.wait_bot_turns()
 
     assert room.status == "finished"
     assert room.game.results_by_number() == {first.number: "win", second.number: "loss"}
@@ -761,6 +762,7 @@ async def test_blackjack_all_natural_hands_go_straight_to_settlement(monkeypatch
 
     monkeypatch.setattr(BlackjackGame, "deal", staticmethod(fixed_deal))
     await manager.start_game(room, first.token, "")
+    await manager.wait_bot_turns()
 
     assert room.status == "finished"
     assert room.game.results_by_number() == {
@@ -841,6 +843,7 @@ async def test_blackjack_action_resolves_at_once_when_remaining_players_are_offl
     manager._reset_turn_deadline(room)
 
     await manager.player_blackjack_action(room, first.token, "stand")
+    await manager.wait_bot_turns()
 
     assert room.status == "finished"
     assert room.game.hand_for_number(second.number).status == "stand"

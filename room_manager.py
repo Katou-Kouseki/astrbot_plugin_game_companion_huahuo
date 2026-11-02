@@ -1623,7 +1623,7 @@ class RoomManager:
                 await self._finish_game(room)
                 return
             if room.game.all_players_done():
-                await self._blackjack_dealer_turn(room)
+                self._spawn_blackjack_dealer_turn(room)
                 return
         if isinstance(room.game, UndercoverGame):
             async with room.lock:
@@ -1906,7 +1906,7 @@ class RoomManager:
         if finished:
             await self._finish_game(room)
         elif bot_turn:
-            await self._bot_turn(room)
+            self._spawn_bot_turn(room)
 
     def _blackjack_players(self, room: GameRoom) -> list[Visitor]:
         """当前在座且访客记录仍存在的玩家，按座位顺序。"""
@@ -1957,7 +1957,7 @@ class RoomManager:
                 dealer_ready = self._advance_blackjack_turn(room)
         await self._emit("blackjack_changed", room, event)
         if dealer_ready:
-            await self._blackjack_dealer_turn(room)
+            self._spawn_blackjack_dealer_turn(room)
 
     def _advance_blackjack_turn(
         self, room: GameRoom, *, now: float | None = None
@@ -2373,7 +2373,7 @@ class RoomManager:
                 await self._finish_game(room)
                 return
             if room.game.all_players_done():
-                await self._blackjack_dealer_turn(room)
+                self._spawn_blackjack_dealer_turn(room)
                 return
         if isinstance(room.game, UndercoverGame):
             async with room.lock:
@@ -2567,7 +2567,7 @@ class RoomManager:
         if blackjack_continues:
             return
         if dealer_ready:
-            await self._blackjack_dealer_turn(room)
+            self._spawn_blackjack_dealer_turn(room)
             return
         await self._finish_game(room)
 
@@ -2615,7 +2615,7 @@ class RoomManager:
             room.touch()
             room.add_message("system", reason)
         if dealer_ready:
-            await self._blackjack_dealer_turn(room)
+            self._spawn_blackjack_dealer_turn(room)
 
     async def kick_visitor(self, room: GameRoom, visitor_number: int) -> None:
         """Invalidate one browser identity and clear its seat if necessary."""
@@ -2650,7 +2650,7 @@ class RoomManager:
             room.touch()
             room.add_message("system", f"{visitor.number} 号已被移出房间。")
         if dealer_ready:
-            await self._blackjack_dealer_turn(room)
+            self._spawn_blackjack_dealer_turn(room)
 
     async def pause(self, room: GameRoom) -> None:
         """Pause an active game without changing its board."""
@@ -2684,7 +2684,7 @@ class RoomManager:
             # 双真人局恢复时会把「对方那一手」误当花火的回合，替真人落子。
             bot_turn = self._is_bot_turn(room)
         if blackjack_dealer:
-            await self._blackjack_dealer_turn(room)
+            self._spawn_blackjack_dealer_turn(room)
             return
         if bot_turn:
             self._spawn_bot_turn(room)
@@ -3340,6 +3340,18 @@ class RoomManager:
         过一会儿才出现花火的应手，和真人思考的节奏一致。
         """
         task = asyncio.create_task(self._bot_turn(room))
+        self._bot_tasks.add(task)
+        task.add_done_callback(self._bot_tasks.discard)
+        return task
+
+    def _spawn_blackjack_dealer_turn(self, room: GameRoom) -> asyncio.Task:
+        """庄家回合后台执行：翻牌、逐张补牌、结算，不阻塞玩家要牌/停牌的响应。
+
+        庄家补牌有逐张间隔，若同步 await 会让玩家点「要牌」后一直卡到庄家补完牌
+        才拿到响应，前端一次性蹦出全部补牌（观感「节奏太快」）。丢到后台后，
+        前端轮询能逐张看到庄家翻牌与补牌。
+        """
+        task = asyncio.create_task(self._blackjack_dealer_turn(room))
         self._bot_tasks.add(task)
         task.add_done_callback(self._bot_tasks.discard)
         return task
@@ -4060,7 +4072,7 @@ class RoomManager:
                         f"{self._visitor_label(previous)}回合超时，已轮到 {self._visitor_label(current)}。",
                     )
         if dealer_ready:
-            await self._blackjack_dealer_turn(room)
+            self._spawn_blackjack_dealer_turn(room)
         if duel_finished:
             await self._finish_game(room)
         if need_start_undercover is not None:

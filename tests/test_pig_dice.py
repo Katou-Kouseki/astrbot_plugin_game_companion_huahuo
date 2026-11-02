@@ -112,6 +112,7 @@ async def test_room_manager_runs_dynamic_bot_turn_without_model(
     room.game.roll("human", value=5)
 
     await manager.player_dice_action(room, visitor.token, "hold")
+    await manager.wait_bot_turns()
 
     assert isinstance(room.game, PigDiceGame)
     assert room.game.human_score == 5
