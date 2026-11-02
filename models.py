@@ -757,9 +757,7 @@ class GameRoom:
                 )
                 if isinstance(self.game, DrawGuessGame)
                 else self.game.snapshot(
-                    visitor_player_number=(
-                        visitor.number if visitor else None
-                    )
+                    visitor_uid=_visitor_uid(visitor.token) if visitor else None
                 )
                 if isinstance(self.game, UndercoverGame)
                 else self.game.snapshot(

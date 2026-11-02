@@ -48,9 +48,9 @@ def test_deal_gives_two_cards_each_and_one_hidden_dealer_card() -> None:
         shoe=fixed_shoe(["A", "2", "K", "9", "7", "5", "3", "4"]),
     )
 
-    assert list(game.hands) == [1, 2]
-    assert [card.rank for card in game.hands[1].cards] == ["A", "2"]
-    assert game.hands[1].value == 13
+    assert set(game.hands) == {"1", "2"}
+    assert [card.rank for card in game.hand_for_number(1).cards] == ["A", "2"]
+    assert game.hand_for_number(1).value == 13
     assert game.dealer_cards[0].rank == "7"
     assert game.dealer_hole is not None
     assert game.dealer_hole.rank == "5"
@@ -66,7 +66,7 @@ def test_natural_blackjack_is_recognised_at_deal_time() -> None:
         shoe=fixed_shoe(["A", "K", "9", "8"]),
     )
 
-    hand = game.hands[1]
+    hand = game.hand_for_number(1)
     assert hand.blackjack is True
     assert hand.status == "blackjack"
     assert game.all_players_done() is True
@@ -82,7 +82,7 @@ def test_dealer_natural_is_peeked_and_settles_immediately() -> None:
     assert game.dealer_blackjack is True
     assert game.finished is True
     assert game.phase == "settled"
-    assert game.results == {1: "loss"}
+    assert game.results_by_number() == {1: "loss"}
     assert game.snapshot()["dealer_hidden"] is False
 
 
@@ -97,9 +97,9 @@ def test_hit_draws_busts_and_auto_stands_at_21() -> None:
     assert event["action"] == "hit"
     assert event["value"] == 20
     game.hit(1)
-    assert game.hands[1].value == 25
-    assert game.hands[1].busted is True
-    assert game.hands[1].result == "loss"
+    assert game.hand_for_number(1).value == 25
+    assert game.hand_for_number(1).busted is True
+    assert game.hand_for_number(1).result == "loss"
 
     game = BlackjackGame.deal(
         difficulty="normal",
@@ -107,8 +107,8 @@ def test_hit_draws_busts_and_auto_stands_at_21() -> None:
         shoe=fixed_shoe(["10", "6", "9", "8", "5"]),
     )
     game.hit(1)
-    assert game.hands[1].value == 21
-    assert game.hands[1].status == "stand"
+    assert game.hand_for_number(1).value == 21
+    assert game.hand_for_number(1).status == "stand"
 
 
 @pytest.mark.parametrize(
@@ -149,7 +149,7 @@ def test_settlement_compares_dealer_total(ranks: list[str], expected: str) -> No
         game.draw_dealer()
     game.settle()
 
-    assert game.results == {1: expected}
+    assert game.results_by_number() == {1: expected}
     assert game.finished is True
 
 
@@ -165,7 +165,7 @@ def test_player_blackjack_beats_a_drawn_dealer_21() -> None:
     game.settle()
 
     assert game.dealer_total == 21
-    assert game.results == {1: "blackjack_win"}
+    assert game.results_by_number() == {1: "blackjack_win"}
 
 
 def test_surrender_marks_the_hand_as_a_loss() -> None:
@@ -177,8 +177,8 @@ def test_surrender_marks_the_hand_as_a_loss() -> None:
 
     game.surrender(1)
 
-    assert game.hands[1].status == "surrendered"
-    assert game.hands[1].result == "loss"
+    assert game.hand_for_number(1).status == "surrendered"
+    assert game.hand_for_number(1).result == "loss"
     assert game.all_players_done() is False
 
 

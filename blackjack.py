@@ -55,9 +55,15 @@ class BlackjackCard:
 
 @dataclass(slots=True)
 class BlackjackHand:
-    """One player hand identified by the room visitor number."""
+    """一手牌。
+
+    ``uid`` 是房内稳定的访客标识（由访客 token 派生），用于在整局中定位这手牌；
+    ``number`` 只是展示用的座位号。坐席在中途变动（掉线回收、换座）后座位号会被
+    重编，只有 uid 不会变。
+    """
 
     number: int
+    uid: str = ""
     cards: list[BlackjackCard] = field(default_factory=list)
     status: HandStatus = "playing"
     result: HandResult = ""
@@ -83,6 +89,7 @@ class BlackjackHand:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "uid": self.uid,
             "number": self.number,
             "cards": [card.as_dict() for card in self.cards],
             "value": self.value,
@@ -122,7 +129,8 @@ class BlackjackGame:
 
     difficulty: Difficulty = "normal"
     shoe: list[BlackjackCard] = field(default_factory=fresh_shoe)
-    hands: dict[int, BlackjackHand] = field(default_factory=dict)
+    # 键是玩家 uid（稳定访客标识），不是座位号：座位号会在中途重编，uid 不会。
+    hands: dict[str, BlackjackHand] = field(default_factory=dict)
     dealer_cards: list[BlackjackCard] = field(default_factory=list)
     dealer_hole: BlackjackCard | None = None
     phase: GamePhase = "player_turns"
@@ -137,6 +145,7 @@ class BlackjackGame:
         *,
         difficulty: Difficulty = "normal",
         player_numbers: list[int],
+        player_uids: list[str] | None = None,
         shoe: list[BlackjackCard] | None = None,
     ) -> BlackjackGame:
         """Deal a complete round; deterministic tests may inject a shoe."""
@@ -144,15 +153,26 @@ class BlackjackGame:
         numbers = [int(number) for number in player_numbers]
         if not numbers or len(set(numbers)) != len(numbers):
             raise ValueError("玩家编号不能为空或重复")
+        # 未显式给 uid 时退回用编号字符串，保证旧调用与单元测试仍可用；
+        # 真实房间一律传访客 uid，座位移位也不会认错手牌。
+        uids = (
+            [str(uid) for uid in player_uids]
+            if player_uids is not None
+            else [str(number) for number in numbers]
+        )
+        if len(uids) != len(numbers) or not all(uids):
+            raise ValueError("玩家标识数量必须与玩家数量一致")
+        if len(set(uids)) != len(uids):
+            raise ValueError("玩家标识不能重复")
         if len(deck) < len(numbers) * 2 + 2:
             raise ValueError("牌堆不足，无法完成开局")
         game = cls(difficulty=difficulty, shoe=deck)
-        for number in numbers:
-            hand = BlackjackHand(number=number)
+        for number, uid in zip(numbers, uids):
+            hand = BlackjackHand(number=number, uid=uid)
             hand.add(game._draw())
             hand.add(game._draw())
             hand.status = "blackjack" if hand.blackjack else "playing"
-            game.hands[number] = hand
+            game.hands[uid] = hand
         game.dealer_cards.append(game._draw())
         game.dealer_hole = game._draw()
         if game._dealer_peeks_blackjack():
@@ -191,8 +211,22 @@ class BlackjackGame:
         return True
 
     @property
-    def results(self) -> dict[int, HandResult]:
-        return {number: hand.result for number, hand in self.hands.items()}
+    def results(self) -> dict[str, HandResult]:
+        """按玩家 uid 返回结算结果。"""
+        return {uid: hand.result for uid, hand in self.hands.items()}
+
+    def results_by_number(self) -> dict[int, HandResult]:
+        """按座位号返回结算结果，仅用于展示与历史文案。"""
+        return {hand.number: hand.result for hand in self.hands.values()}
+
+    def hand_for_uid(self, uid: str) -> BlackjackHand | None:
+        return self.hands.get(str(uid))
+
+    def hand_for_number(self, number: int) -> BlackjackHand | None:
+        return next(
+            (hand for hand in self.hands.values() if hand.number == int(number)),
+            None,
+        )
 
     def all_players_done(self) -> bool:
         return all(hand.status != "playing" for hand in self.hands.values())
@@ -215,15 +249,16 @@ class BlackjackGame:
         self.dealer_cards.append(card)
         return card
 
-    def hit(self, number: int) -> dict[str, Any]:
-        hand = self._hand(number)
+    def hit(self, key: str | int) -> dict[str, Any]:
+        hand = self._hand(key)
         if hand.status != "playing":
             raise ValueError("这手牌已经不需要再要牌")
         card = self._draw()
         hand.add(card)
         event: dict[str, Any] = {
             "action": "hit",
-            "number": number,
+            "uid": hand.uid,
+            "number": hand.number,
             "card": card.as_dict(),
             "value": hand.value,
             "soft": hand.soft,
@@ -238,26 +273,36 @@ class BlackjackGame:
         self._append_event(event)
         return event
 
-    def stand(self, number: int) -> dict[str, Any]:
-        hand = self._hand(number)
+    def stand(self, key: str | int) -> dict[str, Any]:
+        hand = self._hand(key)
         if hand.status != "playing":
             raise ValueError("这手牌已经停牌")
         hand.status = "stand"
-        event = {"action": "stand", "number": number, "value": hand.value}
+        event = {
+            "action": "stand",
+            "uid": hand.uid,
+            "number": hand.number,
+            "value": hand.value,
+        }
         self._append_event(event)
         return event
 
-    def surrender(self, number: int) -> dict[str, Any]:
-        hand = self._hand(number)
+    def surrender(self, key: str | int) -> dict[str, Any]:
+        hand = self._hand(key)
         if hand.status not in {"playing", "stand", "blackjack"}:
             raise ValueError("这手牌已经结算")
         hand.status = "surrendered"
         hand.result = "loss"
-        event = {"action": "surrender", "number": number, "value": hand.value}
+        event = {
+            "action": "surrender",
+            "uid": hand.uid,
+            "number": hand.number,
+            "value": hand.value,
+        }
         self._append_event(event)
         return event
 
-    def settle(self) -> dict[int, HandResult]:
+    def settle(self) -> dict[str, HandResult]:
         """Reveal and settle every hand. Idempotent after the first call."""
         if self.finished:
             return self.results
@@ -286,7 +331,10 @@ class BlackjackGame:
                 "action": "settle",
                 "dealer_total": dealer_total,
                 "dealer_soft": self.dealer_soft,
-                "results": {str(key): value for key, value in self.results.items()},
+                "results": {
+                    str(number): value
+                    for number, value in self.results_by_number().items()
+                },
             }
         )
         return self.results
@@ -314,9 +362,13 @@ class BlackjackGame:
             "dealer_total": dealer_total,
             "dealer_soft": dealer_soft,
             "hands": {
-                str(number): hand.as_dict() for number, hand in self.hands.items()
+                uid: hand.as_dict() for uid, hand in self.hands.items()
             },
             "results": {str(key): value for key, value in self.results.items()},
+            "results_by_number": {
+                str(number): value
+                for number, value in self.results_by_number().items()
+            },
             "history": self.history[-24:],
         }
 
@@ -334,8 +386,19 @@ class BlackjackGame:
             raise ValueError("牌堆已经用完")
         return self.shoe.pop()
 
-    def _hand(self, number: int) -> BlackjackHand:
-        hand = self.hands.get(int(number))
+    def _hand(self, key: str | int) -> BlackjackHand:
+        """按 uid 定位手牌；传座位号时仅在能唯一命中时回退，兼容旧调用。"""
+        if isinstance(key, str):
+            hand = self.hands.get(key)
+            if hand is not None:
+                return hand
+            try:
+                number = int(key)
+            except (TypeError, ValueError):
+                raise ValueError("这手牌不属于本局玩家") from None
+        else:
+            number = int(key)
+        hand = self.hand_for_number(number)
         if hand is None:
             raise ValueError("这手牌不属于本局玩家")
         return hand

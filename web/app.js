@@ -2862,10 +2862,13 @@
     };
     const hands = document.getElementById("blackjackHands");
     hands.replaceChildren();
-    Object.entries(game.hands || {})
-      .sort(([left], [right]) => Number(left) - Number(right))
-      .forEach(([number, hand]) => {
-        const own = number === String(room.visitor_number);
+    Object.values(game.hands || {})
+      .sort((left, right) => Number(left.number) - Number(right.number))
+      .forEach((hand) => {
+        const number = String(hand.number);
+        const own = Boolean(hand.uid)
+          ? hand.uid === room.visitor_uid
+          : number === String(room.visitor_number);
         const current = room.is_current_player && number === String(room.current_player_number);
         const item = document.createElement("article");
         item.className = `blackjack-hand ${hand.status || "playing"} ${own ? "own" : ""} ${current ? "current" : ""}`;
@@ -2940,7 +2943,11 @@
       });
     }
 
-    const hand = game.hands?.[String(room.visitor_number)];
+    const hand = Object.values(game.hands || {}).find((entry) =>
+      entry.uid
+        ? entry.uid === room.visitor_uid
+        : String(entry.number) === String(room.visitor_number)
+    );
     const canAct = Boolean(
       room.is_current_player
       && room.is_player

@@ -100,6 +100,12 @@ DEFAULT_SEED_WORDS: list[tuple[str, str]] = [
 
 @dataclass(slots=True)
 class UCPlayer:
+    """一位玩家。
+
+    ``number`` 是开局时冻结的座位号（只在文案与发言顺序里用），``uid`` 是房内稳定的
+    访客标识。坐席中途变动后座位号会被重编，所以外部一律按 uid 反查玩家。
+    """
+
     number: int
     qq: str = ""
     display_name: str = ""
@@ -107,6 +113,7 @@ class UCPlayer:
     word: str = ""
     is_out: bool = False
     player_id: int = 0
+    uid: str = ""
 
     @property
     def label(self) -> str:
@@ -208,16 +215,31 @@ class UndercoverGame:
 
     # ---------------------- Setup ----------------------
 
-    def attach_players(self, seat_infos: list[tuple[int, str, str]]) -> None:
-        """seat_infos: [(seat_number, qq, display_name), ...]。调用前先清旧。"""
+    def attach_players(
+        self,
+        seat_infos: list[tuple[int, str, str]],
+        uids: list[str] | None = None,
+    ) -> None:
+        """seat_infos: [(seat_number, qq, display_name), ...]。调用前先清旧。
+
+        uids 与 seat_infos 一一对应；不传时退回用座位号字符串，保证旧调用可用。
+        """
         self.players = []
-        for number, qq, name in seat_infos:
+        uid_list = (
+            [str(uid) for uid in uids]
+            if uids is not None
+            else [str(int(number)) for number, _qq, _name in seat_infos]
+        )
+        if len(uid_list) != len(seat_infos):
+            raise ValueError("玩家标识数量必须与座位数量一致")
+        for (number, qq, name), uid in zip(seat_infos, uid_list):
             self.players.append(
                 UCPlayer(
                     number=int(number),
                     qq=str(qq or ""),
                     display_name=str(name or ""),
                     player_id=self._next_player_id,
+                    uid=uid,
                 )
             )
             self._next_player_id += 1
@@ -322,6 +344,17 @@ class UndercoverGame:
 
     def _player_by_number(self, number: int) -> UCPlayer | None:
         return next((p for p in self.players if p.number == number), None)
+
+    def player_for_uid(self, uid: str) -> UCPlayer | None:
+        """按稳定 uid 反查玩家（外部不要再用座位号查，座位号会在中途重编）。"""
+        key = str(uid or "")
+        if not key:
+            return None
+        return next((p for p in self.players if p.uid == key), None)
+
+    def player_for_number(self, number: int) -> UCPlayer | None:
+        """按开局冻结的座位号查玩家，仅用于展示与内部流程。"""
+        return self._player_by_number(int(number))
 
     def round_vote_breakdown(self) -> str:
         """把当前（pending）轮的每张票拼成「1号（昵称） → 3号（昵称）」文本，供房间对话展示。"""
@@ -671,10 +704,15 @@ class UndercoverGame:
             for w in (self.civilian_word, self.undercover_word)
         )
 
-    def snapshot(self, visitor_player_number: int | None = None) -> dict[str, Any]:
-        visitor = next(
-            (p for p in self.players if p.number == visitor_player_number), None
-        )
+    def snapshot(
+        self,
+        visitor_player_number: int | None = None,
+        *,
+        visitor_uid: str | None = None,
+    ) -> dict[str, Any]:
+        visitor = self.player_for_uid(visitor_uid) if visitor_uid else None
+        if visitor is None and visitor_player_number is not None:
+            visitor = self._player_by_number(visitor_player_number)
         reveal_all = self.phase == "finished"
         live_count = len([p for p in self.players if not p.is_out])
         counts_all = self._camp_count_all()
@@ -685,6 +723,7 @@ class UndercoverGame:
                 "number": p.number,
                 "player_number": p.number,
                 "player_id": p.player_id,
+                "uid": p.uid,
                 "display_name": p.display_name or f"{p.number}号",
                 "is_out": p.is_out,
                 "is_current_speaking": (

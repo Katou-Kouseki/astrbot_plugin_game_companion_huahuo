@@ -27,6 +27,7 @@ from .models import (
     Visitor,
     _undercover_badges_for,
     _undercover_identity_key,
+    _visitor_uid,
 )
 from .othello import BLACK as OTHELLO_BLACK
 from .othello import WHITE as OTHELLO_WHITE
@@ -44,7 +45,7 @@ from .turtle_soup import (
     TurtleSoupGame,
     clean_player_text,
 )
-from .undercover import UndercoverGame
+from .undercover import UndercoverGame, UCPlayer
 from .undercover_words import UndercoverWordStore
 from .xiangqi import BLACK as XIANGQI_BLACK
 from .xiangqi import RED as XIANGQI_RED
@@ -945,13 +946,12 @@ class RoomManager:
                 raise ValueError("这个房间需要管理员从游戏管理台安排玩家")
             if room.multiplayer.enabled:
                 duel = room.game_type in DUEL_GAMES
-                if room.status == "active" and (
-                    duel
-                    or (
-                        isinstance(room.game, BlackjackGame)
-                        and not room.game.finished
-                    )
-                ):
+                # 局内已经按开局号码记账，中途再塞人会让座位号与局内号错位，直接拒绝
+                round_running = bool(
+                    isinstance(room.game, (BlackjackGame, UndercoverGame))
+                    and not room.game.finished
+                )
+                if room.status == "active" and (duel or round_running):
                     raise ValueError("本局进行中，请等这一局结束后再加入玩家席")
                 if duel and room.status == "paused":
                     raise ValueError("对局已暂停，结束后再加入玩家席")
@@ -1106,6 +1106,12 @@ class RoomManager:
             if room.multiplayer.enabled:
                 seat = room.multiplayer.seat_for_token(visitor.token)
                 if seat is None:
+                    if (
+                        room.status == "active"
+                        and isinstance(room.game, (BlackjackGame, UndercoverGame))
+                        and not room.game.finished
+                    ):
+                        raise ValueError("本局进行中，不能新增玩家席，请等这一局结束")
                     if (
                         room.multiplayer.capacity
                         and len(room.multiplayer.seats) >= room.multiplayer.capacity
@@ -1344,7 +1350,8 @@ class RoomManager:
             show_voters=self.undercover_show_voters,
         )
         room.game.attach_players(
-            [(seat.number, seat.qq, seat.display_name) for seat in live_seats]
+            [(seat.number, seat.qq, seat.display_name) for seat in live_seats],
+            [_visitor_uid(seat.visitor_token) for seat in live_seats],
         )
         room.game.assign_words(word_pair)
         room.multiplayer.current_turn_index = 0
@@ -1474,14 +1481,7 @@ class RoomManager:
                 )
                 side_label = ""
             elif room.game_type == "blackjack":
-                room.game = BlackjackGame.deal(
-                    difficulty=room.difficulty,
-                    player_numbers=[
-                        room.visitors[seat.visitor_token].number
-                        for seat in room.multiplayer.seats
-                        if seat.visitor_token in room.visitors
-                    ],
-                )
+                room.game = self._deal_blackjack(room)
                 room.multiplayer.current_turn_index = 0
                 side_label = ""
             elif room.game_type == "undercover":
@@ -1881,6 +1881,25 @@ class RoomManager:
         elif bot_turn:
             await self._bot_turn(room)
 
+    def _blackjack_players(self, room: GameRoom) -> list[Visitor]:
+        """当前在座且访客记录仍存在的玩家，按座位顺序。"""
+        return [
+            room.visitors[seat.visitor_token]
+            for seat in room.multiplayer.seats
+            if seat.visitor_token in room.visitors
+        ]
+
+    def _deal_blackjack(
+        self, room: GameRoom, *, difficulty: Difficulty | None = None
+    ) -> BlackjackGame:
+        """开一局二十一点：手牌按稳定 uid 记账，座位号只用于展示。"""
+        players = self._blackjack_players(room)
+        return BlackjackGame.deal(
+            difficulty=difficulty or room.difficulty,
+            player_numbers=[visitor.number for visitor in players],
+            player_uids=[_visitor_uid(visitor.token) for visitor in players],
+        )
+
     async def player_blackjack_action(
         self, room: GameRoom, visitor_token: str, action: str
     ) -> None:
@@ -1899,9 +1918,9 @@ class RoomManager:
             if visitor.token != room.multiplayer.current_token:
                 raise PermissionError("还没轮到这位玩家")
             event = (
-                game.hit(visitor.number)
+                game.hit(_visitor_uid(visitor.token))
                 if normalized == "hit"
-                else game.stand(visitor.number)
+                else game.stand(_visitor_uid(visitor.token))
             )
             room.touch()
             if game.all_players_done():
@@ -1937,14 +1956,14 @@ class RoomManager:
             visitor = room.visitors.get(seat.visitor_token)
             if visitor is None:
                 continue
-            hand = game.hands.get(visitor.number)
+            hand = game.hands.get(_visitor_uid(visitor.token))
             if hand is None or hand.status != "playing":
                 continue
             if visitor.connected and current - visitor.last_seen_at < 15:
                 state.current_turn_index = index
                 self._reset_turn_deadline(room, now=current)
                 return game.all_players_done()
-            game.stand(visitor.number)
+            game.stand(_visitor_uid(visitor.token))
             room.add_message(
                 "system",
                 f"{self._visitor_label(visitor)}已离线，当前手牌自动停牌。",
@@ -2247,14 +2266,7 @@ class RoomManager:
                 )
                 side_label = ""
             elif isinstance(room.game, BlackjackGame):
-                room.game = BlackjackGame.deal(
-                    difficulty=difficulty,
-                    player_numbers=[
-                        room.visitors[seat.visitor_token].number
-                        for seat in room.multiplayer.seats
-                        if seat.visitor_token in room.visitors
-                    ],
-                )
+                room.game = self._deal_blackjack(room, difficulty=difficulty)
                 room.multiplayer.current_turn_index = 0
                 side_label = ""
             elif isinstance(room.game, UndercoverGame):
@@ -2475,7 +2487,7 @@ class RoomManager:
                 ):
                     raise PermissionError("还没轮到这位玩家投降")
                 visitor = self._visitor(room, visitor_token)
-                game.surrender(visitor.number)
+                game.surrender(_visitor_uid(visitor.token))
                 room.add_message(
                     "system",
                     f"{self._visitor_label(visitor)}选择投降，这一手记为输。",
@@ -2964,8 +2976,14 @@ class RoomManager:
                 raise ValueError("当前游戏不支持多人席位交换")
             requester = self._visitor(room, visitor_token)
             self._purge_swap_requests(room, current)
-            if room.game_type in DUEL_GAMES and room.status in {"active", "paused"}:
-                # 对局中换座会让执方与棋局对不上，等这一局结束再换
+            running_round = bool(
+                isinstance(room.game, (BlackjackGame, UndercoverGame))
+                and not room.game.finished
+            )
+            if (
+                room.game_type in DUEL_GAMES and room.status in {"active", "paused"}
+            ) or (room.status == "active" and running_round):
+                # 对局中换座会让执方/局内号码与座位对不上，等这一局结束再换
                 raise ValueError("对局进行中不能换座，请等这一局结束")
             if state.seat_for_token(requester.token) is not None:
                 raise ValueError("玩家席内不能申请交换其他玩家")
@@ -3489,6 +3507,14 @@ class RoomManager:
                         if uc_player.camp != camp:
                             continue
                         seat = next(
+                            (
+                                s
+                                for s in room.multiplayer.seats
+                                if uc_player.uid
+                                and _visitor_uid(s.visitor_token) == uc_player.uid
+                            ),
+                            None,
+                        ) or next(
                             (
                                 s
                                 for s in room.multiplayer.seats
@@ -4063,13 +4089,13 @@ class RoomManager:
             return True
         previous = room.visitors.get(state.current_token)
         if previous is not None:
-            hand = game.hands.get(previous.number)
+            hand = game.hands.get(_visitor_uid(previous.token))
             if hand is not None and hand.status == "playing":
                 offline = not (
                     previous.connected and now - previous.last_seen_at < 15
                 )
                 if offline:
-                    game.stand(previous.number)
+                    game.stand(_visitor_uid(previous.token))
                     room.add_message(
                         "system",
                         f"{self._visitor_label(previous)}已离线，当前手牌自动停牌。",
@@ -4087,9 +4113,9 @@ class RoomManager:
         if now < state.turn_deadline:
             return False
         if previous is not None:
-            hand = game.hands.get(previous.number)
+            hand = game.hands.get(_visitor_uid(previous.token))
             if hand is not None and hand.status == "playing":
-                game.stand(previous.number)
+                game.stand(_visitor_uid(previous.token))
                 room.add_message(
                     "system",
                     f"{self._visitor_label(previous)}回合超时，已自动停牌。",
@@ -4525,13 +4551,29 @@ class RoomManager:
         self._assign_duel_sides(room)
         return removed
 
+    def _seats_numbering_frozen(self, room: GameRoom) -> bool:
+        """对局进行中冻结座位编号。
+
+        二十一点/谁是卧底在开局时把座位号快照进局内（手牌、发言顺序、投票），
+        中途有人掉线被移出玩家席时若重新紧凑编号，剩下的玩家就会“换号”，
+        展示号与局内号错位。这里在局面未结束时跳过重编，等本局结束后再收紧。
+        """
+        game = room.game
+        if room.status != "active" or game is None:
+            return False
+        if isinstance(game, (BlackjackGame, UndercoverGame)):
+            return not game.finished
+        return False
+
     def _sync_primary_player(self, room: GameRoom) -> None:
         if not room.multiplayer.enabled or not room.multiplayer.seats:
             self._clear_primary_player(room)
             return
-        # 每次入席/换座/离席后按列表顺序重新编号，保证 seat.number 是 1..N
-        for idx, seat in enumerate(room.multiplayer.seats):
-            seat.number = idx + 1
+        # 每次入席/换座/离席后按列表顺序重新编号，保证 seat.number 是 1..N；
+        # 对局进行中的二十一点/谁是卧底例外：局内号码已快照，重编会造成错位。
+        if not self._seats_numbering_frozen(room):
+            for idx, seat in enumerate(room.multiplayer.seats):
+                seat.number = idx + 1
         # 同步已入座访客的 number 与 seat.number，保证 WebUI “我的号码”＝游戏内座位号，
         # 避免“轮到你却提示不是你的轮次”的错觉
         self._sync_visitor_numbers(room)
@@ -4566,13 +4608,13 @@ class RoomManager:
             and isinstance(room.game, BlackjackGame)
             and not room.game.finished
         ):
-            hand = room.game.hands.get(departing.number)
+            hand = room.game.hands.get(_visitor_uid(departing.token))
             if (
                 hand is not None
                 and hand.status in {"playing", "stand", "blackjack"}
                 and not hand.result
             ):
-                room.game.surrender(departing.number)
+                room.game.surrender(_visitor_uid(departing.token))
         state.seats.pop(old_index)
         if state.seats:
             if old_index < state.current_turn_index:
@@ -4752,6 +4794,32 @@ class RoomManager:
         if visitor is None:
             raise ValueError(f"房间内没有 {number} 号访客")
         return visitor
+
+    @staticmethod
+    def _undercover_player_for_seat(
+        room: GameRoom, seat: PlayerSeat | None
+    ) -> UCPlayer | None:
+        """按稳定 uid 找出座位对应的卧底玩家（座位号会在中途重编，不能用它反查）。"""
+        game = room.game
+        if seat is None or not isinstance(game, UndercoverGame):
+            return None
+        return game.player_for_uid(_visitor_uid(seat.visitor_token))
+
+    @staticmethod
+    def _visitor_for_undercover_player(
+        room: GameRoom, player: UCPlayer | None
+    ) -> Visitor | None:
+        """按玩家的稳定 uid 找回访客记录（用于文案里的名字与号码）。"""
+        if player is None or not player.uid:
+            return None
+        return next(
+            (
+                visitor
+                for token, visitor in room.visitors.items()
+                if _visitor_uid(token) == player.uid
+            ),
+            None,
+        )
 
     @staticmethod
     def _normalize_strokes(value: Any) -> list[dict[str, Any]]:
@@ -5017,7 +5085,10 @@ class RoomManager:
             seat = room.multiplayer.seat_for_token(visitor.token)
             if seat is None:
                 raise PermissionError("只有已入座玩家可以发言")
-            player_number = seat.number
+            uc_player = self._undercover_player_for_seat(room, seat)
+            if uc_player is None:
+                raise PermissionError("这局没有你的位置（你可能已被移出玩家席）")
+            player_number = uc_player.number
             # AI 玩家的发言豁免相似度拦截：避免最后一轮只剩几名 AI 时本地兜底文案互相雷同被拒而卡死
             accepted = room.game.submit_speech(
                 player_number, cleaned, skip_similarity=bool(getattr(seat, "is_ai", False))
@@ -5051,10 +5122,11 @@ class RoomManager:
                         f"第 {round_number} 轮发言全部完成，请各位存活玩家投票投出心目中的卧底。",
                     )
             else:
-                next_player = (
-                    self._visitor_by_number(room, expected)
+                next_player = self._visitor_for_undercover_player(
+                    room,
+                    room.game.player_for_number(expected)
                     if expected is not None
-                    else None
+                    else None,
                 )
                 if next_player is not None:
                     label = self._visitor_label(next_player)
@@ -5096,7 +5168,17 @@ class RoomManager:
             if room.game.phase not in ("speech", "pk"):
                 return
             visitor = self._visitor(room, visitor_token)
-            if room.game.expected_speaker_number != visitor.number:
+            expected = room.game.expected_speaker_number
+            uc_player = self._undercover_player_for_seat(
+                room, room.multiplayer.seat_for_token(visitor.token)
+            )
+            # 优先按稳定 uid 认人；极端情况下（早期快照缺少 uid）退回按号码比对。
+            my_number = (
+                uc_player.number
+                if uc_player is not None
+                else visitor.number
+            )
+            if expected is None or my_number != expected:
                 return
             skipped = room.game.expected_speaker_number
             room.game.skip_current_speaker()
@@ -5128,7 +5210,10 @@ class RoomManager:
             seat = room.multiplayer.seat_for_token(visitor.token)
             if seat is None:
                 raise PermissionError("只有已入座玩家可以投票")
-            voter_number = seat.number
+            uc_player = self._undercover_player_for_seat(room, seat)
+            if uc_player is None:
+                raise PermissionError("这局没有你的位置（你可能已被移出玩家席）")
+            voter_number = uc_player.number
             result = room.game.submit_vote(voter_number, target)
             self._reset_turn_deadline(room)
             room.touch()
@@ -5196,7 +5281,8 @@ class RoomManager:
                 raise PermissionError("只有已入座玩家可以推进 PK")
             room.game.continue_pk(targets)
             round_number = room.game.current_round_number
-            player_number = seat.number
+            uc_player = self._undercover_player_for_seat(room, seat)
+            player_number = uc_player.number if uc_player is not None else seat.number
             self._reset_turn_deadline(room)
             room.touch()
             snapshot = room.game.snapshot(player_number)
@@ -5654,10 +5740,7 @@ class RoomManager:
                 and room.game is not None
                 and getattr(room.game, "players", None)
             ):
-                p = next(
-                    (x for x in room.game.players if x.number == seat.number),
-                    None,
-                )
+                p = room.game.player_for_uid(_visitor_uid(seat.visitor_token))
                 if p is not None:
                     p.is_out = True
             # 记录退席前的房主，退席后若房主位置迁移则向全房同步新接任者

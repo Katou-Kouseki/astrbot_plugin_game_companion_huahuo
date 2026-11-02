@@ -27,7 +27,7 @@ from .draw_guess import DrawGuessGame
 from .gomoku import BLACK as GOMOKU_BLACK
 from .gomoku import WHITE as GOMOKU_WHITE
 from .gomoku import Difficulty, GomokuGame
-from .models import GameRoom, GameType, TurtleSoupMode, Visitor
+from .models import GameRoom, GameType, TurtleSoupMode, Visitor, _visitor_uid
 from .othello import BLACK as OTHELLO_BLACK
 from .othello import WHITE as OTHELLO_WHITE
 from .othello import OthelloGame
@@ -2314,9 +2314,11 @@ class GameCompanionPlugin(Star):
                 else "玩家轮流要牌或停牌"
             )
             hands = "、".join(
-                f"{number}号{hand.value}点"
+                f"{hand.number}号{hand.value}点"
                 + ("（21点）" if hand.blackjack else "")
-                for number, hand in sorted(game.hands.items())
+                for hand in sorted(
+                    game.hands.values(), key=lambda item: item.number
+                )
             ) or "暂无"
             lines.append(
                 f"实时局面：Bot 是庄家，明牌{upcard.rank + upcard.suit if upcard else '未发'}，"
@@ -2939,9 +2941,7 @@ class GameCompanionPlugin(Star):
                 for seat in room.multiplayer.seats:
                     if seat.is_ai or not seat.qq:
                         continue
-                    pl = next(
-                        (p for p in room.game.players if p.number == seat.number), None
-                    )
+                    pl = self._uc_player_for_seat(room, seat)
                     if pl is not None and (pl.camp or "") != room.game.winner_camp:
                         loser_qqs.append(seat.qq)
                 for qq in sorted(set(loser_qqs)):
@@ -3265,7 +3265,8 @@ class GameCompanionPlugin(Star):
                 and isinstance(room.game, UndercoverGame)
                 and room.game.phase in {"speech", "pk"}
                 and is_player
-                and visitor.number == room.game.expected_speaker_number
+                and self._uc_number_for_visitor(room, visitor)
+                == room.game.expected_speaker_number
             ):
                 try:
                     await self.manager.player_undercover_speech(
@@ -8018,9 +8019,7 @@ class GameCompanionPlugin(Star):
                 # 1) 发言阶段：当前是 AI 玩家就自动发言
                 if game.phase in ("speech", "pk"):
                     exp = game.expected_speaker_number
-                    seat = next(
-                        (s for s in room.multiplayer.seats if s.number == exp), None
-                    )
+                    seat = self._uc_seat_for_number(room, exp) if exp else None
                     if seat is None or not getattr(seat, "is_ai", False):
                         return
                     # 小延时避免栈过深
@@ -8035,7 +8034,7 @@ class GameCompanionPlugin(Star):
                     voted = set(game.snapshot(None).get("voted_this_round_player_numbers") or [])
                     for n in all_live_nums:
                         if n in voted: continue
-                        seat = next((s for s in room.multiplayer.seats if s.number == n), None)
+                        seat = self._uc_seat_for_number(room, n)
                         if seat and getattr(seat, "is_ai", False):
                             await asyncio.sleep(0.5)
                             await self._undercover_ai_do_vote(room, seat)
@@ -8062,10 +8061,13 @@ class GameCompanionPlugin(Star):
             exp = game.expected_speaker_number
             if exp is None:
                 return
-            seat = next(
-                (s for s in room.multiplayer.seats if s.number == exp), None
-            )
+            # 座位号会在中途重编，先用开局冻结的号码找到局内玩家，再按稳定 uid 找座位
+            seat = self._uc_seat_for_number(room, exp)
             if seat is None:
+                # 当前发言人的座位已不存在（掉线被移出玩家席等）：
+                # 直接跳过，避免整局卡在“等一个不在场的人发言”。
+                game.skip_current_speaker()
+                await self._undercover_ai_step_if_needed(room)
                 return
             if getattr(seat, "is_ai", False):
                 # 发言超时且是 AI：供应商故障时不再等模型，直接提交本地兜底文案，保证轮次推进
@@ -8081,23 +8083,69 @@ class GameCompanionPlugin(Star):
             # 合法的本地票，保证即使供应商故障（429/断连）本轮也能收敛、不会永久卡在“投票进行中”。
             await self._undercover_force_all_votes(room)
 
+    @staticmethod
+    def _uc_player_for_seat(room: GameRoom, seat) -> Any:
+        """按稳定 uid 找出座位对应的卧底玩家（座位号中途会重编，不能用来反查）。"""
+        game = room.game
+        token = str(getattr(seat, "visitor_token", "") or "") if seat else ""
+        if not token or not isinstance(game, UndercoverGame):
+            return None
+        return game.player_for_uid(_visitor_uid(token))
+
+    @staticmethod
+    def _uc_number_for_seat(room: GameRoom, seat) -> int | None:
+        """座位在对局内的冻结号码；不在局内（中途入座/已移出）返回 None。"""
+        player = GameCompanionPlugin._uc_player_for_seat(room, seat)
+        return int(player.number) if player is not None else None
+
+    @staticmethod
+    def _uc_number_for_visitor(room: GameRoom, visitor) -> int | None:
+        """访客在对局内的冻结号码；不是本局玩家时返回 None。"""
+        game = room.game
+        token = str(getattr(visitor, "token", "") or "") if visitor else ""
+        if not token or not isinstance(game, UndercoverGame):
+            return None
+        player = game.player_for_uid(_visitor_uid(token))
+        return int(player.number) if player is not None else None
+
+    @classmethod
+    def _uc_seat_for_number(cls, room: GameRoom, number: int) -> Any:
+        """按局内冻结号码找回当前座位（座位号可能已被重编，优先按稳定 uid 匹配）。"""
+        game = room.game
+        if not isinstance(game, UndercoverGame):
+            return None
+        player = game.player_for_number(int(number))
+        if player is not None and player.uid:
+            seat = next(
+                (
+                    s
+                    for s in room.multiplayer.seats
+                    if _visitor_uid(s.visitor_token) == player.uid
+                ),
+                None,
+            )
+            if seat is not None:
+                return seat
+        return next(
+            (s for s in room.multiplayer.seats if s.number == int(number)), None
+        )
+
     async def _undercover_ai_speak_fallback(self, room: GameRoom, seat) -> None:
         """AI 发言兜底：绕过模型，直接按轮次提交一句本地文案，保证发言轮在供应商故障时也能推进。"""
         game = room.game
         if not isinstance(game, UndercoverGame) or getattr(game, "phase", "") not in ("speech", "pk"):
             return
-        if game.expected_speaker_number != seat.number:
+        ai_player = self._uc_player_for_seat(room, seat)
+        my_number = int(ai_player.number) if ai_player is not None else int(seat.number)
+        if game.expected_speaker_number != my_number:
             return
-        ai_player = next(
-            (p for p in game.players if int(p.number) == int(seat.number)), None
-        )
         camp = str(ai_player.camp or "") if ai_player else ""
         if camp == "none":
             camp = ""
         round_no = max(1, int(game.current_round_number or 0))
         try:
             await self.manager.player_undercover_speech(
-                room, seat.visitor_token, _uc_ai_fallback(camp, round_no, seat.number)
+                room, seat.visitor_token, _uc_ai_fallback(camp, round_no, my_number)
             )
         except Exception as exc:
             # 本地兜底提交仍失败（相似度命中 / 座椅 token 失效等）：至少推进发言指针，
@@ -8124,10 +8172,12 @@ class GameCompanionPlugin(Star):
         pending = getattr(game, "pending_round", None)
         if pending is None:
             return
-        seats_by_num = {
-            seat.number: seat
-            for seat in getattr(getattr(room, "multiplayer", None), "seats", []) or []
-        }
+        # 按局内冻结号码建索引（座位号在中途可能已被重编，不能直接用 seat.number）
+        seats_by_num: dict[int, Any] = {}
+        for seat in getattr(getattr(room, "multiplayer", None), "seats", []) or []:
+            number = self._uc_number_for_seat(room, seat)
+            if number is not None:
+                seats_by_num[number] = seat
         for voter_num in list(pending.vote_player_numbers):
             if pending.has_voted(voter_num):
                 continue
@@ -8151,12 +8201,11 @@ class GameCompanionPlugin(Star):
         self, room: GameRoom, seat
     ) -> None:
         game: UndercoverGame = room.game  # type: ignore[assignment]
-        snap = game.snapshot(seat.number)
+        ai_player = self._uc_player_for_seat(room, seat)
+        my_number = int(ai_player.number) if ai_player is not None else int(my_number)
+        snap = game.snapshot(visitor_uid=_visitor_uid(seat.visitor_token))
         # 注意：不能用快照里的 my.camp/my.word——「告知身份」关闭时快照会隐去阵营，
         # AI 必须直接从游戏内部拿到自己的真实阵营与词条，否则会因 camp 为空而沉默卡局。
-        ai_player = next(
-            (p for p in game.players if int(p.number) == int(seat.number)), None
-        )
         camp = str(ai_player.camp or "") if ai_player else ""
         word = str(ai_player.word or "") if ai_player else ""
         # 收集本轮已经说完的玩家发言
@@ -8172,7 +8221,7 @@ class GameCompanionPlugin(Star):
         own_history = [
             str(s["content"])
             for s in game.rounds_speeches()
-            if int(s.get("player_number", 0)) == int(seat.number)
+            if int(s.get("player_number", 0)) == int(my_number)
         ]
         round_no = max(1, int(game.current_round_number or 0))
         anti_repeat = (
@@ -8231,11 +8280,11 @@ class GameCompanionPlugin(Star):
             # 规整为「≤1 逗号、≤20 字」的短句
             content = _sanitize_uc_ai_speech(content)
             if len(content) < 4:
-                content = _uc_ai_fallback(camp, round_no, seat.number)
+                content = _uc_ai_fallback(camp, round_no, my_number)
             # 白板 AI 兜底：一旦模型说出的内容泄露了任一词条（含「刷牙」之于「牙刷」这类），
             # 立即换成安全的兜底文案，避免 AI 因“白板说词直接获胜”而莫名其妙结束整局。
             if camp == "whiteboard" and game.leaks_word(content):
-                content = _uc_ai_fallback(camp, round_no, seat.number)
+                content = _uc_ai_fallback(camp, round_no, my_number)
             await self.manager.player_undercover_speech(
                 room, seat.visitor_token, content
             )
@@ -8244,7 +8293,7 @@ class GameCompanionPlugin(Star):
                 "[GameCompanion] AI 发言生成失败，改用本地兜底：%s", exc
             )
             # 失败时用一句本地兜底文案（按轮次轮换，避免整局一句复读），避免卡住整轮
-            fallback = _uc_ai_fallback(camp, round_no, seat.number)
+            fallback = _uc_ai_fallback(camp, round_no, my_number)
             try:
                 await self.manager.player_undercover_speech(
                     room, seat.visitor_token, fallback
@@ -8264,14 +8313,16 @@ class GameCompanionPlugin(Star):
         self, room: GameRoom, seat
     ) -> None:
         game: UndercoverGame = room.game  # type: ignore[assignment]
-        my_snap = game.snapshot(seat.number)
+        ai_vp = self._uc_player_for_seat(room, seat)
+        my_number = int(ai_vp.number) if ai_vp is not None else int(my_number)
+        my_snap = game.snapshot(visitor_uid=_visitor_uid(seat.visitor_token))
         rounds = my_snap.get("rounds_public") or []
         live_players = my_snap.get("players_public") or []
         live_nums = [int(p["player_number"]) for p in live_players if not p.get("is_out")]
         if not rounds:
             # 没有发言记录：只从合法目标里选（PK 轮只能投平票候选人），避免非法票被拒导致 AI 卡投
-            eligible = _uc_eligible_vote_targets(game, seat.number) or [
-                n for n in live_nums if n != seat.number
+            eligible = _uc_eligible_vote_targets(game, my_number) or [
+                n for n in live_nums if n != my_number
             ]
             if not eligible:
                 return
@@ -8286,11 +8337,11 @@ class GameCompanionPlugin(Star):
         lines = []
         for s in round_speeches:
             pn = int(s.get("player_number") or 0)
-            if pn in live_nums and pn != seat.number:
+            if pn in live_nums and pn != my_number:
                 lines.append(f"{pn}号玩家说：{s.get('content') or ''}")
         if not lines:
-            eligible = _uc_eligible_vote_targets(game, seat.number) or [
-                n for n in live_nums if n != seat.number
+            eligible = _uc_eligible_vote_targets(game, my_number) or [
+                n for n in live_nums if n != my_number
             ]
             if not eligible:
                 return
@@ -8302,9 +8353,6 @@ class GameCompanionPlugin(Star):
         my_camp = str((my_snap.get("my") or {}).get("camp") or "")
         my_word = str((my_snap.get("my") or {}).get("word") or "")
         # 同上：AI 投票也需用真实阵营/词条，避免「告知身份」关闭时拿到被隐去的空值
-        ai_vp = next(
-            (p for p in game.players if int(p.number) == int(seat.number)), None
-        )
         if ai_vp is not None:
             my_camp = str(ai_vp.camp or "")
             my_word = str(ai_vp.word or "")
@@ -8324,7 +8372,7 @@ class GameCompanionPlugin(Star):
             "不要返回任何其他文字或说明。"
         )
         # 合法目标（PK 轮只限平票候选人）
-        eligible = _uc_eligible_vote_targets(game, seat.number)
+        eligible = _uc_eligible_vote_targets(game, my_number)
         target = None
         try:
             text = await asyncio.wait_for(
@@ -8340,7 +8388,7 @@ class GameCompanionPlugin(Star):
             target = None
         if target is None:
             # 本地兜底：稳定选一个合法目标（PK 只会选平票候选人）
-            candidates = eligible or [n for n in live_nums if n != seat.number]
+            candidates = eligible or [n for n in live_nums if n != my_number]
             target = candidates[0] if candidates else None
         if target is not None:
             try:

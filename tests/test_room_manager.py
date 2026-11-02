@@ -1,9 +1,11 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 from astrbot_plugin_game_companion_huahuo.blackjack import BlackjackCard, BlackjackGame
+from astrbot_plugin_game_companion_huahuo.models import _visitor_uid
 from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 
 
@@ -558,11 +560,12 @@ async def test_solo_blackjack_deals_one_hand_automatically(monkeypatch) -> None:
 
     original_deal = BlackjackGame.deal.__func__
 
-    def fixed_deal(*, difficulty, player_numbers, **_kwargs):
+    def fixed_deal(*, difficulty, player_numbers, player_uids=None, **_kwargs):
         return original_deal(
             BlackjackGame,
             difficulty=difficulty,
             player_numbers=player_numbers,
+            player_uids=player_uids,
             shoe=fixed_blackjack_shoe(["10", "6", "9", "8"]),
         )
 
@@ -572,7 +575,7 @@ async def test_solo_blackjack_deals_one_hand_automatically(monkeypatch) -> None:
     assert room.status == "active"
     assert isinstance(room.game, BlackjackGame)
     assert room.game.phase == "player_turns"
-    assert list(room.game.hands) == [visitor.number]
+    assert room.game.hand_for_uid(_visitor_uid(visitor.token)) is not None
     assert room.multiplayer.enabled is True
     assert room.multiplayer.capacity == 1
     assert room.multiplayer.turn_deadline > 0
@@ -594,11 +597,12 @@ async def test_multiplayer_blackjack_waits_for_explicit_deal(monkeypatch) -> Non
 
     original_deal = BlackjackGame.deal.__func__
 
-    def fixed_deal(*, difficulty, player_numbers, **_kwargs):
+    def fixed_deal(*, difficulty, player_numbers, player_uids=None, **_kwargs):
         return original_deal(
             BlackjackGame,
             difficulty=difficulty,
             player_numbers=player_numbers,
+            player_uids=player_uids,
             shoe=fixed_blackjack_shoe(["10", "6", "10", "8", "9", "8"]),
         )
 
@@ -606,7 +610,7 @@ async def test_multiplayer_blackjack_waits_for_explicit_deal(monkeypatch) -> Non
     await manager.start_game(room, first.token, "")
 
     assert isinstance(room.game, BlackjackGame)
-    assert set(room.game.hands) == {first.number, second.number}
+    assert room.game.hand_for_uid(_visitor_uid(first.token)) is not None and room.game.hand_for_uid(_visitor_uid(second.token)) is not None
     assert room.status == "active"
 
 
@@ -621,6 +625,7 @@ async def test_blackjack_actions_rotate_turns_and_settle_hands() -> None:
     room.game = BlackjackGame.deal(
         difficulty="normal",
         player_numbers=[first.number, second.number],
+        player_uids=[_visitor_uid(first.token), _visitor_uid(second.token)],
         shoe=fixed_blackjack_shoe(["10", "10", "10", "8", "9", "10"]),
     )
     room.status = "active"
@@ -632,7 +637,7 @@ async def test_blackjack_actions_rotate_turns_and_settle_hands() -> None:
     await manager.player_blackjack_action(room, second.token, "stand")
 
     assert room.status == "finished"
-    assert room.game.results == {first.number: "win", second.number: "loss"}
+    assert room.game.results_by_number() == {first.number: "win", second.number: "loss"}
     assert room.human_wins == 1
     assert room.bot_wins == 1
     assert room.completed_games == 1
@@ -649,6 +654,7 @@ async def test_blackjack_turn_timeout_auto_stands_current_hand() -> None:
     room.game = BlackjackGame.deal(
         difficulty="normal",
         player_numbers=[first.number, second.number],
+        player_uids=[_visitor_uid(first.token), _visitor_uid(second.token)],
         shoe=fixed_blackjack_shoe(["10", "10", "10", "8", "9", "10"]),
     )
     room.status = "active"
@@ -659,7 +665,7 @@ async def test_blackjack_turn_timeout_auto_stands_current_hand() -> None:
 
     await manager.sweep_expired(now=1000.0)
 
-    assert room.game.hands[first.number].status == "stand"
+    assert room.game.hand_for_number(first.number).status == "stand"
     assert room.multiplayer.current_token == second.token
 
 
@@ -670,7 +676,7 @@ async def test_blackjack_rejects_seat_join_during_an_active_round() -> None:
     first = await manager.join(room)
     await manager.claim_and_start(room, first.token, "")
     room.game = BlackjackGame.deal(
-        difficulty="normal", player_numbers=[first.number], shoe=fixed_blackjack_shoe(["10", "10", "9", "8"])
+        difficulty="normal", player_numbers=[first.number], player_uids=[_visitor_uid(first.token)], shoe=fixed_blackjack_shoe(["10", "10", "9", "8"])
     )
     room.status = "active"
     latecomer = await manager.join(room)
@@ -690,6 +696,7 @@ async def test_blackjack_deadline_is_set_only_while_hands_are_pending() -> None:
     room.game = BlackjackGame.deal(
         difficulty="normal",
         player_numbers=[first.number, second.number],
+        player_uids=[_visitor_uid(first.token), _visitor_uid(second.token)],
         shoe=fixed_blackjack_shoe(["10", "10", "10", "8", "9", "10"]),
     )
     room.status = "active"
@@ -714,18 +721,19 @@ async def test_blackjack_deal_skips_natural_blackjack_hands(monkeypatch) -> None
 
     original_deal = BlackjackGame.deal.__func__
 
-    def fixed_deal(*, difficulty, player_numbers, **_kwargs):
+    def fixed_deal(*, difficulty, player_numbers, player_uids=None, **_kwargs):
         return original_deal(
             BlackjackGame,
             difficulty=difficulty,
             player_numbers=player_numbers,
+            player_uids=player_uids,
             shoe=fixed_blackjack_shoe(["A", "K", "10", "6", "9", "8"]),
         )
 
     monkeypatch.setattr(BlackjackGame, "deal", staticmethod(fixed_deal))
     await manager.start_game(room, first.token, "")
 
-    assert room.game.hands[first.number].blackjack is True
+    assert room.game.hand_for_number(first.number).blackjack is True
     assert room.multiplayer.current_token == second.token
     assert room.multiplayer.turn_deadline > 0
 
@@ -741,11 +749,12 @@ async def test_blackjack_all_natural_hands_go_straight_to_settlement(monkeypatch
 
     original_deal = BlackjackGame.deal.__func__
 
-    def fixed_deal(*, difficulty, player_numbers, **_kwargs):
+    def fixed_deal(*, difficulty, player_numbers, player_uids=None, **_kwargs):
         return original_deal(
             BlackjackGame,
             difficulty=difficulty,
             player_numbers=player_numbers,
+            player_uids=player_uids,
             shoe=fixed_blackjack_shoe(["A", "K", "A", "Q", "9", "8"]),
         )
 
@@ -753,7 +762,7 @@ async def test_blackjack_all_natural_hands_go_straight_to_settlement(monkeypatch
     await manager.start_game(room, first.token, "")
 
     assert room.status == "finished"
-    assert room.game.results == {
+    assert room.game.results_by_number() == {
         first.number: "blackjack_win",
         second.number: "blackjack_win",
     }
@@ -770,6 +779,7 @@ async def test_blackjack_offline_hand_is_auto_stood_and_turn_advances() -> None:
     room.game = BlackjackGame.deal(
         difficulty="normal",
         player_numbers=[first.number, second.number],
+        player_uids=[_visitor_uid(first.token), _visitor_uid(second.token)],
         shoe=fixed_blackjack_shoe(["10", "10", "10", "8", "9", "10"]),
     )
     room.status = "active"
@@ -780,7 +790,7 @@ async def test_blackjack_offline_hand_is_auto_stood_and_turn_advances() -> None:
 
     await manager.sweep_expired(now=1000.0)
 
-    assert room.game.hands[first.number].status == "stand"
+    assert room.game.hand_for_number(first.number).status == "stand"
     assert room.multiplayer.current_token == second.token
 
 
@@ -794,18 +804,19 @@ async def test_blackjack_first_seat_acts_first_on_a_normal_deal(monkeypatch) -> 
     await manager.claim_and_start(room, second.token, "")
     original_deal = BlackjackGame.deal.__func__
 
-    def fixed_deal(*, difficulty, player_numbers, **_kwargs):
+    def fixed_deal(*, difficulty, player_numbers, player_uids=None, **_kwargs):
         return original_deal(
             BlackjackGame,
             difficulty=difficulty,
             player_numbers=player_numbers,
+            player_uids=player_uids,
             shoe=fixed_blackjack_shoe(["10", "6", "10", "8", "9", "8"]),
         )
 
     monkeypatch.setattr(BlackjackGame, "deal", staticmethod(fixed_deal))
     await manager.start_game(room, first.token, "")
 
-    assert room.game.hands[first.number].blackjack is False
+    assert room.game.hand_for_number(first.number).blackjack is False
     assert room.multiplayer.current_token == first.token
     assert room.multiplayer.turn_deadline > 0
 
@@ -821,6 +832,7 @@ async def test_blackjack_action_resolves_at_once_when_remaining_players_are_offl
     room.game = BlackjackGame.deal(
         difficulty="normal",
         player_numbers=[first.number, second.number],
+        player_uids=[_visitor_uid(first.token), _visitor_uid(second.token)],
         shoe=fixed_blackjack_shoe(["10", "10", "10", "8", "9", "10"]),
     )
     room.status = "active"
@@ -830,8 +842,8 @@ async def test_blackjack_action_resolves_at_once_when_remaining_players_are_offl
     await manager.player_blackjack_action(room, first.token, "stand")
 
     assert room.status == "finished"
-    assert room.game.hands[second.number].status == "stand"
-    assert room.game.results == {first.number: "win", second.number: "loss"}
+    assert room.game.hand_for_number(second.number).status == "stand"
+    assert room.game.results_by_number() == {first.number: "win", second.number: "loss"}
 
 
 @pytest.mark.asyncio
@@ -1067,3 +1079,47 @@ async def test_restart_finished_game_also_rotates_sides() -> None:
     await manager._finish_game(room)
     await manager.restart_finished_game(room, difficulty="normal")
     assert room.game.human_color == 1
+
+
+@pytest.mark.asyncio
+async def test_blackjack_hand_kept_by_uid_after_departed_seat_renumber() -> None:
+    """掉线玩家被移出玩家席后，剩余玩家的手牌仍按稳定 uid 精确认领。
+
+    旧实现用座位号做手牌键，掉线回收会重编座位号，导致剩下的玩家
+    「认错手牌 / 找不到手牌」。回归保证改用 uid 后不再发生。
+    """
+    manager = RoomManager(blackjack_max_players=3, multiplayer_turn_timeout=60)
+    room = await create_blackjack_room(manager)
+    first = await manager.join(room)
+    second = await manager.join(room)
+    third = await manager.join(room)
+    for visitor in (first, second, third):
+        await manager.claim_and_start(room, visitor.token, "")
+
+    room.game = BlackjackGame.deal(
+        difficulty="normal",
+        player_numbers=[first.number, second.number, third.number],
+        player_uids=[
+            _visitor_uid(first.token),
+            _visitor_uid(second.token),
+            _visitor_uid(third.token),
+        ],
+        shoe=fixed_blackjack_shoe(["10", "10", "10", "10", "10", "8", "9", "10"]),
+    )
+    room.status = "active"
+    first.connected = True
+    third.connected = True
+    now = time.time()
+    first.last_seen_at = now
+    third.last_seen_at = now
+    manager._reset_turn_deadline(room, now=now)
+
+    # 管理台在对局进行中把 2 号移到观众席：座位会重编，但手牌必须仍按 uid 认领
+    await manager.remove_player(room, second.number)
+
+    # 掉线的 second 手牌按 uid 精确投降，third 手牌不受影响
+    assert room.game.hand_for_uid(_visitor_uid(second.token)).status == "surrendered"
+    assert room.game.hand_for_uid(_visitor_uid(third.token)).status == "playing"
+    # 对局进行中座位编号冻结，third 的局内号码未被重编
+    assert room.game.hand_for_uid(_visitor_uid(third.token)).number == third.number
+    assert third.number == 3
