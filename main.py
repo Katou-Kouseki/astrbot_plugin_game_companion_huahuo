@@ -1558,6 +1558,8 @@ class GameCompanionPlugin(Star):
         # 让管理台/群里的房间链接不会因为 Quick Tunnel 短暂抖动或局域网探测反复变化。
         self._access_base_cache: str = ""
         self._background_tasks: set[asyncio.Task] = set()
+        # 房间 id → 计划中的「连战 N 局」合并播报任务（同一房间只排一个）
+        self._board_flush_tasks: dict[str, asyncio.Task] = {}
         self._companion_round_event_tasks: dict[str, asyncio.Task] = {}
         self._recent_private_game_results: dict[str, _RecentPrivateGameResult] = {}
         self._companion_invite_api: Any | None = None
@@ -5697,6 +5699,11 @@ class GameCompanionPlugin(Star):
         用 AstrBot t2i（回退 Pillow）生成「棋类战报」海报随通报发送，无前端页面也能出图
         （缺 t2i / Pillow / 中文字体时回退纯文字）。发送成功后写入与手动通知一致的幂等
         标记，避免随后手动点「通知到群」重复发送。
+
+        节流分两层：
+        1. 手数不足（board.group_announce_min_moves）→ 直接不发；
+        2. 冷却窗口内（board.group_announce_cooldown_seconds）→ 不丢弃，先把本局攒进
+           room.pending_board_announces，窗口结束时合并成一条「连战 N 局」发出。
         """
         try:
             # 先读终局快照：玩家可能已点「再来一局」，room.game 已换成新局
@@ -5710,12 +5717,28 @@ class GameCompanionPlugin(Star):
                 and moves < self.board_group_announce_min_moves
             ):
                 return
+            entry = self._board_announce_entry(room)
+            if entry is None:
+                return
             cooldown = self.board_group_announce_cooldown
-            if (
-                cooldown
-                and room.last_board_announce_at
-                and time.time() - room.last_board_announce_at < cooldown
-            ):
+            if cooldown and room.last_board_announce_at:
+                elapsed = time.time() - room.last_board_announce_at
+                if elapsed < cooldown:
+                    # 冷却窗口内：攒着，等窗口结束合并成一条「连战 N 局」
+                    self._queue_board_announce(room, entry)
+                    self._schedule_board_flush(room, max(0.5, cooldown - elapsed))
+                    return
+            # 窗口刚好过去：把之前攒下的连战和本局并成一条发
+            pending = self._take_board_pending(room)
+            entry_key = (entry.get("completed_games"), entry.get("game_uid"))
+            entries = [
+                item
+                for item in pending
+                if (item.get("completed_games"), item.get("game_uid")) != entry_key
+            ]
+            entries.append(entry)
+            if len(entries) > 1:
+                await self._send_board_series(room, entries)
                 return
             style = (getattr(self, "board_group_announce_style", "text") or "text").lower()
             image_data = ""
@@ -5734,6 +5757,184 @@ class GameCompanionPlugin(Star):
                 room.last_board_announce_at = time.time()
         except Exception as exc:
             logger.warning("[GameCompanion] 棋类自动播报失败: %s", exc)
+
+    def _board_announce_entry(self, room: GameRoom) -> dict[str, object] | None:
+        """把本局结果压成一条「连战」摘要，供冷却窗口内合并播报。"""
+        payload = self._board_result_payload(room)
+        if payload is None:
+            return None
+        winner_token = str(payload.get("winner_token") or "")
+        try:
+            ai_seat = self.manager._ai_seat(room)
+        except Exception:
+            ai_seat = None
+        winner_is_ai = bool(
+            winner_token
+            and ai_seat is not None
+            and winner_token == getattr(ai_seat, "visitor_token", "")
+        )
+        human_won = payload.get("human_won")
+        return {
+            "game_type": str(payload.get("game_type") or room.game_type),
+            "game_uid": str(payload.get("game_uid") or ""),
+            "completed_games": int(payload.get("completed_games") or 0),
+            "moves": int(payload.get("moves") or 0),
+            "draw": bool(payload.get("draw")),
+            "winner_name": str(payload.get("winner_name") or ""),
+            "winner_side": str(payload.get("winner_side") or ""),
+            "winner_is_ai": winner_is_ai,
+            "human_won": None if human_won is None else bool(human_won),
+        }
+
+    @staticmethod
+    def _queue_board_announce(room: GameRoom, entry: dict[str, object]) -> None:
+        """冷却窗口内结束的一局先入库（同局去重，最多保留 20 条）。"""
+        pending = getattr(room, "pending_board_announces", None)
+        if not isinstance(pending, list):
+            pending = []
+            room.pending_board_announces = pending
+        key = (entry.get("completed_games"), entry.get("game_uid"))
+        if any(
+            (item.get("completed_games"), item.get("game_uid")) == key
+            for item in pending
+        ):
+            return
+        pending.append(entry)
+        del pending[:-20]
+
+    @staticmethod
+    def _take_board_pending(room: GameRoom) -> list[dict[str, object]]:
+        """取出并清空待合并队列（切过玩法/换了房间的旧条目按 game_type 丢掉）。"""
+        pending = list(getattr(room, "pending_board_announces", None) or [])
+        room.pending_board_announces = []
+        return [
+            item
+            for item in pending
+            if str(item.get("game_type") or room.game_type) == room.game_type
+        ]
+
+    def _schedule_board_flush(self, room: GameRoom, delay: float) -> None:
+        """安排一次「连战合并播报」；已有排队任务时不重复排（新对局会被它一起带出）。"""
+        tasks = getattr(self, "_board_flush_tasks", None)
+        if not isinstance(tasks, dict):
+            tasks = {}
+            self._board_flush_tasks = tasks
+        existing = tasks.get(room.room_id)
+        if existing is not None and not existing.done():
+            return
+        room.pending_board_flush_at = time.time() + max(0.0, delay)
+        tasks[room.room_id] = self._spawn(self._flush_board_announces(room, delay))
+
+    async def _flush_board_announces(
+        self, room: GameRoom, delay: float = 0.0
+    ) -> None:
+        """冷却窗口结束后，把攒下的对局合并成一条「连战 N 局」发到群里。"""
+        try:
+            if delay > 0:
+                await asyncio.sleep(delay)
+            entries = self._take_board_pending(room)
+            if not entries:
+                return
+            await self._send_board_series(room, entries)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("[GameCompanion] 连战合并播报失败: %s", exc)
+        finally:
+            tasks = getattr(self, "_board_flush_tasks", None)
+            if isinstance(tasks, dict):
+                current = asyncio.current_task()
+                if tasks.get(room.room_id) is current:
+                    tasks.pop(room.room_id, None)
+            room.pending_board_flush_at = 0.0
+
+    def _board_series_text(
+        self, room: GameRoom, entries: list[dict[str, object]]
+    ) -> str:
+        """连战合并文案：逐局胜负 + 手数，末尾总比分。"""
+        if not entries:
+            return ""
+        label = self.manager._game_label(room.game_type)
+        shown = entries[:10]
+        lines = [f"♟️ {label} · 连战 {len(entries)} 局"]
+        for index, entry in enumerate(shown, 1):
+            side = {"red": "红", "black": "黑", "white": "白"}.get(
+                str(entry.get("winner_side") or ""), ""
+            )
+            side_text = f"（执{side}）" if side else ""
+            moves = int(entry.get("moves") or 0)
+            if entry.get("draw"):
+                result = "🤝 平局"
+            elif entry.get("winner_is_ai"):
+                result = f"🏆 花火获胜{side_text}"
+            else:
+                name = str(entry.get("winner_name") or "")
+                result = f"🏆 {name}获胜{side_text}" if name else f"🏆 玩家获胜{side_text}"
+            lines.append(f"{index}. {result} · {moves} 手")
+        if len(entries) > len(shown):
+            lines.append(f"…另有 {len(entries) - len(shown)} 局略")
+        ai_wins = sum(1 for e in entries if e.get("winner_is_ai"))
+        draws = sum(1 for e in entries if e.get("draw"))
+        human_wins = sum(
+            1 for e in entries if not e.get("draw") and not e.get("winner_is_ai")
+        )
+        tally = []
+        if ai_wins:
+            tally.append(f"花火 {ai_wins} 胜")
+        if human_wins:
+            tally.append(f"玩家 {human_wins} 胜")
+        if draws:
+            tally.append(f"{draws} 平")
+        if tally:
+            lines.append("📊 " + " · ".join(tally))
+        return "\n".join(lines)
+
+    async def _send_board_series(
+        self, room: GameRoom, entries: list[dict[str, object]]
+    ) -> None:
+        """发送「连战 N 局」合并战报（多局摘要只走文字，不再逐局出图）。"""
+        text = self._board_series_text(room, entries)
+        if not text:
+            return
+        recap = ""
+        if getattr(self, "board_group_announce_recap", True):
+            try:
+                recap = await self._board_series_recap(room, entries)
+            except Exception:
+                recap = ""
+        await self._send_to_origin(
+            room, text + (f"\n📝 复盘：{recap}" if recap else "")
+        )
+        latest = max(int(e.get("completed_games") or 0) for e in entries)
+        room.last_announced_uid = f"board:{latest}"
+        room.last_announced_text = text
+        room.last_board_announce_at = time.time()
+
+    async def _board_series_recap(
+        self, room: GameRoom, entries: list[dict[str, object]]
+    ) -> str:
+        """为一段连战生成简短复盘（合并播报附带），LLM 不可用则返回空串。"""
+        summary = self._board_series_text(room, entries).replace("\n", "；")
+        if not summary:
+            return ""
+        prompt = (
+            "请为一串连续进行的棋类对局（连战）生成简短复盘（中文，2~3 句，"
+            "轻松俏皮口吻，可以带点网络梗和适度 emoji，不要标题、不要编号、不要客套感谢语）。\n"
+            f"连战情况：{summary}\n"
+            "风格参考：像一起玩的朋友在茶余饭后聊这几盘棋，点一下整体走势"
+            "（谁占上风、有没有被翻盘），绝不攻击或贬低任何一方。"
+        )
+        try:
+            text = await self._llm_gen_neutral(
+                prompt,
+                system_prompt=(
+                    "你是古灵精怪但温和的复盘解说员「花火」，点评轻松俏皮、善意不伤人，"
+                    "只用中文输出复盘正文，不要标题、不要编号。"
+                ),
+            )
+        except Exception:
+            return ""
+        return (text or "").strip()
 
     async def _undercover_announce_poster(self, room: GameRoom) -> str:
         """生成「战况通知」海报，返回 base64 PNG。

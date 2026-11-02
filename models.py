@@ -345,6 +345,11 @@ class GameRoom:
     last_board_result: dict[str, object] | None = None
     # 上一次自动播报的时间戳（0 = 从未播报），用于刷屏节流
     last_board_announce_at: float = 0.0
+    # 冷却窗口内结束的对局先攒在这里，窗口结束时合并成一条「连战 N 局」发出，
+    # 既不刷群也不丢战报（每条为 _board_announce_entry 压出的摘要 dict）
+    pending_board_announces: list[dict[str, object]] = field(default_factory=list)
+    # 计划中的合并播报时间点（0 = 当前没有排队任务）
+    pending_board_flush_at: float = 0.0
     confirmed_participant_qqs: set[str] = field(default_factory=set)
     participant_names: dict[str, str] = field(default_factory=dict)
     round_participant_qqs: set[str] = field(default_factory=set)

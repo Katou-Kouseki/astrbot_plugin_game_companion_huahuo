@@ -267,14 +267,39 @@ def _announce_plugin(
     plugin.board_group_announce_style = "text"
     plugin.board_group_announce_min_moves = min_moves
     plugin.board_group_announce_cooldown = cooldown
+    plugin.board_group_announce_recap = False
     plugin.sent: list[str] = []
+    # 「连战 N 局」合并播报走 _send_to_origin，单独记录文案
+    plugin.sent_texts: list[str] = []
+    plugin._board_flush_tasks = {}
 
     async def fake_announce(room, image_data=""):
         plugin.sent.append("SENT")
         return "TEXT"
 
+    async def fake_send(room, text):
+        plugin.sent_texts.append(text)
+
+    def spawn(operation):
+        import asyncio
+
+        return asyncio.create_task(operation)
+
     plugin.board_announce_result = fake_announce  # type: ignore[attr-defined]
+    plugin._send_to_origin = fake_send  # type: ignore[attr-defined]
+    plugin._spawn = spawn  # type: ignore[attr-defined]
     return plugin
+
+
+def _cancel_flushes(plugin: GameCompanionPlugin) -> None:
+    """取消排队的「连战合并播报」后台任务，让测试可以手动立即触发。"""
+    tasks = getattr(plugin, "_board_flush_tasks", {})
+    for task in list(tasks.values()):
+        try:
+            task.cancel()
+        except Exception:
+            pass
+    tasks.clear()
 
 
 @pytest.mark.asyncio
@@ -316,7 +341,7 @@ async def test_auto_announce_skips_below_min_moves() -> None:
 
 @pytest.mark.asyncio
 async def test_auto_announce_respects_cooldown() -> None:
-    """冷却期内不重复发群，冷却过后恢复。"""
+    """冷却期内不立刻发群（但会攒着等合并），冷却过后恢复单局播报。"""
     import time
 
     manager = RoomManager(max_private_rooms=0)
@@ -330,7 +355,148 @@ async def test_auto_announce_respects_cooldown() -> None:
     room.last_board_announce_at = time.time()
     await plugin._auto_announce_board(room)
     assert plugin.sent == []
+    assert len(room.pending_board_announces) == 1
+    _cancel_flushes(plugin)
 
+    # 窗口内没有积压（比如窗口刚好过去）：恢复逐局播报
+    room.pending_board_announces = []
     room.last_board_announce_at = time.time() - 31
     await plugin._auto_announce_board(room)
     assert len(plugin.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_cooldown_games_merge_into_one_series_message() -> None:
+    """冷却窗口内结束的连战不逐局刷群，窗口结束时合并成一条「连战 N 局」。"""
+    import time
+
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 12
+    room.game.winner = WHITE  # 花火（AI 白）先赢一局
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=0, cooldown=30)
+    room.last_board_announce_at = time.time()
+    await plugin._auto_announce_board(room)
+    _cancel_flushes(plugin)
+    assert plugin.sent_texts == []
+    assert len(room.pending_board_announces) == 1
+
+    # 第二局：立刻再战（再来一局会换先，玩家改执白），玩家赢
+    await manager.restart_finished_game(room, difficulty="normal")
+    room.game.history = [(7, 7, WHITE)] * 9
+    room.game.winner = WHITE
+    room.game.draw = False
+    await manager._finish_game(room)
+    await plugin._auto_announce_board(room)
+    _cancel_flushes(plugin)
+    assert plugin.sent == []  # 一局都没单独发
+    assert len(room.pending_board_announces) == 2
+
+    await plugin._flush_board_announces(room, 0)
+
+    assert len(plugin.sent_texts) == 1
+    text = plugin.sent_texts[0]
+    assert "连战 2 局" in text
+    assert "花火获胜" in text and "小明获胜" in text
+    assert "12 手" in text and "9 手" in text
+    assert "花火 1 胜" in text and "玩家 1 胜" in text
+    assert room.pending_board_announces == []
+    assert room.last_board_announce_at > 0
+
+
+@pytest.mark.asyncio
+async def test_backlog_drained_into_next_single_announce() -> None:
+    """窗口刚过就来新对局：积压的连战和本局并成一条，不补发两条。"""
+    import time
+
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, WHITE)] * 11
+    room.game.winner = WHITE
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=0, cooldown=30)
+    room.last_board_announce_at = time.time()
+    await plugin._auto_announce_board(room)
+    _cancel_flushes(plugin)
+
+    await manager.restart_finished_game(room, difficulty="normal")
+    room.game.history = [(7, 7, WHITE)] * 7
+    room.game.winner = WHITE
+    room.game.draw = False
+    await manager._finish_game(room)
+    room.last_board_announce_at = time.time() - 31  # 冷却已过
+
+    await plugin._auto_announce_board(room)
+
+    assert plugin.sent == []  # 不再走单局播报
+    assert len(plugin.sent_texts) == 1
+    assert "连战 2 局" in plugin.sent_texts[0]
+
+
+@pytest.mark.asyncio
+async def test_short_games_not_queued_for_series() -> None:
+    """手数不足的对局既不播报也不进合并队列（避免 0 手速战被攒成一条）。"""
+    import time
+
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 3
+    room.game.winner = BLACK
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=5, cooldown=30)
+    room.last_board_announce_at = time.time()
+    await plugin._auto_announce_board(room)
+
+    assert room.pending_board_announces == []
+    assert plugin.sent_texts == []
+
+
+@pytest.mark.asyncio
+async def test_scheduled_flush_fires_after_window() -> None:
+    """排队任务会在冷却窗口结束时自动发出合并战报。"""
+    import asyncio
+    import time
+
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 10
+    room.game.winner = BLACK
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=0, cooldown=0.2)
+    room.last_board_announce_at = time.time()
+    await plugin._auto_announce_board(room)
+    assert plugin.sent_texts == []
+
+    await asyncio.sleep(0.8)
+
+    assert len(plugin.sent_texts) == 1
+    assert "连战 1 局" in plugin.sent_texts[0]
+
+
+def test_board_series_text_tally() -> None:
+    """连战文案：逐局胜负 + 手数 + 总比分。"""
+    manager = RoomManager(max_private_rooms=0)
+    plugin = _plugin(manager)
+    room = type("R", (), {"game_type": "gomoku"})()
+    entries = [
+        {"winner_is_ai": True, "winner_side": "white", "moves": 12},
+        {"winner_is_ai": False, "winner_name": "小明", "winner_side": "black", "moves": 8},
+        {"draw": True, "moves": 21},
+    ]
+
+    text = plugin._board_series_text(room, entries)
+
+    assert "连战 3 局" in text
+    assert "花火获胜（执白）" in text
+    assert "小明获胜（执黑）" in text
+    assert "21 手" in text
+    assert "花火 1 胜" in text and "玩家 1 胜" in text and "1 平" in text
