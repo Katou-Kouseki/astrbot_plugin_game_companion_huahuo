@@ -92,6 +92,12 @@
   let activeRoomView = "game";
   let lastSeenMessageId = 0;
   let renderedDiceSequence = 0;
+  let dicePrevHumanScore = null;   // 上一帧玩家分数（用于加分动效）
+  let dicePrevBotScore = null;     // 上一帧花火分数（用于加分动效）
+  let diceSpinTimer = null;        // 掷骰滚动动画的句柄
+  let bjPrevDealerCount = -1;      // 上一帧庄家牌数（-1 表示首次，全量发牌动画）
+  let bjPrevHandCounts = new Map(); // 上一帧各手牌牌数：key = uid 或 number
+  let bjPrevFinished = null;       // 上一帧是否已结算（用于识别新一局重置）
   let drawStrokes = [];
   let activeDrawStroke = null;
   let drawSyncBusy = false;
@@ -2853,13 +2859,77 @@
 
   }
 
+  // 设置骰子的点数（1-6）或回到「尚未掷骰」的 waiting 态
+  function applyDiceValue(cube, value) {
+    const v = Number(value) || 0;
+    for (let i = 1; i <= 6; i += 1) cube.classList.remove(`value-${i}`);
+    cube.classList.remove("waiting");
+    if (v >= 1 && v <= 6) {
+      cube.classList.add(`value-${v}`);
+      cube.setAttribute("aria-label", `骰子点数 ${v}`);
+    } else {
+      cube.classList.add("waiting");
+      cube.setAttribute("aria-label", "尚未掷骰");
+    }
+  }
+
+  // 收手存分时：分数放大高亮 + 一个「+N」浮动标签，让加分更明显
+  function flashDiceScore(el, delta) {
+    if (!el || !(delta > 0)) return;
+    el.classList.remove("score-pop");
+    void el.offsetWidth; // 强制重排，确保动画能重播
+    el.classList.add("score-pop");
+    const bump = document.createElement("span");
+    bump.className = "score-bump";
+    bump.textContent = `+${delta}`;
+    el.appendChild(bump);
+    window.setTimeout(() => bump.remove(), 1300);
+  }
+
+  // 掷骰：先快速轮换随机点数模拟滚动，约 630ms 后定格到最终点数
+  function animateDiceRoll(cube, finalValue) {
+    if (diceSpinTimer) {
+      window.clearInterval(diceSpinTimer);
+      diceSpinTimer = null;
+    }
+    cube.classList.add("is-spinning");
+    const values = [1, 2, 3, 4, 5, 6];
+    let tick = 0;
+    diceSpinTimer = window.setInterval(() => {
+      tick += 1;
+      const randomValue = values[Math.floor(Math.random() * values.length)];
+      applyDiceValue(cube, randomValue);
+      if (tick >= 7) {
+        window.clearInterval(diceSpinTimer);
+        diceSpinTimer = null;
+        applyDiceValue(cube, Number(finalValue) || 0);
+        cube.classList.remove("is-spinning");
+      }
+    }, 90);
+  }
+
   function renderPigDice() {
     if (room?.game_type !== "pig_dice") return;
     const game = room.game;
     if (!game) renderedDiceSequence = 0;
     document.getElementById("diceTarget").textContent = game?.target_score ?? 50;
-    document.getElementById("diceHumanScore").textContent = game?.human_score ?? 0;
-    document.getElementById("diceBotScore").textContent = game?.bot_score ?? 0;
+    const humanEl = document.getElementById("diceHumanScore");
+    const botEl = document.getElementById("diceBotScore");
+    const hs = game?.human_score ?? 0;
+    const bs = game?.bot_score ?? 0;
+    humanEl.textContent = hs;
+    botEl.textContent = bs;
+    // 收手存分：分数上涨时放大高亮 + 浮动「+N」
+    if (game) {
+      if (dicePrevHumanScore !== null && hs > dicePrevHumanScore) {
+        flashDiceScore(humanEl, hs - dicePrevHumanScore);
+      }
+      if (dicePrevBotScore !== null && bs > dicePrevBotScore) {
+        flashDiceScore(botEl, bs - dicePrevBotScore);
+      }
+    }
+    dicePrevHumanScore = game ? hs : null;
+    dicePrevBotScore = game ? bs : null;
     document.getElementById("diceTurnTotal").textContent = game?.turn_total ?? 0;
     document.getElementById("diceRisk").textContent = `花火 风格：${{
       cautious: "稳健", balanced: "均衡", bold: "大胆",
@@ -2867,12 +2937,32 @@
 
     const cube = document.getElementById("diceCube");
     const value = Number(game?.last_roll || 0);
-    cube.className = value ? `dice-cube value-${value}` : "dice-cube waiting";
-    cube.setAttribute("aria-label", value ? `骰子点数 ${value}` : "尚未掷骰");
-    if (game?.action_count && game.action_count !== renderedDiceSequence) {
-      renderedDiceSequence = game.action_count;
-      cube.classList.add("is-rolling");
-      window.setTimeout(() => cube.classList.remove("is-rolling"), 420);
+    const seq = game?.action_count || 0;
+    const lastAction = (Array.isArray(game?.history) && game.history.length)
+      ? game.history[game.history.length - 1].action
+      : null;
+
+    // 新对局（action_count 重新从 0 计）时清掉残留的滚动动画
+    if (game && seq < renderedDiceSequence) {
+      renderedDiceSequence = 0;
+      if (diceSpinTimer) {
+        window.clearInterval(diceSpinTimer);
+        diceSpinTimer = null;
+      }
+      cube.classList.remove("is-spinning");
+    }
+
+    if (diceSpinTimer) {
+      // 滚动动画进行中，交给 setInterval 控制，本帧不覆盖点数
+    } else if (seq !== renderedDiceSequence) {
+      renderedDiceSequence = seq;
+      if (lastAction === "roll" && value) {
+        animateDiceRoll(cube, value);
+      } else {
+        applyDiceValue(cube, value);
+      }
+    } else if (renderedDiceSequence === 0) {
+      applyDiceValue(cube, value);
     }
 
     const status = document.getElementById("diceStatus");
@@ -2935,12 +3025,27 @@
     const game = room.game || {};
     document.getElementById("blackjackDifficulty").textContent = difficultyLabel(room.difficulty);
 
+    const dealerArr = Array.isArray(game.dealer_cards) ? game.dealer_cards : [];
+    // 新对局检测：上一帧已结算、这一帧未结算（再来一局），或庄家牌数回退（重新发牌）
+    const newRound = (bjPrevFinished === true && game.finished !== true)
+      || (bjPrevDealerCount >= 0 && dealerArr.length < bjPrevDealerCount);
+    if (newRound) {
+      bjPrevDealerCount = -1;
+      bjPrevHandCounts.clear();
+    }
+    bjPrevFinished = game.finished ? true : false;
+
     const dealerCards = document.getElementById("blackjackDealerCards");
     dealerCards.replaceChildren();
-    (Array.isArray(game.dealer_cards) ? game.dealer_cards : []).forEach((card) => {
-      dealerCards.appendChild(blackjackCardNode(card));
+    dealerArr.forEach((card, idx) => {
+      const node = blackjackCardNode(card);
+      if (idx >= (bjPrevDealerCount < 0 ? 0 : bjPrevDealerCount)) {
+        node.classList.add("deal-in");
+      }
+      dealerCards.appendChild(node);
     });
     if (game.dealer_hidden) dealerCards.appendChild(blackjackCardNode(null, true));
+    bjPrevDealerCount = dealerArr.length;
     document.getElementById("blackjackDealerTotal").textContent = game.dealer_hidden
       ? "?"
       : String(game.dealer_total ?? "?");
@@ -2974,9 +3079,15 @@
         header.append(title, badge);
         const cards = document.createElement("div");
         cards.className = "playing-cards";
-        (Array.isArray(hand.cards) ? hand.cards : []).forEach((card) => {
-          cards.appendChild(blackjackCardNode(card));
+        const handKey = hand.uid || String(hand.number);
+        const handCards = Array.isArray(hand.cards) ? hand.cards : [];
+        const prevCount = bjPrevHandCounts.get(handKey) || 0;
+        handCards.forEach((card, idx) => {
+          const node = blackjackCardNode(card);
+          if (idx >= prevCount) node.classList.add("deal-in");
+          cards.appendChild(node);
         });
+        bjPrevHandCounts.set(handKey, handCards.length);
         const footer = document.createElement("footer");
         const total = document.createElement("strong");
         total.textContent = `${hand.value} 点`;

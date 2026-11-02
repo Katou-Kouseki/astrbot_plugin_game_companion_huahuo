@@ -3507,7 +3507,8 @@ class RoomManager:
                 return
             if bot_done:
                 return
-            await asyncio.sleep(0.7)
+            # 花火每次投掷之间给一个轻量随机间隔，观感更像真人在掷，而不是机械匀速
+            await asyncio.sleep(random.uniform(0.5, 1.1))
 
     async def _finish_game(self, room: GameRoom) -> None:
         async with room.lock:

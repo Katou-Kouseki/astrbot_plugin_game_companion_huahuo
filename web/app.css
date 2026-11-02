@@ -363,11 +363,38 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .dice-scores div { padding: 15px 20px; text-align: center; }
 .dice-scores div + div { border-left: 1px solid var(--border); }
 .dice-scores span { display: block; color: var(--muted); font-size: 12px; }
-.dice-scores strong { display: block; margin-top: 2px; font-size: 28px; color: var(--text-strong); }
+.dice-scores strong { display: block; margin-top: 2px; font-size: 28px; color: var(--text-strong); position: relative; }
 .dice-scores .human strong { color: var(--green); }
 .dice-scores .turn-bank { background: var(--gold-soft); }
 .dice-scores .turn-bank strong { color: var(--gold); }
 .dice-scores .bot strong { color: var(--red); }
+.dice-scores strong.score-pop { animation: score-pop .5s ease-out; }
+@keyframes score-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.45); }
+  100% { transform: scale(1); }
+}
+.score-bump {
+  position: absolute;
+  left: 50%;
+  top: -6px;
+  transform: translateX(-50%);
+  padding: 1px 6px;
+  border-radius: 9px;
+  background: var(--gold);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  pointer-events: none;
+  animation: score-bump 1.3s ease-out forwards;
+}
+@keyframes score-bump {
+  0% { opacity: 0; transform: translate(-50%, 6px); }
+  18% { opacity: 1; transform: translate(-50%, 0); }
+  75% { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -14px); }
+}
 .dice-table {
   min-height: 245px;
   display: flex;
@@ -404,6 +431,14 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   0% { transform: rotate(-7deg) scale(.88); }
   55% { transform: rotate(5deg) scale(1.06); }
   100% { transform: rotate(0) scale(1); }
+}
+.dice-cube.is-spinning { animation: dice-shake .5s ease-in-out infinite; }
+@keyframes dice-shake {
+  0% { transform: rotate(-6deg) translateY(-2px); }
+  25% { transform: rotate(4deg) translateY(1px); }
+  50% { transform: rotate(-3deg) translateY(-1px); }
+  75% { transform: rotate(5deg) translateY(2px); }
+  100% { transform: rotate(-6deg) translateY(-2px); }
 }
 .dice-readout { min-width: 190px; display: grid; gap: 5px; }
 .dice-readout strong { font-size: 22px; }
@@ -527,6 +562,13 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   color: #fff;
   font-size: 20px;
   font-weight: 700;
+}
+.playing-card.deal-in {
+  animation: card-deal-in .4s cubic-bezier(.2, .7, .3, 1.1);
+}
+@keyframes card-deal-in {
+  0% { opacity: 0; transform: translateY(-10px) translateX(14px) scale(.6); }
+  100% { opacity: 1; transform: translateY(0) translateX(0) scale(1); }
 }
 .blackjack-turn { margin: 0 26px; padding: 11px 13px; border-radius: 5px; background: #eef1ef; color: #48524c; font-size: 14px; }
 .blackjack-history {
