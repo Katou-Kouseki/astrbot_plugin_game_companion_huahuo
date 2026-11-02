@@ -2546,8 +2546,34 @@
     }
   }
 
+  // 消息区内容签名：消息没变化时跳过全量重建，避免每秒 replaceChildren
+  // 打断正在进行的文字选区/复制，也避免打字机被反复拆掉重启。
+  let lastChatSignature = "";
+  function chatSignature(room) {
+    const messages = Array.isArray(room?.messages) ? room.messages : [];
+    const last = messages[messages.length - 1];
+    const thinking = shouldShowThinking(messages, Date.now() / 1000);
+    return [
+      messages.length,
+      last?.id ?? last?.ts ?? "",
+      last?.role ?? "",
+      last?.sender_name ?? "",
+      last?.sender_number ?? "",
+      last?.content ?? "",
+      room?.bot_typing ? 1 : 0,
+      thinking ? 1 : 0,
+    ].join("|");
+  }
+
   function renderMessages() {
     const list = document.getElementById("messages");
+    const sig = chatSignature(room);
+    if (sig === lastChatSignature) {
+      // 内容没变：跳过重建，只同步「回到底部」按钮（滚动位置可能被用户手动改变）
+      updateChatScrollButton();
+      return;
+    }
+    lastChatSignature = sig;
     // 全量重绘前必须清掉旧 DOM 上的打字机定时器，避免泄漏
     teardownAllTypingTimers();
     const prevScrollTop = list.scrollTop;
