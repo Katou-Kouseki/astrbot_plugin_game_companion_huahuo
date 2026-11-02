@@ -90,6 +90,7 @@ class TurtleSoupGame:
     question_count: int = 0
     answer_attempts: int = 0
     hints_used: int = 0
+    hint_usage: dict[str, int] = field(default_factory=dict)
     solved: bool = False
     gave_up: bool = False
     bot_solved: bool = False
@@ -216,16 +217,24 @@ class TurtleSoupGame:
         return newly_discovered
 
     def reveal_hint(
-        self, *, source: Literal["web", "qq"], player_number: int | None = None
+        self,
+        *,
+        source: Literal["web", "qq"],
+        player_number: int | None = None,
+        player_uid: str = "",
     ) -> str:
         if self.phase != "ready" or self.puzzle is None:
             raise ValueError("当前不能申请提示")
         allowed = len(self.puzzle.hints)
         if self.max_hints:
             allowed = min(allowed, self.max_hints)
-        if self.hints_used >= allowed:
-            raise ValueError("本题已经没有更多提示")
-        hint = self.puzzle.hints[self.hints_used]
+        # 每玩家独立限次：用稳定 uid 作键（座位号会重编号），每人从第 1 条渐进提示开始。
+        key = str(player_uid or "") or str(player_number or 0)
+        used = self.hint_usage.get(key, 0)
+        if used >= allowed:
+            raise ValueError("你本局已经用完提示次数")
+        hint = self.puzzle.hints[used]
+        self.hint_usage[key] = used + 1
         self.hints_used += 1
         self.entries.append(
             SoupEntry(
@@ -307,12 +316,14 @@ class TurtleSoupGame:
         self.processing = False
         self.processing_player_number = None
 
-    def snapshot(self) -> dict[str, object]:
+    def snapshot(self, viewer_uid: str | None = None) -> dict[str, object]:
         reveal_solution = self.finished and self.puzzle is not None
         available_hints = len(self.puzzle.hints) if self.puzzle else 0
         hint_limit = (
             min(self.max_hints, available_hints) if self.max_hints else available_hints
         )
+        viewer_key = str(viewer_uid or "")
+        viewer_used = self.hint_usage.get(viewer_key, 0) if viewer_key else 0
         return {
             "kind": "turtle_soup",
             "mode": self.mode,
@@ -327,6 +338,7 @@ class TurtleSoupGame:
             "question_count": self.question_count,
             "answer_attempts": self.answer_attempts,
             "hints_used": self.hints_used,
+            "hint_used_self": viewer_used,
             "hint_limit": hint_limit,
             "discovered_fact_count": len(self.discovered_facts),
             "key_fact_count": len(self.puzzle.key_facts) if self.puzzle else 0,

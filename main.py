@@ -2059,6 +2059,24 @@ class GameCompanionPlugin(Star):
         )
         yield event.plain_result(text + "\n\n📝 复盘：示例复盘文案（真实场景由 AI 生成）。")
 
+    @filter.command("棋类日报", alias={"棋类周报", "棋类战绩日报", "棋类战绩周报"})
+    async def board_report_now(self, event: AstrMessageEvent):
+        """立即生成一份棋类战绩日报/周报文本发到当前会话（样式测试/手动补发）。
+
+        顶层指令：直接发送「棋类日报 / 棋类周报」等即可触发（无需游戏指令组前缀）。
+        内容与定时棋类战绩报告相同（四种棋类全局榜），不依赖 board_report_enabled 开关。
+        """
+        yield event.plain_result(self._build_board_report())
+
+    @filter.command("棋类战报", alias={"棋类战报样式测试"})
+    async def board_report_test(self, event: AstrMessageEvent):
+        """用示例五子棋对局生成一条「棋类战报」文案，用于测试战报文字样式。
+
+        顶层指令：直接发送「棋类战报 / 棋类战报样式测试」即可触发。
+        """
+        text = self._board_announce_text(self._board_sample_room())
+        yield event.plain_result(text or "示例棋类战报生成失败")
+
     async def _bind_game_player_text(
         self, event: AstrMessageEvent, identity_token: str
     ) -> str:
@@ -5730,6 +5748,33 @@ class GameCompanionPlugin(Star):
             players=players,
         )
         return SimpleNamespace(game=game, multiplayer=SimpleNamespace(seats=[]))
+
+    @staticmethod
+    def _board_sample_room() -> Any:
+        """构造一局示例「棋类」结果（真实五子棋对局），供棋类战报测试指令使用。
+
+        黑方（玩家执黑）在第 0 行连成五子获胜，返回 9 手的完整对局，
+        便于 _board_announce_text / _board_announce_poster 直接消费。
+        """
+        from types import SimpleNamespace
+
+        from .gomoku import BLACK, WHITE, GomokuGame
+
+        game = GomokuGame(human_color=BLACK)
+        for row, column, color in [
+            (0, 0, BLACK), (1, 0, WHITE),
+            (0, 1, BLACK), (1, 1, WHITE),
+            (0, 2, BLACK), (1, 2, WHITE),
+            (0, 3, BLACK), (1, 3, WHITE),
+            (0, 4, BLACK),
+        ]:
+            game.place(row, column, color)
+        return SimpleNamespace(
+            game_type="gomoku",
+            completed_games=1,
+            multiplayer=SimpleNamespace(seats=[]),
+            game=game,
+        )
 
     async def _auto_announce_undercover(self, room: GameRoom) -> None:
         """局末自动播报（group_announce_auto）。

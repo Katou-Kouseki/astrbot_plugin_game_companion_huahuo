@@ -2918,7 +2918,17 @@ class RoomManager:
                 raise ValueError("当前不能申请提示")
             if game.mode != "bot_host":
                 raise ValueError("玩家出题模式不提供 Bot 预设提示")
-            hint = game.reveal_hint(source=source, player_number=player_number)
+            # 计算稳定 uid 作限次键：web 端直接取访客，QQ 端经座位反查。
+            player_uid = ""
+            if source == "web" and visitor_token:
+                player_uid = _visitor_uid(self._visitor(room, visitor_token).token)
+            elif source == "qq" and actor_qq and room.multiplayer.enabled:
+                seat = room.multiplayer.seat_for_qq(actor_qq)
+                if seat is not None:
+                    player_uid = _visitor_uid(seat.visitor_token)
+            hint = game.reveal_hint(
+                source=source, player_number=player_number, player_uid=player_uid
+            )
             room.touch()
             self._advance_multiplayer_turn(room)
         await self._emit(

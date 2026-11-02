@@ -250,6 +250,8 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .soup-progress dt { color: #747d77; font-size: 11px; }
 .soup-progress dd { margin: 2px 0 0; font-size: 16px; font-weight: 700; }
 .soup-turn { margin: 0 26px 12px; min-height: 20px; color: var(--warning); font-size: 13px; font-weight: 650; }
+.soup-hint-row { display: flex; justify-content: flex-end; margin: 0 26px 8px; }
+.soup-hint-row .secondary-action { min-height: 34px; font-size: 13px; }
 .soup-history {
   flex: 1;
   min-height: 180px;
@@ -396,7 +398,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .dice-cube.value-4 i:nth-child(1), .dice-cube.value-4 i:nth-child(3), .dice-cube.value-4 i:nth-child(7), .dice-cube.value-4 i:nth-child(9),
 .dice-cube.value-5 i:nth-child(1), .dice-cube.value-5 i:nth-child(3), .dice-cube.value-5 i:nth-child(5), .dice-cube.value-5 i:nth-child(7), .dice-cube.value-5 i:nth-child(9),
 .dice-cube.value-6 i:nth-child(1), .dice-cube.value-6 i:nth-child(3), .dice-cube.value-6 i:nth-child(4), .dice-cube.value-6 i:nth-child(6), .dice-cube.value-6 i:nth-child(7), .dice-cube.value-6 i:nth-child(9) { opacity: 1; }
-.dice-cube.waiting::after { content: "?"; grid-area: 1 / 1 / 4 / 4; color: #8a938d; font-size: 62px; font-weight: 700; }
+.dice-cube.waiting::after { content: "?"; grid-area: 1 / 1 / 4 / 4; display: grid; place-items: center; color: #8a938d; font-size: 62px; font-weight: 700; }
 .dice-cube.is-rolling { animation: dice-pop .42s ease-out; }
 @keyframes dice-pop {
   0% { transform: rotate(-7deg) scale(.88); }
@@ -1046,7 +1048,7 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 .chat-composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 42px;
-  align-items: end;
+  align-items: center;
   gap: 8px;
   border-top: 1px solid var(--border);
   padding: 11px;

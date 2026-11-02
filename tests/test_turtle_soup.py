@@ -174,7 +174,7 @@ async def test_hints_are_progressive_and_honor_configured_limit() -> None:
 
     assert first != second
     assert game.snapshot()["hint_limit"] == 2
-    with pytest.raises(ValueError, match="没有更多提示"):
+    with pytest.raises(ValueError, match="用完提示次数"):
         await manager.request_turtle_soup_hint(
             room, source="web", visitor_token=visitor.token
         )

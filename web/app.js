@@ -2699,7 +2699,19 @@
     document.getElementById("soupQuestionCount").textContent = game?.question_count ?? 0;
     document.getElementById("soupHintCount").textContent = playerHosted
       ? `${room.player_numbers?.length || 0} 人`
-      : `${game?.hints_used ?? 0} / ${game?.hint_limit ?? 0}`;
+      : `${game?.hint_used_self ?? 0} / ${game?.hint_limit ?? 0}`;
+    const hintButton = document.getElementById("soupHintButton");
+    const hintLabel = document.getElementById("soupHintLabel");
+    if (playerHosted) {
+      hintButton.hidden = true;
+    } else {
+      hintButton.hidden = false;
+      const hintLeft = Math.max(0, (game?.hint_limit ?? 0) - (game?.hint_used_self ?? 0));
+      const canHint = room.is_player && room.status === "active"
+        && game?.phase === "ready" && !game?.processing && hintLeft > 0;
+      hintButton.disabled = !canHint;
+      hintLabel.textContent = hintLeft > 0 ? `获取提示（剩 ${hintLeft} 次）` : "提示已用完";
+    }
     document.getElementById("soupAnswerCount").textContent = game?.answer_attempts ?? 0;
     document.getElementById("soupFactCount").textContent = playerHosted
       ? game?.turn_count ?? 0
@@ -4032,6 +4044,22 @@
     } catch (error) {
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
       showToast(error?.message || "花火 暂时无法看图");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  async function soupHint() {
+    if (busy || room?.game_type !== "turtle_soup") return;
+    busy = true;
+    try {
+      const data = await request("POST", "soup/hint", { visitor_token: visitorToken });
+      setRoom(data.room);
+      render();
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "获取提示失败");
     } finally {
       busy = false;
       render();
@@ -5868,6 +5896,7 @@
   });
   document.getElementById("diceRollAction").addEventListener("click", () => diceAction("roll"));
   document.getElementById("diceHoldAction").addEventListener("click", () => diceAction("hold"));
+  document.getElementById("soupHintButton").addEventListener("click", soupHint);
   document.getElementById("blackjackHitAction").addEventListener("click", () => blackjackAction("hit"));
   document.getElementById("blackjackStandAction").addEventListener("click", () => blackjackAction("stand"));
   drawCanvas.addEventListener("pointerdown", beginDrawing);

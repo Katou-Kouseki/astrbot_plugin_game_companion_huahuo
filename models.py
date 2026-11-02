@@ -767,6 +767,10 @@ class GameRoom:
                     viewer_side=my_seat.side if my_seat else None
                 )
                 if isinstance(self.game, XiangqiGame)
+                else self.game.snapshot(
+                    viewer_uid=_visitor_uid(visitor.token) if visitor else None
+                )
+                if isinstance(self.game, TurtleSoupGame)
                 else self.game.snapshot()
                 if self.game
                 else None
