@@ -2424,7 +2424,7 @@ class RoomManager:
             if room.multiplayer.enabled:
                 if room.multiplayer.seat_for_token(visitor.token) is None:
                     raise PermissionError("请你先入座，再调整花火棋力")
-                if self._duel_human_pair(room):
+                if room.game_type in DUEL_GAMES and self._duel_human_pair(room):
                     raise PermissionError("和真人对局时不能调整花火棋力")
             elif visitor.token != room.player_token:
                 raise PermissionError("请你先入座，再调整花火棋力")

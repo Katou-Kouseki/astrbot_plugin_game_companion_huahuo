@@ -39,7 +39,7 @@ GameType = Literal[
 ]
 # 有「棋力档位」的玩法：管理台允许在这些房间上直接切换 easy/normal/hard。
 DIFFICULTY_GAME_TYPES: frozenset[str] = frozenset(
-    {"gomoku", "othello", "xiangqi", "weiqi", "tictactoe"}
+    {"gomoku", "othello", "xiangqi", "weiqi", "tictactoe", "pig_dice", "blackjack"}
 )
 RoomStatus = Literal[
     "waiting", "setup", "active", "finished", "rematch_pending", "paused", "closed"
@@ -850,7 +850,7 @@ class GameRoom:
             "created_at": self.created_at,
             "last_activity_at": self.last_activity_at,
             "difficulty": self.difficulty,
-            # 只有棋类房间能中途改棋力（其余玩法的 difficulty 是内容等级/风格，不是棋力）
+            # 棋类/贪心骰子/二十一点可中途改难度（其余玩法的 difficulty 是内容等级，不是强度）
             "difficulty_adjustable": self.game_type in DIFFICULTY_GAME_TYPES,
             "scores": {
                 game_type: {

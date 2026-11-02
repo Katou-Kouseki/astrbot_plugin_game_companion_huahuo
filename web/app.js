@@ -1908,17 +1908,25 @@
     document.getElementById("difficulty").textContent = pigDice
       ? ({ easy: "稳健", normal: "均衡", hard: "大胆" }[room.difficulty] || "均衡")
       : difficultyLabel(room.difficulty);
-    // 棋类房间：落座玩家 + 对面不是真人时，把「棋力」徽章换成可点选的三档
+    // 难度可调的玩法（棋类/贪心骰子/二十一点）：落座玩家可自选难度；
+    // 棋类还需「对面不是真人」（真人对真人没有花火可调）
     const difficultyPicker = document.getElementById("difficultyPicker");
     const difficultyBadge = document.getElementById("difficulty");
     const canPickDifficulty =
-      isDuelGame(room) && Boolean(room.is_player) && !hasHumanOpponent(room);
+      Boolean(room.difficulty_adjustable) &&
+      Boolean(room.is_player) &&
+      !(isDuelGame(room) && hasHumanOpponent(room));
     if (difficultyPicker) {
       difficultyPicker.hidden = !canPickDifficulty;
       difficultyPicker
         .querySelectorAll("[data-difficulty]")
         .forEach((btn) => {
-          const selected = btn.getAttribute("data-difficulty") === room.difficulty;
+          const d = btn.getAttribute("data-difficulty");
+          // 贪心骰子的难度叫「风格」：稳健/均衡/大胆
+          btn.textContent = pigDice
+            ? ({ easy: "稳健", normal: "均衡", hard: "大胆" }[d] || d)
+            : ({ easy: "简单", normal: "普通", hard: "困难" }[d] || d);
+          const selected = d === room.difficulty;
           btn.classList.toggle("is-active", selected);
           btn.setAttribute("aria-pressed", selected ? "true" : "false");
           btn.disabled = busy;
@@ -5826,13 +5834,14 @@
   }
 
   async function setDifficulty(difficulty) {
-    // 只有棋类、本人在玩家席、且对面不是真人时才能调花火棋力
+    // 难度可调的玩法（棋类/贪心骰子/二十一点）且本人在玩家席才能调；
+    // 棋类还需「对面不是真人」
     if (
       busy
       || !room
-      || !isDuelGame(room)
+      || !room.difficulty_adjustable
       || !room.is_player
-      || hasHumanOpponent(room)
+      || (isDuelGame(room) && hasHumanOpponent(room))
     ) {
       return;
     }
@@ -5845,10 +5854,13 @@
         difficulty,
       });
       setRoom(data.room);
-      showToast(`花火棋力已切换为${difficultyLabel(difficulty)}`);
+      const diffLabel = room.game_type === "pig_dice"
+        ? ({ easy: "稳健", normal: "均衡", hard: "大胆" }[difficulty] || difficulty)
+        : difficultyLabel(difficulty);
+      showToast(`花火难度已切换为${diffLabel}`);
       render();
     } catch (error) {
-      showToast(error?.message || "调整棋力失败");
+      showToast(error?.message || "调整难度失败");
     } finally {
       busy = false;
       render();

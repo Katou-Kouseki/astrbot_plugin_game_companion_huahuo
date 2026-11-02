@@ -107,7 +107,7 @@ async def test_ai_seat_answers_after_human_move(
 
 
 @pytest.mark.asyncio
-async def test_admin_can_switch_difficulty_for_board_games_only() -> None:
+async def test_admin_can_switch_difficulty_for_adjustable_games() -> None:
     manager = RoomManager(max_private_rooms=5, weiqi_board_size=9)
     room = await make_room(manager)
     assert room.admin_snapshot()["difficulty_adjustable"] is True
@@ -115,10 +115,17 @@ async def test_admin_can_switch_difficulty_for_board_games_only() -> None:
     await manager.set_difficulty(room, "hard")
     assert room.difficulty == "hard"
 
+    # 贪心骰子/二十一点也是强度类玩法，可调难度
     pascal = await make_room(manager, game_type="pig_dice")
-    assert pascal.admin_snapshot()["difficulty_adjustable"] is False
+    assert pascal.admin_snapshot()["difficulty_adjustable"] is True
+    await manager.set_difficulty(pascal, "hard")
+    assert pascal.difficulty == "hard"
+
+    # 海龟汤等非强度类玩法不可调
+    soup = await make_room(manager, game_type="turtle_soup")
+    assert soup.admin_snapshot()["difficulty_adjustable"] is False
     with pytest.raises(ValueError):
-        await manager.set_difficulty(pascal, "hard")
+        await manager.set_difficulty(soup, "hard")
 
 
 @pytest.mark.asyncio

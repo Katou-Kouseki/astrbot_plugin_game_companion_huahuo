@@ -398,7 +398,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .dice-cube.value-4 i:nth-child(1), .dice-cube.value-4 i:nth-child(3), .dice-cube.value-4 i:nth-child(7), .dice-cube.value-4 i:nth-child(9),
 .dice-cube.value-5 i:nth-child(1), .dice-cube.value-5 i:nth-child(3), .dice-cube.value-5 i:nth-child(5), .dice-cube.value-5 i:nth-child(7), .dice-cube.value-5 i:nth-child(9),
 .dice-cube.value-6 i:nth-child(1), .dice-cube.value-6 i:nth-child(3), .dice-cube.value-6 i:nth-child(4), .dice-cube.value-6 i:nth-child(6), .dice-cube.value-6 i:nth-child(7), .dice-cube.value-6 i:nth-child(9) { opacity: 1; }
-.dice-cube.waiting::after { content: "?"; grid-area: 1 / 1 / 4 / 4; display: grid; place-items: center; color: #8a938d; font-size: 62px; font-weight: 700; }
+.dice-cube.waiting::after { content: "?"; grid-area: 1 / 1 / 4 / 4; display: grid; place-items: center; color: #8a938d; font-size: 62px; font-weight: 700; transform: translateY(0.32em); }
 .dice-cube.is-rolling { animation: dice-pop .42s ease-out; }
 @keyframes dice-pop {
   0% { transform: rotate(-7deg) scale(.88); }
