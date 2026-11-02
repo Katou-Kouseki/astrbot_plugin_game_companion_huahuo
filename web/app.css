@@ -1026,8 +1026,9 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   z-index: 110; /* 低于结算卡/弹层，弹层出现时不会压在上面 */
   display: flex;
   flex-direction: column;
+  align-items: flex-end; /* 宽度跟内容走，短提示就是小胶囊，不占整块 */
   gap: 6px;
-  width: 208px;
+  max-width: 236px;
   pointer-events: none;
 }
 
@@ -1036,18 +1037,20 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   align-items: center;
   gap: 7px;
   max-width: 100%;
-  padding: 4px 10px 4px 4px;
+  padding: 5px 12px 5px 5px;
   border: 1px solid var(--border);
   border-left: 2px solid var(--green);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--surface-solid) 90%, transparent);
-  box-shadow: 0 6px 16px rgba(20, 26, 22, .10);
+  background: color-mix(in srgb, var(--surface-solid) 92%, transparent);
+  box-shadow: 0 6px 18px rgba(20, 26, 22, .14);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   font-size: 12.5px;
   line-height: 1.4;
   color: var(--text);
   opacity: 0;
   transform: translateY(-4px);
-  transition: opacity .22s ease, transform .22s ease;
+  transition: opacity .2s ease, transform .2s ease;
 }
 
 .room-activity-item.show { opacity: 1; transform: none; }
@@ -1091,19 +1094,28 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
 .room-activity-text span { flex: 0 0 auto; color: var(--muted); white-space: nowrap; }
 
 @media (max-width: 1180px) {
-  /* 单栏时右上方就是棋盘，改到底部居中的细条，仍然鼠标穿透 */
+  /* 单栏时右上方就是棋盘：贴屏幕正中下方悬浮，宽度跟内容走，只露最新两条 */
   .room-activity {
     top: auto;
     right: auto;
     left: 50%;
-    bottom: 76px;
-    width: min(260px, calc(100% - 28px));
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    width: auto;
+    max-width: calc(100% - 28px);
+    align-items: center;
     transform: translateX(-50%);
-    /* 窄屏只露最新两条：最新的贴着底部，旧的往上溢出被裁掉 */
     flex-direction: column;
     justify-content: flex-end;
-    max-height: 74px;
+    max-height: 76px;
     overflow: hidden;
+  }
+  .room-activity-item {
+    transform: translateY(8px);
+    box-shadow: 0 8px 22px rgba(20, 26, 22, .18);
+  }
+  /* 聊天页底部是输入框，提醒抬到输入框上方，别压住发送键 */
+  body.room-view-chat .room-activity {
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
   }
 }
 

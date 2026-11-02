@@ -993,6 +993,7 @@ class GameRoomServer:
                 else 0,
             )
         )
+        snapshot["activity_toast"] = self._activity_toast_snapshot()
         response = self._response({**data, "room": snapshot})
         if issued_token:
             ttl_days = int(
@@ -1008,6 +1009,31 @@ class GameRoomServer:
                 samesite="Lax",
             )
         return response
+
+    def _activity_toast_snapshot(self) -> dict[str, object]:
+        """房间动态提醒的前端开关（web_ui 段，实时跟随配置）。
+
+        前端每次轮询都会拿到最新值：关掉总开关后旧页面也会立刻停止弹窗，
+        不需要刷新房间链接。读配置失败时按默认值全开，不能因此让房间状态接口挂掉。
+        """
+        defaults = {"enabled": True, "spectators": True, "cooldown_seconds": 15}
+        plugin = self.plugin
+        read_bool = getattr(plugin, "_cfg_bool", None)
+        read_int = getattr(plugin, "_cfg_non_negative", None)
+        if not callable(read_bool) or not callable(read_int):
+            return defaults
+        try:
+            return {
+                "enabled": bool(read_bool("web_ui.activity_toast_enabled", True)),
+                "spectators": bool(
+                    read_bool("web_ui.activity_toast_spectators", True)
+                ),
+                "cooldown_seconds": max(
+                    0, int(read_int("web_ui.activity_toast_cooldown_seconds", 15))
+                ),
+            }
+        except Exception:
+            return defaults
 
     def _trusted_browser_snapshot(
         self, *, active: bool, expires_at: float

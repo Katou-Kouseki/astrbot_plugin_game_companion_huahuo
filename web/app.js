@@ -627,15 +627,17 @@
   let activityTimer = 0;
   let activityPrimed = false;
 
-  function activityAllowed(visitor, kind) {
+  function activityAllowed(visitor, kind, cooldownMs = ACTIVITY_COOLDOWN_MS) {
     const key = `${Number(visitor?.number)}:${ACTIVITY_BUCKET[kind] || kind}`;
     const now = Date.now();
     const last = activityCooldown.get(key) || 0;
-    if (now - last < ACTIVITY_COOLDOWN_MS) return false;
+    if (cooldownMs > 0 && now - last < cooldownMs) return false;
     activityCooldown.set(key, now);
     if (activityCooldown.size > 240) {
       activityCooldown.forEach((stamp, mapKey) => {
-        if (now - stamp > ACTIVITY_COOLDOWN_MS) activityCooldown.delete(mapKey);
+        if (now - stamp > Math.max(cooldownMs, ACTIVITY_COOLDOWN_MS)) {
+          activityCooldown.delete(mapKey);
+        }
       });
     }
     return true;
@@ -753,8 +755,22 @@
   }
 
   function handleRosterActivity(previous, current) {
-    collectRosterEvents(previous, current).forEach(({ visitor, kind }) => {
-      if (!activityAllowed(visitor, kind)) return;
+    // 先做 diff（顺带建立基线），再按配置过滤，配置热改后下一轮就生效
+    const events = collectRosterEvents(previous, current);
+    if (!events.length) return;
+    const config = room?.activity_toast || {};
+    if (config.enabled === false) return;
+    const cooldownSeconds = Number(config.cooldown_seconds);
+    const cooldownMs = Number.isFinite(cooldownSeconds)
+      ? Math.max(0, cooldownSeconds) * 1000
+      : ACTIVITY_COOLDOWN_MS;
+    // 「观众进出也提醒」关闭时：纯观众的出现/离开不弹，落座/退席与玩家的进出照旧
+    const showSpectators = config.spectators !== false;
+    events.forEach(({ visitor, kind }) => {
+      if (ACTIVITY_BUCKET[kind] === "presence" && !showSpectators && !visitor.is_player) {
+        return;
+      }
+      if (!activityAllowed(visitor, kind, cooldownMs)) return;
       enqueueActivity(visitor, kind);
     });
   }
@@ -1608,6 +1624,7 @@
 
   function setRoomView(view) {
     activeRoomView = view === "chat" ? "chat" : "game";
+    document.body.classList.toggle("room-view-chat", activeRoomView === "chat");
     document.getElementById("gameWorkspace").classList.toggle("room-view-hidden", activeRoomView !== "game");
     document.getElementById("chatPanel").classList.toggle("room-view-hidden", activeRoomView !== "chat");
     document.querySelectorAll("[data-room-view]").forEach((button) => {

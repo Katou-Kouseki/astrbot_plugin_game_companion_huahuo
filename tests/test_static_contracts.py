@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.36"
+    assert metadata["version"] == "0.5.37"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -819,8 +819,8 @@ def test_room_activity_toasts_are_compact_and_throttled() -> None:
     assert ".room-activity-text strong" in style
     assert "text-overflow: ellipsis;" in style[style.index(".room-activity-text strong") :]
 
-    # 四类事件都在
-    for kind in ('"join"', '"leave"', '"seat-in"', '"seat-out"'):
+    # 五类事件都在（含离线回来的「回到了房间」）
+    for kind in ('"join"', '"leave"', '"return"', '"seat-in"', '"seat-out"'):
         assert kind in script
     # 同一访客同类动作有 CD，且轮询后做 diff
     assert "ACTIVITY_COOLDOWN_MS = 15000" in script
@@ -829,3 +829,23 @@ def test_room_activity_toasts_are_compact_and_throttled() -> None:
     assert "handleRosterActivity(" in load_state
     # 不提醒自己与花火
     assert "number === selfNumber || visitor.is_ai" in script
+
+    # 服务端下发开关，前端按配置过滤（总开关 / 观众进出 / 冷却）
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    ui = schema["web_ui"]["items"]
+    assert ui["activity_toast_enabled"]["default"] is True
+    assert ui["activity_toast_spectators"]["default"] is True
+    assert ui["activity_toast_cooldown_seconds"]["default"] == 15
+    assert "_activity_toast_snapshot" in server
+    assert '"web_ui.activity_toast_spectators"' in server
+    assert 'snapshot["activity_toast"]' in server
+    assert "config.enabled === false" in script
+    assert "config.spectators !== false" in script
+
+    # 窄屏贴屏幕正中下方悬浮，聊天页抬到输入框上方
+    mobile = style[style.index("@media (max-width: 1180px)", style.index(".room-activity {")) :]
+    assert "left: 50%;" in mobile
+    assert "env(safe-area-inset-bottom, 0px)" in mobile
+    assert "body.room-view-chat .room-activity" in mobile
+    assert 'classList.toggle("room-view-chat"' in script

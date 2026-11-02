@@ -179,6 +179,30 @@
       }
     }
   },
+  "web_ui": {
+    "description": "房间页面界面",
+    "type": "object",
+    "items": {
+      "activity_toast_enabled": {
+        "description": "房间动态提醒",
+        "type": "bool",
+        "default": true,
+        "hint": "有访客进出房间、或观众席与玩家席互相切换时，在房间页角落弹一条细长提醒（小头像 + 昵称，3 秒多自动消失），鼠标可穿透不挡落子。关闭后所有人都不再看到。"
+      },
+      "activity_toast_spectators": {
+        "description": "观众进出也提醒",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后只在「玩家入座 / 玩家退席 / 已入座的玩家进出房间」时提醒，纯观众的进出不再弹窗（观众多时更安静）。"
+      },
+      "activity_toast_cooldown_seconds": {
+        "description": "同一人提醒冷却（秒）",
+        "type": "int",
+        "default": 15,
+        "hint": "同一个人反复进出时，多少秒内只提醒一次，避免刷屏；0 表示不限制。"
+      }
+    }
+  },
   "commentary": {
     "description": "花火解说",
     "type": "object",
