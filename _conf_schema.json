@@ -709,6 +709,12 @@
         "default": 5,
         "hint": "对局手数少于该值时不自动播报（避免「0 手速战速决」这类无意义战报）；0 表示不限制。"
       },
+      "group_announce_series_idle_seconds": {
+        "description": "连战合并等待（秒）",
+        "type": "int",
+        "default": 90,
+        "hint": "冷却窗口内结束的对局会先攒着，等最后一次对局结束这么多秒后再合并成一条「连战 N 局」；玩家退席/离开房间会立即发送。0 表示冷却一过就发（旧行为）。"
+      },
       "report_enabled": {
         "description": "开启棋类战绩日报/周报",
         "type": "bool",

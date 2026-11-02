@@ -628,7 +628,7 @@
   let activityPrimed = false;
 
   function activityAllowed(visitor, kind, cooldownMs = ACTIVITY_COOLDOWN_MS) {
-    const key = `${Number(visitor?.number)}:${ACTIVITY_BUCKET[kind] || kind}`;
+    const key = `${rosterKey(visitor)}:${ACTIVITY_BUCKET[kind] || kind}`;
     const now = Date.now();
     const last = activityCooldown.get(key) || 0;
     if (cooldownMs > 0 && now - last < cooldownMs) return false;
@@ -711,21 +711,28 @@
     }, ACTIVITY_LIFE_MS);
   }
 
+  function rosterKey(visitor) {
+    // uid 由服务端按访客 token 哈希下发：座位重编号、号码与花火座位撞号都不会认错人
+    const uid = String(visitor?.uid || "");
+    return uid || `n${Number(visitor?.number)}`;
+  }
+
   function collectRosterEvents(previous, current) {
     if (!activityPrimed) {
       activityPrimed = true;
       return [];
     }
     if (!Array.isArray(previous) || !Array.isArray(current)) return [];
-    const selfNumber = Number(room?.visitor_number);
+    const selfKey =
+      String(room?.visitor_uid || "") || `n${Number(room?.visitor_number)}`;
     const events = [];
-    const previousMap = new Map(previous.map((item) => [Number(item.number), item]));
+    const previousMap = new Map(previous.map((item) => [rosterKey(item), item]));
     current.forEach((visitor) => {
-      const number = Number(visitor.number);
-      const before = previousMap.get(number);
-      previousMap.delete(number);
+      const key = rosterKey(visitor);
+      const before = previousMap.get(key);
+      previousMap.delete(key);
       // 自己的进出/落座由自己的界面变化体现，机器人（花火）不提醒
-      if (number === selfNumber || visitor.is_ai) return;
+      if (key === selfKey || visitor.is_ai) return;
       if (!before) {
         if (visitor.online) events.push({ visitor, kind: "join" });
         return;
@@ -747,7 +754,7 @@
       }
     });
     previousMap.forEach((visitor) => {
-      if (Number(visitor.number) === selfNumber || visitor.is_ai) return;
+      if (rosterKey(visitor) === selfKey || visitor.is_ai) return;
       if (!visitor.online) return;
       events.push({ visitor, kind: "leave" });
     });

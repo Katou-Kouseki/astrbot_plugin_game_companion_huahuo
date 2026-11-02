@@ -268,6 +268,8 @@ def _announce_plugin(
     plugin.board_group_announce_min_moves = min_moves
     plugin.board_group_announce_cooldown = cooldown
     plugin.board_group_announce_recap = False
+    # 默认退回「冷却一过就发」，需要测连战等待的用例自己覆盖这个值
+    plugin.board_group_announce_series_idle = 0
     plugin.sent: list[str] = []
     # 「连战 N 局」合并播报走 _send_to_origin，单独记录文案
     plugin.sent_texts: list[str] = []
@@ -500,3 +502,70 @@ def test_board_series_text_tally() -> None:
     assert "小明获胜（执黑）" in text
     assert "21 手" in text
     assert "花火 1 胜" in text and "玩家 1 胜" in text and "1 平" in text
+
+
+@pytest.mark.asyncio
+async def test_series_flushes_immediately_when_humans_leave_seat() -> None:
+    """连战汇总：真人全离开玩家席就立刻发，不用等空闲计时。"""
+    import asyncio
+    import time
+
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 12
+    room.game.winner = BLACK
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=0, cooldown=30)
+    plugin.board_group_announce_series_idle = 600  # 按理要等 10 分钟
+    room.last_board_announce_at = time.time()
+    await plugin._auto_announce_board(room)
+    _cancel_flushes(plugin)
+    assert plugin.sent_texts == []
+    assert len(room.pending_board_announces) == 1
+
+    await manager.leave_player_seat(room, room.multiplayer.seats[0].visitor_token)
+    # 退席后花火也一起离座，房间回到 waiting（下次入座才能重新选先后手）
+    assert room.multiplayer.seats == []
+    assert room.status == "waiting"
+
+    plugin._flush_board_series_when_seats_empty(room)
+    await asyncio.sleep(0)
+
+    assert len(plugin.sent_texts) == 1
+    assert "连战 1 局" in plugin.sent_texts[0]
+
+
+@pytest.mark.asyncio
+async def test_series_waits_for_new_games_and_flushes_after_idle() -> None:
+    """还在连开时不断顺延；停手后才发一条，且只发一次。"""
+    import asyncio
+    import time
+
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 12
+    room.game.winner = WHITE
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=0, cooldown=30)
+    plugin.board_group_announce_series_idle = 1.5
+    room.last_board_announce_at = time.time()
+    await plugin._auto_announce_board(room)
+
+    # 空闲计时还没到就来下一局：应当重新计时，而不是先把上一局发出去
+    await manager.restart_finished_game(room, difficulty="normal")
+    room.game.history = [(7, 7, WHITE)] * 9
+    room.game.winner = WHITE
+    room.game.draw = False
+    await manager._finish_game(room)
+    await plugin._auto_announce_board(room)
+    assert plugin.sent_texts == []
+
+    await asyncio.sleep(1.9)
+
+    assert len(plugin.sent_texts) == 1
+    assert "连战 2 局" in plugin.sent_texts[0]
+    assert room.pending_board_announces == []

@@ -121,19 +121,31 @@ class GomokuGame:
             return ranked[0]
 
         deadline = time.monotonic() + max(0.05, min(time_limit, 1.5))
+        # 困难：先找「一手做出双威胁」的杀着（双四 / 四三 / 双活三），能直接锁定胜局。
+        # 旧实现只做「最小化对手收益」的两层搜索，价值里没有自己的进攻分，
+        # 结果反而比普通档的贪心更被动（用户实测困难等于送棋）。
+        for row, column in ranked[:12]:
+            self.board[row][column] = self.bot_color
+            threat = self.move_threat(row, column, self.bot_color)
+            self.board[row][column] = EMPTY
+            if len(threat.winning_points) >= 2:
+                return row, column
+            fours, threes = self._threat_shape(row, column, self.bot_color)
+            if (fours >= 1 and threes >= 1) or threes >= 2:
+                return row, column
+        # 否则做一层「自己收益 − 对手最强回应」的评估，取综合最优
         best_move = ranked[0]
         best_value = -math.inf
-        alpha = -math.inf
-        for row, column in ranked[:12]:
+        for row, column in ranked[:10]:
             if time.monotonic() >= deadline:
                 break
+            attack = sum(self._direction_scores(row, column, self.bot_color))
             self.board[row][column] = self.bot_color
-            value = self._search_reply(deadline, alpha)
+            value = attack - 1.2 * self._best_reply_gain(deadline)
             self.board[row][column] = EMPTY
             if value > best_value:
                 best_value = value
                 best_move = (row, column)
-            alpha = max(alpha, best_value)
         return best_move
 
     def undo_round(self) -> int:
@@ -290,8 +302,12 @@ class GomokuGame:
         return attack * 1.12 + defense + center * 0.2
 
     def _pattern_score(self, row: int, column: int, color: int) -> float:
+        return float(sum(self._direction_scores(row, column, color)))
+
+    def _direction_scores(self, row: int, column: int, color: int) -> list[float]:
+        """四个方向的单点价值（临时落子后逐方向评估，结束时恢复空位）。"""
         self.board[row][column] = color
-        score = 0.0
+        scores: list[float] = []
         for delta_row, delta_column in ((1, 0), (0, 1), (1, 1), (1, -1)):
             count = 1
             open_ends = 0
@@ -312,17 +328,50 @@ class GomokuGame:
                         open_ends += 1
                     break
             if count >= 5:
-                score += 1_000_000
+                scores.append(1_000_000.0)
             elif count == 4:
-                score += 48_000 if open_ends == 2 else 12_000
+                scores.append(48_000.0 if open_ends == 2 else 12_000.0)
             elif count == 3:
-                score += 4_000 if open_ends == 2 else 700
+                scores.append(4_000.0 if open_ends == 2 else 700.0)
             elif count == 2:
-                score += 350 if open_ends == 2 else 60
+                scores.append(350.0 if open_ends == 2 else 60.0)
             else:
-                score += open_ends * 4
+                scores.append(float(open_ends * 4))
         self.board[row][column] = EMPTY
-        return score
+        return scores
+
+    def _threat_shape(self, row: int, column: int, color: int) -> tuple[int, int]:
+        """该点成四的条数与活三条数（用于识别双威胁）。"""
+        fours = 0
+        threes = 0
+        for score in self._direction_scores(row, column, color):
+            if score >= 12_000:
+                fours += 1
+            elif score >= 4_000:
+                threes += 1
+        return fours, threes
+
+    def _best_reply_gain(self, deadline: float) -> float:
+        """对手一步能拿到的最好收益；用来惩罚「给对手送机会」的落点。
+
+        调用前当前落子应已在盘面上（由调用方放置/还原）。
+        """
+        replies = sorted(
+            self._candidate_moves(),
+            key=lambda move: self._move_score(move[0], move[1], self.human_color),
+            reverse=True,
+        )[:8]
+        worst = 0.0
+        for row, column in replies:
+            if time.monotonic() >= deadline:
+                break
+            self.board[row][column] = self.human_color
+            won = self._is_win(row, column, self.human_color)
+            self.board[row][column] = EMPTY
+            if won:
+                return 2_000_000.0
+            worst = max(worst, sum(self._direction_scores(row, column, self.human_color)))
+        return worst
 
     def _line_potential(self, row: int, column: int, color: int) -> int:
         self.board[row][column] = color
@@ -345,33 +394,3 @@ class GomokuGame:
             longest = max(longest, count)
         self.board[row][column] = EMPTY
         return longest
-
-    def _search_reply(self, deadline: float, alpha: float) -> float:
-        replies = sorted(
-            self._candidate_moves(),
-            key=lambda move: self._move_score(move[0], move[1], self.human_color),
-            reverse=True,
-        )[:10]
-        if not replies:
-            return 0.0
-        worst = math.inf
-        for row, column in replies:
-            if time.monotonic() >= deadline:
-                break
-            self.board[row][column] = self.human_color
-            if self._is_win(row, column, self.human_color):
-                value = -900_000.0
-            else:
-                bot_best = max(
-                    (
-                        self._move_score(next_row, next_column, self.bot_color)
-                        for next_row, next_column in self._candidate_moves()
-                    ),
-                    default=0.0,
-                )
-                value = bot_best - self._move_score(row, column, self.human_color)
-            self.board[row][column] = EMPTY
-            worst = min(worst, value)
-            if worst <= alpha:
-                break
-        return worst if worst < math.inf else 0.0

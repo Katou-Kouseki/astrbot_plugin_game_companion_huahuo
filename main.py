@@ -1430,6 +1430,10 @@ class GameCompanionPlugin(Star):
         self.board_group_announce_min_moves = self._cfg_non_negative(
             "board.group_announce_min_moves", 5
         )
+        # 连战合并：等最后一局结束后这么久再发（玩家还在连开就继续等）
+        self.board_group_announce_series_idle = self._cfg_non_negative(
+            "board.group_announce_series_idle_seconds", 90
+        )
         self.board_report_enabled = self._cfg_bool(
             "board.report_enabled", False
         )
@@ -2790,6 +2794,8 @@ class GameCompanionPlugin(Star):
             return
         if event_name == "seats_changed":
             self._capture_round_participants(room)
+            # 连战汇总：真人全走了就别再等空闲计时，立刻把攒下的几局合并播报掉
+            self._flush_board_series_when_seats_empty(room)
             return
         if event_name == "board_changed" and room.game is not None:
             if room.game_type == "gomoku":
@@ -5724,9 +5730,9 @@ class GameCompanionPlugin(Star):
             if cooldown and room.last_board_announce_at:
                 elapsed = time.time() - room.last_board_announce_at
                 if elapsed < cooldown:
-                    # 冷却窗口内：攒着，等窗口结束合并成一条「连战 N 局」
+                    # 冷却窗口内：攒着，等玩家真的停下来（或退席）再合并成一条「连战 N 局」
                     self._queue_board_announce(room, entry)
-                    self._schedule_board_flush(room, max(0.5, cooldown - elapsed))
+                    self._schedule_board_flush(room, self._board_series_delay(elapsed))
                     return
             # 窗口刚好过去：把之前攒下的连战和本局并成一条发
             pending = self._take_board_pending(room)
@@ -5813,17 +5819,46 @@ class GameCompanionPlugin(Star):
             if str(item.get("game_type") or room.game_type) == room.game_type
         ]
 
+    def _board_series_delay(self, elapsed: float) -> float:
+        """连战汇总的等待时长。
+
+        默认按「空闲计时」：每结束一局就重新计时，玩家还在连续开局时不会提前播报；
+        只有真人离开玩家席才立刻发。配置为 0 时退回旧行为（冷却一过就发）。
+        """
+        idle = getattr(self, "board_group_announce_series_idle", 90)
+        if idle and idle > 0:
+            return float(idle)
+        cooldown = getattr(self, "board_group_announce_cooldown", 30)
+        return max(0.5, float(cooldown) - max(0.0, float(elapsed or 0)))
+
     def _schedule_board_flush(self, room: GameRoom, delay: float) -> None:
-        """安排一次「连战合并播报」；已有排队任务时不重复排（新对局会被它一起带出）。"""
+        """安排一次「连战合并播报」；新对局进来时重新计时（防抖）。"""
         tasks = getattr(self, "_board_flush_tasks", None)
         if not isinstance(tasks, dict):
             tasks = {}
             self._board_flush_tasks = tasks
         existing = tasks.get(room.room_id)
         if existing is not None and not existing.done():
-            return
+            # 还在连战：把旧的等待任务取消，按最新一局重新计时
+            existing.cancel()
         room.pending_board_flush_at = time.time() + max(0.0, delay)
         tasks[room.room_id] = self._spawn(self._flush_board_announces(room, delay))
+
+    def _flush_board_series_when_seats_empty(self, room: GameRoom) -> None:
+        """真人全部离开玩家席后，连战汇总不必再等空闲计时，立即发。"""
+        if not getattr(room, "pending_board_announces", None):
+            return
+        try:
+            if self.manager._human_seats(room):
+                return
+        except Exception:
+            return
+        tasks = getattr(self, "_board_flush_tasks", None)
+        if isinstance(tasks, dict):
+            task = tasks.get(room.room_id)
+            if task is not None and not task.done():
+                task.cancel()
+        self._spawn(self._flush_board_announces(room, 0.0))
 
     async def _flush_board_announces(
         self, room: GameRoom, delay: float = 0.0
@@ -5846,7 +5881,8 @@ class GameCompanionPlugin(Star):
                 current = asyncio.current_task()
                 if tasks.get(room.room_id) is current:
                     tasks.pop(room.room_id, None)
-            room.pending_board_flush_at = 0.0
+                    # 只有自己还是队首时才清时间戳：防抖重排时旧任务不能覆盖新计划
+                    room.pending_board_flush_at = 0.0
 
     def _board_series_text(
         self, room: GameRoom, entries: list[dict[str, object]]

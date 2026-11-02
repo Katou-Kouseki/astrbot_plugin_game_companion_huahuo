@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -18,6 +19,16 @@ from .weiqi import WeiqiGame
 from .xiangqi import XiangqiGame
 
 RoomSource = Literal["group", "private"]
+
+def _visitor_uid(token: str) -> str:
+    """访客的公开稳定标识：够短、不可逆、座位重编号也不会变。
+
+    前端用它做「谁进谁出」的差量判断——`number` 会随入座重排（seat.number 1..N）
+    并且可能与观众号重复（花火座位就是 2 号），不能当身份用。
+    """
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()[:10]
+
+
 GameType = Literal[
     "gomoku", "xiangqi", "weiqi", "tictactoe", "othello", "turtle_soup",
     "pig_dice", "draw_guess", "blackjack", "undercover",
@@ -276,6 +287,8 @@ class Visitor:
         """
         return {
             "number": self.number,
+            # 稳定身份（座位重编号 / 号码重复时也不会混淆）
+            "uid": _visitor_uid(self.token),
             "online": self.connected and time.time() - self.last_seen_at < 15,
             "is_player": is_player,
             "is_current_player": is_current_player,
@@ -593,6 +606,7 @@ class GameRoom:
             "status": self.status,
             "created_at": self.created_at,
             "visitor_number": visitor.number if visitor else None,
+            "visitor_uid": _visitor_uid(visitor.token) if visitor else "",
             "visitor_display_name": (
                 visitor.display_name if visitor and visitor.identity_confirmed else ""
             ),

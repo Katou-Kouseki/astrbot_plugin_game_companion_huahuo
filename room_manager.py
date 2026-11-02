@@ -5371,18 +5371,16 @@ class RoomManager:
             # _remove_multiplayer_seat 自带黑杰克手牌 surrender 与席位轮转清理
             self._remove_multiplayer_seat(room, visitor.token)
             self._announce_host_transfer(room, previous_host_token)
-            if (
-                room.status == "active"
-                and room.game_type in DUEL_GAMES
-                and not self._human_seats(room)
-            ):
-                # 和花火对局中途退席：本局按弃局处理，花火一起离座，
-                # 房间回到 waiting，下次有人进来可以重新选对手
+            if room.game_type in DUEL_GAMES and not self._human_seats(room):
+                # 真人全部离席：花火一起离座，房间回到 waiting。
+                # 只在 active 时清花火会留下「备战/结算阶段的空壳 AI 座位」，
+                # 下一个人入座时座位直接凑满→秒开局，连先手后手都没得选。
+                if room.status == "active" and room.game is not None:
+                    room.add_message("system", "本局已按弃局处理。")
                 room.game = None
                 self._remove_ai_seats_locked(room)
                 room.status = "waiting"
                 room.multiplayer.turn_deadline = 0.0
-                room.add_message("system", "本局已按弃局处理。")
             if room.multiplayer.seats:
                 self._sync_primary_player(room)
                 if room.status != "active":

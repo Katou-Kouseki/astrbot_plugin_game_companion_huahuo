@@ -910,3 +910,41 @@ async def test_spectator_cannot_pick_difficulty() -> None:
 
     with pytest.raises(PermissionError):
         await manager.player_set_difficulty(room, spectator.token, "hard")
+
+
+@pytest.mark.asyncio
+async def test_leaving_seat_after_finished_clears_ai_and_waits_for_side_choice() -> None:
+    """结算阶段退出玩家席：花火一起离座，下次入座停在 setup（可以选先后手）。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.add_ai_seat(room, visitor.token, side="white")
+    assert room.status == "active"
+    assert [seat.is_ai for seat in room.multiplayer.seats] == [False, True]
+
+    room.game.winner = room.game.bot_color
+    await manager._finish_game(room)
+    assert room.status == "finished"
+
+    await manager.leave_player_seat(room, visitor.token)
+
+    # 花火不能留在玩家席上，否则下一个人入座就直接开局
+    assert room.multiplayer.seats == []
+    assert room.status == "waiting"
+    assert room.game is None
+
+    await manager.claim_and_start(room, visitor.token, "human_black")
+
+    assert room.status == "setup"
+    assert room.game is None

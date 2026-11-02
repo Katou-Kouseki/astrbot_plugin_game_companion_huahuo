@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.37"
+    assert metadata["version"] == "0.5.38"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -828,7 +828,7 @@ def test_room_activity_toasts_are_compact_and_throttled() -> None:
     load_state = script[script.index("async function loadState()") :]
     assert "handleRosterActivity(" in load_state
     # 不提醒自己与花火
-    assert "number === selfNumber || visitor.is_ai" in script
+    assert "key === selfKey || visitor.is_ai" in script
 
     # 服务端下发开关，前端按配置过滤（总开关 / 观众进出 / 冷却）
     server = (ROOT / "server.py").read_text(encoding="utf-8")
@@ -849,3 +849,34 @@ def test_room_activity_toasts_are_compact_and_throttled() -> None:
     assert "env(safe-area-inset-bottom, 0px)" in mobile
     assert "body.room-view-chat .room-activity" in mobile
     assert 'classList.toggle("room-view-chat"' in script
+
+
+def test_room_activity_uses_stable_visitor_uid() -> None:
+    """名册差量按服务端下发的 uid 认人：座位重编号 / 号码撞号都不会误报进出。"""
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "def _visitor_uid(" in models
+    assert '"uid": _visitor_uid(self.token)' in models
+    assert '"visitor_uid": _visitor_uid(visitor.token) if visitor else ""' in models
+    assert "function rosterKey(" in script
+    assert "rosterKey(visitor)" in script
+    # 不能再拿 number 当身份
+    assert "previousMap.get(number)" not in script
+    assert "String(room?.visitor_uid || \"\")" in script
+
+
+def test_board_series_waits_for_idle_and_flushes_on_seat_leave() -> None:
+    """连战汇总：空闲计时防抖 + 真人退席立即发送。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+    assert (
+        schema["board"]["items"]["group_announce_series_idle_seconds"]["default"] == 90
+    )
+    assert "board_group_announce_series_idle" in main
+    assert "def _board_series_delay(" in main
+    assert "def _flush_board_series_when_seats_empty(" in main
+    assert "self._flush_board_series_when_seats_empty(room)" in main
+    # 防抖：新对局要把旧的等待任务取消重排
+    assert "existing.cancel()" in main
