@@ -163,3 +163,48 @@ def test_invalid_game_settings_are_rejected_atomically(payload: dict) -> None:
         plugin._validated_game_settings(payload)
 
     assert plugin.config == {}
+
+
+def test_undercover_settings_apply_without_reloading_plugin() -> None:
+    """管理台里能改的卧底参数必须同步到 manager。
+
+    以前 `_apply_game_settings_runtime` 整段漏了 undercover_*：保存后页面显示新值，
+    实际对局仍用启动时的旧值（要重启插件才生效）。
+    """
+    plugin = make_plugin()
+    plugin.config = {
+        "undercover": {
+            "max_players": 8,
+            "min_players": 4,
+            "camp_scales_default": "3 1 0",
+            "allow_host_customize_camp_scales": False,
+            "match_seconds": 120,
+            "prepare_seconds": 5,
+            "speaking_seconds": 90,
+            "voting_seconds": 60,
+            "first_round_non_voting": 5,
+            "send_identity_in_card": False,
+            "show_voters": True,
+            "similarity": 66,
+            "ai_fill_enabled": False,
+            "ai_fill_min_players": 5,
+        }
+    }
+
+    plugin._apply_game_settings_runtime()
+
+    manager = plugin.manager
+    assert manager.undercover_max_players == 8
+    assert manager.undercover_min_players == 4
+    assert manager.undercover_match_seconds == 120
+    assert manager.undercover_prepare_seconds == 5
+    assert manager.undercover_speaking_seconds == 90
+    assert manager.undercover_voting_seconds == 60
+    assert manager.undercover_first_round_non_voting == 5
+    assert manager.undercover_send_identity_in_card is False
+    assert manager.undercover_show_voters is True
+    assert manager.undercover_similarity == 66
+    assert manager.undercover_allow_host_customize_camp_scales is False
+    assert manager.undercover_ai_fill_enabled is False
+    assert manager.undercover_ai_fill_min_players == 5
+    assert manager.undercover_camp_scales_default == (3, 1, 0)

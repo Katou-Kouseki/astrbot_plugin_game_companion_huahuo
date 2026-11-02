@@ -281,6 +281,7 @@ def _announce_plugin(
 
     async def fake_send(room, text):
         plugin.sent_texts.append(text)
+        return True  # 真实 _send_to_origin 现在返回「是否发出去了」
 
     def spawn(operation):
         import asyncio

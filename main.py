@@ -33,7 +33,13 @@ from .othello import WHITE as OTHELLO_WHITE
 from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
-from .room_manager import BOARD_GAME_CLASSES, DUEL_GAMES, SUPPORTED_GAMES, RoomManager
+from .room_manager import (
+    BOARD_GAME_CLASSES,
+    DUEL_GAMES,
+    SUPPORTED_GAMES,
+    RoomManager,
+    _parse_camp_scales,
+)
 from .server import GameRoomServer
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
@@ -2648,8 +2654,15 @@ class GameCompanionPlugin(Star):
         因为 Quick Tunnel 短暂抖动、`ready` 标记翻转或局域网探测在多次调用间返回
         不同结果而「自己变来变去」。只有隧道重建（恢复）时才清缓存、换新地址。
         """
-        if getattr(self, "_access_base_cache", ""):
-            return self._access_base_cache
+        cached = getattr(self, "_access_base_cache", "")
+        if cached:
+            # 缓存可能指向已经失效的隧道域名：只要隧道换了地址就必须重算，
+            # 否则长期给用户发「打不开的旧链接」（重建路径之外的隧道切换不会清缓存）。
+            tunnel_url = str(getattr(self.quick_tunnel, "url", "") or "").rstrip("/")
+            configured = self._configured_access_base()
+            if configured or not tunnel_url or tunnel_url in cached:
+                return cached
+            self._access_base_cache = ""
         base = self._configured_access_base() or (
             self.quick_tunnel.url if bool(getattr(self.quick_tunnel, "ready", False)) else ""
         ) or self._local_access_base(allow_unresolved=True)
@@ -3670,14 +3683,18 @@ class GameCompanionPlugin(Star):
             "玩家在房间对话中请求悔棋。结合当前人格决定是否同意，只输出 JSON："
             '{"accept":true或false,"reply":"一句简短自然回复"}。',
         )
-        accepted = True
-        reply = "这次可以，退回上一轮。"
+        # 默认拒绝：模型超时 / 返回非 JSON / 字段缺失时不能当「同意」处理——
+        # 悔棋会直接改局面，宁可不退也不能凭空替玩家改棋。
+        accepted = False
+        reply = "这次先不退，接着下吧。"
         for candidate in re.findall(r"\{.*?\}", raw or "", re.DOTALL):
             try:
                 data = json.loads(candidate)
             except json.JSONDecodeError:
                 continue
-            accepted = bool(data.get("accept"))
+            if not isinstance(data, dict) or "accept" not in data:
+                continue
+            accepted = data.get("accept") is True
             reply = str(data.get("reply") or reply).strip()[:300]
             break
         return accepted, reply
@@ -4963,15 +4980,23 @@ class GameCompanionPlugin(Star):
             "status": "已形成游戏邀请动机",
         }
 
-    async def _send_to_origin(self, room: GameRoom, text: str) -> None:
+    async def _send_to_origin(self, room: GameRoom, text: str) -> bool:
+        """把纯文字发到开房群，返回是否真的发出去了。
+
+        返回值的意义：播报类调用方会按「有没有发出去」写幂等标记。以前这里
+        吞掉异常且不返回结果，机器人在群里被踢/被禁言时，调用方照样认为发成功
+        并把 `last_announced_uid` 写死——这一局之后再也播不出去。
+        """
         if not text:
-            return
+            return False
         try:
             await self.context.send_message(
                 room.session_id, MessageChain([Plain(text)])
             )
+            return True
         except Exception as exc:
-            logger.debug("[GameCompanion] 回发游戏消息失败: %s", exc)
+            logger.warning("[GameCompanion] 回发游戏消息失败: %s", exc)
+            return False
 
     async def undercover_recap(self, room: GameRoom) -> str:
         """生成一局谁是卧底的短复盘摘要（结算卡「生成复盘」/「通知到群」共用）。
@@ -5056,19 +5081,28 @@ class GameCompanionPlugin(Star):
             if image_data:
                 # 纯图片模式：只发图（可选附带复盘）；附带复盘时图片前加一行标题，不发详情
                 title_line = f"🕵️ 谁是卧底战报：{title}" if recap else ""
-                await self._send_to_origin_image(room, title_line, image_data, recap)
+                sent = await self._send_to_origin_image(
+                    room, title_line, image_data, recap
+                )
+                if not sent:
+                    return ""
                 # 未带复盘时也要返回非空标记：保证幂等判定与「已通知」提示正确
                 return title_line or "🖼️ 战报图已发送"
             # 海报缺失/生成失败：回退纯文字，避免群里收不到通知
-            await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
-            return text
+            sent = await self._send_to_origin(
+                room, text + (f"\n📝 复盘：{recap}" if recap else "")
+            )
+            return text if sent else ""
         if want_image and image_data:
-            await self._send_to_origin_image(
+            sent = await self._send_to_origin_image(
                 room, text if want_text else "", image_data, recap if want_text else ""
             )
-            return text
+            return text if sent else ""
         if want_text:
-            await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
+            sent = await self._send_to_origin(
+                room, text + (f"\n📝 复盘：{recap}" if recap else "")
+            )
+            return text if sent else ""
         return text
 
     async def board_announce_result(
@@ -5102,13 +5136,15 @@ class GameCompanionPlugin(Star):
         if not want_text and not want_image:
             want_text = True
         if want_image and image_data:
-            await self._send_to_origin_image(
+            sent = await self._send_to_origin_image(
                 room, text if want_text else "", image_data, recap
             )
-            return text
+            return text if sent else ""
         # 纯文字 / 「仅图片」但缺图：一律发文字兜底，保证群里能收到战况
-        await self._send_to_origin(room, text + (f"\n📝 复盘：{recap}" if recap else ""))
-        return text
+        sent = await self._send_to_origin(
+            room, text + (f"\n📝 复盘：{recap}" if recap else "")
+        )
+        return text if sent else ""
 
     async def board_recap(self, room: GameRoom) -> str:
         """生成一局棋类的短复盘摘要（结算卡「复盘」/「通知到群」共用）。
@@ -5738,6 +5774,10 @@ class GameCompanionPlugin(Star):
                 and moves < self.board_group_announce_min_moves
             ):
                 return
+            # 手动「通知到群」可能已经发过这一局：别重复刷群（两边共用同一幂等键）
+            sent_key = f"board:{int(payload.get('completed_games') or 0)}"
+            if room.last_announced_uid == sent_key:
+                return
             entry = self._board_announce_entry(room)
             if entry is None:
                 return
@@ -5834,6 +5874,25 @@ class GameCompanionPlugin(Star):
             if str(item.get("game_type") or room.game_type) == room.game_type
         ]
 
+    @classmethod
+    def _requeue_board_pending(
+        cls, room: GameRoom, entries: list[dict[str, object]]
+    ) -> None:
+        """把没发出去的连战条目放回队首（取消 / 发送失败时用）。
+
+        以前 `_flush_board_announces` 先出队再 await 发送：如果这个 await 期间
+        被防抖重排 cancel 掉（玩家又开了一局），或群发送失败，这几局的战报就
+        凭空消失了。现在放回队首，下一轮合并会一起带上。
+        """
+        if not entries:
+            return
+        for entry in reversed(entries):
+            cls._queue_board_announce(room, entry)
+        # _queue_board_announce 是 append + 截断，这里重排一次保证顺序（旧 -> 新）
+        pending = getattr(room, "pending_board_announces", None)
+        if isinstance(pending, list):
+            pending.sort(key=lambda item: int(item.get("completed_games") or 0))
+
     def _board_series_delay(self, elapsed: float) -> float:
         """连战汇总的等待时长。
 
@@ -5879,17 +5938,27 @@ class GameCompanionPlugin(Star):
         self, room: GameRoom, delay: float = 0.0
     ) -> None:
         """冷却窗口结束后，把攒下的对局合并成一条「连战 N 局」发到群里。"""
+        entries: list[dict[str, object]] = []
         try:
             if delay > 0:
                 await asyncio.sleep(delay)
             entries = self._take_board_pending(room)
             if not entries:
                 return
-            await self._send_board_series(room, entries)
+            if await self._send_board_series(room, entries):
+                entries = []
+            else:
+                # 群发失败（被踢/禁言/网络）不能吞掉这几局的战报：放回队里等下一轮
+                self._requeue_board_pending(room, entries)
+                entries = []
         except asyncio.CancelledError:
+            # 睡着了被防抖重排取消：还没出队，entries 为空，无需回填
+            if entries:
+                self._requeue_board_pending(room, entries)
             raise
         except Exception as exc:
             logger.warning("[GameCompanion] 连战合并播报失败: %s", exc)
+            self._requeue_board_pending(room, entries)
         finally:
             tasks = getattr(self, "_board_flush_tasks", None)
             if isinstance(tasks, dict):
@@ -5942,24 +6011,27 @@ class GameCompanionPlugin(Star):
 
     async def _send_board_series(
         self, room: GameRoom, entries: list[dict[str, object]]
-    ) -> None:
+    ) -> bool:
         """发送「连战 N 局」合并战报（多局摘要只走文字，不再逐局出图）。"""
         text = self._board_series_text(room, entries)
         if not text:
-            return
+            return False
         recap = ""
         if getattr(self, "board_group_announce_recap", True):
             try:
                 recap = await self._board_series_recap(room, entries)
             except Exception:
                 recap = ""
-        await self._send_to_origin(
+        sent = await self._send_to_origin(
             room, text + (f"\n📝 复盘：{recap}" if recap else "")
         )
+        if not sent:
+            return False
         latest = max(int(e.get("completed_games") or 0) for e in entries)
         room.last_announced_uid = f"board:{latest}"
         room.last_announced_text = text
         room.last_board_announce_at = time.time()
+        return True
 
     async def _board_series_recap(
         self, room: GameRoom, entries: list[dict[str, object]]
@@ -6451,7 +6523,7 @@ class GameCompanionPlugin(Star):
 
     async def _send_to_origin_image(
         self, room: GameRoom, text: str, image_data_url: str, recap: str = ""
-    ) -> None:
+    ) -> bool:
         """把文字（可选）、一张战报图与复盘（可选）发到开房群，复盘放在图片后面。
 
         图片上方空一行（文字末尾补空行）、下方也空一行再接复盘，视觉更透气。
@@ -6471,12 +6543,14 @@ class GameCompanionPlugin(Star):
                 await self.context.send_message(
                     room.session_id, MessageChain(parts)
                 )
+                return True
         except Exception as exc:
             logger.warning("[GameCompanion] 发送战报图片失败，回退纯文字: %s", exc)
-            if text or recap:
-                await self._send_to_origin(
-                    room, (text + (f"\n📝 复盘：{recap}" if recap else "")).strip()
-                )
+        if text or recap:
+            return await self._send_to_origin(
+                room, (text + (f"\n📝 复盘：{recap}" if recap else "")).strip()
+            )
+        return False
 
     def _register_report_scheduler(self) -> None:
         """用 AstrBot 自带的 APScheduler（context.cron_manager.scheduler）注册卧底日报/周报定时任务。
@@ -6554,10 +6628,24 @@ class GameCompanionPlugin(Star):
         except Exception as exc:
             logger.warning("[GameCompanion] 战绩报表发送失败(%s): %s", umoid, exc)
 
+    @staticmethod
+    def _report_window_days(mode: str) -> int:
+        """报表统计窗口：日报=最近 1 天，周报=最近 7 天，其它/未知=累计(0)。"""
+        return {"daily": 1, "weekly": 7}.get(str(mode or "").lower(), 0)
+
     def _build_undercover_report(self) -> str:
-        """拼一份谁是卧底战绩日报/周报文本（取自全局胜场榜，按名合并）。"""
-        rows = self.manager.global_leaderboard("undercover", limit=20)
-        lines = ["📊 谁是卧底 · 战绩报告", "——————"]
+        """拼一份谁是卧底战绩日报/周报文本（按时间窗口取全局胜场榜，按名合并）。"""
+        mode = str(getattr(self, "undercover_report_mode", "daily") or "daily")
+        days = self._report_window_days(mode)
+        rows = self.manager.global_leaderboard("undercover", limit=20, days=days or None)
+        scope = "累计" if not days else ("最近 1 天" if days == 1 else f"最近 {days} 天")
+        fallback = False
+        if days and not rows:
+            # 升级后前几天可能还没有按天数据：不要发一张空榜，退回累计并注明
+            rows = self.manager.global_leaderboard("undercover", limit=20)
+            scope = "累计（该时段暂无新对局）"
+            fallback = True
+        lines = ["📊 谁是卧底 · 战绩报告", f"统计范围：{scope}", "——————"]
         if not rows:
             lines.append("当前暂无卧底战绩记录。")
             return "\n".join(lines)
@@ -6566,7 +6654,9 @@ class GameCompanionPlugin(Star):
             rank = medals[i] if i < 3 else f"#{i + 1}"
             lines.append(f"{rank} {row['name']}：{int(row['wins'] or 0)} 胜")
         lines.append("——————")
-        lines.append("数据来自跨房间全局战绩榜。")
+        lines.append(
+            "数据来自跨房间全局战绩榜。" if not fallback else "数据来自跨房间全局战绩榜（累计）。"
+        )
         return "\n".join(lines)
 
     def _register_board_report_scheduler(self) -> None:
@@ -6636,13 +6726,18 @@ class GameCompanionPlugin(Star):
         logger.info("[GameCompanion] 已触发棋类战绩报表推送")
 
     def _build_board_report(self) -> str:
-        """拼一份棋类战绩日报/周报文本（汇总四种棋类的全局战绩榜，含胜率）。"""
+        """拼一份棋类战绩日报/周报文本（按时间窗口汇总四种棋类榜，含胜率）。"""
         game_types = ["gomoku", "othello", "xiangqi", "weiqi"]
         labels = {"gomoku": "五子棋", "othello": "黑白棋", "xiangqi": "中国象棋", "weiqi": "围棋"}
-        lines = ["📊 棋类对局 · 战绩报告", "——————"]
+        mode = str(getattr(self, "board_report_mode", "daily") or "daily")
+        days = self._report_window_days(mode)
+        scope = "累计" if not days else ("最近 1 天" if days == 1 else f"最近 {days} 天")
+        lines = ["📊 棋类对局 · 战绩报告", f"统计范围：{scope}", "——————"]
         total_entries = 0
         for gt in game_types:
-            rows = self.manager.global_leaderboard(gt, limit=10)
+            rows = self.manager.global_leaderboard(gt, limit=10, days=days or None)
+            if not rows and days:
+                rows = self.manager.global_leaderboard(gt, limit=10)
             if not rows:
                 continue
             total_entries += 1
@@ -7590,6 +7685,75 @@ class GameCompanionPlugin(Star):
         self.manager.multiplayer_turn_timeout = self.multiplayer_turn_timeout
         self.manager.duel_turn_timeout = self.duel_turn_timeout
         self.manager.duel_offline_grace = self.duel_offline_grace
+        # ---- 谁是卧底：管理台里能改，就必须在保存后同步到 manager ----
+        # 以前整段漏掉了，管理台显示已保存、实际对局仍用启动时的旧值。
+        self.undercover_max_players = self._cfg_int(
+            "undercover.max_players", 10, minimum=2, maximum=20
+        )
+        self.undercover_min_players = self._cfg_int(
+            "undercover.min_players", 2, minimum=2, maximum=10
+        )
+        self.undercover_match_seconds = self._cfg_int(
+            "undercover.match_seconds", 180, minimum=10, maximum=600
+        )
+        self.undercover_prepare_seconds = self._cfg_int(
+            "undercover.prepare_seconds", 10, minimum=0, maximum=120
+        )
+        self.undercover_speaking_seconds = self._cfg_int(
+            "undercover.speaking_seconds", 160, minimum=0, maximum=600
+        )
+        self.undercover_voting_seconds = self._cfg_int(
+            "undercover.voting_seconds", 120, minimum=0, maximum=600
+        )
+        self.undercover_first_round_non_voting = self._cfg_int(
+            "undercover.first_round_non_voting", 3, minimum=2, maximum=10
+        )
+        self.undercover_send_identity_in_card = self._cfg_bool(
+            "undercover.send_identity_in_card", True
+        )
+        self.undercover_show_voters = self._cfg_bool(
+            "undercover.show_voters", False
+        )
+        self.undercover_similarity = self._cfg_int(
+            "undercover.similarity", 80, minimum=0, maximum=100
+        )
+        self.undercover_allow_host_customize_camp_scales = self._cfg_bool(
+            "undercover.allow_host_customize_camp_scales", True
+        )
+        self.undercover_ai_fill_enabled = self._cfg_bool(
+            "undercover.ai_fill_enabled", True
+        )
+        self.undercover_ai_fill_min_players = self._cfg_int(
+            "undercover.ai_fill_min_players", 3, minimum=2, maximum=8
+        )
+        self.undercover_camp_scales_default = (
+            self._cfg_str("undercover.camp_scales_default", "4 1 0") or "4 1 0"
+        )
+        self.manager.undercover_max_players = self.undercover_max_players
+        self.manager.undercover_min_players = self.undercover_min_players
+        self.manager.undercover_match_seconds = self.undercover_match_seconds
+        self.manager.undercover_prepare_seconds = self.undercover_prepare_seconds
+        self.manager.undercover_speaking_seconds = self.undercover_speaking_seconds
+        self.manager.undercover_voting_seconds = self.undercover_voting_seconds
+        self.manager.undercover_first_round_non_voting = (
+            self.undercover_first_round_non_voting
+        )
+        self.manager.undercover_send_identity_in_card = (
+            self.undercover_send_identity_in_card
+        )
+        self.manager.undercover_show_voters = self.undercover_show_voters
+        self.manager.undercover_similarity = self.undercover_similarity
+        self.manager.undercover_allow_host_customize_camp_scales = (
+            self.undercover_allow_host_customize_camp_scales
+        )
+        self.manager.undercover_ai_fill_enabled = self.undercover_ai_fill_enabled
+        self.manager.undercover_ai_fill_min_players = max(
+            self.manager.undercover_min_players,
+            min(self.undercover_ai_fill_min_players, 12),
+        )
+        self.manager.undercover_camp_scales_default = _parse_camp_scales(
+            self.undercover_camp_scales_default
+        )
         self.weiqi_board_size = self._cfg_int(
             "weiqi.board_size", 13, minimum=9, maximum=19
         )

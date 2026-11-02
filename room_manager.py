@@ -172,6 +172,10 @@ class RoomManager:
     CLOSED_ACCESS_TTL_SECONDS = 15 * 60
     MAX_CLOSED_ACCESS_RECORDS = 256
     FINISHED_PLAYER_LEAVE_GRACE_SECONDS = 8
+    # 访客表回收：房间可能被反复打开（群链接长期有效），离线访客只增不减会让
+    # 每次快照都越来越大。超过阈值后清理「长时间离线且没占座」的访客。
+    VISITOR_PRUNE_MIN_IDLE_SECONDS = 1800
+    VISITOR_PRUNE_THRESHOLD = 40
     FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS = 60
     # 集结阶段离线玩家席自动移出：显式关闭网页（leave）宽限数秒防刷新误踢；
     # 心跳超时阈值放宽到 90s，容忍浏览器后台标签节流（否则切后台的玩家会被误踢）
@@ -325,7 +329,45 @@ class RoomManager:
         # 全员就绪 -> 自动开局前的确认等待秒数（期间可取消准备）
         self.UC_ALL_READY_CONFIRM_SECONDS = 2.0
 
-    def global_leaderboard(self, game_type: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+    @staticmethod
+    def _bump_daily(
+        entry: dict[str, object],
+        *,
+        wins: int = 0,
+        games: int = 0,
+        now: float | None = None,
+    ) -> None:
+        """维护 entry["daily"] = {YYYY-MM-DD: {"w": 胜, "g": 局}}，供日报/周报按时间窗口统计。
+
+        以前「日报」和「周报」都读同一份累计榜，两种报表内容完全一样。
+        这里按天分桶，只保留最近 60 天，避免统计文件无限增长。
+        """
+        if not wins and not games:
+            return
+        stamp = time.localtime(now if now is not None else time.time())
+        day = time.strftime("%Y-%m-%d", stamp)
+        daily = entry.get("daily")
+        if not isinstance(daily, dict):
+            daily = {}
+            entry["daily"] = daily
+        slot = daily.setdefault(day, {"w": 0, "g": 0})
+        if not isinstance(slot, dict):
+            slot = {"w": 0, "g": 0}
+            daily[day] = slot
+        slot["w"] = int(slot.get("w") or 0) + int(wins)
+        slot["g"] = int(slot.get("g") or 0) + int(games)
+        if len(daily) > 60:
+            for key in sorted(daily)[:-60]:
+                daily.pop(key, None)
+
+    def global_leaderboard(
+        self,
+        game_type: str | None = None,
+        limit: int = 50,
+        *,
+        days: int | None = None,
+        now: float | None = None,
+    ) -> list[dict[str, object]]:
         """返回指定游戏类型下的跨房间全局胜场榜（按胜场降序）。
 
         AI 座位的 qq 是每次对局新建的随机 token，会导致同一个 AI 名（如「花火·调皮(AI)」）
@@ -333,16 +375,37 @@ class RoomManager:
         棋类玩法同时返回 `games`（总局数）与 `winrate`（胜率，百分比），供前端展示。
         """
         bucket = self.global_player_wins.get(game_type or "") or {}
+        window = int(days) if days and int(days) > 0 else 0
+        days_allowed: set[str] | None = None
+        if window:
+            today = time.localtime(now if now is not None else time.time())
+            days_allowed = set()
+            for offset in range(window):
+                days_allowed.add(
+                    time.strftime("%Y-%m-%d", time.localtime(
+                        time.mktime(today) - offset * 86400
+                    ))
+                )
         merged: dict[str, dict[str, object]] = {}
         for _qq, info in bucket.items():
             name = str(info.get("name") or "未知玩家").strip() or "未知玩家"
+            if days_allowed is not None:
+                daily = info.get("daily")
+                wins = games = 0
+                if isinstance(daily, dict):
+                    for day, slot in daily.items():
+                        if day not in days_allowed or not isinstance(slot, dict):
+                            continue
+                        wins += int(slot.get("w") or 0)
+                        games += int(slot.get("g") or 0)
+                if not wins and not games:
+                    continue
+            else:
+                wins = int(info.get("wins") or 0)
+                games = int(info.get("games") or 0)
             merged.setdefault(name, {"name": name, "wins": 0, "games": 0})
-            merged[name]["wins"] = int(merged[name]["wins"] or 0) + int(
-                info.get("wins") or 0
-            )
-            merged[name]["games"] = int(merged[name]["games"] or 0) + int(
-                info.get("games") or 0
-            )
+            merged[name]["wins"] = int(merged[name]["wins"] or 0) + wins
+            merged[name]["games"] = int(merged[name]["games"] or 0) + games
         rows: list[dict[str, object]] = []
         for info in sorted(
             merged.values(),
@@ -2574,9 +2637,9 @@ class RoomManager:
                 and room.game.phase == "dealer_turn"
                 and not room.game.finished
             )
-            bot_turn = not isinstance(
-                room.game, (TurtleSoupGame, DrawGuessGame, UndercoverGame)
-            ) and self._game_is_bot_turn(room.game)
+            # 必须用房间级判定：_game_is_bot_turn 只看 game.bot_color，
+            # 双真人局恢复时会把「对方那一手」误当花火的回合，替真人落子。
+            bot_turn = self._is_bot_turn(room)
         if blackjack_dealer:
             await self._blackjack_dealer_turn(room)
             return
@@ -3083,11 +3146,38 @@ class RoomManager:
                 )
         return [room_id for room_id, _reason in expired]
 
+    def _prune_visitors(self, room: GameRoom, current: float) -> None:
+        """回收长时间离线且没占座的访客，避免房间访客表只增不减。
+
+        保留：占着玩家席的、还连着心跳的、房间主玩家、AI、以及最近 30 分钟内出现过的。
+        被回收的人下次打开链接会拿到新的访客身份（不占座，不影响对局）。
+        """
+        if len(room.visitors) <= self.VISITOR_PRUNE_THRESHOLD:
+            return
+        seats = {seat.visitor_token for seat in room.multiplayer.seats}
+        keep_tokens = set(seats)
+        if room.player_token:
+            keep_tokens.add(room.player_token)
+        keep_tokens.update(
+            str(seat.visitor_token) for seat in room.multiplayer.seats if seat.is_ai
+        )
+        for token, visitor in list(room.visitors.items()):
+            if token in keep_tokens or getattr(visitor, "connected", False):
+                continue
+            recent = max(
+                float(getattr(visitor, "last_seen_at", 0) or 0),
+                float(getattr(visitor, "left_at", 0) or 0),
+            )
+            if current - recent < self.VISITOR_PRUNE_MIN_IDLE_SECONDS:
+                continue
+            room.visitors.pop(token, None)
+
     async def _sweep_room(
         self, room: GameRoom, current: float
     ) -> tuple[str, str] | None:
         """检查单个房间；命中销毁规则时返回 (room_id, 原因)，否则 None。"""
         await self._tick_multiplayer_room(room, current)
+        self._prune_visitors(room, current)
         if (
             room.status == "active"
             and isinstance(room.game, DrawGuessGame)
@@ -3129,8 +3219,12 @@ class RoomManager:
                 and (self.empty_player_timeout or self.idle_timeout)
             ):
                 return (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
-        if isinstance(room.game, TurtleSoupGame) and room.game.phase == "preparing":
-            return None
+        # 海龟汤「出题中」既没有玩家入座、也没有操作，容易被两条规则秒杀，
+        # 所以豁免「玩家席无人」；但不能连 idle 一起豁免——出题链路异常时
+        # 房间会永远留在内存里，还占着群房配额。
+        preparing = bool(
+            isinstance(room.game, TurtleSoupGame) and room.game.phase == "preparing"
+        )
         # 管理台手动开出来的「链接房间」由管理员在管理台显式关闭，不参与
         # 「玩家席无人」「长时间无操作」的自动销毁：管理员把链接发给朋友后，
         # 对方可能过很久才点开，提前销毁就会变成「链接进不去」。
@@ -3140,10 +3234,20 @@ class RoomManager:
             self.empty_player_timeout
             and room.player_empty_since is not None
             and current - room.player_empty_since >= self.empty_player_timeout
+            and not preparing
             and not self._has_present_visitors(room, current)
         ):
             return (room.room_id, "玩家席长时间无人，房间已自动销毁")
-        if self.idle_timeout and current - room.last_activity_at >= self.idle_timeout:
+        # 对局/结算阶段只要还有人（心跳新鲜）在看，就不按「无操作」销毁：
+        # 玩家可能只是长时间思考或走开一会儿，中途销毁会直接丢掉这一局。
+        watching = room.status in {"active", "paused", "finished"} and (
+            self._has_present_visitors(room, current)
+        )
+        if (
+            self.idle_timeout
+            and current - room.last_activity_at >= self.idle_timeout
+            and not watching
+        ):
             return (room.room_id, "房间长时间无操作，已自动销毁")
         return None
 
@@ -3406,6 +3510,7 @@ class RoomManager:
                             )
                             if entry["name"]:
                                 global_entry["name"] = entry["name"]
+                            self._bump_daily(global_entry, wins=1)
                             # 分阵营胜场：用于解锁「藏品/护身符」徽章；
                             # 按 QQ 稳定键存储，改昵称后胜场与徽章不丢失
                             self._credit_undercover_camp_wins(
@@ -3572,10 +3677,12 @@ class RoomManager:
         for qq, name, token in humans:
             entry = bucket.setdefault(qq, {"name": "", "wins": 0, "games": 0})
             entry["games"] = int(entry.get("games") or 0) + 1
-            if token in winners:
+            won = token in winners
+            if won:
                 entry["wins"] = int(entry.get("wins") or 0) + 1
             if name:
                 entry["name"] = name
+            self._bump_daily(entry, wins=1 if won else 0, games=1)
         if ai_present:
             entry = bucket.setdefault(
                 AI_LEADERBOARD_KEY,
@@ -3584,6 +3691,7 @@ class RoomManager:
             entry["games"] = int(entry.get("games") or 0) + 1
             if ai_won:
                 entry["wins"] = int(entry.get("wins") or 0) + 1
+            self._bump_daily(entry, wins=1 if ai_won else 0, games=1)
         self._save_global_stats()
 
     def _credit_human_global_wins(
@@ -3633,6 +3741,7 @@ class RoomManager:
             global_entry["wins"] = int(global_entry.get("wins") or 0) + 1
             if name:
                 global_entry["name"] = name
+            self._bump_daily(global_entry, wins=1)
         self._save_global_stats()
 
     @staticmethod
