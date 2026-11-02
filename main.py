@@ -3009,6 +3009,13 @@ class GameCompanionPlugin(Star):
             self._notify_companion_activity(room, "ended")
             self._finalize_private_game_result(room)
             await self._record_room_memory(room)
+            # 按 room_id 建的锁与后台任务句柄要一起清掉，否则长期运行会越攒越多
+            self._uc_ai_lock.pop(room.room_id, None)
+            tasks = getattr(self, "_board_flush_tasks", None)
+            if isinstance(tasks, dict):
+                pending_task = tasks.pop(room.room_id, None)
+                if pending_task is not None and not pending_task.done():
+                    pending_task.cancel()
 
     @classmethod
     def _opening_commentary_prompt(cls, room: GameRoom) -> str:

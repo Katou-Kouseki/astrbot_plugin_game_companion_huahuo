@@ -292,3 +292,20 @@ async def test_resume_two_humans_does_not_play_for_the_opponent() -> None:
     await manager.wait_bot_turns()
 
     assert len(room.game.history) == moves_before
+
+
+@pytest.mark.asyncio
+async def test_destroy_releases_room_level_caches() -> None:
+    """房间销毁后要放掉房间级缓存，避免长期运行按「开过多少房」线性增长。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.recap_cache["g1"] = "很长的复盘文本"
+    room.pending_board_announces = [{"game_uid": "g1", "completed_games": 1}]
+    room.last_board_result = {"moves": 12}
+
+    await manager.destroy(room.room_id, "测试销毁")
+
+    assert room.recap_cache == {}
+    assert room.pending_board_announces == []
+    assert room.last_board_result is None
+    assert room.room_id not in manager.rooms

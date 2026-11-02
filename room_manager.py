@@ -3093,6 +3093,12 @@ class RoomManager:
                 time.time() + self.CLOSED_ACCESS_TTL_SECONDS,
             )
             self._purge_closed_access()
+            # 房间级缓存放掉引用：复盘文本 / 连战队列 / 终局快照。房间已 closed，
+            # 这些内容不会再被读，留着只会随「开过多少房」一路线性增长。
+            if isinstance(getattr(room, "recap_cache", None), dict):
+                room.recap_cache.clear()
+            room.pending_board_announces = []
+            room.last_board_result = None
         await self._emit("room_destroyed", room, {"reason": room.close_reason})
         return room
 
