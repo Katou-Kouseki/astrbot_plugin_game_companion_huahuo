@@ -3005,7 +3005,7 @@ class GameCompanionPlugin(Star):
             self._spawn(
                 self._comment(
                     room,
-                    f"{game_label}本局结果是：{result}。请用当前人格简短回应。",
+                    f"{game_label}本局结果是：{self._bot_perspective_result(result)}。请用当前人格简短回应。",
                     expect_game_uid=current_uid,
                 )
             )
@@ -3192,6 +3192,24 @@ class GameCompanionPlugin(Star):
             "uc_undercover_win": "卧底阵营坚持到最后并获得胜利",
             "uc_whiteboard_win": "白板在没有卧底的情况下撑到最后",
         }.get(str(payload.get("result")), "对局结束")
+
+    @staticmethod
+    def _bot_perspective_result(text: str) -> str:
+        """把对局结果文案里的内部标签换成花火（Bot）第一视角。
+
+        解说走花火人格（system prompt 用「你 / 用户」），而结果文案里是
+        「Bot / 玩家」，人称不一致会让 LLM 把胜负搞反（玩家输了却说成自己输了）。
+        这里统一成「你（花火）/ 用户」视角，消除指代歧义。
+        """
+        if not text:
+            return text
+        return (
+            text.replace("Bot 获胜", "你赢了")
+            .replace("玩家获胜", "你输了")
+            .replace("Bot ", "你")
+            .replace("Bot", "你")
+            .replace("玩家", "用户")
+        )
 
     @classmethod
     def _private_result_summary(
