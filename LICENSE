@@ -1,0 +1,28 @@
+# 版权与许可状态说明
+
+本仓库「花火陪你玩」（`Katou-Kouseki/astrbot_plugin_game_companion_huahuo`）是
+[`StarfallMark/astrbot_plugin_game_companion`](https://github.com/StarfallMark/astrbot_plugin_game_companion)
+的派生（fork）作品。
+
+## 来源与版权
+
+- **上游项目**：`StarfallMark/astrbot_plugin_game_companion`，作者 StarfallMark。
+  上游仓库**未附带 LICENSE 文件**，GitHub 亦未声明许可证（`license: null`），
+  因此其代码的版权归属原作者所有，未对本仓库授予明确的开源许可。
+- **本仓库**：在上游基础上进行了大量修改与新增（`main.py`、`room_manager.py`、
+  `models.py`、`server.py`、各游戏引擎与前端等），这些增量与修改部分的版权归
+  本仓库作者 Katou-Kouseki 所有。
+- **上游模板渊源**：上游项目基于 AstrBot 官方插件模板
+  [`Soulter/helloworld`](https://github.com/Soulter/helloworld)（AGPL-3.0）创建；
+  该模板采用 AGPL-3.0，但模板的许可证不自动授予由模板生成/派生的独立仓库。
+
+## 许可状态
+
+由于上游未声明许可证，本仓库目前**不对外承诺任何特定开源许可证**。若需进一步
+分发或商用，建议先与上游作者 StarfallMark 确认授权，再由本仓库作者补充相应的
+标准许可证文本（如 MIT、AGPL-3.0 等）。
+
+## 第三方组件
+
+- Pikafish 引擎为 GPL-3.0，其 NNUE 权重文件具有单独许可，详情见
+  `README.md` 及引擎随附的许可证文件。

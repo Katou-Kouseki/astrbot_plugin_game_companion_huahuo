@@ -188,3 +188,7 @@ node --check pages/游戏管理台/manager.js
 ```
 
 最低支持 AstrBot `4.24.2`，当前开发与实机测试版本为 AstrBot `4.27.3`；需要 Python `3.12+`。插件版本为 `0.5.16`。
+
+## 致谢 / 来源
+
+本项目是 [`StarfallMark/astrbot_plugin_game_companion`](https://github.com/StarfallMark/astrbot_plugin_game_companion) 的派生作品，感谢原作者 StarfallMark 提供的基础实现。上游仓库未附带许可证声明，具体版权与许可状态见 [LICENSE](./LICENSE)。
