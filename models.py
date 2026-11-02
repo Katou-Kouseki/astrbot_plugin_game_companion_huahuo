@@ -338,6 +338,9 @@ class GameRoom:
     undercover_prepare_seconds: int = 0
     undercover_allow_host_customize_camp_scales: bool = True
     undercover_reveal_identity: bool | None = None
+    # 自动开局任务在途标记：满员/就绪触发自动开局后置位，任务结束清位。
+    # 用于防止取词（可能调 LLM）期间看门狗下一轮又重复触发同一场自动开局。
+    undercover_auto_starting: bool = False
     # 引用管理器「卧底分阵营胜场」同一 dict；存在时座位徽章按实时数据计算
     camp_wins_store: dict[str, dict[str, int]] | None = None
     # 单局群通报与复盘缓存：按 game_uid 记录，保证「一局只通报一次」「复盘缓存不重复请求 LLM」

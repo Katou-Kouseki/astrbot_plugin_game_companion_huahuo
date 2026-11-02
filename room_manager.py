@@ -303,6 +303,8 @@ class RoomManager:
         self.rooms: dict[str, GameRoom] = {}
         # 后台执行的 AI 回合任务：开局/落子后先返回给浏览器，AI 想好了再推过去
         self._bot_tasks: set[asyncio.Task] = set()
+        # 后台执行的卧底自动开局任务：避免 sweep 串行循环被取词（可能调 LLM）阻塞
+        self._auto_start_tasks: set[asyncio.Task] = set()
         self._access_index: dict[str, str] = {}
         self._closed_access: dict[str, tuple[str, float]] = {}
         self._lock = asyncio.Lock()
@@ -1274,8 +1276,14 @@ class RoomManager:
             room.touch()
         await self._emit("player_confirmed", room, {})
 
-    async def _setup_undercover_game(self, room: GameRoom) -> str:
-        """初始化谁是卧底：AI 补位、重编座位号、取词条并分配身份。返回固定空 side_label。"""
+    async def _setup_undercover_game(
+        self, room: GameRoom, word_pair: tuple[str, str] | None = None
+    ) -> str:
+        """初始化谁是卧底：AI 补位、重编座位号、取词条并分配身份。返回固定空 side_label。
+
+        词条可能走 LLM（最长数秒），调用方应先在锁外取好并通过 word_pair 传入；
+        未传入时才在当前位置兜底取词（例如老调用路径）。
+        """
         if not room.multiplayer.enabled:
             raise ValueError("谁是卧底必须在多人模式下进行")
         live_seats = [
@@ -1330,7 +1338,8 @@ class RoomManager:
             raise ValueError(
                 f"谁是卧底至少需要 {self.undercover_min_players} 位已入座玩家"
             )
-        word_pair = await self._fetch_undercover_word_pair(room)
+        if word_pair is None:
+            word_pair = await self._fetch_undercover_word_pair(room)
         # 阵营比例：优先房主自定义覆盖，否则默认
         camp_scales = self.undercover_camp_scales_default
         host_scales = getattr(room, "undercover_host_camp_scales", None)
@@ -1360,6 +1369,24 @@ class RoomManager:
     async def start_game(self, room: GameRoom, visitor_token: str, side: str) -> None:
         """Start a game after a seat has been assigned."""
         self.require_game_enabled(room.game_type)
+        # 谁是卧底需要在开局前取词条，可能调用 LLM（最长数秒）。这里在进入
+        # room.lock 之前先把词取好，避免持有房间锁期间 await 网络/模型：
+        # 一方面会锁死本房间的其它操作，另一方面 start_game 常被串行的
+        # sweep_expired 链路调用，卡住会拖慢之后所有房间的清扫。
+        # 取词前先做一次与锁内一致的轻量预检，尽量不浪费一次 LLM 调用；
+        # 真正的鉴权/状态校验仍在锁内，取词完成后会再校验一遍。
+        word_pair: tuple[str, str] | None = None
+        if room.game_type == "undercover":
+            visitor = self._visitor(room, visitor_token)
+            if room.multiplayer.enabled:
+                allowed = room.multiplayer.seat_for_token(visitor.token) is not None
+            else:
+                allowed = visitor.token == room.player_token
+            if not allowed:
+                raise PermissionError("只有当前玩家可以开始对局")
+            if room.status not in {"setup", "finished", "rematch_pending"}:
+                raise ValueError("当前房间状态不能开始新对局")
+            word_pair = await self._fetch_undercover_word_pair(room)
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             if room.multiplayer.enabled:
@@ -1485,7 +1512,7 @@ class RoomManager:
                 room.multiplayer.current_turn_index = 0
                 side_label = ""
             elif room.game_type == "undercover":
-                side_label = await self._setup_undercover_game(room)
+                side_label = await self._setup_undercover_game(room, word_pair)
             else:
                 room.game = TurtleSoupGame(
                     difficulty=room.difficulty,
@@ -3313,6 +3340,33 @@ class RoomManager:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
+    def _spawn_auto_start(self, room: GameRoom, token: str) -> None:
+        """把卧底自动开局丢到后台执行，避免阻塞 sweep 的串行循环。
+
+        start_game 里的取词可能调用 LLM（最长数秒）。自动开局是看门狗在清扫
+        时触发的，若同步 await 会让之后所有房间的判负/销毁都晚数秒。
+        """
+
+        async def _run() -> None:
+            try:
+                await self.start_game(room, token, "")
+            except Exception as exc:  # noqa: BLE001 - 开局失败不阻塞 sweep
+                logger.debug(
+                    "[GameCompanion] undercover auto-start failed: %s", exc
+                )
+            finally:
+                room.undercover_auto_starting = False
+
+        task = asyncio.create_task(_run())
+        self._auto_start_tasks.add(task)
+        task.add_done_callback(self._auto_start_tasks.discard)
+
+    async def wait_auto_starts(self) -> None:
+        """等所有在途的自动开局结束（测试用）。"""
+        pending = [task for task in list(self._auto_start_tasks) if not task.done()]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
     async def _bot_turn(self, room: GameRoom) -> None:
         # 记下这一局：睡眠期间玩家可能「再来一局」或退席，room.game 会被换掉，
         # 旧任务醒来后不能再往新棋盘上落子。
@@ -3908,7 +3962,11 @@ class RoomManager:
                             "有玩家取消了准备或退出玩家席，自动开局已取消，等待重新就绪。",
                         )
                         room.touch()
-                if (full or timed_out or all_ready_confirm) and live_count >= self.undercover_min_players:
+                if (
+                    not room.undercover_auto_starting
+                    and (full or timed_out or all_ready_confirm)
+                    and live_count >= self.undercover_min_players
+                ):
                     target = next(
                         (
                             s.visitor_token
@@ -3920,6 +3978,9 @@ class RoomManager:
                         # 先把 turn_deadline 清零，避免重入
                         state.turn_deadline = 0.0
                         self._undercover_all_ready_at.pop(room.room_id, None)
+                        # 置「自动开局在途」标记：取词可能调 LLM 数秒，期间看门狗
+                        # 每 2 秒一轮，若不清标记会重复触发同一场开局。
+                        room.undercover_auto_starting = True
                         need_start_undercover = (room, target)
             elif (
                 room.game_type == "undercover"
@@ -3968,14 +4029,9 @@ class RoomManager:
         if duel_finished:
             await self._finish_game(room)
         if need_start_undercover is not None:
-            try:
-                await self.start_game(
-                    need_start_undercover[0], need_start_undercover[1], ""
-                )
-            except Exception as exc:  # 人数不足/权限异常等：不阻塞 housekeeping
-                logger.debug(
-                    "[GameCompanion] undercover auto-start failed: %s", exc
-                )
+            # 丢到后台执行：start_game 里的卧底取词可能调 LLM 数秒，若在这里
+            # await 会阻塞 sweep 的串行 for 循环，拖慢之后所有房间的清扫。
+            self._spawn_auto_start(need_start_undercover[0], need_start_undercover[1])
         if need_undercover_timeout is not None:
             await self._emit(
                 "undercover_turn_timeout",

@@ -7,6 +7,7 @@ import pytest
 from astrbot_plugin_game_companion_huahuo.blackjack import BlackjackCard, BlackjackGame
 from astrbot_plugin_game_companion_huahuo.models import _visitor_uid
 from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.undercover import UndercoverGame
 
 
 async def create_room(
@@ -1123,3 +1124,98 @@ async def test_blackjack_hand_kept_by_uid_after_departed_seat_renumber() -> None
     # 对局进行中座位编号冻结，third 的局内号码未被重编
     assert room.game.hand_for_uid(_visitor_uid(third.token)).number == third.number
     assert third.number == 3
+
+
+@pytest.mark.asyncio
+async def test_undercover_word_fetch_runs_outside_room_lock(monkeypatch) -> None:
+    """卧底取词（可能调 LLM、最长数秒）必须发生在 room.lock 之外。
+
+    否则会锁死本房间的其它操作，并拖慢串行的 sweep_expired 链路。
+    """
+    manager = RoomManager(
+        undercover_min_players=3,
+        undercover_ai_fill_enabled=False,
+        undercover_max_players=3,
+    )
+    room = await manager.create_room(
+        source="group",
+        session_id="aiocqhttp:group:uc",
+        platform="aiocqhttp",
+        group_id="20002",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="undercover",
+        difficulty="normal",
+    )
+    visitors = [await manager.join(room) for _index in range(3)]
+    for visitor in visitors:
+        await manager.claim_and_start(room, visitor.token, "")
+
+    lock_states: list[bool] = []
+
+    async def fake_fetch(r):
+        lock_states.append(r.lock.locked())
+        return ("牛奶", "豆浆")
+
+    monkeypatch.setattr(manager, "_fetch_undercover_word_pair", fake_fetch)
+    await manager.start_game(room, visitors[0].token, "")
+
+    assert room.status == "active"
+    assert isinstance(room.game, UndercoverGame)
+    # 取词时房间锁必须是释放状态
+    assert lock_states == [False]
+
+
+@pytest.mark.asyncio
+async def test_undercover_auto_start_does_not_block_sweep(monkeypatch) -> None:
+    """满员触发的自动开局必须丢到后台，不阻塞 sweep 串行循环，且不会重复触发。"""
+    manager = RoomManager(
+        undercover_min_players=3,
+        undercover_ai_fill_enabled=False,
+        undercover_max_players=3,
+    )
+    room = await manager.create_room(
+        source="group",
+        session_id="aiocqhttp:group:uc2",
+        platform="aiocqhttp",
+        group_id="20003",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="undercover",
+        difficulty="normal",
+    )
+    visitors = [await manager.join(room) for _index in range(3)]
+    for visitor in visitors:
+        await manager.claim_and_start(room, visitor.token, "")
+
+    fetch_started = asyncio.Event()
+    release_fetch = asyncio.Event()
+    fetch_calls: list[int] = []
+
+    async def fake_fetch(r):
+        fetch_calls.append(1)
+        fetch_started.set()
+        await release_fetch.wait()
+        return ("牛奶", "豆浆")
+
+    monkeypatch.setattr(manager, "_fetch_undercover_word_pair", fake_fetch)
+
+    now = time.time()
+    # 第一轮清扫：满员触发自动开局，取词在后台挂起，sweep 应立即返回
+    await manager._tick_multiplayer_room(room, now)
+    await fetch_started.wait()
+    assert room.undercover_auto_starting is True
+    assert fetch_calls == [1]
+
+    # 取词尚未返回时再来一轮清扫：防重入标记应阻止重复触发
+    await manager._tick_multiplayer_room(room, now + 2)
+    assert fetch_calls == [1]
+
+    # 放行取词，自动开局完成
+    release_fetch.set()
+    await manager.wait_auto_starts()
+    assert room.status == "active"
+    assert isinstance(room.game, UndercoverGame)
+    assert room.undercover_auto_starting is False
