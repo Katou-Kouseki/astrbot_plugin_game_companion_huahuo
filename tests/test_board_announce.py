@@ -270,6 +270,8 @@ def _announce_plugin(
     plugin.board_group_announce_recap = False
     # 默认退回「冷却一过就发」，需要测连战等待的用例自己覆盖这个值
     plugin.board_group_announce_series_idle = 0
+    # 旧行为（时间驱动）：关闭「玩家在房间内就攒着」；新逻辑用例自行开启
+    plugin.board_group_announce_wait_while_active = False
     plugin.sent: list[str] = []
     # 「连战 N 局」合并播报走 _send_to_origin，单独记录文案
     plugin.sent_texts: list[str] = []
@@ -539,8 +541,8 @@ async def test_series_flushes_immediately_when_humans_leave_seat() -> None:
 
 
 @pytest.mark.asyncio
-async def test_series_waits_for_new_games_and_flushes_after_idle() -> None:
-    """还在连开时不断顺延；停手后才发一条，且只发一次。"""
+async def test_series_flushes_when_human_goes_offline() -> None:
+    """攒着模式：真人离线（无心跳）后，连战合并任务立即发出。"""
     import asyncio
     import time
 
@@ -552,21 +554,85 @@ async def test_series_waits_for_new_games_and_flushes_after_idle() -> None:
     await manager._finish_game(room)
 
     plugin = _announce_plugin(manager, min_moves=0, cooldown=30)
-    plugin.board_group_announce_series_idle = 1.5
+    plugin.board_group_announce_wait_while_active = True
+    plugin.board_group_announce_series_idle = 60  # 兜底 60s，测试内不会到
+
+    # 真人离线
+    human = room.multiplayer.seats[0]
+    visitor = room.visitors[human.visitor_token]
+    visitor.connected = False
+    visitor.last_seen_at = time.time() - 500
+
     room.last_board_announce_at = time.time()
     await plugin._auto_announce_board(room)
+    assert len(room.pending_board_announces) == 1
 
-    # 空闲计时还没到就来下一局：应当重新计时，而不是先把上一局发出去
-    await manager.restart_finished_game(room, difficulty="normal")
-    room.game.history = [(7, 7, WHITE)] * 9
+    await asyncio.sleep(0.2)
+
+    assert len(plugin.sent_texts) == 1
+    assert "连战 1 局" in plugin.sent_texts[0]
+    assert room.pending_board_announces == []
+
+
+@pytest.mark.asyncio
+async def test_series_does_not_flush_while_active_even_after_cooldown() -> None:
+    """攒着模式是状态驱动：玩家在线时，即使过了冷却窗口也不发。"""
+    import asyncio
+    import time
+
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 12
     room.game.winner = WHITE
     room.game.draw = False
     await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=0, cooldown=0.2)
+    plugin.board_group_announce_wait_while_active = True
+    plugin.board_group_announce_series_idle = 60
+
+    room.last_board_announce_at = time.time()
     await plugin._auto_announce_board(room)
+    assert len(room.pending_board_announces) == 1
+
+    await asyncio.sleep(0.5)  # 已超过冷却窗口 0.2s，但玩家在线，不应发
+
     assert plugin.sent_texts == []
+    assert len(room.pending_board_announces) == 1
+    _cancel_flushes(plugin)
 
-    await asyncio.sleep(1.9)
 
-    assert len(plugin.sent_texts) == 1
-    assert "连战 2 局" in plugin.sent_texts[0]
-    assert room.pending_board_announces == []
+@pytest.mark.asyncio
+async def test_board_humans_all_gone() -> None:
+    """_board_humans_all_gone：离席/离线返回 True，活跃在线返回 False。"""
+    import time
+
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.history = [(7, 7, BLACK)] * 12
+    room.game.winner = WHITE
+    room.game.draw = False
+    await manager._finish_game(room)
+
+    plugin = _announce_plugin(manager, min_moves=0, cooldown=30)
+    human = room.multiplayer.seats[0]
+    visitor = room.visitors[human.visitor_token]
+
+    # 在线且心跳新鲜：不算离席
+    visitor.connected = True
+    visitor.last_seen_at = time.time()
+    assert plugin._board_humans_all_gone(room) is False
+
+    # 离线（断连）
+    visitor.connected = False
+    assert plugin._board_humans_all_gone(room) is True
+
+    # 在线但心跳超时（后台标签节流/断网）
+    visitor.connected = True
+    visitor.last_seen_at = time.time() - 500
+    assert plugin._board_humans_all_gone(room) is True
+
+    # 全部离席
+    await manager.leave_player_seat(room, human.visitor_token)
+    assert room.multiplayer.seats == []
+    assert plugin._board_humans_all_gone(room) is True

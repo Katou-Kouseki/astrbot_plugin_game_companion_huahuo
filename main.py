@@ -86,6 +86,9 @@ COMMENTARY_SIDE_LABELS = {"red": "红", "black": "黑", "white": "白"}
 # 先手或展示顺序：象棋红先，棋类黑先（white 只作为兜底）
 COMMENTARY_SIDE_ORDER = ("red", "black", "white")
 
+# 连战汇总的「离线」判定阈值：真人无心跳超过该秒数视为已离线（用户要求放宽到 3~5 分钟）
+BOARD_SERIES_OFFLINE_SECONDS = 240
+
 
 def _commentary_seat_map(room: GameRoom) -> dict[str, str]:
     """执方（red/black/white）→ 坐在这一方的人；花火座位统一叫「花火」。"""
@@ -1436,9 +1439,12 @@ class GameCompanionPlugin(Star):
         self.board_group_announce_min_moves = self._cfg_non_negative(
             "board.group_announce_min_moves", 5
         )
-        # 连战合并：等最后一局结束后这么久再发（玩家还在连开就继续等）
+        # 连战合并：玩家在房间内就攒着（离席/离线再统一发），兜底上限避免永久憋着
+        self.board_group_announce_wait_while_active = self._cfg_bool(
+            "board.group_announce_wait_while_active", True
+        )
         self.board_group_announce_series_idle = self._cfg_non_negative(
-            "board.group_announce_series_idle_seconds", 90
+            "board.group_announce_series_idle_seconds", 1800
         )
         self.board_report_enabled = self._cfg_bool(
             "board.report_enabled", False
@@ -5813,7 +5819,9 @@ class GameCompanionPlugin(Star):
         节流分两层：
         1. 手数不足（board.group_announce_min_moves）→ 直接不发；
         2. 冷却窗口内（board.group_announce_cooldown_seconds）→ 不丢弃，先把本局攒进
-           room.pending_board_announces，窗口结束时合并成一条「连战 N 局」发出。
+           room.pending_board_announces。开启「玩家在房间内就攒着」时，等玩家离开
+           玩家席或离线后再合并成一条「连战 N 局」（最多攒够兜底上限）；关闭时
+           冷却窗口一过就发。
         """
         try:
             # 先读终局快照：玩家可能已点「再来一局」，room.game 已换成新局
@@ -5947,16 +5955,50 @@ class GameCompanionPlugin(Star):
             pending.sort(key=lambda item: int(item.get("completed_games") or 0))
 
     def _board_series_delay(self, elapsed: float) -> float:
-        """连战汇总的等待时长。
+        """「攒着」关闭时的合并节奏：冷却窗口还需多久关闭。
 
-        默认按「空闲计时」：每结束一局就重新计时，玩家还在连续开局时不会提前播报；
-        只有真人离开玩家席才立刻发。配置为 0 时退回旧行为（冷却一过就发）。
+        开启「玩家在房间内就攒着」时此值仅作调度占位，实际等待由
+        _flush_board_announces 内的状态检查驱动（离席/离线立即发，兜底上限强制发）；
+        关闭时退化为「冷却窗口一过就发」。
         """
-        idle = getattr(self, "board_group_announce_series_idle", 90)
-        if idle and idle > 0:
-            return float(idle)
         cooldown = getattr(self, "board_group_announce_cooldown", 30)
         return max(0.5, float(cooldown) - max(0.0, float(elapsed or 0)))
+
+    def _board_wait_while_active(self) -> bool:
+        """是否「玩家在房间内就攒着」（默认开）。"""
+        return bool(getattr(self, "board_group_announce_wait_while_active", True))
+
+    def _board_humans_all_gone(self, room: GameRoom) -> bool:
+        """真人全部离开玩家席、或全部离线，即可立即发连战汇总。"""
+        try:
+            seats = self.manager._human_seats(room)
+        except Exception:
+            return False
+        if not seats:
+            return True
+        now = time.time()
+        offline = float(getattr(self, "board_group_offline_seconds", None) or BOARD_SERIES_OFFLINE_SECONDS)
+        for seat in seats:
+            visitor = room.visitors.get(seat.visitor_token)
+            if visitor is None:
+                continue
+            if visitor.connected and now - visitor.last_seen_at < offline:
+                return False  # 还有活跃真人
+        return True
+
+    async def _board_hold_until_humans_gone(self, room: GameRoom) -> None:
+        """「攒着」模式下的等待：真人离席/离线立即返回，否则攒够兜底上限再返回。"""
+        max_wait = float(getattr(self, "board_group_announce_series_idle", 1800) or 0)
+        if max_wait <= 0:
+            max_wait = float(getattr(self, "board_group_announce_cooldown", 30) or 30)
+        deadline = time.time() + max_wait
+        while True:
+            if self._board_humans_all_gone(room):
+                return
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(1.0, remaining))
 
     def _schedule_board_flush(self, room: GameRoom, delay: float) -> None:
         """安排一次「连战合并播报」；新对局进来时重新计时（防抖）。"""
@@ -5994,7 +6036,11 @@ class GameCompanionPlugin(Star):
         entries: list[dict[str, object]] = []
         try:
             if delay > 0:
-                await asyncio.sleep(delay)
+                if self._board_wait_while_active():
+                    # 状态驱动：玩家还在房间里就一直攒着，离席/离线（或攒够兜底）才发
+                    await self._board_hold_until_humans_gone(room)
+                else:
+                    await asyncio.sleep(delay)
             entries = self._take_board_pending(room)
             if not entries:
                 return

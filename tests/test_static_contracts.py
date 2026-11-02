@@ -867,19 +867,27 @@ def test_room_activity_uses_stable_visitor_uid() -> None:
 
 
 def test_board_series_waits_for_idle_and_flushes_on_seat_leave() -> None:
-    """连战汇总：空闲计时防抖 + 真人退席立即发送。"""
+    """连战汇总：状态驱动（离席/离线立即发，兜底上限），真人退席立即发送。"""
     main = (ROOT / "main.py").read_text(encoding="utf-8")
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
 
+    # 兜底上限默认 30 分钟（1800s）
     assert (
-        schema["board"]["items"]["group_announce_series_idle_seconds"]["default"] == 90
+        schema["board"]["items"]["group_announce_series_idle_seconds"]["default"] == 1800
     )
+    # 「玩家在房间内就攒着」默认开
+    assert schema["board"]["items"]["group_announce_wait_while_active"]["default"] is True
     assert "board_group_announce_series_idle" in main
+    assert "board_group_announce_wait_while_active" in main
     assert "def _board_series_delay(" in main
     assert "def _flush_board_series_when_seats_empty(" in main
+    assert "def _board_humans_all_gone(" in main
+    assert "def _board_hold_until_humans_gone(" in main
     assert "self._flush_board_series_when_seats_empty(room)" in main
     # 防抖：新对局要把旧的等待任务取消重排
     assert "existing.cancel()" in main
+    # 离线判定阈值放宽到 3~5 分钟（240s）
+    assert "BOARD_SERIES_OFFLINE_SECONDS = 240" in main
 
 
 def test_duel_side_rotation_is_relative_and_configurable() -> None:
