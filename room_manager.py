@@ -3671,6 +3671,11 @@ class RoomManager:
                     winner_tokens=winner_tokens or set(),
                     ai_won=(result == "bot_win"),
                 )
+            elif room.game_type in {"blackjack", "pig_dice"}:
+                # 二十一点/贪心骰子：花火是对手/庄家，每局记局数，赢局记胜场
+                self._credit_ai_opponent_game(room, ai_won=(result == "bot_win"))
+                if result == "human_win":
+                    self._credit_human_global_wins(room)
             elif duel_handled:
                 # 两人对弈只给赢家记胜，AI 座位不计入全局榜
                 self._credit_human_global_wins(room, winner_tokens=duel_credit)
@@ -3791,6 +3796,25 @@ class RoomManager:
             if ai_won:
                 entry["wins"] = int(entry.get("wins") or 0) + 1
             self._bump_daily(entry, wins=1 if ai_won else 0, games=1)
+        self._save_global_stats()
+
+    def _credit_ai_opponent_game(self, room: GameRoom, *, ai_won: bool) -> None:
+        """二十一点/贪心骰子等「单人 vs 花火」玩法：花火是对手/庄家，每局记局数，赢局记胜场。
+
+        与棋类榜共用 AI_LEADERBOARD_KEY / AI_LEADERBOARD_NAME，让花火在这些玩法里
+        也有自己的胜率排名（而不是只出现在棋类榜里）。
+        """
+        if room.game_type not in {"blackjack", "pig_dice"}:
+            return
+        bucket = self.global_player_wins.setdefault(room.game_type, {})
+        entry = bucket.setdefault(
+            AI_LEADERBOARD_KEY,
+            {"name": AI_LEADERBOARD_NAME, "wins": 0, "games": 0},
+        )
+        entry["games"] = int(entry.get("games") or 0) + 1
+        if ai_won:
+            entry["wins"] = int(entry.get("wins") or 0) + 1
+        self._bump_daily(entry, wins=1 if ai_won else 0, games=1)
         self._save_global_stats()
 
     def _credit_human_global_wins(

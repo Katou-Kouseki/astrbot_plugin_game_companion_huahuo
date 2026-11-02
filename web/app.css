@@ -504,7 +504,7 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   width: 52px;
   height: 72px;
   display: grid;
-  place-content: start center;
+  place-items: center;
   gap: 0;
   border: 1px solid #c9d0cb;
   border-radius: 6px;
@@ -512,11 +512,17 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   color: #29342e;
   box-shadow: 0 3px 8px rgba(35, 43, 38, .1);
 }
-.playing-card strong { font-size: 18px; line-height: 1; }
-.playing-card span { font-size: 20px; line-height: 1; }
+.playing-card strong {
+  position: absolute;
+  top: 3px;
+  left: 6px;
+  font-size: 12px;
+  line-height: 1;
+}
+.playing-card span { font-size: 26px; line-height: 1; }
 .playing-card.red { color: #b23b33; }
 .playing-card.face-down {
-  place-content: center;
+  place-items: center;
   background: repeating-linear-gradient(45deg, #34503f, #34503f 4px, #2c4336 4px, #2c4336 8px);
   color: #fff;
   font-size: 20px;

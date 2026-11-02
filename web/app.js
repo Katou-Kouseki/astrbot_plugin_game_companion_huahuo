@@ -2749,6 +2749,8 @@
       : "等待玩家加入";
 
     const history = document.getElementById("soupHistory");
+    const soupPrevScrollTop = history.scrollTop;
+    const soupWasNearBottom = history.scrollHeight - history.scrollTop - history.clientHeight < 48;
     history.replaceChildren();
     const entries = Array.isArray(game?.entries) ? game.entries.slice() : [];
     if (!entries.length) {
@@ -2777,7 +2779,12 @@
         item.append(prompt, response);
         history.appendChild(item);
       });
-      history.scrollTop = history.scrollHeight;
+      // 和聊天窗一致：在底部才跟随滚到底，上滑翻历史则原地恢复，别把「爬楼」拽回底部
+      if (soupWasNearBottom) {
+        history.scrollTop = history.scrollHeight;
+      } else {
+        history.scrollTop = soupPrevScrollTop;
+      }
     }
 
     const solution = document.getElementById("soupSolution");
