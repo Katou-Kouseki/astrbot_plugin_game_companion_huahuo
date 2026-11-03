@@ -908,8 +908,7 @@ _UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
   .head .r { font-size: 16px; color: rgba(255,255,255,.6); max-width: 340px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .big { margin-top: 76px; text-align: center; font-size: 88px; font-weight: 900; line-height: 1.1;
     color: {{ camp_color }};
-    text-shadow: 3px 0 0 #fff, -3px 0 0 #fff, 0 3px 0 #fff, 0 -3px 0 #fff,
-                 3px 3px 0 #fff, -3px 3px 0 #fff, 3px -3px 0 #fff, -3px -3px 0 #fff,
+    text-shadow: 1.5px 0 0 #fff, -1.5px 0 0 #fff, 0 1.5px 0 #fff, 0 -1.5px 0 #fff,
                  0 6px 24px rgba(0,0,0,.3);
     position: relative; }
   .winners { margin-top: 44px; text-align: center; font-size: 26px; font-weight: 700;
@@ -962,8 +961,7 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
   .head .r { font-size: 30px; }
   .big { margin-top: 22px; text-align: center; font-size: 52px; font-weight: 900; line-height: 1.15;
     color: {{ accent }};
-    text-shadow: 2px 0 0 #fff, -2px 0 0 #fff, 0 2px 0 #fff, 0 -2px 0 #fff,
-                 2px 2px 0 #fff, -2px 2px 0 #fff, 2px -2px 0 #fff, -2px -2px 0 #fff,
+    text-shadow: 1px 0 0 #fff, -1px 0 0 #fff, 0 1px 0 #fff, 0 -1px 0 #fff,
                  0 4px 18px rgba(0,0,0,.3);
     position: relative; overflow-wrap: anywhere; word-break: break-all; }
   .sub { margin-top: 8px; text-align: center; font-size: 18px; font-weight: 600;

@@ -828,7 +828,7 @@ def test_board_poster_highlights_and_gold_title() -> None:
     # 把文字压暗 45%：白→#8c8c8c、金→#8c7338）
     assert "color: {{ accent }};" in main
     assert "-webkit-text-stroke" not in main
-    assert "2px 0 0 #fff" in main  # 白色描边（text-shadow 八方向模拟）
+    assert "1px 0 0 #fff" in main  # 白色描边（text-shadow 四方向模拟，减薄避免棱角）
     assert "0 4px 18px rgba(0,0,0,.3)" in main  # 保留下投影
     # 五子棋连线
     assert "winning_line" in manager
