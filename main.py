@@ -902,7 +902,7 @@ _UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
   .head .t { font-size: 22px; font-weight: 800; color: #ffd9a0; }
   .head .r { font-size: 16px; color: rgba(255,255,255,.6); max-width: 340px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .big { margin-top: 76px; text-align: center; font-size: 88px; font-weight: 900; line-height: 1.1;
-    color: {{ camp_color }}; -webkit-text-stroke: 10px rgba(0,0,0,.45); text-shadow: 0 6px 24px rgba(0,0,0,.3); position: relative; }
+    color: {{ camp_color }}; text-shadow: 0 6px 24px rgba(0,0,0,.3); position: relative; }
   .winners { margin-top: 44px; text-align: center; font-size: 26px; font-weight: 700;
     color: #ffe3b0; line-height: 40px; position: relative; }
   .pills { margin-top: 44px; display: flex; justify-content: center; gap: 20px; position: relative; }
@@ -952,7 +952,7 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
   .head .t { font-size: 22px; font-weight: 800; color: #ffe0a6; }
   .head .r { font-size: 30px; }
   .big { margin-top: 22px; text-align: center; font-size: 52px; font-weight: 900; line-height: 1.15;
-    color: #ffffff; -webkit-text-stroke: 6px rgba(0,0,0,.45); text-shadow: 0 4px 18px rgba(0,0,0,.3);
+    color: {{ accent }}; text-shadow: 0 4px 18px rgba(0,0,0,.3);
     position: relative; overflow-wrap: anywhere; word-break: break-all; }
   .sub { margin-top: 8px; text-align: center; font-size: 18px; font-weight: 600;
     color: rgba(255,255,255,.8); position: relative; overflow-wrap: anywhere; word-break: break-all; }
@@ -5752,7 +5752,7 @@ class GameCompanionPlugin(Star):
             if _pillow_font_length(d, title, big_font, ef_b) <= max_w:
                 break
         title = _pillow_truncate(d, title, max_w, big_font, ef_b)
-        _pillow_draw_text(d, W / 2, int(160 * S), title, big_font, (255, 255, 255, 255), anchor="mm", efont=ef_b)
+        _pillow_draw_text(d, W / 2, int(160 * S), title, big_font, accent, anchor="mm", efont=ef_b)
         # 副信息：过长时截断（含玩家昵称）
         sub_font = _pillow_font(False, int(19 * S))
         sub_text = _pillow_truncate(d, data["sub"], max_w, sub_font, ef_b)

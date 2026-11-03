@@ -818,13 +818,15 @@ def test_board_report_uses_frozen_snapshot_and_throttles() -> None:
     assert "expect_game_uid" in main
 
 
-def test_board_poster_highlights_and_white_title() -> None:
-    """战报海报：获胜方名称用白色大字，并接好终局高亮（五子棋连线/象棋最后一手/黑白棋落子+子数）。"""
+def test_board_poster_highlights_and_gold_title() -> None:
+    """战报海报：获胜方名称用金色大字（去掉半透明描边，避免被 t2i 渲染器压暗），并带终局高亮。"""
     main = (ROOT / "main.py").read_text(encoding="utf-8")
     manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
 
-    # 名称（大字结果）用白色，不再用金色 accent
-    assert "color: #ffffff; -webkit-text-stroke" in main
+    # 名称（大字结果）用金色 accent，且不再用 -webkit-text-stroke（其半透明黑描边
+    # 会被自建 t2i 渲染器画到填充之上，把文字压暗 45%：白→#8c8c8c、金→#8c7338）
+    assert "color: {{ accent }}; text-shadow: 0 4px 18px rgba(0,0,0,.3);" in main
+    assert "-webkit-text-stroke" not in main
     # 五子棋连线
     assert "winning_line" in manager
     assert "_gomoku_winning_line" in manager
