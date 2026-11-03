@@ -5368,6 +5368,12 @@ class GameCompanionPlugin(Star):
         name = str(payload.get("winner_name") or "")
         side = str(payload.get("winner_side") or "")
         draw = bool(payload.get("draw"))
+        # 与花火（AI 座位）对局时，副信息里带上花火棋力（难度），让群友一眼看清对手水平
+        diff = (
+            f" · 花火（{self.manager._difficulty_label(room.difficulty)}）"
+            if self.manager._ai_seat(room) is not None
+            else ""
+        )
         if name:
             # 昵称过长时截断，避免战报标题/副信息溢出画布「显示不全」
             if len(name) > 10:
@@ -5375,31 +5381,36 @@ class GameCompanionPlugin(Star):
             side_text = {"red": "红", "black": "黑", "white": "白"}.get(side, "")
             title = f"{name} 获胜"
             sub = (
-                f"{label} · {name}执{side_text} · 共 {moves} 手"
+                f"{label} · {name}执{side_text}{diff} · 共 {moves} 手"
                 if side_text
-                else f"{label} · 共 {moves} 手"
+                else f"{label}{diff} · 共 {moves} 手"
             )
             badge, accent = "🏆", "#ffd166"
         elif draw:
-            title, sub, badge, accent = "平局", f"{label} · 共 {moves} 手", "🤝", "#9ccbff"
+            title, sub, badge, accent = (
+                "平局",
+                f"{label}{diff} · 共 {moves} 手",
+                "🤝",
+                "#9ccbff",
+            )
         elif payload.get("human_won") is True:
             title, sub, badge, accent = (
                 "玩家获胜",
-                f"{label} · 共 {moves} 手",
+                f"{label}{diff} · 共 {moves} 手",
                 "🏆",
                 "#ffd166",
             )
         elif payload.get("human_won") is False:
             title, sub, badge, accent = (
                 "花火 获胜",
-                f"{label} · 共 {moves} 手",
+                f"{label}{diff} · 共 {moves} 手",
                 "🏆",
                 "#ffd166",
             )
         else:
             title, sub, badge, accent = (
                 "本局结束",
-                f"{label} · 共 {moves} 手",
+                f"{label}{diff} · 共 {moves} 手",
                 "🏁",
                 "#9ccbff",
             )

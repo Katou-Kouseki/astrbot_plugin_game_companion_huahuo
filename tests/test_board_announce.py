@@ -167,6 +167,50 @@ async def test_board_poster_data_ai_win() -> None:
 
 
 @pytest.mark.asyncio
+async def test_board_poster_data_includes_ai_difficulty() -> None:
+    """与花火对局的战报海报副信息要带上花火棋力（难度），方便群友看清对手水平。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)  # difficulty="normal"
+    room.game.winner = BLACK  # 玩家执黑胜
+    room.game.draw = False
+    room.game.history = [(7, 7, BLACK)]
+    room.status = "finished"
+
+    data = _plugin(manager)._board_poster_data(room)
+
+    assert "花火（普通）" in data["sub"]
+
+
+@pytest.mark.asyncio
+async def test_board_poster_data_omits_difficulty_without_ai() -> None:
+    """两位真人对弈（无 AI 座位）的战报海报不显示花火难度。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await manager.create_room(
+        source="private",
+        session_id="UMO:t:PM:3",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="小明",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    first = await manager.join(room)
+    second = await manager.join(room)
+    await manager.assign_player(room, first.number, "10001")
+    await manager.assign_player(room, second.number, "10002")
+    room.multiplayer.seats[0].side = "black"
+    room.multiplayer.seats[1].side = "white"
+    room.game = SimpleNamespace(winner=BLACK, draw=False, history=[])
+    room.status = "finished"
+
+    data = _plugin(manager)._board_poster_data(room)
+
+    assert "花火" not in data["sub"]
+
+
+@pytest.mark.asyncio
 async def test_board_poster_t2i_uses_html_render() -> None:
     """服务端海报优先走 AstrBot 的 html_render（t2i），并返回 base64 PNG。"""
     manager = RoomManager(max_private_rooms=0)

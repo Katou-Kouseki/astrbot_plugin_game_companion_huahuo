@@ -384,7 +384,7 @@ async def test_heartbeat_does_not_refresh_meaningful_activity() -> None:
 
 @pytest.mark.asyncio
 async def test_finished_room_expires_shortly_after_player_leaves() -> None:
-    manager = RoomManager(empty_player_timeout=0, idle_timeout=300)
+    manager = RoomManager(empty_player_timeout=60, idle_timeout=300)
     room = await create_room(manager, source="private")
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "human_black")
@@ -402,9 +402,31 @@ async def test_finished_room_expires_shortly_after_player_leaves() -> None:
 
 
 @pytest.mark.asyncio
+async def test_finished_room_not_fast_recycled_when_empty_timeout_disabled() -> None:
+    """「玩家席无人自动销毁秒数」设为 0 时，本局结束后玩家离开不再被 8 秒快速回收，
+    只由「房间无有效操作」超时兜底销毁（LLM 开房后玩家走光也不该被秒杀）。"""
+    manager = RoomManager(empty_player_timeout=0, idle_timeout=300)
+    room = await create_room(manager, source="private")
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    room.status = "finished"
+    room.last_activity_at = 100.0
+    visitor.connected = False
+    visitor.left_at = 100.0
+    visitor.last_seen_at = 100.0
+
+    # 超过 8 秒离开宽限，房间也不应被「人去房空」快速回收
+    assert await manager.sweep_expired(now=108.0) == []
+    assert room.room_id in manager.rooms
+    # 直到「房间无有效操作」超时（300s）才被兜底销毁
+    assert await manager.sweep_expired(now=399.9) == []
+    assert await manager.sweep_expired(now=400.0) == [room.room_id]
+
+
+@pytest.mark.asyncio
 async def test_finished_room_survives_while_spectator_is_present() -> None:
     """一局结束后玩家离开，但只要还有观众在线，房间就不应被自动销毁。"""
-    manager = RoomManager(empty_player_timeout=0, idle_timeout=300)
+    manager = RoomManager(empty_player_timeout=60, idle_timeout=300)
     room = await create_room(manager, source="private")
     player = await manager.join(room)
     spectator = await manager.join(room)
@@ -480,7 +502,7 @@ async def test_active_game_is_not_destroyed_by_browser_leave_grace() -> None:
 
 @pytest.mark.asyncio
 async def test_finished_room_uses_heartbeat_loss_when_leave_signal_is_missing() -> None:
-    manager = RoomManager(empty_player_timeout=0, idle_timeout=300)
+    manager = RoomManager(empty_player_timeout=60, idle_timeout=300)
     room = await create_room(manager, source="private")
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "human_black")
