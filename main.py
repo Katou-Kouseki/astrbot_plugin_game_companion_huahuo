@@ -852,6 +852,8 @@ def _pillow_draw_text(
     *,
     anchor: str = "ls",
     efont: Any = None,
+    stroke_width: int = 0,
+    stroke_fill: Any = None,
 ) -> None:
     """混合字体绘制：anchor 支持 ls/rs/lm/rm/mm。
 
@@ -875,7 +877,10 @@ def _pillow_draw_text(
     elif anchor == "lm":
         draw_anchor = "lm"
     for seg, seg_font in segs:
-        d.text((x0, y), seg, font=seg_font or f, fill=fill, anchor=draw_anchor)
+        d.text(
+            (x0, y), seg, font=seg_font or f, fill=fill, anchor=draw_anchor,
+            stroke_width=stroke_width, stroke_fill=stroke_fill,
+        )
         x0 += d.textlength(seg, font=seg_font or f)
 
 # 服务端「战况通知」海报的 HTML/Jinja2 模板（AstrBot t2i 渲染，样式与前端战况大字报一致）。
@@ -902,7 +907,11 @@ _UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
   .head .t { font-size: 22px; font-weight: 800; color: #ffd9a0; }
   .head .r { font-size: 16px; color: rgba(255,255,255,.6); max-width: 340px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .big { margin-top: 76px; text-align: center; font-size: 88px; font-weight: 900; line-height: 1.1;
-    color: {{ camp_color }}; text-shadow: 0 6px 24px rgba(0,0,0,.3); position: relative; }
+    color: {{ camp_color }};
+    text-shadow: 3px 0 0 #fff, -3px 0 0 #fff, 0 3px 0 #fff, 0 -3px 0 #fff,
+                 3px 3px 0 #fff, -3px 3px 0 #fff, 3px -3px 0 #fff, -3px -3px 0 #fff,
+                 0 6px 24px rgba(0,0,0,.3);
+    position: relative; }
   .winners { margin-top: 44px; text-align: center; font-size: 26px; font-weight: 700;
     color: #ffe3b0; line-height: 40px; position: relative; }
   .pills { margin-top: 44px; display: flex; justify-content: center; gap: 20px; position: relative; }
@@ -952,7 +961,10 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
   .head .t { font-size: 22px; font-weight: 800; color: #ffe0a6; }
   .head .r { font-size: 30px; }
   .big { margin-top: 22px; text-align: center; font-size: 52px; font-weight: 900; line-height: 1.15;
-    color: {{ accent }}; text-shadow: 0 4px 18px rgba(0,0,0,.3);
+    color: {{ accent }};
+    text-shadow: 2px 0 0 #fff, -2px 0 0 #fff, 0 2px 0 #fff, 0 -2px 0 #fff,
+                 2px 2px 0 #fff, -2px 2px 0 #fff, 2px -2px 0 #fff, -2px -2px 0 #fff,
+                 0 4px 18px rgba(0,0,0,.3);
     position: relative; overflow-wrap: anywhere; word-break: break-all; }
   .sub { margin-top: 8px; text-align: center; font-size: 18px; font-weight: 600;
     color: rgba(255,255,255,.8); position: relative; overflow-wrap: anywhere; word-break: break-all; }
@@ -5752,7 +5764,7 @@ class GameCompanionPlugin(Star):
             if _pillow_font_length(d, title, big_font, ef_b) <= max_w:
                 break
         title = _pillow_truncate(d, title, max_w, big_font, ef_b)
-        _pillow_draw_text(d, W / 2, int(160 * S), title, big_font, accent, anchor="mm", efont=ef_b)
+        _pillow_draw_text(d, W / 2, int(160 * S), title, big_font, accent, anchor="mm", efont=ef_b, stroke_width=int(2 * S), stroke_fill=(255, 255, 255))
         # 副信息：过长时截断（含玩家昵称）
         sub_font = _pillow_font(False, int(19 * S))
         sub_text = _pillow_truncate(d, data["sub"], max_w, sub_font, ef_b)
@@ -6667,7 +6679,7 @@ class GameCompanionPlugin(Star):
             fill=camp_col + (255,),
             anchor="mm",
             stroke_width=int(12 * S),
-            stroke_fill=(0, 0, 0, 128),
+            stroke_fill=(255, 255, 255),
         )
 
         # 获胜玩家名单（金色，最多 3 行）

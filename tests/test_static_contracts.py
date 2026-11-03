@@ -819,14 +819,17 @@ def test_board_report_uses_frozen_snapshot_and_throttles() -> None:
 
 
 def test_board_poster_highlights_and_gold_title() -> None:
-    """战报海报：获胜方名称用金色大字（去掉半透明描边，避免被 t2i 渲染器压暗），并带终局高亮。"""
+    """战报海报：获胜方名称用金色大字 + 白色描边（text-shadow 模拟，不被 t2i 渲染器压暗），并带终局高亮。"""
     main = (ROOT / "main.py").read_text(encoding="utf-8")
     manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
 
-    # 名称（大字结果）用金色 accent，且不再用 -webkit-text-stroke（其半透明黑描边
-    # 会被自建 t2i 渲染器画到填充之上，把文字压暗 45%：白→#8c8c8c、金→#8c7338）
-    assert "color: {{ accent }}; text-shadow: 0 4px 18px rgba(0,0,0,.3);" in main
+    # 名称（大字结果）用金色 accent；描边用 text-shadow 白色（画在文字后面），
+    # 不再用 -webkit-text-stroke（其半透明黑描边会被自建 t2i 渲染器画到填充之上，
+    # 把文字压暗 45%：白→#8c8c8c、金→#8c7338）
+    assert "color: {{ accent }};" in main
     assert "-webkit-text-stroke" not in main
+    assert "2px 0 0 #fff" in main  # 白色描边（text-shadow 八方向模拟）
+    assert "0 4px 18px rgba(0,0,0,.3)" in main  # 保留下投影
     # 五子棋连线
     assert "winning_line" in manager
     assert "_gomoku_winning_line" in manager
