@@ -725,3 +725,88 @@ async def test_board_poster_data_othello_shows_piece_count() -> None:
 
     assert "黑 " in data["sub"]
     assert "白 " in data["sub"]
+
+
+def _report_plugin(manager: RoomManager) -> GameCompanionPlugin:
+    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin.manager = manager
+    plugin.board_report_mode = "daily"
+    return plugin
+
+
+@pytest.mark.asyncio
+async def test_board_sample_room_produces_snapshot_with_highlights() -> None:
+    """样例房间会冻结终局快照，带上三种终局高亮（五子棋连线/象棋最后一手/黑白棋落子+子数）。"""
+    manager = RoomManager(max_private_rooms=0)
+    plugin = _report_plugin(manager)
+
+    gomoku = plugin._board_sample_room("五子棋")
+    assert gomoku.last_board_result["winning_line"]
+    assert gomoku.last_board_result.get("last_move") is None
+
+    othello = plugin._board_sample_room("黑白棋")
+    assert othello.last_board_result["last_move"] == {"to": [2, 4], "color": 1}
+    assert othello.last_board_result["piece_count"]["black"] > othello.last_board_result["piece_count"]["white"]
+
+    xiangqi = plugin._board_sample_room("中国象棋")
+    assert xiangqi.last_board_result["last_move"]["to"] is not None
+    assert xiangqi.last_board_result["last_move"]["from"] is not None
+
+    assert plugin._board_sample_room("").game_type == "gomoku"
+
+
+@pytest.mark.asyncio
+async def test_board_sample_room_svg_highlights_each_game() -> None:
+    """三种棋类的样例海报 SVG 都带金色高亮标记。"""
+    manager = RoomManager(max_private_rooms=0)
+    plugin = _report_plugin(manager)
+    for key in ("五子棋", "黑白棋", "中国象棋"):
+        room = plugin._board_sample_room(key)
+        svg = plugin._board_svg(room)
+        assert "#ffd166" in svg
+
+
+def test_board_report_data_groups_four_games() -> None:
+    """棋类日报数据按四种棋类分区，每区最多 limit 名。"""
+    manager = RoomManager(max_private_rooms=0)
+    manager.global_player_wins["gomoku"] = {
+        "1": {"name": "小明", "wins": 5, "games": 8},
+        "2": {"name": "小红", "wins": 3, "games": 5},
+    }
+    manager.global_player_wins["xiangqi"] = {"3": {"name": "王五", "wins": 4, "games": 9}}
+    plugin = _report_plugin(manager)
+
+    data = plugin._board_report_data(subtitle="日报")
+
+    labels = [s["label"] for s in data["sections"]]
+    assert labels == ["五子棋", "中国象棋"]
+    gomoku = data["sections"][0]
+    assert [r["name"] for r in gomoku["rows"]] == ["小明", "小红"]
+    assert gomoku["rows"][0]["winrate"] == 62
+    assert data["subtitle"] == "日报"
+
+
+def test_board_report_data_empty_returns_no_sections() -> None:
+    manager = RoomManager(max_private_rooms=0)
+    plugin = _report_plugin(manager)
+    data = plugin._board_report_data(subtitle="周报")
+    assert data["sections"] == []
+    assert data["subtitle"] == "周报"
+
+
+def test_board_report_poster_pillow_renders_png() -> None:
+    """棋类日报海报 Pillow 兜底能渲染出 PNG（有数据与空数据两种）。"""
+    pytest.importorskip("PIL")
+    manager = RoomManager(max_private_rooms=0)
+    manager.global_player_wins["gomoku"] = {
+        "1": {"name": "小明", "wins": 5, "games": 8},
+    }
+    plugin = _report_plugin(manager)
+
+    data = plugin._board_report_data(subtitle="日报")
+    png = GameCompanionPlugin._board_report_poster_pillow(data)
+    assert png.startswith("iVBOR")  # base64 PNG 头
+
+    empty = plugin._board_report_data(subtitle="周报")
+    empty_png = GameCompanionPlugin._board_report_poster_pillow(empty)
+    assert empty_png.startswith("iVBOR")

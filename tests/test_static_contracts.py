@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.49"
+    assert metadata["version"] == "0.5.50"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -832,6 +832,27 @@ def test_board_poster_highlights_and_white_title() -> None:
     assert '"last_move"' in manager
     assert '"piece_count"' in manager
     assert "last_move: dict[str, object] | None = None" in main
+
+
+def test_board_report_commands_render_posters_for_testing() -> None:
+    """棋类战报/日报测试指令能出海报：战报按棋类出终局高亮图，日报出排行榜海报。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    # 战报测试指令：生成文字 + 海报，并支持按棋类选样例
+    assert '@filter.command("棋类战报", alias={"棋类战报样式测试"})' in main
+    assert "async def board_report_test(self, event: AstrMessageEvent, game: str = \"\")" in main
+    assert "self._board_announce_poster(room)" in main
+    assert "def _board_sample_room(self, game_key: str = \"\") -> Any" in main
+    assert "def _board_sample_game(game_type: str) -> Any" in main
+    assert 'self.manager._snapshot_board_result(room)' in main
+
+    # 日报测试指令：生成排行榜海报（t2i 优先、Pillow 兜底、文字回退）
+    assert '@filter.command("棋类日报", alias={"棋类周报", "棋类战绩日报", "棋类战绩周报"})' in main
+    assert "self._board_report_poster(data)" in main
+    assert "def _board_report_data(" in main
+    assert "_BOARD_REPORT_TMPL" in main
+    assert "棋类对局 · 战绩报告" in main
+    assert "def _board_report_poster_pillow" in main
 
 
 def test_room_activity_toasts_are_compact_and_throttled() -> None:

@@ -1056,6 +1056,90 @@ _UNDERCOVER_REPORT_TMPL = """<!DOCTYPE html>
 </html>"""
 
 
+# 服务端「棋类战绩日报/周报」排行榜海报的 HTML/Jinja2 模板（深蓝榜单卡风格，与卧底
+# 日报同族，但按四种棋类分区，每区展示该棋类前 3 名：图标头 + 奖牌 + 名字 + 胜场/胜率）。
+_BOARD_REPORT_TMPL = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=720">
+<style>
+  html, body { margin: 0; padding: 0; }
+  .poster {
+    min-width: 720px; min-height: 560px; box-sizing: border-box;
+    padding: 40px 44px 30px; position: relative; overflow: hidden;
+    background: linear-gradient(160deg, #1c2b4e 0%, #0c1526 100%);
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; color: #fff;
+  }
+  .poster::before { content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(120% 80% at 85% -10%, rgba(90,130,220,.28), transparent 60%),
+                radial-gradient(90% 60% at -10% 110%, rgba(255,190,90,.12), transparent 55%); }
+  .poster::after { content: ''; position: absolute; inset: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.03) 0 2px, transparent 2px 40px); }
+  .header { display: flex; align-items: center; gap: 16px; position: relative; }
+  .icon { width: 54px; height: 54px; border-radius: 14px; flex: none; display: flex; align-items: center;
+    justify-content: center; font-size: 30px; background: rgba(255,215,130,.16); border: 1px solid rgba(255,215,130,.35); }
+  .titles { flex: 1; min-width: 0; }
+  .title { font-size: 26px; font-weight: 800; color: #ffe096; letter-spacing: 1px; }
+  .sub { margin-top: 4px; font-size: 13px; color: rgba(255,255,255,.5); }
+  .badge { flex: none; padding: 6px 18px; border-radius: 999px; font-size: 15px; font-weight: 700;
+    color: #3a2a08; background: linear-gradient(135deg, #ffd782, #ffb34d); box-shadow: 0 4px 14px rgba(255,180,80,.35); }
+  .rule { margin-top: 26px; height: 1px; position: relative;
+    background: linear-gradient(90deg, rgba(255,255,255,.02), rgba(255,255,255,.18), rgba(255,255,255,.02)); }
+  .cards { margin-top: 20px; display: flex; flex-direction: column; gap: 14px; position: relative; }
+  .card { border-radius: 16px; padding: 14px 18px 16px; background: rgba(255,255,255,.045);
+    border: 1px solid rgba(255,255,255,.06); }
+  .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .card-head .cicon { font-size: 20px; line-height: 1; }
+  .card-head .clabel { font-size: 18px; font-weight: 800; color: #ffe096; }
+  .row { display: flex; align-items: center; gap: 12px; height: 36px; }
+  .rank { width: 26px; height: 26px; border-radius: 50%; flex: none; display: flex; align-items: center;
+    justify-content: center; font-size: 15px; font-weight: 700; color: rgba(255,255,255,.75); background: rgba(255,255,255,.08); }
+  .rank.medal { background: radial-gradient(circle at 35% 30%, #fff7e0, #ffd782); color: #5b3a08; font-size: 16px; }
+  .name { flex: 1; min-width: 0; font-size: 18px; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat { flex: none; font-size: 15px; font-weight: 700; color: #ffe096; }
+  .empty { margin-top: 36px; text-align: center; font-size: 20px; color: rgba(255,255,255,.55); position: relative; }
+  .footer { margin-top: 26px; text-align: center; font-size: 13px; color: rgba(255,255,255,.45); position: relative; }
+  .accent { position: absolute; left: 0; right: 0; bottom: 0; height: 6px;
+    background: linear-gradient(90deg, #ffd782, #ff9d5c, #ffd782); }
+</style>
+</head>
+<body>
+<div class="poster">
+  <div class="header">
+    <div class="icon">♟️</div>
+    <div class="titles">
+      <div class="title">棋类对局 · 战绩报告</div>
+      <div class="sub">跨房间全局战绩榜 · {{ scope }}</div>
+    </div>
+    <div class="badge">{{ subtitle }}</div>
+  </div>
+  <div class="rule"></div>
+  {% if sections %}
+  <div class="cards">
+  {% for s in sections %}
+    <div class="card">
+      <div class="card-head"><span class="cicon">{{ s.icon }}</span><span class="clabel">{{ s.label }}</span></div>
+      {% for r in s.rows %}
+      <div class="row">
+        <span class="rank {{ 'medal' if loop.index0 < 3 else '' }}">{{ r.rank }}</span>
+        <span class="name">{{ r.name }}</span>
+        <span class="stat">{{ r.wins }} 胜 · {{ r.winrate }}%</span>
+      </div>
+      {% endfor %}
+    </div>
+  {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">当前暂无棋类战绩记录。</div>
+  {% endif %}
+  <div class="footer">数据来自跨房间全局战绩榜 · 由 花火 监督生成</div>
+  <div class="accent"></div>
+</div>
+</body>
+</html>"""
+
+
 @dataclass(slots=True)
 class _RecentPrivateGameResult:
     room_id: str
@@ -2067,21 +2151,55 @@ class GameCompanionPlugin(Star):
 
     @filter.command("棋类日报", alias={"棋类周报", "棋类战绩日报", "棋类战绩周报"})
     async def board_report_now(self, event: AstrMessageEvent):
-        """立即生成一份棋类战绩日报/周报文本发到当前会话（样式测试/手动补发）。
+        """立即生成一份棋类战绩日报/周报海报发到当前会话（样式测试/手动补发）。
 
         顶层指令：直接发送「棋类日报 / 棋类周报」等即可触发（无需游戏指令组前缀）。
+        输出棋类排行榜海报（t2i 优先、Pillow 兜底）；都不可用时回退纯文字榜单。
         内容与定时棋类战绩报告相同（四种棋类全局榜），不依赖 board_report_enabled 开关。
         """
-        yield event.plain_result(self._build_board_report())
+        message = str(getattr(event, "message_str", "") or "")
+        subtitle = "周报" if ("周报" in message and "日报" not in message) else "日报"
+        data = self._board_report_data(subtitle=subtitle)
+        try:
+            image_data = await self._board_report_poster(data)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 生成棋类战绩海报失败，回退纯文字: %s", exc)
+            yield event.plain_result(self._build_board_report())
+            return
+        try:
+            from astrbot.api.message_components import Image
+
+            yield event.chain_result(
+                MessageChain([Image(file=f"base64://{image_data}")])
+            )
+        except Exception as exc:
+            yield event.plain_result(f"棋类战绩海报已生成但发送失败：{exc}")
 
     @filter.command("棋类战报", alias={"棋类战报样式测试"})
-    async def board_report_test(self, event: AstrMessageEvent):
-        """用示例五子棋对局生成一条「棋类战报」文案，用于测试战报文字样式。
+    async def board_report_test(self, event: AstrMessageEvent, game: str = ""):
+        """用示例对局生成一条「棋类战报」海报（文字 + 图），用于测试战报样式与终局高亮。
 
-        顶层指令：直接发送「棋类战报 / 棋类战报样式测试」即可触发。
+        顶层指令：直接发送「棋类战报 / 棋类战报样式测试」即可触发（默认五子棋）。
+        可选参数：五子棋 / 黑白棋 / 中国象棋 / 围棋，例如「棋类战报 中国象棋」。
+        图片优先用 AstrBot t2i（HTML 渲染），不可用时回退服务端 Pillow。
         """
-        text = self._board_announce_text(self._board_sample_room())
-        yield event.plain_result(text or "示例棋类战报生成失败")
+        room = self._board_sample_room(game)
+        text = self._board_announce_text(room) or "示例棋类战报生成失败"
+        try:
+            image_data = await self._board_announce_poster(room)
+        except Exception as exc:
+            yield event.plain_result(text + f"\n\n（海报生成失败：{exc}）")
+            return
+        try:
+            from astrbot.api.message_components import Image
+
+            yield event.chain_result(
+                MessageChain(
+                    [Plain(text + "\n\n"), Image(file=f"base64://{image_data}")]
+                )
+            )
+        except Exception as exc:
+            yield event.plain_result(text + f"\n\n（海报已生成但发送失败：{exc}）")
 
     async def _bind_game_player_text(
         self, event: AstrMessageEvent, identity_token: str
@@ -5887,15 +6005,79 @@ class GameCompanionPlugin(Star):
         )
         return SimpleNamespace(game=game, multiplayer=SimpleNamespace(seats=[]))
 
-    @staticmethod
-    def _board_sample_room() -> Any:
-        """构造一局示例「棋类」结果（真实五子棋对局），供棋类战报测试指令使用。
+    def _board_sample_room(self, game_key: str = "") -> Any:
+        """构造一局示例「棋类」终局，供棋类战报测试指令使用。
 
-        黑方（玩家执黑）在第 0 行连成五子获胜，返回 9 手的完整对局，
-        便于 _board_announce_text / _board_announce_poster 直接消费。
+        game_key 支持「五子棋/黑白棋/中国象棋/围棋」（或其英文名），默认五子棋。
+        构造后调用 manager 冻结终局快照，让战报海报带上对应的终局高亮效果：
+        五子棋连五连线 / 象棋最后一手 / 黑白棋落子与子数。
         """
         from types import SimpleNamespace
 
+        key = (game_key or "").strip().lower()
+        alias = {
+            "五子棋": "gomoku", "gomoku": "gomoku",
+            "黑白棋": "othello", "黑白": "othello", "othello": "othello",
+            "中国象棋": "xiangqi", "象棋": "xiangqi", "xiangqi": "xiangqi",
+            "围棋": "weiqi", "weiqi": "weiqi", "go": "weiqi",
+        }
+        gt = alias.get(key, "gomoku")
+        game = self._board_sample_game(gt)
+        room = SimpleNamespace(
+            game_type=gt,
+            completed_games=1,
+            difficulty="normal",
+            status="finished",
+            multiplayer=SimpleNamespace(seats=[]),
+            game=game,
+        )
+        self.manager._snapshot_board_result(room)
+        return room
+
+    @staticmethod
+    def _board_sample_game(game_type: str) -> Any:
+        """构造一局示例终局（供 _board_sample_room 使用），每种棋类返回已分胜负的盘面。"""
+        if game_type == "othello":
+            from .othello import BLACK, OthelloGame
+
+            game = OthelloGame(human_color=BLACK)
+            game.board = [
+                [1, 1, 1, 1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 1, 1, 2, 2],
+                [1, 1, 1, 1, 2, 2, 2, 2],
+                [1, 1, 1, 2, 2, 2, 2, 2],
+                [1, 1, 1, 1, 2, 2, 2, 2],
+                [1, 1, 1, 1, 1, 2, 2, 2],
+                [1, 1, 1, 1, 1, 1, 1, 2],
+            ]
+            game.winner = BLACK
+            game.draw = False
+            game.history = [(2, 4, BLACK)]
+            return game
+        if game_type == "xiangqi":
+            from .xiangqi import RED, XiangqiGame
+
+            game = XiangqiGame(human_side=RED)
+            # 中炮对屏风马开局的几步，最后一手（红方）作为海报高亮目标
+            game.moves = ["h2e2", "h9g7", "h0g2", "i9h9", "c3c4", "g6g5"]
+            game.winner = RED
+            game.draw = False
+            return game
+        if game_type == "weiqi":
+            from .weiqi import BLACK, WHITE, WeiqiGame
+
+            game = WeiqiGame(human_color=BLACK, size=13)
+            board = [[0] * 13 for _ in range(13)]
+            for row, col in ((3, 3), (3, 5), (4, 4), (5, 3), (5, 5), (6, 6), (2, 6), (4, 2)):
+                board[row][col] = BLACK
+            for row, col in ((3, 4), (4, 3), (4, 5), (5, 4), (6, 4), (5, 6)):
+                board[row][col] = WHITE
+            game.board = board
+            game.winner = BLACK
+            game.draw = False
+            game.history = [(5, 5, BLACK)]
+            return game
         from .gomoku import BLACK, WHITE, GomokuGame
 
         game = GomokuGame(human_color=BLACK)
@@ -5907,12 +6089,7 @@ class GameCompanionPlugin(Star):
             (0, 4, BLACK),
         ]:
             game.place(row, column, color)
-        return SimpleNamespace(
-            game_type="gomoku",
-            completed_games=1,
-            multiplayer=SimpleNamespace(seats=[]),
-            game=game,
-        )
+        return game
 
     async def _auto_announce_undercover(self, room: GameRoom) -> None:
         """局末自动播报（group_announce_auto）。
@@ -6955,6 +7132,254 @@ class GameCompanionPlugin(Star):
         for umoid in groups:
             self._spawn(self._send_report_piece(umoid, text))
         logger.info("[GameCompanion] 已触发棋类战绩报表推送")
+
+    def _board_report_data(
+        self, subtitle: str = "日报", limit_per_game: int = 3
+    ) -> dict[str, Any]:
+        """提取棋类战绩榜数据（四种棋类各取前几名），供棋类日报海报 t2i/Pillow 共用。"""
+        game_types = ["gomoku", "othello", "xiangqi", "weiqi"]
+        labels = {
+            "gomoku": "五子棋", "othello": "黑白棋",
+            "xiangqi": "中国象棋", "weiqi": "围棋",
+        }
+        icons = {"gomoku": "🎯", "othello": "⚪", "xiangqi": "♟️", "weiqi": "⛰️"}
+        mode = str(getattr(self, "board_report_mode", "daily") or "daily")
+        days = self._report_window_days(mode)
+        scope = "累计" if not days else ("最近 1 天" if days == 1 else f"最近 {days} 天")
+        medals = ["🥇", "🥈", "🥉"]
+        sections: list[dict[str, Any]] = []
+        for gt in game_types:
+            rows = self.manager.global_leaderboard(
+                gt, limit=limit_per_game, days=days or None
+            )
+            if not rows and days:
+                rows = self.manager.global_leaderboard(gt, limit=limit_per_game)
+            if not rows:
+                continue
+            items = [
+                {
+                    "rank": medals[index] if index < 3 else f"#{index + 1}",
+                    "name": str(row.get("name") or "").strip() or f"玩家{index + 1}",
+                    "wins": int(row.get("wins") or 0),
+                    "winrate": int(round(float(row.get("winrate") or 0))),
+                }
+                for index, row in enumerate(rows)
+            ]
+            sections.append({"icon": icons[gt], "label": labels[gt], "rows": items})
+        return {"subtitle": subtitle, "scope": scope, "sections": sections}
+
+    async def _board_report_poster(self, data: dict[str, Any]) -> str:
+        """生成棋类战绩日报/周报排行榜海报，返回 base64 PNG。
+
+        优先 AstrBot t2i（HTML 渲染），失败回退 Pillow；都失败时抛出异常，
+        由调用方回退纯文字榜单。
+        """
+        try:
+            return await self._board_report_poster_t2i(data)
+        except Exception as exc:
+            logger.warning("[GameCompanion] t2i 渲染棋类日报海报失败，回退 Pillow: %s", exc)
+        return await asyncio.to_thread(self._board_report_poster_pillow, data)
+
+    async def _board_report_poster_t2i(self, data: dict[str, Any]) -> str:
+        """用 AstrBot 的 t2i（HTML 渲染）生成棋类排行榜海报，返回 base64 PNG。"""
+        render = getattr(self, "html_render", None)
+        if not callable(render):
+            raise RuntimeError("当前 AstrBot 未提供 html_render（t2i）能力")
+        options = {
+            "type": "png",
+            "full_page": True,
+            "viewport_width": 720,
+            "device_scale_factor_level": "ultra",
+            "timeout": 20000,
+        }
+        url = await asyncio.wait_for(
+            render(_BOARD_REPORT_TMPL, data, options=options), timeout=8
+        )
+        if not url:
+            raise RuntimeError("t2i 渲染返回空结果")
+        return await self._download_image_base64(url)
+
+    @staticmethod
+    def _board_report_poster_pillow(data: dict[str, Any]) -> str:
+        """Pillow 手绘棋类排行榜海报（t2i 不可用时的兜底，与 HTML 版同款榜单卡风格）。"""
+        from PIL import Image, ImageDraw
+
+        sections = data.get("sections") or []
+        subtitle = str(data.get("subtitle") or "")
+        scope = str(data.get("scope") or "")
+        S = 1.5
+        W = int(720 * S)
+        pad = int(44 * S)
+        header_top = int(40 * S)
+        icon_h = int(54 * S)
+        rule_gap = int(26 * S)
+        card_gap = int(14 * S)
+        card_pad_y = int(14 * S)
+        card_pad_x = int(18 * S)
+        card_head_h = int(32 * S)
+        row_h = int(38 * S)
+        row_gap = int(4 * S)
+        accent_h = int(6 * S)
+        cards_top = int(20 * S)
+        footer_h = int(30 * S)
+
+        def card_height(n_rows: int) -> int:
+            return card_pad_y * 2 + card_head_h + max(1, n_rows) * (row_h + row_gap)
+
+        if sections:
+            cards_h = sum(card_height(len(s.get("rows") or [])) for s in sections)
+            cards_h += max(0, len(sections) - 1) * card_gap
+            body_h = cards_top + cards_h
+        else:
+            body_h = cards_top + int(96 * S)
+        H = (
+            header_top + icon_h + rule_gap + body_h + footer_h
+            + int(22 * S) + accent_h + int(26 * S)
+        )
+        img = Image.new("RGBA", (W, H), (12, 21, 38, 255))
+        d = ImageDraw.Draw(img, "RGBA")
+        top_c = (28, 43, 78)
+        bottom_c = (12, 21, 38)
+        for y in range(H):
+            t = y / max(1, H - 1)
+            d.line(
+                [(0, y), (W, y)],
+                fill=(
+                    round(top_c[0] + (bottom_c[0] - top_c[0]) * t),
+                    round(top_c[1] + (bottom_c[1] - top_c[1]) * t),
+                    round(top_c[2] + (bottom_c[2] - top_c[2]) * t),
+                    255,
+                ),
+            )
+        ef_h = _pillow_emoji_font(int(30 * S))
+        ef_t = _pillow_emoji_font(int(26 * S))
+        base = (18, 30, 52)
+        # 标题区
+        icon_x = pad
+        icon_y = header_top
+        d.rounded_rectangle(
+            [icon_x, icon_y, icon_x + icon_h, icon_y + icon_h],
+            radius=int(14 * S), fill=_pillow_blend(base, (255, 215, 130), 41),
+            outline=_pillow_blend(base, (255, 215, 130), 89), width=int(2 * S),
+        )
+        _pillow_draw_text(
+            d, icon_x + icon_h / 2, icon_y + icon_h / 2, "♟️",
+            _pillow_font(True, int(30 * S)), (255, 224, 150, 255), anchor="mm", efont=ef_h,
+        )
+        title_f = _pillow_font(True, int(26 * S))
+        _pillow_draw_text(
+            d, icon_x + icon_h + int(16 * S), icon_y + int(6 * S),
+            "棋类对局 · 战绩报告", title_f, (255, 224, 150, 255), efont=ef_t,
+        )
+        sub_f = _pillow_font(False, int(13 * S))
+        _pillow_draw_text(
+            d, icon_x + icon_h + int(16 * S), icon_y + int(6 * S) + int(36 * S),
+            f"跨房间全局战绩榜 · {scope}", sub_f, (255, 255, 255, 128), efont=ef_t,
+        )
+        badge_f = _pillow_font(True, int(15 * S))
+        bw = int(_pillow_font_length(d, subtitle, badge_f)) + int(36 * S)
+        bh = int(30 * S)
+        bx = W - pad - bw
+        by = icon_y + (icon_h - bh) // 2
+        d.rounded_rectangle(
+            [bx, by, bx + bw, by + bh], radius=bh // 2, fill=(255, 215, 130, 255)
+        )
+        _pillow_draw_text(
+            d, bx + bw / 2, by + bh / 2, subtitle, badge_f, (58, 42, 8, 255),
+            anchor="mm", efont=ef_t,
+        )
+        # 分隔线
+        rule_y = header_top + icon_h + rule_gap
+        d.line([(pad, rule_y), (W - pad, rule_y)], fill=_pillow_blend(base, (255, 255, 255), 46), width=int(2 * S))
+        # 分区卡片
+        y = rule_y + cards_top
+        if not sections:
+            nf = _pillow_font(False, int(20 * S))
+            _pillow_draw_text(
+                d, W / 2, y + int(48 * S), "当前暂无棋类战绩记录。",
+                nf, (255, 255, 255, 140), anchor="mm", efont=ef_t,
+            )
+        head_f = _pillow_font(True, int(18 * S))
+        name_f = _pillow_font(False, int(18 * S))
+        stat_f = _pillow_font(True, int(15 * S))
+        ef_r = _pillow_emoji_font(int(16 * S))
+        ef_s = _pillow_emoji_font(int(15 * S))
+        rank_r = int(13 * S)
+        name_max_w = int(340 * S)
+        for section in sections:
+            rows = section.get("rows") or []
+            card_h = card_height(len(rows))
+            d.rounded_rectangle(
+                [pad, y, W - pad, y + card_h], radius=int(16 * S),
+                fill=_pillow_blend(base, (255, 255, 255), 12),
+                outline=_pillow_blend(base, (255, 255, 255), 24), width=int(2 * S),
+            )
+            cy = y + card_pad_y + int(16 * S)
+            # 图标与文字分开绘制，避免 emoji 宽度差异导致各区标题错位
+            _pillow_draw_text(
+                d, pad + card_pad_x + int(16 * S), cy,
+                str(section.get("icon") or "♟️"),
+                head_f, (255, 224, 150, 255), anchor="lm", efont=ef_t,
+            )
+            _pillow_draw_text(
+                d, pad + card_pad_x + int(48 * S), cy,
+                str(section.get("label") or ""),
+                head_f, (255, 224, 150, 255), anchor="lm", efont=ef_t,
+            )
+            row_y = y + card_pad_y + card_head_h
+            for index, row in enumerate(rows):
+                rcy = row_y + row_h / 2
+                rank_cx = pad + card_pad_x + rank_r
+                is_top = index < 3
+                if is_top:
+                    d.ellipse(
+                        [rank_cx - rank_r, rcy - rank_r, rank_cx + rank_r, rcy + rank_r],
+                        fill=(255, 215, 130, 255),
+                    )
+                    _pillow_draw_text(
+                        d, rank_cx, rcy, str(row.get("rank") or ""),
+                        _pillow_font(True, int(16 * S)), (58, 42, 8, 255),
+                        anchor="mm", efont=ef_r,
+                    )
+                else:
+                    d.ellipse(
+                        [rank_cx - rank_r, rcy - rank_r, rank_cx + rank_r, rcy + rank_r],
+                        fill=_pillow_blend(base, (255, 255, 255), 20),
+                    )
+                    _pillow_draw_text(
+                        d, rank_cx, rcy, str(row.get("rank") or ""),
+                        _pillow_font(True, int(14 * S)), (255, 255, 255, 191),
+                        anchor="mm", efont=ef_r,
+                    )
+                name_x = rank_cx + rank_r + int(16 * S)
+                name = _pillow_truncate(
+                    d, str(row.get("name") or ""), name_max_w, name_f, ef_t
+                )
+                _pillow_draw_text(
+                    d, name_x, rcy, name, name_f, (255, 255, 255, 240),
+                    anchor="lm", efont=ef_t,
+                )
+                stat_text = f"{int(row.get('wins') or 0)} 胜 · {int(row.get('winrate') or 0)}%"
+                _pillow_draw_text(
+                    d, W - pad - card_pad_x, rcy, stat_text, stat_f,
+                    (255, 224, 150, 255), anchor="rm", efont=ef_s,
+                )
+                row_y += row_h + row_gap
+            y += card_h + card_gap
+        # 底部与强调条
+        ff = _pillow_font(False, int(13 * S))
+        _pillow_draw_text(
+            d, W / 2, H - accent_h - int(30 * S),
+            "数据来自跨房间全局战绩榜 · 由 花火 监督生成", ff,
+            (255, 255, 255, 115), anchor="mm", efont=ef_t,
+        )
+        d.rectangle([0, H - accent_h, W, H], fill=(255, 190, 92, 255))
+        import base64
+        import io
+
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
 
     def _build_board_report(self) -> str:
         """拼一份棋类战绩日报/周报文本（按时间窗口汇总四种棋类榜，含胜率）。"""
