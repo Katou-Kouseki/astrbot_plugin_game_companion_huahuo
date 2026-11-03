@@ -1756,6 +1756,50 @@
     }[room?.game_type] || "棋类游戏";
   }
 
+  // 计算「是否轮到我操作」：聚合各玩法的「轮到你」状态，供标签页标题提醒使用。
+  function computeMyTurn() {
+    if (!room || room.status !== "active") return false;
+    const gt = room.game_type;
+    const game = room.game;
+    // 棋类对弈（五子棋/黑白棋/象棋/围棋）：落座玩家 + 轮到我执方 + 未分胜负
+    if (isDuelGame(room)) {
+      if (!room.is_player || !game || game.winner || game.draw) return false;
+      return gt === "xiangqi" ? game.turn === mySide() : game.turn === myColor();
+    }
+    // 井字棋：轮到我执子
+    if (gt === "tictactoe") {
+      return Boolean(room.is_player && game && !game.winner && !game.draw && game.turn === game.human_mark);
+    }
+    // 贪心骰子：玩家 vs 花火，轮到玩家掷骰
+    if (gt === "pig_dice") {
+      return Boolean(room.is_player && game && !game.finished && game.turn === "human");
+    }
+    // 二十一点：闲家回合轮到我（庄家补牌 / 已结算不算）
+    if (gt === "blackjack") {
+      return Boolean(game && !game.finished && game.phase !== "dealer_turn" && room.is_current_player);
+    }
+    // 海龟汤：提问 / 给线索轮到我（后端 current_player）
+    if (gt === "turtle_soup") {
+      return Boolean(room.is_current_player);
+    }
+    // 你画我猜：轮到我作画（花火看图中 / 已猜中不算）
+    if (gt === "draw_guess") {
+      return Boolean(room.is_player && game && !game.processing && !game.solved && !game.finished);
+    }
+    // 谁是卧底：发言轮轮到我（ucPrevMyTurn 已在 renderUndercover 里更新）
+    if (gt === "undercover") {
+      return Boolean(ucPrevMyTurn);
+    }
+    return false;
+  }
+
+  // 标签页标题提醒：轮到我时改标题，切到别的标签页也能一眼看到「轮到你」
+  function updateDocumentTitle() {
+    document.title = sanitizeDisplayText(
+      computeMyTurn() ? `🔔 轮到你 · ${gameLabel()}` : `花火陪你玩 · ${gameLabel()}`,
+    );
+  }
+
   function syncGameUi() {
     if (!room) return;
     const xiangqi = room.game_type === "xiangqi";
@@ -1984,6 +2028,7 @@
     renderBoardResult();
     maybeShowSideBanner();
     icons();
+    updateDocumentTitle();
   }
 
   function renderSeat() {

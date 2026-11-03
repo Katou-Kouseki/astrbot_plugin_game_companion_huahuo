@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.51"
+    assert metadata["version"] == "0.5.52"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -1131,3 +1131,22 @@ def test_poll_recovers_from_pruned_visitor() -> None:
     poll = poll[: poll.index("async function loadState()")]
     assert 'message.includes("访客身份")' in poll
     assert "await join();" in poll
+
+
+def test_browser_tab_title_reminds_my_turn() -> None:
+    """标签页标题提醒：聚合各玩法「轮到我」状态，render 末尾更新 document.title。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "function computeMyTurn()" in script
+    assert "function updateDocumentTitle()" in script
+    # 轮到我时标题带「轮到你」，未轮到时用静态「花火陪你玩」
+    assert "🔔 轮到你" in script
+    assert "花火陪你玩 · ${gameLabel()}" in script
+    # 覆盖主要玩法的「轮到我」判定
+    assert "isDuelGame(room)" in script  # 棋类对弈（turn === 我执方）
+    assert "game.turn === mySide()" in script  # 象棋
+    assert 'game.turn === "human"' in script  # 贪心骰子
+    assert "room.is_current_player" in script  # 二十一点 / 海龟汤
+    assert "ucPrevMyTurn" in script  # 卧底发言轮
+    # render 末尾更新标题
+    assert "updateDocumentTitle();" in script
