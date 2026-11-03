@@ -3735,6 +3735,11 @@ class RoomManager:
             payload["winner_token"] = winner_seat.visitor_token
             payload["winner_name"] = self._seat_display(winner_seat)
             payload["winner_side"] = self._seat_side(room, winner_seat)
+            # 战报里带上败者：双人对弈 / 单人 vs 花火都能从座位里定位到对家
+            loser_seat = self._duel_loser_seat(room)
+            if loser_seat is not None:
+                payload["loser_name"] = self._seat_display(loser_seat)
+                payload["loser_side"] = self._seat_side(room, loser_seat)
         elif not payload["draw"]:
             # 未启用玩家席的单人房间：按执方判胜负，供播报文案兜底
             if isinstance(game, XiangqiGame):
@@ -4639,6 +4644,27 @@ class RoomManager:
         return self._duel_seat_for_color(
             room, int(getattr(game, "winner", EMPTY) or EMPTY)
         )
+
+    def _duel_loser_seat(self, room: GameRoom) -> PlayerSeat | None:
+        """本局败家座位：象棋按执方查，棋类按颜色查；和棋 / 找不到对家返回 None。
+
+        只有在「座位里能定位到胜负双方」时才返回败者（双人对弈、或单人 vs 花火
+        AI 座位）；纯单人练习没有对家座位，返回 None，战报仍用「玩家/花火」二元兜底。
+        """
+        game = room.game
+        if isinstance(game, XiangqiGame):
+            loser = {"red": "black", "black": "red"}.get(
+                str(game.winner or ""), ""
+            )
+            return self._duel_seat_for_side(room, loser)
+        winner = int(getattr(game, "winner", EMPTY) or EMPTY)
+        if winner == BLACK:
+            loser = WHITE
+        elif winner == WHITE:
+            loser = BLACK
+        else:
+            return None
+        return self._duel_seat_for_color(room, loser)
 
     @staticmethod
     def _duel_human_pair(room: GameRoom) -> bool:

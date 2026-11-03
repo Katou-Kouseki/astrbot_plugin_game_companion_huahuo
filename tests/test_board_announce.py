@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrbot_plugin_game_companion_huahuo.gomoku import BLACK, WHITE
+from astrbot_plugin_game_companion_huahuo.gomoku import BLACK, WHITE, GomokuGame
 from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
 from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 
@@ -810,3 +810,103 @@ def test_board_report_poster_pillow_renders_png() -> None:
     empty = plugin._board_report_data(subtitle="周报")
     empty_png = GameCompanionPlugin._board_report_poster_pillow(empty)
     assert empty_png.startswith("iVBOR")
+
+
+@pytest.mark.asyncio
+async def test_snapshot_records_loser_for_vs_ai() -> None:
+    """终局快照记录败者：单人 vs 花火，花火(白)胜 → 败者是玩家(黑)。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.winner = WHITE
+    room.game.draw = False
+    room.game.history = [(7, 7, BLACK), (7, 8, WHITE)]
+    manager._snapshot_board_result(room)
+
+    snap = room.last_board_result
+    assert snap["winner_name"] == "花火"
+    assert snap["loser_name"] == "小明"
+    assert snap["loser_side"] == "black"
+
+
+@pytest.mark.asyncio
+async def test_board_poster_data_includes_loser_player_wins() -> None:
+    """玩家胜时，战报海报副信息带上败者（花火，含难度）。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.winner = BLACK
+    room.game.draw = False
+    room.game.history = [(7, 7, BLACK)]
+    manager._snapshot_board_result(room)
+
+    data = _plugin(manager)._board_poster_data(room)
+
+    assert data["title"] == "小明 获胜"
+    assert "胜 花火（普通）执白" in data["sub"]
+
+
+@pytest.mark.asyncio
+async def test_board_poster_data_includes_loser_ai_wins() -> None:
+    """花火胜时，战报海报副信息带上败者（玩家）。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.winner = WHITE
+    room.game.draw = False
+    room.game.history = [(7, 7, BLACK), (7, 8, WHITE)]
+    manager._snapshot_board_result(room)
+
+    data = _plugin(manager)._board_poster_data(room)
+
+    assert data["title"] == "花火 获胜"
+    assert "胜 小明执黑" in data["sub"]
+
+
+@pytest.mark.asyncio
+async def test_board_poster_data_includes_loser_for_two_humans() -> None:
+    """两位真人对弈时，战报海报副信息带上败者（不带花火难度）。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await manager.create_room(
+        source="private",
+        session_id="UMO:t:PM:5",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="小明",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    first = await manager.join(room)
+    second = await manager.join(room)
+    await manager.assign_player(room, first.number, "10001")
+    await manager.assign_player(room, second.number, "10002")
+    room.multiplayer.seats[0].side = "black"
+    room.multiplayer.seats[1].side = "white"
+    room.multiplayer.seats[0].display_name = "小明"
+    room.multiplayer.seats[1].display_name = "小红"
+    room.game = GomokuGame(human_color=BLACK)
+    room.game.winner = BLACK
+    room.game.draw = False
+    room.game.history = [(7, 7, BLACK)]
+    manager._snapshot_board_result(room)
+
+    data = _plugin(manager)._board_poster_data(room)
+
+    assert data["title"] == "小明 获胜"
+    assert "胜 小红执白" in data["sub"]
+    assert "花火" not in data["sub"]
+
+
+@pytest.mark.asyncio
+async def test_board_announce_text_includes_loser() -> None:
+    """棋类纯文字战报带上败者。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.winner = WHITE
+    room.game.draw = False
+    room.game.history = [(7, 7, BLACK), (7, 8, WHITE)]
+    manager._snapshot_board_result(room)
+
+    text = _plugin(manager)._board_announce_text(room)
+
+    assert "花火获胜" in text
+    assert "小明落败" in text

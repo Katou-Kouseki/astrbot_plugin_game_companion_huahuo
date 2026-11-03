@@ -5394,6 +5394,10 @@ class GameCompanionPlugin(Star):
             payload["winner_token"] = winner_seat.visitor_token
             payload["winner_name"] = self.manager._seat_display(winner_seat)
             payload["winner_side"] = self.manager._seat_side(room, winner_seat)
+            loser_seat = self.manager._duel_loser_seat(room)
+            if loser_seat is not None:
+                payload["loser_name"] = self.manager._seat_display(loser_seat)
+                payload["loser_side"] = self.manager._seat_side(room, loser_seat)
         # 单人历史房间（未启用玩家席）的兜底胜负
         if not payload["draw"] and not payload["winner_name"]:
             if isinstance(game, XiangqiGame):
@@ -5442,6 +5446,14 @@ class GameCompanionPlugin(Star):
         )
         if name:
             result = f"🏆 {name}获胜" + (f"（执{side_text}）" if side_text else "")
+            loser = str(payload.get("loser_name") or "")
+            if loser and loser != name:
+                loser_side_text = {"red": "红", "black": "黑", "white": "白"}.get(
+                    str(payload.get("loser_side") or ""), ""
+                )
+                result += f" · {loser}落败" + (
+                    f"（执{loser_side_text}）" if loser_side_text else ""
+                )
         elif payload.get("draw"):
             result = "🤝 平局"
         elif payload.get("human_won") is True:
@@ -5508,21 +5520,41 @@ class GameCompanionPlugin(Star):
         side = str(payload.get("winner_side") or "")
         draw = bool(payload.get("draw"))
         # 与花火（AI 座位）对局时，副信息里带上花火棋力（难度），让群友一眼看清对手水平
-        diff = (
-            f" · 花火（{self.manager._difficulty_label(room.difficulty)}）"
+        ai_difficulty = (
+            self.manager._difficulty_label(room.difficulty)
             if self.manager._ai_seat(room) is not None
             else ""
         )
+        diff = f" · 花火（{ai_difficulty}）" if ai_difficulty else ""
+
+        def _huahuo_label(raw_name: str) -> str:
+            # 花火作为胜者/败者时，难度直接跟在名字后（如「花火（普通）」），避免与 diff 重复
+            if ai_difficulty and raw_name == "花火":
+                return f"花火（{ai_difficulty}）"
+            return raw_name
+
         if name:
             # 昵称过长时截断，避免战报标题/副信息溢出画布「显示不全」
             if len(name) > 10:
                 name = name[:10] + "…"
             side_text = {"red": "红", "black": "黑", "white": "白"}.get(side, "")
+            loser = str(payload.get("loser_name") or "")
+            loser_side_text = {"red": "红", "black": "黑", "white": "白"}.get(
+                str(payload.get("loser_side") or ""), ""
+            )
+            if loser and loser != name:
+                if len(loser) > 10:
+                    loser = loser[:10] + "…"
+                loser_text = f" 胜 {_huahuo_label(loser)}" + (
+                    f"执{loser_side_text}" if loser_side_text else ""
+                )
+            else:
+                loser_text = ""
             title = f"{name} 获胜"
             sub = (
-                f"{label} · {name}执{side_text}{diff} · {count_text}"
+                f"{label} · {_huahuo_label(name)}执{side_text}{loser_text} · {count_text}"
                 if side_text
-                else f"{label}{diff} · {count_text}"
+                else f"{label}{loser_text} · {count_text}"
             )
             badge, accent = "🏆", "#ffd166"
         elif draw:
