@@ -304,10 +304,43 @@ class GomokuGame:
     def _pattern_score(self, row: int, column: int, color: int) -> float:
         return float(sum(self._direction_scores(row, column, color)))
 
-    def _direction_scores(self, row: int, column: int, color: int) -> list[float]:
-        """四个方向的单点价值（临时落子后逐方向评估，结束时恢复空位）。"""
+    @staticmethod
+    def _run_score(count: int, open_ends: int) -> float:
+        """单方向棋型分值：连子数 + 空端数 → 价值。
+
+        排序（从高到低）：成五 > 活四 > 活三 > 冲四 > 眠三 > 活二。
+        关键在「活三 > 冲四」：单独冲四只是逼对手封一手、封完就死，
+        活三下一手能变活四（对手无法双封），威胁更大；死四（两端都被堵）
+        完全是白费一手，分值归零。
+        """
+        if count >= 5:
+            return 1_000_000.0
+        if count == 4:
+            if open_ends == 2:
+                return 200_000.0  # 活四：必胜
+            if open_ends == 1:
+                return 10_000.0  # 冲四：逼应，但单独不致命
+            return 0.0  # 死四：两端都被堵，纯属浪费
+        if count == 3:
+            if open_ends == 2:
+                return 15_000.0  # 活三：强威胁，高于冲四
+            if open_ends == 1:
+                return 1_200.0  # 眠三
+            return 100.0
+        if count == 2:
+            if open_ends == 2:
+                return 500.0
+            if open_ends == 1:
+                return 120.0
+            return 20.0
+        return float(open_ends * 4)
+
+    def _direction_runs(
+        self, row: int, column: int, color: int
+    ) -> list[tuple[int, int]]:
+        """临时落子后，四个方向各自的 (连子数, 空端数)，结束时恢复空位。"""
         self.board[row][column] = color
-        scores: list[float] = []
+        runs: list[tuple[int, int]] = []
         for delta_row, delta_column in ((1, 0), (0, 1), (1, 1), (1, -1)):
             count = 1
             open_ends = 0
@@ -327,27 +360,24 @@ class GomokuGame:
                     if self.board[scan_row][scan_column] == EMPTY:
                         open_ends += 1
                     break
-            if count >= 5:
-                scores.append(1_000_000.0)
-            elif count == 4:
-                scores.append(48_000.0 if open_ends == 2 else 12_000.0)
-            elif count == 3:
-                scores.append(4_000.0 if open_ends == 2 else 700.0)
-            elif count == 2:
-                scores.append(350.0 if open_ends == 2 else 60.0)
-            else:
-                scores.append(float(open_ends * 4))
+            runs.append((count, open_ends))
         self.board[row][column] = EMPTY
-        return scores
+        return runs
+
+    def _direction_scores(self, row: int, column: int, color: int) -> list[float]:
+        return [
+            self._run_score(count, open_ends)
+            for count, open_ends in self._direction_runs(row, column, color)
+        ]
 
     def _threat_shape(self, row: int, column: int, color: int) -> tuple[int, int]:
-        """该点成四的条数与活三条数（用于识别双威胁）。"""
+        """该点成四的条数与活三条数（用于识别双威胁：四三 / 双活三）。"""
         fours = 0
         threes = 0
-        for score in self._direction_scores(row, column, color):
-            if score >= 12_000:
+        for count, open_ends in self._direction_runs(row, column, color):
+            if count == 4 and open_ends >= 1:
                 fours += 1
-            elif score >= 4_000:
+            elif count == 3 and open_ends == 2:
                 threes += 1
         return fours, threes
 

@@ -1244,3 +1244,44 @@ async def test_undercover_auto_start_does_not_block_sweep(monkeypatch) -> None:
     assert room.status == "active"
     assert isinstance(room.game, UndercoverGame)
     assert room.undercover_auto_starting is False
+
+
+@pytest.mark.asyncio
+async def test_spectator_claims_finished_duel_takes_over_ai_seat() -> None:
+    """对局结束后，观众席玩家可以直接接替花火的座位，与在席玩家重新对弈。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    first = await manager.join(room)
+    await manager.assign_player(room, first.number, "10001")
+    await manager.add_ai_seat(room, first.token, side="black")
+    assert room.status == "active"
+    assert manager._ai_seat(room) is not None
+
+    # 本局结束，在席玩家还没申请再来一局
+    room.status = "finished"
+    room.game.winner = 1
+    room.game.draw = False
+
+    # 观众席玩家（已绑定身份）接替花火
+    spectator = await manager.join(room)
+    spectator.identity_confirmed = True
+    spectator.qq = "10002"
+    spectator.display_name = "观众乙"
+
+    await manager.claim_and_start(room, spectator.token, "")
+
+    assert manager._ai_seat(room) is None
+    assert len(room.multiplayer.seats) == 2
+    assert all(not seat.is_ai for seat in room.multiplayer.seats)
+    assert room.status == "active"
+    assert room.game is not None

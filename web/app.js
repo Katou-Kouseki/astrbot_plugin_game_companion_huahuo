@@ -2117,13 +2117,18 @@
         Number((room.player_numbers || []).length),
         Number((room.player_seats || []).length),
       );
-      const full = capacity > 0 && seated >= capacity;
+      // 两人对弈里，花火占的座位不算「真满」：对局结束后观众可以直接接替花火入座
+      // （后端 claim 会先把花火请下座位、再把这位观众安进去，随后立即开局）。
+      const vacatableAi = isDuelGame(room) && hasAiOpponent(room) && !inPlay;
+      const full = capacity > 0 && seated >= capacity && !vacatableAi;
       if (inPlay) {
         action.innerHTML = '<i data-lucide="eye"></i><span>本局进行中</span>';
         action.disabled = true;
         note.textContent = "这一局已经开始了，等这局结束后再加入玩家席。";
       } else {
-        action.innerHTML = '<i data-lucide="log-in"></i><span>加入对局</span>';
+        action.innerHTML = vacatableAi
+          ? '<i data-lucide="log-in"></i><span>我来对弈</span>'
+          : '<i data-lucide="log-in"></i><span>加入对局</span>';
         action.disabled = busy || full || identityRequired;
         note.textContent = full
           ? (room.game_type === "undercover"
@@ -2131,6 +2136,8 @@
             : "玩家席已满，可向席内玩家申请交换。")
           : identityRequired
           ? "请先用页面令牌在 QQ 中绑定身份。"
+          : vacatableAi
+          ? "花火这局已结束，你可以接替花火的位置，和对面玩家对弈。"
           : isDuelGame(room)
           ? `玩家席 ${seated} / ${capacity || 2}，加入后可以等对手，也能直接和花火对局。`
           : room.multiplayer_enabled

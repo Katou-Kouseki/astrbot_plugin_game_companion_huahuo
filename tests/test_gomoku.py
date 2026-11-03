@@ -180,3 +180,36 @@ def test_gomoku_commentary_explains_single_bot_threat_without_jargon() -> None:
     assert "1 个下一手即可连成五子的空位" in prompt
     assert "黑方下一手仍可封住" in prompt
     assert "专业棋型名称" in prompt
+
+
+def test_run_score_ranks_live_three_above_rush_four() -> None:
+    """活三威胁高于冲四，死四分值归零——避免 AI 往被堵的线里凑第 4 颗。"""
+    assert GomokuGame._run_score(3, 2) > GomokuGame._run_score(4, 1)  # 活三 > 冲四
+    assert GomokuGame._run_score(4, 0) == 0.0  # 死四：两端都被堵
+    assert GomokuGame._run_score(4, 2) > GomokuGame._run_score(3, 2)  # 活四 > 活三
+
+
+def test_ai_prefers_live_three_over_rush_four_extension() -> None:
+    """玩家预堵了三连的一端后，AI 不应再往同一条线凑第 4 颗（冲四），
+    而应优先去别处做活三。"""
+    game = GomokuGame(human_color=BLACK, difficulty="normal")
+    # 白棋三连 (7,4)(7,5)(7,6)，黑棋预堵左端 (7,3)
+    for column in (4, 5, 6):
+        game.board[7][column] = WHITE
+        game.history.append((7, column, WHITE))
+    game.board[7][3] = BLACK
+    game.history.append((7, 3, BLACK))
+    # 别处白棋两连 (5,5)(5,6)，(5,4) / (5,7) 都能做成活三
+    game.board[5][5] = WHITE
+    game.history.append((5, 5, WHITE))
+    game.board[5][6] = WHITE
+    game.history.append((5, 6, WHITE))
+    game.turn = WHITE
+
+    row, column = game.choose_bot_move(seed=1)
+
+    # 关键：不再往被预堵的那条线凑冲四 (7,7)。
+    # 实际最优是 (6,5)——它同时连通 (5,5)(7,5) 与 (5,6)(7,4) 两条活三，
+    # 属于双活三杀着；即便退一步也只该是 (5,4)/(5,7) 的活三，绝不该是冲四。
+    assert (row, column) != (7, 7)
+    assert (row, column) != (7, 2)

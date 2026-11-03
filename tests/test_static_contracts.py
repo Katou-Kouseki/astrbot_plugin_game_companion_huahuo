@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.47"
+    assert metadata["version"] == "0.5.48"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -781,6 +781,20 @@ def test_weiqi_board_size_capture_fx_and_in_play_join_guard() -> None:
     assert 'const inPlay = room.status === "active" || room.status === "paused";' in script
     assert 'action.innerHTML = \'<i data-lucide="eye"></i><span>本局进行中</span>\';' in script
     assert "等这局结束后再加入玩家席" in script
+
+
+def test_spectator_can_take_over_ai_seat_after_finished_duel() -> None:
+    """对局结束后，观众席玩家可以接替花火座位（前端按钮 + 后端 claim 让位）。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    # 前端：花火占的座位不算「真满」，观众看到的是可点的「接替花火」
+    assert "const vacatableAi = isDuelGame(room) && hasAiOpponent(room) && !inPlay;" in script
+    assert '接替花火' in script
+    assert "花火这局已结束，你可以接替花火的位置" in script
+    # 后端：claim 在席位满且坐着花火时，先把花火请下座位再安进真人
+    assert "vacated_ai = self._ai_seat(room)" in manager
+    assert "把位置让给了" in manager
 
 
 def test_board_report_uses_frozen_snapshot_and_throttles() -> None:
