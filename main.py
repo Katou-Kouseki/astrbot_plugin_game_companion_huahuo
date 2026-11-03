@@ -952,7 +952,7 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
   .head .t { font-size: 22px; font-weight: 800; color: #ffe0a6; }
   .head .r { font-size: 30px; }
   .big { margin-top: 22px; text-align: center; font-size: 52px; font-weight: 900; line-height: 1.15;
-    color: {{ accent }}; -webkit-text-stroke: 6px rgba(0,0,0,.45); text-shadow: 0 4px 18px rgba(0,0,0,.3);
+    color: #ffffff; -webkit-text-stroke: 6px rgba(0,0,0,.45); text-shadow: 0 4px 18px rgba(0,0,0,.3);
     position: relative; overflow-wrap: anywhere; word-break: break-all; }
   .sub { margin-top: 8px; text-align: center; font-size: 18px; font-weight: 600;
     color: rgba(255,255,255,.8); position: relative; overflow-wrap: anywhere; word-break: break-all; }
@@ -5365,6 +5365,15 @@ class GameCompanionPlugin(Star):
             gt, "♟️"
         )
         moves = int(payload.get("moves") or 0)
+        # 黑白棋终局：副信息显示双方子数，比「共 N 手」更直观
+        if gt == "othello":
+            piece_count = payload.get("piece_count") or {}
+            if piece_count.get("black") is not None and piece_count.get("white") is not None:
+                count_text = f"黑 {int(piece_count['black'])} · 白 {int(piece_count['white'])}"
+            else:
+                count_text = f"共 {moves} 手"
+        else:
+            count_text = f"共 {moves} 手"
         name = str(payload.get("winner_name") or "")
         side = str(payload.get("winner_side") or "")
         draw = bool(payload.get("draw"))
@@ -5381,36 +5390,36 @@ class GameCompanionPlugin(Star):
             side_text = {"red": "红", "black": "黑", "white": "白"}.get(side, "")
             title = f"{name} 获胜"
             sub = (
-                f"{label} · {name}执{side_text}{diff} · 共 {moves} 手"
+                f"{label} · {name}执{side_text}{diff} · {count_text}"
                 if side_text
-                else f"{label}{diff} · 共 {moves} 手"
+                else f"{label}{diff} · {count_text}"
             )
             badge, accent = "🏆", "#ffd166"
         elif draw:
             title, sub, badge, accent = (
                 "平局",
-                f"{label}{diff} · 共 {moves} 手",
+                f"{label}{diff} · {count_text}",
                 "🤝",
                 "#9ccbff",
             )
         elif payload.get("human_won") is True:
             title, sub, badge, accent = (
                 "玩家获胜",
-                f"{label}{diff} · 共 {moves} 手",
+                f"{label}{diff} · {count_text}",
                 "🏆",
                 "#ffd166",
             )
         elif payload.get("human_won") is False:
             title, sub, badge, accent = (
                 "花火 获胜",
-                f"{label}{diff} · 共 {moves} 手",
+                f"{label}{diff} · {count_text}",
                 "🏆",
                 "#ffd166",
             )
         else:
             title, sub, badge, accent = (
                 "本局结束",
-                f"{label}{diff} · 共 {moves} 手",
+                f"{label}{diff} · {count_text}",
                 "🏁",
                 "#9ccbff",
             )
@@ -5440,9 +5449,11 @@ class GameCompanionPlugin(Star):
             board = raw() if callable(raw) else raw
         if not board or not isinstance(board, list) or not board:
             return ""
+        winning_line = payload.get("winning_line") if isinstance(payload, dict) else None
+        last_move = payload.get("last_move") if isinstance(payload, dict) else None
         gt = room.game_type
         if gt == "xiangqi":
-            return GameCompanionPlugin._xiangqi_svg_from_board(board)
+            return GameCompanionPlugin._xiangqi_svg_from_board(board, last_move)
         n = len(board)
         size = 360
         if gt == "othello":
@@ -5464,6 +5475,11 @@ class GameCompanionPlugin(Star):
                         parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" fill="#1a1a1a"/>')
                     else:
                         parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{r:.2f}" fill="#f4f4f2" stroke="#9aa09b" stroke-width="1"/>')
+            # 高亮最后一步落子
+            if last_move and last_move.get("to"):
+                lr, lc = last_move["to"]
+                cx, cy = lc * cell + cell / 2, lr * cell + cell / 2
+                parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{cell * 0.46:.2f}" fill="none" stroke="#ffd166" stroke-width="2.5"/>')
             return f'<svg width="360" height="360" viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg">{"".join(parts)}</svg>'
         pal = {
             "gomoku": ("#d4a85f", "#5d472c", "#242724", "#f7f8f5", "#9da39e"),
@@ -5490,11 +5506,27 @@ class GameCompanionPlugin(Star):
                     parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{rr:.2f}" fill="{black_c}"/>')
                 else:
                     parts.append(f'<circle cx="{cx:.2f}" cy="{cy:.2f}" r="{rr:.2f}" fill="{white_c}" stroke="{edge_c}" stroke-width="1"/>')
+        # 五子棋：给连成五的一串棋子画一条贯穿高亮线
+        if winning_line and len(winning_line) >= 2:
+            r0, c0 = winning_line[0]
+            r1, c1 = winning_line[-1]
+            x0, y0 = m + c0 * gap, m + r0 * gap
+            x1, y1 = m + c1 * gap, m + r1 * gap
+            parts.append(
+                f'<line x1="{x0:.2f}" y1="{y0:.2f}" x2="{x1:.2f}" y2="{y1:.2f}" '
+                f'stroke="#ffd166" stroke-width="{gap * 0.30:.2f}" stroke-linecap="round" opacity="0.40"/>'
+            )
+            parts.append(
+                f'<line x1="{x0:.2f}" y1="{y0:.2f}" x2="{x1:.2f}" y2="{y1:.2f}" '
+                f'stroke="#ffd166" stroke-width="{gap * 0.12:.2f}" stroke-linecap="round"/>'
+            )
         return f'<svg width="360" height="360" viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg">{"".join(parts)}</svg>'
 
     @staticmethod
-    def _xiangqi_svg_from_board(board: list[list[str]]) -> str:
-        """中国象棋终局棋盘 SVG（10x9，含棋子汉字）。"""
+    def _xiangqi_svg_from_board(
+        board: list[list[str]], last_move: dict[str, object] | None = None
+    ) -> str:
+        """中国象棋终局棋盘 SVG（10x9，含棋子汉字），可高亮最后一手落子。"""
         rows, cols = len(board), len(board[0]) if board else 9
         size = 360
         m = size * 0.07
@@ -5530,6 +5562,28 @@ class GameCompanionPlugin(Star):
                 label = labels.get(piece, piece)
                 parts.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="{rad:.2f}" fill="#f1d49a" stroke="{stroke}" stroke-width="1.5"/>')
                 parts.append(f'<text x="{x:.2f}" y="{y:.2f}" font-size="{fsize:.2f}" font-family="Noto Serif SC, Songti SC, serif" font-weight="700" fill="{fill}" text-anchor="middle" dominant-baseline="central">{label}</text>')
+        # 高亮最后一手：from→to 淡色虚线 + 落子点金色外圈（杀棋/将军的那一手）
+        if last_move:
+            from_rc = last_move.get("from")
+            to_rc = last_move.get("to")
+            if (
+                isinstance(from_rc, (list, tuple))
+                and len(from_rc) == 2
+                and isinstance(to_rc, (list, tuple))
+                and len(to_rc) == 2
+            ):
+                fr, fc = from_rc
+                tr, tc = to_rc
+                x0, y0 = m + fc * gx, m + fr * gy
+                x1, y1 = m + tc * gx, m + tr * gy
+                parts.append(
+                    f'<line x1="{x0:.2f}" y1="{y0:.2f}" x2="{x1:.2f}" y2="{y1:.2f}" '
+                    f'stroke="#ffd166" stroke-width="1.6" stroke-dasharray="4 3" opacity="0.75"/>'
+                )
+                parts.append(
+                    f'<circle cx="{x1:.2f}" cy="{y1:.2f}" r="{rad * 1.3:.2f}" '
+                    f'fill="none" stroke="#ffd166" stroke-width="2.5"/>'
+                )
         return f'<svg width="360" height="360" viewBox="0 0 360 360" xmlns="http://www.w3.org/2000/svg">{"".join(parts)}</svg>'
 
     def _board_poster_pillow(self, room: GameRoom) -> str:
@@ -5580,7 +5634,7 @@ class GameCompanionPlugin(Star):
             if _pillow_font_length(d, title, big_font, ef_b) <= max_w:
                 break
         title = _pillow_truncate(d, title, max_w, big_font, ef_b)
-        _pillow_draw_text(d, W / 2, int(160 * S), title, big_font, accent, anchor="mm", efont=ef_b)
+        _pillow_draw_text(d, W / 2, int(160 * S), title, big_font, (255, 255, 255, 255), anchor="mm", efont=ef_b)
         # 副信息：过长时截断（含玩家昵称）
         sub_font = _pillow_font(False, int(19 * S))
         sub_text = _pillow_truncate(d, data["sub"], max_w, sub_font, ef_b)
@@ -5614,6 +5668,8 @@ class GameCompanionPlugin(Star):
             board = raw() if callable(raw) else raw
         if not board:
             return
+        winning_line = payload.get("winning_line") if isinstance(payload, dict) else None
+        last_move = payload.get("last_move") if isinstance(payload, dict) else None
         if gt == "xiangqi":
             rows, cols = len(board), len(board[0]) if board else 9
             m = size * 0.07
@@ -5651,6 +5707,28 @@ class GameCompanionPlugin(Star):
                         fill=(241, 212, 154), outline=ec, width=max(1, int(size / 200)),
                     )
                     d.text((x, y), labels.get(piece, piece), font=f, fill=tc, anchor="mm")
+            # 高亮最后一手：from→to 淡线 + 落子点金色外圈（杀棋/将军的那一手）
+            if last_move:
+                from_rc = last_move.get("from")
+                to_rc = last_move.get("to")
+                if (
+                    isinstance(from_rc, (list, tuple)) and len(from_rc) == 2
+                    and isinstance(to_rc, (list, tuple)) and len(to_rc) == 2
+                ):
+                    fr, fc = from_rc
+                    tr, tc = to_rc
+                    fx, fy = x0 + m + fc * gx, y0 + m + fr * gy
+                    tx, ty = x0 + m + tc * gx, y0 + m + tr * gy
+                    d.line(
+                        [(fx, fy), (tx, ty)],
+                        fill=(255, 209, 102, 190),
+                        width=max(1, int(size / 280)),
+                    )
+                    d.ellipse(
+                        [tx - rad * 1.3, ty - rad * 1.3, tx + rad * 1.3, ty + rad * 1.3],
+                        outline=(255, 209, 102, 255),
+                        width=max(1, int(size / 160)),
+                    )
             return
         n = len(board)
         if gt == "othello":
@@ -5673,6 +5751,15 @@ class GameCompanionPlugin(Star):
                         d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(26, 26, 26))
                     else:
                         d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(244, 244, 242), outline=(154, 160, 155), width=1)
+            # 高亮最后一步落子
+            if last_move and last_move.get("to"):
+                lr, lc = last_move["to"]
+                cx, cy = x0 + lc * cell + cell / 2, y0 + lr * cell + cell / 2
+                d.ellipse(
+                    [cx - cell * 0.46, cy - cell * 0.46, cx + cell * 0.46, cy + cell * 0.46],
+                    outline=(255, 209, 102, 255),
+                    width=max(1, int(size / 160)),
+                )
             return
         pal = {
             "gomoku": ((212, 168, 95), (93, 71, 44), (36, 39, 36), (247, 248, 245), (157, 163, 158)),
@@ -5699,6 +5786,22 @@ class GameCompanionPlugin(Star):
                     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=black_c)
                 else:
                     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=white_c, outline=edge_c, width=1)
+        # 五子棋：给连成五的一串棋子画一条贯穿高亮线
+        if winning_line and len(winning_line) >= 2:
+            r0, c0 = winning_line[0]
+            r1, c1 = winning_line[-1]
+            ax, ay = x0 + m + c0 * gap, y0 + m + r0 * gap
+            bx, by = x0 + m + c1 * gap, y0 + m + r1 * gap
+            d.line(
+                [(ax, ay), (bx, by)],
+                fill=(255, 209, 102, 120),
+                width=max(2, int(gap * 0.30)),
+            )
+            d.line(
+                [(ax, ay), (bx, by)],
+                fill=(255, 209, 102, 255),
+                width=max(1, int(gap * 0.12)),
+            )
 
     @staticmethod
     def _undercover_announce_text(game: Any) -> str:

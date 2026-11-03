@@ -680,3 +680,48 @@ async def test_board_humans_all_gone() -> None:
     await manager.leave_player_seat(room, human.visitor_token)
     assert room.multiplayer.seats == []
     assert plugin._board_humans_all_gone(room) is True
+
+
+@pytest.mark.asyncio
+async def test_board_svg_draws_gomoku_winning_line() -> None:
+    """五子棋战报海报：连成五的一串棋子上要画一条贯穿的高亮线。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)  # 人类执黑、花火执白
+    for col in range(3, 8):
+        room.game.board[7][col] = BLACK
+    room.game.winner = BLACK
+    room.game.draw = False
+    room.game.history = [(7, col, BLACK) for col in range(3, 8)]
+    manager._snapshot_board_result(room)
+
+    svg = _plugin(manager)._board_svg(room)
+
+    assert 'stroke="#ffd166"' in svg
+
+
+@pytest.mark.asyncio
+async def test_board_poster_data_othello_shows_piece_count() -> None:
+    """黑白棋战报海报副信息显示双方终局子数。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await manager.create_room(
+        source="private",
+        session_id="UMO:t:PM:4",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="小明",
+        admin_room=False,
+        game_type="othello",
+        difficulty="normal",
+    )
+    visitor = await manager.join(room)
+    await manager.assign_player(room, visitor.number, "10001")
+    await manager.add_ai_seat(room, visitor.token, side="black")
+    room.game.winner = BLACK
+    room.game.draw = False
+    manager._snapshot_board_result(room)
+
+    data = _plugin(manager)._board_poster_data(room)
+
+    assert "黑 " in data["sub"]
+    assert "白 " in data["sub"]

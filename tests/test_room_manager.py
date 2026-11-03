@@ -1285,3 +1285,21 @@ async def test_spectator_claims_finished_duel_takes_over_ai_seat() -> None:
     assert all(not seat.is_ai for seat in room.multiplayer.seats)
     assert room.status == "active"
     assert room.game is not None
+
+
+def test_gomoku_winning_line_returns_the_winning_run() -> None:
+    """五子棋终局：能扫出连成五的那一串坐标（横向）。"""
+    board = [[0] * 15 for _ in range(15)]
+    for col in range(5, 10):
+        board[7][col] = 1
+    assert RoomManager._gomoku_winning_line(board, 1) == [
+        (7, 5), (7, 6), (7, 7), (7, 8), (7, 9),
+    ]
+
+
+def test_gomoku_winning_line_empty_without_five() -> None:
+    """不足五连时返回空。"""
+    board = [[0] * 15 for _ in range(15)]
+    for col in range(5, 9):
+        board[7][col] = 1
+    assert RoomManager._gomoku_winning_line(board, 1) == []

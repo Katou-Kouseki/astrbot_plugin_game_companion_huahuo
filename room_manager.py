@@ -3746,7 +3746,79 @@ class RoomManager:
                 human_color = int(getattr(game, "human_color", 0) or 0)
                 if winner and human_color:
                     payload["human_won"] = winner == human_color
+        # 战报海报的终局高亮信息：五子棋获胜连线 / 象棋最后一手 / 黑白棋落子与子数
+        if isinstance(game, GomokuGame) and game.winner:
+            line = self._gomoku_winning_line(board, game.winner)
+            if line:
+                payload["winning_line"] = [list(point) for point in line]
+        elif isinstance(game, OthelloGame):
+            if game.history:
+                last_row, last_col, last_color = game.history[-1]
+                payload["last_move"] = {"to": [last_row, last_col], "color": int(last_color)}
+            payload["piece_count"] = {
+                "black": int(game.black_count),
+                "white": int(game.white_count),
+            }
+        elif isinstance(game, XiangqiGame) and game.moves:
+            from_row, from_col, to_row, to_col = game.iccs_to_coordinates(game.moves[-1])
+            before = game._board_before_last_move()
+            captured = (
+                before[to_row][to_col]
+                if 0 <= to_row < len(before)
+                and 0 <= to_col < len(before[0])
+                and before[to_row][to_col] != "."
+                else ""
+            )
+            piece = (
+                board[to_row][to_col]
+                if board
+                and 0 <= to_row < len(board)
+                and 0 <= to_col < len(board[0])
+                else ""
+            )
+            payload["last_move"] = {
+                "from": [from_row, from_col],
+                "to": [to_row, to_col],
+                "piece": piece,
+                "captured": captured,
+            }
         room.last_board_result = payload
+
+    @staticmethod
+    def _gomoku_winning_line(
+        board: list[list[int]] | None, color: int
+    ) -> list[tuple[int, int]]:
+        """从终局盘面找出获胜方的一条连线（横/竖/两斜，取连续同色 ≥5 的那一串）。"""
+        if not board or not board[0]:
+            return []
+        size = len(board)
+        for row in range(size):
+            for col in range(size):
+                if board[row][col] != color:
+                    continue
+                for delta_row, delta_col in ((0, 1), (1, 0), (1, 1), (1, -1)):
+                    segment = [(row, col)]
+                    scan_row, scan_col = row + delta_row, col + delta_col
+                    while (
+                        0 <= scan_row < size
+                        and 0 <= scan_col < size
+                        and board[scan_row][scan_col] == color
+                    ):
+                        segment.append((scan_row, scan_col))
+                        scan_row += delta_row
+                        scan_col += delta_col
+                    scan_row, scan_col = row - delta_row, col - delta_col
+                    while (
+                        0 <= scan_row < size
+                        and 0 <= scan_col < size
+                        and board[scan_row][scan_col] == color
+                    ):
+                        segment.insert(0, (scan_row, scan_col))
+                        scan_row -= delta_row
+                        scan_col -= delta_col
+                    if len(segment) >= 5:
+                        return segment
+        return []
 
     def _credit_board_game_global(
         self,

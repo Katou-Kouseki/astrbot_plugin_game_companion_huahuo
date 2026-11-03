@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.48"
+    assert metadata["version"] == "0.5.49"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -816,6 +816,22 @@ def test_board_report_uses_frozen_snapshot_and_throttles() -> None:
     assert '"group_announce_min_moves"' in schema
     # 解说防丢
     assert "expect_game_uid" in main
+
+
+def test_board_poster_highlights_and_white_title() -> None:
+    """战报海报：获胜方名称用白色大字，并接好终局高亮（五子棋连线/象棋最后一手/黑白棋落子+子数）。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    # 名称（大字结果）用白色，不再用金色 accent
+    assert "color: #ffffff; -webkit-text-stroke" in main
+    # 五子棋连线
+    assert "winning_line" in manager
+    assert "_gomoku_winning_line" in manager
+    # 象棋最后一手 + 黑白棋落子/子数
+    assert '"last_move"' in manager
+    assert '"piece_count"' in manager
+    assert "last_move: dict[str, object] | None = None" in main
 
 
 def test_room_activity_toasts_are_compact_and_throttled() -> None:
