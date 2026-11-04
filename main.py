@@ -7860,13 +7860,12 @@ class GameCompanionPlugin(Star):
         items = store.list_all() if store is not None else []
         return {"status": "ok", "data": {"items": items}}
 
-    async def page_undercover_words_add(
-        self, payload: Any = None
-    ) -> dict[str, Any]:
+    async def page_undercover_words_add(self) -> dict[str, Any]:
         store = self.undercover_word_store
         if store is None:
             return {"status": "error", "message": "词库不可用", "data": {"items": []}}
-        payload = payload or {}
+        # register_web_api 不向 handler 传参，必须自己从全局 request 取 JSON body
+        payload = await request.json(default={}) or {}
         w1 = str(payload.get("word1") or "").strip()
         w2 = str(payload.get("word2") or "").strip()
         if not w1 or not w2:
@@ -7890,13 +7889,11 @@ class GameCompanionPlugin(Star):
             }
         return {"status": "ok", "data": {"items": store.list_all(), "added": added}}
 
-    async def page_undercover_words_delete(
-        self, payload: Any = None
-    ) -> dict[str, Any]:
+    async def page_undercover_words_delete(self) -> dict[str, Any]:
         store = self.undercover_word_store
         if store is None:
             return {"status": "error", "message": "词库不可用", "data": {"items": []}}
-        payload = payload or {}
+        payload = await request.json(default={}) or {}
         try:
             item_id = int(payload.get("id"))
         except (TypeError, ValueError):
@@ -7913,6 +7910,37 @@ class GameCompanionPlugin(Star):
                 "data": {"items": store.list_all()},
             }
         return {"status": "ok", "data": {"items": store.list_all()}}
+
+    @staticmethod
+    def _extract_uc_word_pairs(text: str) -> list[Any]:
+        """从 LLM 输出中提取词对列表。
+
+        LLM 通常按要求返回裸 JSON 数组 ``[{...}, ...]``，而 ``extract_json_object``
+        只认对象，会把数组里的第一个元素当成整个结果（导致一条都收不到）。这里
+        先按数组解析，再兼容 ``{"items": [...]}`` 包装或单个词对对象。
+        """
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(raw):
+            if character != "[":
+                continue
+            try:
+                parsed, _end = decoder.raw_decode(raw[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, list):
+                return [item for item in parsed if isinstance(item, dict)]
+        data = extract_json_object(raw)
+        if isinstance(data, dict):
+            for key in ("items", "pairs", "words", "result", "data"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+            if data.get("word1") and data.get("word2"):
+                return [data]
+        return []
 
     @staticmethod
     def _parse_uc_word_lines(text: str) -> tuple[list[tuple[str, str]], list[str]]:
@@ -7937,13 +7965,11 @@ class GameCompanionPlugin(Star):
             pairs.append((tokens[0], tokens[1]))
         return pairs, malformed
 
-    async def page_undercover_words_batch_import(
-        self, payload: Any = None
-    ) -> dict[str, Any]:
+    async def page_undercover_words_batch_import(self) -> dict[str, Any]:
         store = self.undercover_word_store
         if store is None:
             return {"status": "error", "message": "词库不可用", "data": {"items": []}}
-        payload = payload or {}
+        payload = await request.json(default={}) or {}
         pairs, malformed = self._parse_uc_word_lines(str(payload.get("text") or ""))
         added = 0
         skipped: list[str] = [f"格式错误：{line}" for line in malformed]
@@ -7963,13 +7989,11 @@ class GameCompanionPlugin(Star):
             },
         }
 
-    async def page_undercover_words_llm_generate_batch(
-        self, payload: Any = None
-    ) -> dict[str, Any]:
+    async def page_undercover_words_llm_generate_batch(self) -> dict[str, Any]:
         store = self.undercover_word_store
         if store is None:
             return {"status": "error", "message": "词库不可用", "data": {"items": []}}
-        payload = payload or {}
+        payload = await request.json(default={}) or {}
         try:
             count = max(3, min(int(payload.get("count") or 10), 30))
         except (TypeError, ValueError):
@@ -7989,18 +8013,9 @@ class GameCompanionPlugin(Star):
                 self._llm_gen_neutral(prompt),
                 timeout=30,
             )
-            parsed = extract_json_object(text)
-            if isinstance(parsed, dict) and isinstance(parsed.get("items"), list):
-                pairs_src = parsed["items"]
-            elif isinstance(parsed, list):
-                pairs_src = parsed
-            else:
-                # 尝试多种包装
-                pairs_src = []
-                for key in ("pairs", "words", "result", "data"):
-                    if isinstance(parsed, dict) and isinstance(parsed.get(key), list):
-                        pairs_src = parsed[key]; break
-        except Exception:
+            pairs_src = self._extract_uc_word_pairs(text)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 词库 LLM 生成失败: %s", exc)
             pairs_src = []
         # 遍历入库；窗口去重用已有的机制
         for item in pairs_src:

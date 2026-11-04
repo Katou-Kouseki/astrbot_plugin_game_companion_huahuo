@@ -1,5 +1,11 @@
 # 更新日志
 
+## 0.5.54 - 2026-11-04
+
+### 修复
+- **词库管理批量添加 / 新增 / 删除 / AI 生成全部失效**：AstrBot 的 `register_web_api` 不会向 handler 传参，这 4 个接口却写成 `(self, payload=None)`，`payload` 恒为 `None`，请求体永远取不到——批量添加因此返回 `added_count: 0, skipped_count: 0`（不报错也没效果）。改为与其余接口一致，用 `await request.json(default={})` 自己读 body。
+- **「AI 生成 10 对新词」一条也收不到**：`extract_json_object` 只解析 JSON 对象 `{...}`，而生成提示要求模型返回数组 `[...]`，解析时会把数组第一项当成整个结果、最终得 0 条。新增 `_extract_uc_word_pairs`：先按数组解析，再兼容 `{"items": [...]}` 包装、markdown 代码块与单个词对对象。
+
 ## 0.5.53 - 2026-11-04
 
 ### 新增

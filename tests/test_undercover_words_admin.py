@@ -169,3 +169,41 @@ async def test_receive_ignores_other_command_text_while_pending(tmp_path: Path) 
 
 async def _run(agen) -> list[object]:
     return [item async for item in agen]
+
+
+# ---------------- LLM 词对解析（AI 批量生成） ----------------
+
+
+def test_extract_uc_word_pairs_accepts_bare_array() -> None:
+    """LLM 常返回裸 JSON 数组，必须能全部取出（旧实现只认对象，会漏成 0 条）。"""
+    text = '[{"word1":"可乐","word2":"雪碧"},{"word1":"牛奶","word2":"豆浆"}]'
+
+    pairs = GameCompanionPlugin._extract_uc_word_pairs(text)
+
+    assert [(p["word1"], p["word2"]) for p in pairs] == [
+        ("可乐", "雪碧"),
+        ("牛奶", "豆浆"),
+    ]
+
+
+def test_extract_uc_word_pairs_accepts_wrapped_and_markdown() -> None:
+    wrapped = '{"items":[{"word1":"猫","word2":"狗"}]}'
+    marked = '```json\n[{"word1":"咖啡","word2":"奶茶"}]\n```'
+
+    assert GameCompanionPlugin._extract_uc_word_pairs(wrapped) == [
+        {"word1": "猫", "word2": "狗"}
+    ]
+    assert GameCompanionPlugin._extract_uc_word_pairs(marked) == [
+        {"word1": "咖啡", "word2": "奶茶"}
+    ]
+
+
+def test_extract_uc_word_pairs_accepts_single_object() -> None:
+    assert GameCompanionPlugin._extract_uc_word_pairs(
+        '{"word1":"口红","word2":"唇釉"}'
+    ) == [{"word1": "口红", "word2": "唇釉"}]
+
+
+def test_extract_uc_word_pairs_returns_empty_for_garbage() -> None:
+    assert GameCompanionPlugin._extract_uc_word_pairs("抱歉，我无法生成") == []
+    assert GameCompanionPlugin._extract_uc_word_pairs("") == []

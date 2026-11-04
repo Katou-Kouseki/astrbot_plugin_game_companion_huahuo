@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.53"
+    assert metadata["version"] == "0.5.54"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -1150,3 +1150,23 @@ def test_browser_tab_title_reminds_my_turn() -> None:
     assert "ucPrevMyTurn" in script  # 卧底发言轮
     # render 末尾更新标题
     assert "updateDocumentTitle();" in script
+
+
+def test_page_api_handlers_read_body_from_request_not_signature() -> None:
+    """AstrBot 的 register_web_api 不向 handler 传参，POST handler 必须自己读 request.json。
+
+    曾因词库 4 个 handler 写成 `(self, payload=None)`，payload 恒为 None，
+    导致批量添加/新增/删除/AI 生成全部拿不到请求体（返回 0 条却不报错）。
+    """
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "payload: Any = None" not in main
+    assert main.count("await request.json(default={}) or {}") >= 11
+    # 词库 4 个写接口都要按此方式取请求体
+    for name in (
+        "page_undercover_words_add",
+        "page_undercover_words_delete",
+        "page_undercover_words_batch_import",
+        "page_undercover_words_llm_generate_batch",
+    ):
+        assert f"async def {name}(self) -> dict[str, Any]:" in main
