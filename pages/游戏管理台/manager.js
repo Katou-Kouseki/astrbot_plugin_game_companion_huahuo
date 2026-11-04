@@ -904,10 +904,10 @@
       addBtn.disabled = true;
       try {
         const res = await endpoint("POST", "undercover_words/add", { word1, word2 });
-        renderUndercoverWords(res?.data?.items || [], tbody, countLabel);
+        renderUndercoverWords(res?.items || [], tbody, countLabel);
         w1.value = "";
         w2.value = "";
-        showToast(res?.status === "ok" ? "已添加" : res?.message || "添加失败");
+        showToast("已添加");
       } catch (err) {
         showToast(err?.message || "添加失败");
       } finally {
@@ -943,18 +943,14 @@
         const res = await endpoint("POST", "undercover_words/llm_generate_batch", {
           count: 10,
         });
-        const items = res?.data?.items || [];
-        const skipped = res?.data?.skipped || 0;
+        const items = res?.items || [];
+        const skipped = res?.skipped || 0;
         if (tableWrap && !tableWrap.hidden) {
           renderUndercoverWords(items, tbody, countLabel);
         } else {
           loadUndercoverWords(tbody, countLabel);
         }
-        showToast(
-          res?.status === "ok"
-            ? `AI 生成完成：新增 ${res.data.added || 0} 对，跳过重复 ${skipped} 对`
-            : res?.message || "生成失败"
-        );
+        showToast(`AI 生成完成：新增 ${res?.added || 0} 对，跳过重复 ${skipped} 对`);
       } catch (err) {
         showToast(err?.message || "AI 生成失败，稍后重试");
       } finally {
@@ -1006,18 +1002,19 @@
           text,
         });
         if (tableWrap && !tableWrap.hidden) {
-          renderUndercoverWords(res?.data?.items || [], tbody, countLabel);
+          renderUndercoverWords(res?.items || [], tbody, countLabel);
         } else {
           loadUndercoverWords(tbody, countLabel);
         }
-        const added = res?.data?.added_count || 0;
-        const skippedCount = res?.data?.skipped_count || 0;
-        const skipped = res?.data?.skipped || [];
+        const added = res?.added_count || 0;
+        const skippedCount = res?.skipped_count || 0;
+        const skipped = res?.skipped || [];
+        // toast 为单行短提示，跳过多时只带首条原因，避免溢出
         const msg =
           `批量完成：新增 ${added} 对，跳过 ${skippedCount} 对` +
-          (skipped.length > 0 ? `\n跳过明细：\n${skipped.slice(0, 5).join("\n")}` : "");
-        showToast(res?.status === "ok" ? msg : res?.message || "批量添加失败");
-        if (res?.status === "ok") textarea.value = "";
+          (skipped.length > 0 ? `（如：${skipped[0]}）` : "");
+        showToast(msg);
+        textarea.value = "";
       } catch (err) {
         showToast(err?.message || "批量添加失败");
       } finally {
@@ -1074,7 +1071,7 @@
   async function loadUndercoverWords(tbody, countLabel) {
     try {
       const res = await endpoint("GET", "undercover_words");
-      renderUndercoverWords(res?.data?.items || [], tbody, countLabel);
+      renderUndercoverWords(res?.items || [], tbody, countLabel);
     } catch (err) {
       showToast(err?.message || "读取词库失败");
     }
@@ -1107,8 +1104,8 @@
         if (!ok) return;
         try {
           const res = await endpoint("POST", "undercover_words/delete", { id: item.id });
-          renderUndercoverWords(res?.data?.items || [], tbody, countLabel);
-          showToast(res?.status === "ok" ? "已删除" : res?.message || "删除失败");
+          renderUndercoverWords(res?.items || [], tbody, countLabel);
+          showToast("已删除");
         } catch (err) {
           showToast(err?.message || "删除失败");
         }

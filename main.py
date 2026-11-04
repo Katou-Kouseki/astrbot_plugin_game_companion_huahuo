@@ -1564,6 +1564,8 @@ class GameCompanionPlugin(Star):
         self.undercover_word_store = UndercoverWordStore(
             self.data_dir / "undercover_words.json"
         )
+        # 私聊「新增词条」后的待录入状态：发送者 QQ -> 过期时间戳（time.time）
+        self._uc_word_pending: dict[str, float] = {}
         self.multiplayer_turn_timeout = self._cfg_non_negative(
             "multiplayer.turn_timeout_seconds", 60
         )
@@ -2158,6 +2160,107 @@ class GameCompanionPlugin(Star):
             self._undercover_sample_room(camp).game
         )
         yield event.plain_result(text + "\n\n📝 复盘：示例复盘文案（真实场景由 AI 生成）。")
+
+    @filter.command(
+        "新增词条", alias={"添加词条", "新增词库", "添加词库", "录入词条"}
+    )
+    async def undercover_words_add_start(self, event: AstrMessageEvent):
+        """私聊管理员：开始批量录入「谁是卧底」词条。
+
+        发「新增词条 / 添加词条」后 Bot 会提示格式，随后把「词条1 词条2」每行
+        一组的文本一次性发来即可入库；发「取消」退出。仅游戏管理员可在私聊使用。
+        """
+        sender = str(event.get_sender_id() or "").strip()
+        if not sender or sender not in self.game_admin_ids:
+            yield event.plain_result(
+                "只有游戏管理员可以修改词库。可让管理员在插件配置的"
+                "「rooms.game_admin_qq_ids（游戏管理员 QQ）」里加入你。"
+            )
+            return
+        if not self._event_is_private(event):
+            yield event.plain_result("请在私聊里使用该指令，避免在群里刷屏。")
+            return
+        now = time.time()
+        # 顺手清掉其他已过期的待录入条目，避免长期堆积
+        for stale in [key for key, exp in self._uc_word_pending.items() if exp <= now]:
+            self._uc_word_pending.pop(stale, None)
+        self._uc_word_pending[sender] = now + 600
+        yield event.plain_result(
+            "请把要添加的词条按下面格式发给我（每行一组，两个词用空格或逗号分隔）：\n"
+            "词条1 词条2\n"
+            "词条1 词条2\n\n"
+            "我会逐行录入并回报成功 / 跳过情况。发送「取消」可退出（10 分钟内有效）。"
+        )
+
+    @filter.regex(r"^[\s\S]+$")
+    async def undercover_words_add_receive(self, event: AstrMessageEvent):
+        """接收「新增词条」之后管理员私聊发来的批量词条文本。"""
+        sender = str(event.get_sender_id() or "").strip()
+        expires_at = self._uc_word_pending.get(sender)
+        if not expires_at or expires_at <= time.time():
+            self._uc_word_pending.pop(sender, None)
+            return
+        if not self._event_is_private(event):
+            return
+        text = str(getattr(event, "message_str", "") or "").strip()
+        if not text:
+            return
+        # 指令本身也会被这条通配正则命中，交回指令处理器
+        if text.startswith(("新增词条", "添加词条", "新增词库", "添加词库", "录入词条")):
+            return
+        # 命中待录入状态：吃掉这条消息，避免再被 LLM 当成闲聊回复一遍
+        stop_event = getattr(event, "stop_event", None)
+        if callable(stop_event):
+            try:
+                stop_event()
+            except Exception:
+                pass
+        if text in {"取消", "退出", "cancel", "Cancel"}:
+            self._uc_word_pending.pop(sender, None)
+            yield event.plain_result("已退出词条录入。")
+            return
+        store = self.undercover_word_store
+        if store is None:
+            self._uc_word_pending.pop(sender, None)
+            yield event.plain_result("词库不可用，请稍后再试。")
+            return
+        pairs, malformed = self._parse_uc_word_lines(text)
+        if not pairs and not malformed:
+            yield event.plain_result(
+                "没有识别到内容，请按「词条1 词条2」每行一组重新发送，或发「取消」退出。"
+            )
+            return
+        added_pairs: list[tuple[str, str]] = []
+        skipped: list[str] = [f"格式错误：{line}" for line in malformed]
+        for w1, w2 in pairs:
+            if store.add(w1, w2) is None:
+                skipped.append(f"重复/非法：{w1} vs {w2}")
+                continue
+            added_pairs.append((w1, w2))
+        self._uc_word_pending.pop(sender, None)
+        lines = [
+            f"词库录入完成：成功 {len(added_pairs)} 对，跳过 {len(skipped)} 对。"
+        ]
+        if added_pairs:
+            preview = "、".join(f"{w1}/{w2}" for w1, w2 in added_pairs[:5])
+            tail = f" 等 {len(added_pairs)} 对" if len(added_pairs) > 5 else ""
+            lines.append(f"✅ 新增：{preview}{tail}")
+        if skipped:
+            preview = "；".join(skipped[:5])
+            tail = f" …共 {len(skipped)} 条" if len(skipped) > 5 else ""
+            lines.append(f"⏭ 跳过：{preview}{tail}")
+        lines.append(f"📚 当前词库共 {len(store.list_all())} 对。")
+        yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _event_is_private(event: AstrMessageEvent) -> bool:
+        """判断消息是否来自私聊（兼容 FriendMessage / PrivateMessage / :private:）。"""
+        origin = str(getattr(event, "unified_msg_origin", "") or "")
+        return (
+            "FriendMessage" in origin
+            or "PrivateMessage" in origin
+            or ":private:" in origin
+        )
 
     @filter.command("棋类日报", alias={"棋类周报", "棋类战绩日报", "棋类战绩周报"})
     async def board_report_now(self, event: AstrMessageEvent):
@@ -7811,24 +7914,40 @@ class GameCompanionPlugin(Star):
             }
         return {"status": "ok", "data": {"items": store.list_all()}}
 
+    @staticmethod
+    def _parse_uc_word_lines(text: str) -> tuple[list[tuple[str, str]], list[str]]:
+        """按「每行一对词条」解析批量文本。
+
+        Returns:
+            ``(pairs, malformed)``：成功解析的词对列表，以及词条数不是 2 的原始行。
+            一行内用空格 / 逗号（中英文）/ 冒号 / 顿号 / 制表符分隔两个词条。
+        """
+        import re
+
+        pairs: list[tuple[str, str]] = []
+        malformed: list[str] = []
+        for raw_line in str(text or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            tokens = [token for token in re.split(r"[\s,，:：、\t]+", line) if token]
+            if len(tokens) != 2:
+                malformed.append(line)
+                continue
+            pairs.append((tokens[0], tokens[1]))
+        return pairs, malformed
+
     async def page_undercover_words_batch_import(
         self, payload: Any = None
     ) -> dict[str, Any]:
         store = self.undercover_word_store
         if store is None:
             return {"status": "error", "message": "词库不可用", "data": {"items": []}}
-        import re
         payload = payload or {}
-        text = str(payload.get("text") or "")
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        pairs, malformed = self._parse_uc_word_lines(str(payload.get("text") or ""))
         added = 0
-        skipped: list[str] = []
-        for line in lines:
-            tokens = [t for t in re.split(r"[\s,，:：\t]+", line) if t]
-            if len(tokens) != 2:
-                skipped.append(f"格式错误：{line}")
-                continue
-            w1, w2 = tokens
+        skipped: list[str] = [f"格式错误：{line}" for line in malformed]
+        for w1, w2 in pairs:
             if store.add(w1, w2) is not None:
                 added += 1
             else:

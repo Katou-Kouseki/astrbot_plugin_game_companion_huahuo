@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.52"
+    assert metadata["version"] == "0.5.53"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -828,8 +828,8 @@ def test_board_poster_highlights_and_gold_title() -> None:
     # 把文字压暗 45%：白→#8c8c8c、金→#8c7338）
     assert "color: {{ accent }};" in main
     assert "-webkit-text-stroke" not in main
-    assert "5px 0 1px #fff" in main  # 白色描边（text-shadow 四方向 + 1px 模糊羽化）
-    assert "0 18px 18px rgba(0,0,0,.3)" in main  # 保留下投影
+    assert "5px 0 1px #fff" in main  # 白色描边（手动调粗后保留）
+    assert "0 4px 18px rgba(0,0,0,.3)" in main  # 保留下投影
     # 五子棋连线
     assert "winning_line" in manager
     assert "_gomoku_winning_line" in manager
