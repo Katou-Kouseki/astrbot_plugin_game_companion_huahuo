@@ -327,6 +327,7 @@ class GameRoomServer:
             visitor_token,
             str(payload.get("side") or "human_black"),
         )
+        self._log_room_op(room, "room_claim", "落座玩家席", visitor_token)
         return self._response(
             {"room": self._room_payload(room, visitor_token)}
         )
@@ -340,6 +341,7 @@ class GameRoomServer:
         await self.manager.start_game(
             room, visitor_token, str(payload.get("side") or "human_black")
         )
+        self._log_room_op(room, "room_start", "开始对局", visitor_token)
         return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _move(self, request: web.Request) -> web.Response:
@@ -378,6 +380,7 @@ class GameRoomServer:
             return web.json_response(
                 {"status": "error", "message": str(exc)}, status=400
             )
+        self._log_room_op(room, "room_resign", "认输", visitor_token)
         return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _weiqi_board(self, request: web.Request) -> web.Response:
@@ -399,6 +402,7 @@ class GameRoomServer:
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.request_rematch(room, visitor_token)
+        self._log_room_op(room, "room_rematch", "申请再来一局", visitor_token)
         return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _chat(self, request: web.Request) -> web.Response:
@@ -528,10 +532,14 @@ class GameRoomServer:
         room = self._room(request)
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
+        target_number = int(payload.get("target_number") or 0)
         request_id = await self.manager.request_seat_swap(
             room,
             visitor_token,
-            int(payload.get("target_number") or 0),
+            target_number,
+        )
+        self._log_room_op(
+            room, "room_seat_swap", f"请求与 {target_number} 号交换座位", visitor_token
         )
         return self._response(
             {
@@ -552,6 +560,12 @@ class GameRoomServer:
             str(payload.get("request_id") or ""),
             accepted=accepted,
         )
+        self._log_room_op(
+            room,
+            "room_seat_swap",
+            "接受换座请求" if accepted else "拒绝换座请求",
+            visitor_token,
+        )
         return self._response(
             {"accepted": accepted, "room": self._room_payload(room, visitor_token)}
         )
@@ -560,7 +574,9 @@ class GameRoomServer:
         self._require_origin(request)
         room = self._room(request)
         payload = await self._payload(request)
-        await self.manager.leave(room, str(payload.get("visitor_token") or ""))
+        visitor_token = str(payload.get("visitor_token") or "")
+        await self.manager.leave(room, visitor_token)
+        self._log_room_op(room, "room_leave", "离开房间", visitor_token)
         return self._response({"left": True})
 
     async def _undercover_speech(self, request: web.Request) -> web.Response:
@@ -629,6 +645,12 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
+        self._log_room_op(
+            room,
+            "room_uc_scales",
+            f"阵营比例改为 平民{parsed[0]} / 卧底{parsed[1]} / 白板{parsed[2]}",
+            visitor_token,
+        )
         return self._response(
             {
                 "camp_scales": {
@@ -659,6 +681,12 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
+        self._log_room_op(
+            room,
+            "room_uc_reveal_identity",
+            "开启「告知身份」" if reveal_identity else "关闭「告知身份」",
+            visitor_token,
+        )
         return self._response(
             {
                 "reveal_identity": room.undercover_reveal_identity,
@@ -745,6 +773,12 @@ class GameRoomServer:
         if uid and text:
             room.last_announced_uid = uid
             room.last_announced_text = text
+            self._log_room_op(
+                room,
+                "room_announce",
+                "手动把谁是卧底战报发送到群",
+                str(payload.get("visitor_token") or ""),
+            )
         # announced=False 有两种原因：开关没开 / 发送失败。
         # 前端要能区分提示，否则发送失败会被说成「去开开关」。
         return self._response({
@@ -794,6 +828,12 @@ class GameRoomServer:
         if text:
             room.last_announced_uid = key
             room.last_announced_text = text
+            self._log_room_op(
+                room,
+                "room_announce",
+                "手动把棋类战报发送到群",
+                str(payload.get("visitor_token") or ""),
+            )
         return self._response({
             "announced": bool(text),
             "already": False,
@@ -834,6 +874,7 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
+        self._log_room_op(room, "room_seat_leave", "离开玩家席", visitor_token)
         return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _seat_ai(self, request: web.Request) -> web.Response:
@@ -847,12 +888,14 @@ class GameRoomServer:
         try:
             if action == "remove":
                 result = await self.manager.remove_ai_seat(room, visitor_token)
+                self._log_room_op(room, "room_ai_seat", "让花火离座", visitor_token)
             else:
                 result = await self.manager.add_ai_seat(
                     room,
                     visitor_token,
                     side=str(payload.get("side") or ""),
                 )
+                self._log_room_op(room, "room_ai_seat", "让花火补位对局", visitor_token)
         except (ValueError, PermissionError) as exc:
             return web.json_response(
                 {"status": "error", "message": str(exc)},
@@ -881,6 +924,12 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
+        self._log_room_op(
+            room,
+            "room_difficulty",
+            f"花火棋力调整为{self.manager._difficulty_label(difficulty)}",
+            visitor_token,
+        )
         return self._response(
             {
                 "room": self._room_payload(room, visitor_token),
@@ -901,6 +950,9 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
+        self._log_room_op(
+            room, "room_side_rotation", f"再来一局换先方式改为「{mode}」", visitor_token
+        )
         return self._response({"room": self._room_payload(room, visitor_token)})
 
     @staticmethod
@@ -991,6 +1043,7 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
+        self._log_room_op(room, "room_uc_ai", "追加一位花火玩家", visitor_token)
         return self._response({**result, "room": self._room_payload(room, visitor_token)})
 
     async def _undercover_remove_ai_seat(self, request: web.Request) -> web.Response:
@@ -1008,6 +1061,7 @@ class GameRoomServer:
                 {"status": "error", "message": str(exc)},
                 status=400,
             )
+        self._log_room_op(room, "room_uc_ai", "移除一位花火玩家", visitor_token)
         return self._response({**result, "room": self._room_payload(room, visitor_token)})
 
     async def _undercover_batch_words(self, request: web.Request) -> web.Response:
@@ -1025,31 +1079,28 @@ class GameRoomServer:
                     status=403,
                 )
         raw_text = str(payload.get("text") or "")
-        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
         store = getattr(self.manager, "undercover_word_store", None)
         if store is None:
             return web.json_response(
                 {"status": "error", "message": "词库未初始化，无法批量添加"},
                 status=500,
             )
+        # 与插件指令 / 管理台共用同一套解析（空格、中英文逗号、冒号、顿号、制表符）
+        pairs, malformed = self.plugin._parse_uc_word_lines(raw_text)
         added: list[dict] = []
-        skipped: list[str] = []
-        for line in lines:
-            # 支持"词1 词2" / "词1,词2" / "词1:词2" / "词1　词2"（中日文全角空格）
-            tokens = [
-                t
-                for t in __import__("re").split(r"[\s,，:：\t]+", line)
-                if t
-            ]
-            if len(tokens) != 2:
-                skipped.append(f"格式错误：{line}")
-                continue
-            word1, word2 = tokens
+        skipped: list[str] = [f"格式错误：{line}" for line in malformed]
+        for word1, word2 in pairs:
             record = store.add(word1, word2)
             if record:
                 added.append(record)
             else:
                 skipped.append(f"重复/非法：{word1} vs {word2}")
+        self._log_room_op(
+            room,
+            "room_uc_words",
+            f"房间内批量导入词条：新增 {len(added)} 对，跳过 {len(skipped)} 对",
+            visitor_token,
+        )
         return self._response(
             {
                 "added_count": len(added),
@@ -1252,6 +1303,42 @@ class GameRoomServer:
         if not isinstance(payload, dict):
             raise web.HTTPBadRequest(text="请求内容格式无效")
         return payload
+
+    @staticmethod
+    def _visitor_label(room: GameRoom, visitor_token: str) -> str:
+        """把访客 token 转成「昵称（N号）」用于日志；查不到返回空串。"""
+        visitor = room.visitors.get(str(visitor_token or ""))
+        if visitor is None:
+            return ""
+        name = str(getattr(visitor, "display_name", "") or "").strip()
+        number = int(getattr(visitor, "number", 0) or 0)
+        if name and number:
+            return f"{name}（{number}号）"
+        if name:
+            return name
+        return f"{number}号" if number else ""
+
+    def _log_room_op(
+        self,
+        room: GameRoom,
+        action: str,
+        detail: str,
+        visitor_token: str = "",
+    ) -> None:
+        """记录房间内的关键操作到管理台操作日志。
+
+        只记「结构性 / 低频率」动作（落座、开局、离席、改难度、认输等），
+        不记每一步落子、发言、掷骰等高频动作，避免日志被刷爆。
+        """
+        who = self._visitor_label(room, visitor_token)
+        suffix = f" · {who}" if who else ""
+        self.manager.record_operation(
+            action,
+            f"房间 {room.room_id}：{detail}{suffix}",
+            operator=who,
+            room_id=room.room_id,
+            game_type=str(getattr(room, "game_type", "") or ""),
+        )
 
     def _require_origin(self, request: web.Request) -> None:
         if not self._origin_allowed(request):

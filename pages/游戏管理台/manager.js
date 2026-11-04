@@ -709,7 +709,7 @@
     action.disabled = true;
     try {
       const result = await endpoint("POST", "leaderboard/clear", {});
-      showToast(result?.data?.cleared ? "战绩排行榜已清空" : "没有可清空的排行榜数据");
+      showToast(result?.cleared ? "战绩排行榜已清空" : "没有可清空的排行榜数据");
       await loadRooms();
     } catch (error) {
       showToast(error?.message || "清空排行榜失败");
@@ -1299,6 +1299,8 @@
       const tr = document.createElement("tr");
       tr.appendChild(createText("td", row.time || ""));
       tr.appendChild(createText("td", actionLabel(row.action || "")));
+      tr.appendChild(createText("td", row.operator || "—"));
+      tr.appendChild(createText("td", row.room_id || "—"));
       tr.appendChild(createText("td", row.detail || ""));
       body.appendChild(tr);
     });
@@ -1306,8 +1308,19 @@
 
   function actionLabel(action) {
     return {
-      clear_leaderboard: "清空排行榜", set_wins: "修正胜场", close_room: "关闭房间",
-      assign: "安排玩家", demote: "移出玩家", kick: "踢出", switch_game: "切换游戏",
+      // 管理台动作
+      create_room: "开房", close_room: "关闭房间", switch_game: "切换游戏",
+      assign: "安排玩家", demote: "移出玩家", kick: "踢出",
+      set_difficulty: "调整棋力", pause_room: "暂停对局", resume_room: "继续对局",
+      clear_leaderboard: "清空排行榜", set_wins: "修正胜场",
+      // 房间内动作
+      room_claim: "落座", room_start: "开始对局", room_seat_leave: "离席",
+      room_leave: "离开房间", room_seat_swap: "交换座位", room_ai_seat: "花火补位",
+      room_rematch: "再来一局", room_resign: "认输",
+      room_difficulty: "调整棋力", room_side_rotation: "换先设置",
+      room_uc_ai: "花火玩家", room_uc_scales: "阵营比例",
+      room_uc_reveal_identity: "告知身份", room_uc_words: "导入词条",
+      room_announce: "通知到群",
     }[action] || action || "未知";
   }
 
@@ -1327,7 +1340,7 @@
     action.disabled = true;
     try {
       const result = await endpoint("POST", "leaderboard/clear", statsFilter ? { game_type: statsFilter } : {});
-      showToast(result?.data?.cleared ? `已清空${scope}战绩` : (result?.message || "没有可清空的排行榜数据"));
+      showToast(result?.cleared ? `已清空${scope}战绩` : "没有可清空的排行榜数据");
       await loadStats();
       await loadRooms();
     } catch (error) {

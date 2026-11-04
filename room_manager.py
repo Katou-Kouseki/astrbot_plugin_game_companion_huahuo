@@ -517,14 +517,22 @@ class RoomManager:
         return cleared
 
     def record_operation(
-        self, action: str, detail: str = "", operator: str = ""
+        self,
+        action: str,
+        detail: str = "",
+        operator: str = "",
+        *,
+        room_id: str = "",
+        game_type: str = "",
     ) -> None:
-        """把管理台关键动作写入操作日志（JSONL，每条独立成行，失败不抛出）。
+        """把关键动作写入操作日志（JSONL，每条独立成行，失败不抛出）。
 
         Args:
             action: 动作标识，如 clear_leaderboard / set_wins / close_room / assign。
             detail: 人类可读的动作描述。
-            operator: 操作者身份（管理台访客未知，多为占位）。
+            operator: 操作者身份（管理台为「游戏管理台」，房间内为玩家昵称）。
+            room_id: 相关房间号（房间内操作与管理台房间操作都带上）。
+            game_type: 相关玩法标识（如 gomoku / undercover）。
         """
         if self.operation_log_path is None:
             return
@@ -534,6 +542,8 @@ class RoomManager:
             "action": str(action or ""),
             "detail": str(detail or ""),
             "operator": str(operator or ""),
+            "room_id": str(room_id or ""),
+            "game_type": str(game_type or ""),
         }
         try:
             with self.operation_log_path.open("a", encoding="utf-8") as fh:
@@ -589,6 +599,8 @@ class RoomManager:
         self.record_operation(
             "set_wins",
             f"将「{name}」在《{game_type}》的胜场修正为 {wins}",
+            operator="游戏管理台",
+            game_type=str(game_type),
         )
         return len(targets)
 

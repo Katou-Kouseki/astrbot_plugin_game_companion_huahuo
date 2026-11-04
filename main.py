@@ -8102,6 +8102,9 @@ class GameCompanionPlugin(Star):
         self.manager.record_operation(
             "create_room",
             f"管理台开房：{room.room_id}（{self._game_label(game_type)}）",
+            operator="游戏管理台",
+            room_id=room.room_id,
+            game_type=room.game_type,
         )
         return {
             "status": "ok",
@@ -8133,18 +8136,29 @@ class GameCompanionPlugin(Star):
                 self.manager.record_operation(
                     "assign",
                     f"房间 {room.room_id}：将 {visitor_number} 号安排为玩家",
+                    operator="游戏管理台",
+                    room_id=room.room_id,
+                    game_type=room.game_type,
                 )
             elif action == "demote":
                 visitor_number = int(payload.get("visitor_number") or 0)
                 await self.manager.remove_player(room, visitor_number)
                 self.manager.record_operation(
-                    "demote", f"房间 {room.room_id}：将 {visitor_number} 号移回观众席"
+                    "demote",
+                    f"房间 {room.room_id}：将 {visitor_number} 号移回观众席",
+                    operator="游戏管理台",
+                    room_id=room.room_id,
+                    game_type=room.game_type,
                 )
             elif action == "kick":
                 visitor_number = int(payload.get("visitor_number") or 0)
                 await self.manager.kick_visitor(room, visitor_number)
                 self.manager.record_operation(
-                    "kick", f"房间 {room.room_id}：将 {visitor_number} 号踢出房间"
+                    "kick",
+                    f"房间 {room.room_id}：将 {visitor_number} 号踢出房间",
+                    operator="游戏管理台",
+                    room_id=room.room_id,
+                    game_type=room.game_type,
                 )
             elif action == "set_difficulty":
                 difficulty = self._difficulty(payload.get("difficulty"))
@@ -8153,11 +8167,28 @@ class GameCompanionPlugin(Star):
                     "set_difficulty",
                     f"房间 {room.room_id}：棋力改为"
                     f"{self.manager._difficulty_label(difficulty)}",
+                    operator="游戏管理台",
+                    room_id=room.room_id,
+                    game_type=room.game_type,
                 )
             elif action == "pause":
                 await self.manager.pause(room)
+                self.manager.record_operation(
+                    "pause_room",
+                    f"房间 {room.room_id}：暂停对局",
+                    operator="游戏管理台",
+                    room_id=room.room_id,
+                    game_type=room.game_type,
+                )
             elif action == "resume":
                 await self.manager.resume(room)
+                self.manager.record_operation(
+                    "resume_room",
+                    f"房间 {room.room_id}：继续对局",
+                    operator="游戏管理台",
+                    room_id=room.room_id,
+                    game_type=room.game_type,
+                )
             elif action == "switch_game":
                 await self.manager.switch_game(
                     room,
@@ -8167,11 +8198,18 @@ class GameCompanionPlugin(Star):
                 self.manager.record_operation(
                     "switch_game",
                     f"房间 {room.room_id}：切换为《{payload.get('game_type')}》",
+                    operator="游戏管理台",
+                    room_id=room.room_id,
+                    game_type=room.game_type,
                 )
             elif action == "close":
                 await self.manager.destroy(room.room_id, "管理员关闭了房间")
                 self.manager.record_operation(
-                    "close_room", f"关闭房间 {room.room_id}"
+                    "close_room",
+                    f"关闭房间 {room.room_id}",
+                    operator="游戏管理台",
+                    room_id=room.room_id,
+                    game_type=room.game_type,
                 )
             else:
                 raise ValueError("不支持的管理操作")
@@ -8188,7 +8226,9 @@ class GameCompanionPlugin(Star):
         if cleared:
             self.manager.record_operation(
                 "clear_leaderboard",
-                f"清空战绩排行榜（{'全部玩法' if not game_type else game_type}）",
+                f"清空战绩排行榜（{'全部玩法' if not game_type else self._game_label(game_type)}）",
+                operator="游戏管理台",
+                game_type=game_type or "",
             )
         return {
             "status": "ok" if cleared else "error",
