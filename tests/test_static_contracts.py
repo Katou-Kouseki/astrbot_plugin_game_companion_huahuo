@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.56"
+    assert metadata["version"] == "0.5.57"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -1207,3 +1207,63 @@ def test_manager_game_labels_cover_all_supported_games() -> None:
     # 后端 SUPPORTED_GAMES 里的每个玩法都要有中文名
     for game in ("gomoku", "xiangqi", "weiqi", "tictactoe", "othello"):
         assert f'"{game}"' in models
+
+
+def test_game_vote_wiring_is_complete() -> None:
+    """房间内投票换游戏：配置项、路由、快照字段、前端面板必须齐全。"""
+    import json
+
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    items = schema["multiplayer"]["items"]
+    for key in (
+        "game_vote_enabled",
+        "game_vote_expiry_seconds",
+        "game_vote_cooldown_seconds",
+        "game_vote_allow_while_playing",
+    ):
+        assert key in items, f"缺少配置项 {key}"
+    # 对局中发起默认关闭
+    assert items["game_vote_allow_while_playing"]["default"] is False
+
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    for path, handler in (
+        ("game/vote/propose", "_game_vote_propose"),
+        ("game/vote/cast", "_game_vote_cast"),
+        ("game/vote/cancel", "_game_vote_cancel"),
+    ):
+        assert f'"/api/room/{{access_token}}/{path}"' in server
+        assert f"async def {handler}(" in server
+    assert "switchable_games=self.manager.switchable_games(room)" in server
+    assert 'snapshot["game_vote_enabled"]' in server
+
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    for name in (
+        "def switchable_games(",
+        "def game_vote_required(",
+        "def prune_game_vote(",
+        "async def propose_game_vote(",
+        "async def cast_game_vote(",
+        "async def cancel_game_vote(",
+    ):
+        assert name in manager
+    # 看门狗顺带清过期提案
+    assert "self.prune_game_vote(room, current)" in manager
+
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    assert "class GameVoteRequest" in models
+    assert '"switchable_games": list(switchable_games or [])' in models
+    assert '"game_vote": self._game_vote_snapshot(visitor_token)' in models
+
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    assert "function renderGameVote()" in script
+    assert "renderGameVote();" in script
+    for action in (
+        'request("POST", "game/vote/propose"',
+        'request("POST", "game/vote/cast"',
+        'request("POST", "game/vote/cancel"',
+    ):
+        assert action in script
+
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    assert 'id="gameVotePanel"' in page
+    assert 'id="gameVoteTarget"' in page

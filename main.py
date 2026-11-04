@@ -1587,6 +1587,17 @@ class GameCompanionPlugin(Star):
         self.swap_request_expiry = self._cfg_int(
             "multiplayer.swap_request_expiry_seconds", 20, minimum=1, maximum=600
         )
+        # 房间内投票换游戏
+        self.game_vote_enabled = self._cfg_bool("multiplayer.game_vote_enabled", True)
+        self.game_vote_expiry = self._cfg_int(
+            "multiplayer.game_vote_expiry_seconds", 60, minimum=10, maximum=600
+        )
+        self.game_vote_cooldown = self._cfg_non_negative(
+            "multiplayer.game_vote_cooldown_seconds", 30
+        )
+        self.game_vote_allow_while_playing = self._cfg_bool(
+            "multiplayer.game_vote_allow_while_playing", False
+        )
         # 再来一局是否换先（黑/白、象棋红/黑互换）
         self.duel_side_rotation = self._cfg_bool(
             "multiplayer.duel_side_rotation", True
@@ -1632,6 +1643,10 @@ class GameCompanionPlugin(Star):
             duel_offline_grace=self.duel_offline_grace,
             swap_request_cooldown=self.swap_request_cooldown,
             swap_request_expiry=self.swap_request_expiry,
+            game_vote_enabled=self.game_vote_enabled,
+            game_vote_expiry=self.game_vote_expiry,
+            game_vote_cooldown=self.game_vote_cooldown,
+            game_vote_allow_while_playing=self.game_vote_allow_while_playing,
             duel_side_rotation=self.duel_side_rotation,
             ai_think_delay=self.ai_think_delay,
             draw_guess_max_guesses=self.draw_guess_max_guesses,

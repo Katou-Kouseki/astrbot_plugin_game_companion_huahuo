@@ -184,6 +184,16 @@ class GameRoomServer:
             "/api/room/{access_token}/side-rotation", self._set_side_rotation
         )
         app.router.add_post("/api/room/{access_token}/rematch", self._rematch)
+        # 房间内投票换游戏：发起 / 投票 / 撤回
+        app.router.add_post(
+            "/api/room/{access_token}/game/vote/propose", self._game_vote_propose
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/game/vote/cast", self._game_vote_cast
+        )
+        app.router.add_post(
+            "/api/room/{access_token}/game/vote/cancel", self._game_vote_cancel
+        )
         app.router.add_post("/api/room/{access_token}/chat", self._chat)
         app.router.add_post("/api/room/{access_token}/leave", self._leave)
         # QQ 头像代理：qlogo 不带 CORS 头，Canvas 无法直接绘制；服务端拉取后补 ACAO
@@ -403,6 +413,59 @@ class GameRoomServer:
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.request_rematch(room, visitor_token)
         self._log_room_op(room, "room_rematch", "申请再来一局", visitor_token)
+        return self._response({"room": self._room_payload(room, visitor_token)})
+
+    async def _game_vote_propose(self, request: web.Request) -> web.Response:
+        """房间内发起「换游戏」投票。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        game_type = str(payload.get("game_type") or "")
+        try:
+            await self.manager.propose_game_vote(room, visitor_token, game_type)
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)}, status=400
+            )
+        self._log_room_op(
+            room,
+            "game_vote",
+            f"发起换游戏投票 → {self.manager._game_label(game_type)}",
+            visitor_token,
+        )
+        return self._response({"room": self._room_payload(room, visitor_token)})
+
+    async def _game_vote_cast(self, request: web.Request) -> web.Response:
+        """对当前换游戏提案投赞成/反对。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        approve = payload.get("approve")
+        if not isinstance(approve, bool):
+            approve = str(approve or "").strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            await self.manager.cast_game_vote(room, visitor_token, approve)
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)}, status=400
+            )
+        return self._response({"room": self._room_payload(room, visitor_token)})
+
+    async def _game_vote_cancel(self, request: web.Request) -> web.Response:
+        """发起人撤回换游戏提案。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        try:
+            await self.manager.cancel_game_vote(room, visitor_token)
+        except (ValueError, PermissionError) as exc:
+            return web.json_response(
+                {"status": "error", "message": str(exc)}, status=400
+            )
+        self._log_room_op(room, "game_vote", "撤回换游戏投票", visitor_token)
         return self._response({"room": self._room_payload(room, visitor_token)})
 
     async def _chat(self, request: web.Request) -> web.Response:
@@ -1014,7 +1077,17 @@ class GameRoomServer:
         snapshot = room.public_snapshot(
             visitor_token,
             global_leaderboard=self.manager.global_leaderboard(room.game_type),
+            switchable_games=self.manager.switchable_games(room),
         )
+        # 提案过期是惰性的：这里顺手清一次，前端下一次轮询就看不到僵尸倒计时
+        if self.manager.prune_game_vote(room):
+            snapshot["game_vote"] = None
+        snapshot["game_vote_enabled"] = bool(self.manager.game_vote_enabled)
+        snapshot["game_vote_allow_while_playing"] = bool(
+            self.manager.game_vote_allow_while_playing
+        )
+        snapshot["game_vote_expiry_seconds"] = int(self.manager.game_vote_expiry)
+        snapshot["game_vote_cooldown_until"] = self.manager.game_vote_cooldown_until(room)
         try:
             snapshot["side_rotation"] = self.manager.side_rotation_state(
                 room, visitor_token

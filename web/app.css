@@ -805,8 +805,86 @@ body.dark .difficulty-picker { background: #2a3330; border-color: #3d4844; }
 body.dark .difficulty-picker button { color: #9aa5a0; }
 body.dark .difficulty-picker button.is-active { background: #2f7d5b; color: #fff; }
 
-.seat-panel, .people-panel { padding: 14px; }
-.identity-challenge { display: grid; gap: 5px; margin: 12px 0 10px; padding: 10px; border: 1px dashed var(--border); border-radius: 5px; background: var(--surface-alt); }
+/* —— 房间内投票换游戏 —— */
+.game-vote-panel {
+  display: grid;
+  gap: 9px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .05);
+  transition: background .3s ease, border-color .3s ease, color .3s ease;
+}
+.game-vote-panel[hidden] { display: none; }
+.game-vote-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.game-vote-head strong {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-strong);
+  font-size: 12.5px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.game-vote-idle { display: flex; align-items: center; gap: 8px; }
+.game-vote-idle[hidden] { display: none; }
+.game-vote-idle select {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.game-vote-idle .secondary-action {
+  flex: 0 0 auto;
+  min-height: 30px;
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+.game-vote-idle .secondary-action:disabled { opacity: .5; cursor: default; }
+.game-vote-active { display: grid; gap: 8px; }
+.game-vote-active[hidden] { display: none; }
+.game-vote-summary {
+  margin: 0;
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.game-vote-actions { display: flex; gap: 6px; }
+.game-vote-actions button {
+  flex: 1;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
+}
+.game-vote-actions button:hover:not(:disabled) { border-color: var(--green); color: var(--green); }
+.game-vote-actions button:disabled { opacity: .5; cursor: default; }
+.game-vote-actions .vote-for.is-active { background: var(--green); border-color: var(--green); color: #fff; }
+.game-vote-actions .vote-against.is-active { background: #b4524a; border-color: #b4524a; color: #fff; }
+.game-vote-actions .vote-cancel { flex: 0 0 auto; color: var(--muted); }
+.game-vote-actions .vote-cancel[hidden] { display: none; }
+.game-vote-hint { margin: 0; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+body.dark .game-vote-idle select { background: #2a3330; border-color: #3d4844; color: #dfe7e3; }
+body.dark .game-vote-actions button { background: #2a3330; border-color: #3d4844; color: #dfe7e3; }
+body.dark .game-vote-actions .vote-for.is-active { background: #2f7d5b; border-color: #2f7d5b; }
+body.dark .game-vote-actions .vote-against.is-active { background: #8f4038; border-color: #8f4038; }
+
+.seat-panel, .people-panel { padding: 14px; }.identity-challenge { display: grid; gap: 5px; margin: 12px 0 10px; padding: 10px; border: 1px dashed var(--border); border-radius: 5px; background: var(--surface-alt); }
 .identity-challenge[hidden] { display: none; }
 .identity-challenge code { letter-spacing: .12em; color: #215c45; font-size: 18px; font-weight: 800; }
 .identity-challenge small { color: #707873; font-size: 11px; line-height: 1.4; }

@@ -454,6 +454,29 @@
           </div>
         </section>
 
+        <!-- 房间内投票换游戏：在线访客都能发起与投票，门槛由后端算好 -->
+        <section id="gameVotePanel" class="game-vote-panel" hidden aria-label="投票换游戏">
+          <div class="game-vote-head">
+            <span class="label">换游戏</span>
+            <strong id="gameVoteHeadline">一起投票决定下一款玩法</strong>
+          </div>
+          <div id="gameVoteIdle" class="game-vote-idle">
+            <select id="gameVoteTarget" aria-label="选择要换的玩法"></select>
+            <button id="gameVotePropose" class="secondary-action" type="button">
+              <i data-lucide="shuffle"></i><span>发起投票</span>
+            </button>
+          </div>
+          <div id="gameVoteActive" class="game-vote-active" hidden>
+            <p id="gameVoteSummary" class="game-vote-summary"></p>
+            <div class="game-vote-actions">
+              <button id="gameVoteFor" class="vote-for" type="button">赞成</button>
+              <button id="gameVoteAgainst" class="vote-against" type="button">反对</button>
+              <button id="gameVoteCancel" class="vote-cancel" type="button" hidden>撤回</button>
+            </div>
+          </div>
+          <p id="gameVoteHint" class="game-vote-hint"></p>
+        </section>
+
         <!-- 围棋专用：停一手 + 盘路。放在操作面板里，和胜率、席位排在一起 -->
         <footer id="weiqiActions" class="board-actions side-actions" hidden>
           <button id="weiqiPassAction" class="pass-action" type="button" title="本手不下，选择停一手">

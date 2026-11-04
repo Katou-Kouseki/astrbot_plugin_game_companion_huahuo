@@ -262,6 +262,30 @@
         "type": "int",
         "default": 20,
         "hint": "过期申请由服务端自动清理。"
+      },
+      "game_vote_enabled": {
+        "description": "开放房间内投票换游戏",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，房间里的玩家可以一起投票把当前玩法换成别的（只能换成管理员已开放、且不是当前玩法的那些）。关闭后房间页不显示换游戏入口。"
+      },
+      "game_vote_expiry_seconds": {
+        "description": "换游戏投票有效秒数",
+        "type": "int",
+        "default": 60,
+        "hint": "超时未达门槛则提案自动作废，并发一条房间系统消息。"
+      },
+      "game_vote_cooldown_seconds": {
+        "description": "换游戏投票冷却秒数",
+        "type": "int",
+        "default": 30,
+        "hint": "同一房间两次发起之间至少间隔这么久，避免来回提不同玩法；0 表示不限制。"
+      },
+      "game_vote_allow_while_playing": {
+        "description": "允许对局进行中投票换游戏",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭：只能在等人、开局前、局间发起。开启后对局进行中也能发起，投票通过会直接放弃当前对局（本局不计入战绩），适合熟人房间；公共房间里容易被几个人投票打断对局，建议保持关闭。"
       }
     }
   },

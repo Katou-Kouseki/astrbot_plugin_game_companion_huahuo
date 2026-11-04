@@ -93,6 +93,32 @@ class SeatSwapRequest:
 
 
 @dataclass(slots=True)
+class GameVoteRequest:
+    """房间内「投票换游戏」的一次提案（同一时间只允许一条）。
+
+    voter_base 是**创建时锁定的在线人数**：中途有人刷新或离开不会把门槛抬高或压低，
+    否则票数可能被「分母抖动」卡死或意外通过。
+    """
+
+    request_id: str
+    proposer_token: str
+    target_game: str
+    created_at: float
+    expires_at: float
+    voter_base: int = 1
+    # 通过门槛：创建时按 voter_base 算好并存下，避免每次读快照重算口径不一致
+    required: int = 1
+    # visitor_token -> 是否赞成（发起人默认赞成）
+    votes: dict[str, bool] = field(default_factory=dict)
+
+    def counts(self) -> tuple[int, int]:
+        """返回 (赞成票, 反对票)。"""
+        in_favor = sum(1 for approved in self.votes.values() if approved)
+        against = sum(1 for approved in self.votes.values() if not approved)
+        return in_favor, against
+
+
+@dataclass(slots=True)
 class MultiplayerState:
     """Game-agnostic seats, round order and spectator swap requests."""
 
@@ -338,6 +364,9 @@ class GameRoom:
     undercover_prepare_seconds: int = 0
     undercover_allow_host_customize_camp_scales: bool = True
     undercover_reveal_identity: bool | None = None
+    # 房间内「投票换游戏」：同时只允许一条提案；冷却按房间计时。
+    game_vote: GameVoteRequest | None = None
+    last_game_vote_at: float = 0.0
     # 自动开局任务在途标记：满员/就绪触发自动开局后置位，任务结束清位。
     # 用于防止取词（可能调 LLM）期间看门狗下一轮又重复触发同一场自动开局。
     undercover_auto_starting: bool = False
@@ -526,10 +555,40 @@ class GameRoom:
         """Mark a meaningful room operation."""
         self.last_activity_at = time.time()
 
+    def _game_vote_snapshot(self, visitor_token: str) -> dict[str, object] | None:
+        """把当前的换游戏提案整理成前端能直接渲染的结构（无提案返回 None）。"""
+        vote = self.game_vote
+        if vote is None:
+            return None
+        proposer = self.visitors.get(vote.proposer_token)
+        if proposer is None:
+            proposer_name = ""
+        elif proposer.identity_confirmed and proposer.display_name:
+            proposer_name = proposer.display_name
+        else:
+            proposer_name = f"{proposer.number}号"
+        in_favor, against = vote.counts()
+        my_vote = vote.votes.get(visitor_token)
+        return {
+            "request_id": vote.request_id,
+            "target_game": vote.target_game,
+            "proposer_name": proposer_name,
+            "votes_for": in_favor,
+            "votes_against": against,
+            "required": max(1, int(vote.required or 1)),
+            "voter_base": max(1, int(vote.voter_base or 1)),
+            "expires_at": vote.expires_at,
+            "my_vote": "for" if my_vote is True else ("against" if my_vote is False else ""),
+            "is_proposer": bool(
+                visitor_token and visitor_token == vote.proposer_token
+            ),
+        }
+
     def public_snapshot(
         self,
         visitor_token: str = "",
         global_leaderboard: list[dict[str, object]] | None = None,
+        switchable_games: list[dict[str, str]] | None = None,
     ) -> dict[str, object]:
         """Return room state without QQ identities or management secrets."""
         visitor = self.visitors.get(visitor_token)
@@ -690,6 +749,10 @@ class GameRoom:
             ),
             "turtle_soup_mode": self.turtle_soup_mode,
             "difficulty": self.difficulty,
+            # 房间内投票换游戏：可选玩法（只含管理员已开放、且不是当前玩法的）
+            # 以及正在进行的提案。门槛由后端算好，前端只负责展示。
+            "switchable_games": list(switchable_games or []),
+            "game_vote": self._game_vote_snapshot(visitor_token),
             # 棋类/贪心骰子/二十一点可中途改难度（其余玩法的 difficulty 是内容等级，不是强度）
             "difficulty_adjustable": self.game_type in DIFFICULTY_GAME_TYPES,
             # 房间内自选的换边方式（None = 跟随插件配置）；前端据此渲染「每局换边/保持执色」

@@ -19,6 +19,7 @@ from .models import (
     DIFFICULTY_GAME_TYPES,
     GameRoom,
     GameType,
+    GameVoteRequest,
     MultiplayerState,
     PlayerSeat,
     RoomSource,
@@ -210,6 +211,10 @@ class RoomManager:
         weiqi_komi: float = WEIQI_DEFAULT_KOMI,
         swap_request_cooldown: int = 30,
         swap_request_expiry: int = 20,
+        game_vote_enabled: bool = True,
+        game_vote_expiry: int = 60,
+        game_vote_cooldown: int = 30,
+        game_vote_allow_while_playing: bool = False,
         duel_side_rotation: bool = True,
         ai_think_delay: float = 0.8,
         draw_guess_max_guesses: int = 5,
@@ -256,6 +261,11 @@ class RoomManager:
         self.weiqi_komi = round(max(0.0, min(float(weiqi_komi), 30.0)) * 2) / 2
         self.swap_request_cooldown = max(0, int(swap_request_cooldown))
         self.swap_request_expiry = max(1, int(swap_request_expiry))
+        # 房间内「投票换游戏」：开关、提案有效期、发起冷却、是否允许对局进行中发起
+        self.game_vote_enabled = bool(game_vote_enabled)
+        self.game_vote_expiry = max(10, min(int(game_vote_expiry), 600))
+        self.game_vote_cooldown = max(0, min(int(game_vote_cooldown), 600))
+        self.game_vote_allow_while_playing = bool(game_vote_allow_while_playing)
         # 再来一局是否换先：开着每局互换黑白（象棋红黑）；关掉就固定按座位号执色
         self.duel_side_rotation = bool(duel_side_rotation)
         # 花火「思考」的基础延迟（秒）：各难度在此基础上做小幅增减，
@@ -2735,6 +2745,191 @@ class RoomManager:
         )
         return True
 
+    # ------------------------------------------------------------------
+    # 房间内「投票换游戏」
+    #
+    # 复用上面的 switch_game：投票通过后只是多一层「大家同意了」的判据，
+    # 真正的切换、座位重排、系统消息、game_switched 事件都还是同一套逻辑。
+    # ------------------------------------------------------------------
+
+    # 判定「在线」的心跳窗口：与 Visitor.online 保持一致（15 秒）。
+    GAME_VOTE_ONLINE_SECONDS = 15
+
+    def switchable_games(self, room: GameRoom) -> list[dict[str, str]]:
+        """房间内可投票切换的玩法（管理员已开放、且不是当前玩法）。"""
+        return [
+            {"key": game_type, "label": self._game_label(game_type)}
+            for game_type in SUPPORTED_GAMES
+            if game_type != room.game_type and self.game_enabled(game_type)
+        ]
+
+    def game_vote_cooldown_until(self, room: GameRoom) -> float:
+        """下一次允许发起投票的时间戳（0 表示现在就能发起）。"""
+        if not self.game_vote_enabled or not self.game_vote_cooldown:
+            return 0.0
+        return float(room.last_game_vote_at or 0.0) + self.game_vote_cooldown
+
+    def _game_vote_online_tokens(self, room: GameRoom, now: float) -> list[str]:
+        """当前在线的真人访客（排除花火占的 AI 座位）。"""
+        ai_tokens = {
+            seat.visitor_token for seat in room.multiplayer.seats if seat.is_ai
+        }
+        tokens: list[str] = []
+        for token, visitor in room.visitors.items():
+            if token in ai_tokens:
+                continue
+            if not getattr(visitor, "connected", False):
+                continue
+            last_seen = float(getattr(visitor, "last_seen_at", 0) or 0)
+            if now - last_seen > self.GAME_VOTE_ONLINE_SECONDS:
+                continue
+            tokens.append(token)
+        return tokens
+
+    @staticmethod
+    def game_vote_required(voter_base: int) -> int:
+        """通过门槛：在线 1 人时发起人一票即通过，否则至少 2 票且过半。"""
+        base = max(1, int(voter_base))
+        if base <= 1:
+            return 1
+        return max(2, base // 2 + 1)
+
+    def prune_game_vote(self, room: GameRoom, now: float | None = None) -> bool:
+        """清理已过期的提案（惰性调用：读快照、发起、投票、看门狗都会走）。"""
+        vote = room.game_vote
+        if vote is None:
+            return False
+        current = time.time() if now is None else float(now)
+        if current < float(vote.expires_at or 0):
+            return False
+        room.game_vote = None
+        room.add_message("system", "换游戏投票已超时作废。")
+        return True
+
+    @staticmethod
+    def game_vote_passed(room: GameRoom) -> bool:
+        vote = room.game_vote
+        if vote is None:
+            return False
+        in_favor, _against = vote.counts()
+        return in_favor >= max(1, int(vote.required or 1))
+
+    async def _apply_game_vote(self, room: GameRoom, target_game: GameType) -> None:
+        """提案通过后真正执行切换（在锁外调用，switch_game 自己会加锁）。"""
+        before = {
+            seat.visitor_token: seat
+            for seat in room.multiplayer.seats
+            if not seat.is_ai
+        }
+        await self.switch_game(room, target_game, force=True)
+        after = {seat.visitor_token for seat in room.multiplayer.seats}
+        bumped = [
+            seat for token, seat in before.items() if token and token not in after
+        ]
+        if bumped:
+            names = "、".join(self._seat_display(seat) for seat in bumped)
+            room.add_message(
+                "system", f"座位不足，{names} 已回到观众席。"
+            )
+
+    async def propose_game_vote(
+        self, room: GameRoom, visitor_token: str, game_type: str
+    ) -> str:
+        """发起一次换游戏投票；返回提案 id。"""
+        if not self.game_vote_enabled:
+            raise PermissionError("房间内投票换游戏已被管理员关闭")
+        if game_type not in SUPPORTED_GAMES:
+            raise ValueError("不支持的玩法")
+        self.require_game_enabled(game_type)
+        passed_target: GameType | None = None
+        async with room.lock:
+            now = time.time()
+            self.prune_game_vote(room, now)
+            if visitor_token not in room.visitors:
+                raise PermissionError("你不在这个房间里")
+            if room.status == "closed":
+                raise ValueError("房间已关闭")
+            if game_type == room.game_type:
+                raise ValueError(f"当前已经在玩{self._game_label(game_type)}")
+            if (
+                room.status in {"active", "paused"}
+                and not self.game_vote_allow_while_playing
+            ):
+                raise ValueError("对局进行中不能发起换游戏投票，等这一局结束后再来")
+            if room.game_vote is not None:
+                raise ValueError("已经有一个换游戏提案在投票中，先等它结束")
+            cooldown_until = self.game_vote_cooldown_until(room)
+            if cooldown_until > now:
+                raise ValueError(
+                    f"换游戏投票冷却中，还要等 {int(cooldown_until - now) + 1} 秒"
+                )
+            voter_base = max(1, len(self._game_vote_online_tokens(room, now)))
+            required = self.game_vote_required(voter_base)
+            request_id = secrets.token_urlsafe(8)
+            room.game_vote = GameVoteRequest(
+                request_id=request_id,
+                proposer_token=visitor_token,
+                target_game=game_type,
+                created_at=now,
+                expires_at=now + self.game_vote_expiry,
+                voter_base=voter_base,
+                required=required,
+                # 发起即赞成：单人房间因此能一票通过
+                votes={visitor_token: True},
+            )
+            room.last_game_vote_at = now
+            proposer = room.visitors.get(visitor_token)
+            proposer_name = self._visitor_label(proposer) if proposer else "有人"
+            room.add_message(
+                "system",
+                f"{proposer_name} 发起投票：换到《{self._game_label(game_type)}》，"
+                f"需 {required} 票赞成，{self.game_vote_expiry} 秒内有效。",
+            )
+            if self.game_vote_passed(room):
+                passed_target = game_type  # type: ignore[assignment]
+                room.game_vote = None
+            room.touch()
+        if passed_target is not None:
+            await self._apply_game_vote(room, passed_target)
+        return request_id
+
+    async def cast_game_vote(
+        self, room: GameRoom, visitor_token: str, approve: bool
+    ) -> bool:
+        """投赞成/反对票；返回这次投票是否直接通过了提案。"""
+        if not self.game_vote_enabled:
+            raise PermissionError("房间内投票换游戏已被管理员关闭")
+        passed_target: GameType | None = None
+        async with room.lock:
+            now = time.time()
+            self.prune_game_vote(room, now)
+            vote = room.game_vote
+            if vote is None:
+                raise ValueError("当前没有进行中的换游戏投票")
+            if visitor_token not in room.visitors:
+                raise PermissionError("你不在这个房间里")
+            vote.votes[visitor_token] = bool(approve)
+            if self.game_vote_passed(room):
+                passed_target = vote.target_game  # type: ignore[assignment]
+                room.game_vote = None
+            room.touch()
+        if passed_target is not None:
+            await self._apply_game_vote(room, passed_target)
+            return True
+        return False
+
+    async def cancel_game_vote(self, room: GameRoom, visitor_token: str) -> None:
+        """发起人撤回自己的提案。"""
+        async with room.lock:
+            vote = room.game_vote
+            if vote is None:
+                raise ValueError("当前没有进行中的换游戏投票")
+            if vote.proposer_token != visitor_token:
+                raise PermissionError("只有发起人才能撤回提案")
+            room.game_vote = None
+            room.add_message("system", "换游戏投票已撤回。")
+            room.touch()
+
     def game_enabled(self, game_type: GameType) -> bool:
         """Return whether new rounds of one supported game may start."""
         return bool(self.enabled_games.get(game_type, False))
@@ -3200,6 +3395,9 @@ class RoomManager:
         expired: list[tuple[str, str]] = []
         for room in list(self.rooms.values()):
             try:
+                # 换游戏投票的过期是惰性的：看门狗每 2 秒顺带清一次，
+                # 读快照时也会再清一次，保证前端不会看到「已过期还在倒计时」。
+                self.prune_game_vote(room, current)
                 hit = await self._sweep_room(room, current)
             except asyncio.CancelledError:
                 raise

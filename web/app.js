@@ -1929,6 +1929,8 @@
     document.body.classList.toggle("room-undercover", room.game_type === "undercover");
     // 右栏「游戏规则 + 全局战绩」面板：按当前游戏类型动态展示对应内容
     renderGameInfoPanel(room);
+    // 房间内「投票换游戏」：每秒轮询都要刷新票数与倒计时
+    renderGameVote();
     // 本局身份卡只属于谁是卧底，其它玩法的右侧面板不显示它
     const ucIdCard = document.getElementById("ucIdentityCard");
     if (ucIdCard) ucIdCard.hidden = room.game_type !== "undercover";
@@ -4556,6 +4558,148 @@
     });
   }
 
+  // —— 房间内投票换游戏 ——
+  // 可选玩法、通过门槛、冷却都由后端算好下发，这里只负责展示与发请求。
+  function renderGameVote() {
+    const panel = document.getElementById("gameVotePanel");
+    if (!panel) return;
+    const games = Array.isArray(room?.switchable_games) ? room.switchable_games : [];
+    if (!room || !room.game_vote_enabled || !games.length) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    const vote = room.game_vote || null;
+    const idle = document.getElementById("gameVoteIdle");
+    const active = document.getElementById("gameVoteActive");
+    const headline = document.getElementById("gameVoteHeadline");
+    const hint = document.getElementById("gameVoteHint");
+    const inPlay = room.status === "active" || room.status === "paused";
+    const allowedNow = !inPlay || Boolean(room.game_vote_allow_while_playing);
+    const now = Number(room.server_time) || Date.now() / 1000;
+    const cooldownLeft = Math.max(
+      0,
+      Math.ceil(Number(room.game_vote_cooldown_until || 0) - now),
+    );
+
+    idle.hidden = Boolean(vote);
+    active.hidden = !vote;
+
+    if (!vote) {
+      headline.textContent = "一起投票决定下一款玩法";
+      // 换可选玩法时才重建下拉，避免每秒轮询把用户的选择冲掉
+      const select = document.getElementById("gameVoteTarget");
+      const signature = games.map((g) => `${g.key}:${g.label}`).join(",");
+      if (select && select.dataset.signature !== signature) {
+        const previous = select.value;
+        select.replaceChildren();
+        games.forEach((g) => {
+          const option = document.createElement("option");
+          option.value = g.key;
+          option.textContent = g.label;
+          select.appendChild(option);
+        });
+        if (previous && games.some((g) => g.key === previous)) select.value = previous;
+        select.dataset.signature = signature;
+      }
+      const propose = document.getElementById("gameVotePropose");
+      const blocked = busy || !allowedNow || cooldownLeft > 0;
+      if (propose) propose.disabled = blocked;
+      hint.textContent = !allowedNow
+        ? "对局进行中，等这一局结束后再发起换游戏投票。"
+        : cooldownLeft > 0
+          ? `换游戏投票冷却中，还要等 ${cooldownLeft} 秒。`
+          : "达到所需票数后立即切换到新玩法，座位与房间链接保持不变。";
+      return;
+    }
+
+    const target = games.find((g) => g.key === vote.target_game);
+    const targetLabel = target?.label || vote.target_game || "新玩法";
+    const required = Number(vote.required) || 1;
+    const inFavor = Number(vote.votes_for) || 0;
+    const against = Number(vote.votes_against) || 0;
+    const left = Math.max(0, Math.ceil(Number(vote.expires_at || 0) - now));
+    headline.textContent = `投票中：换到《${targetLabel}》`;
+    document.getElementById("gameVoteSummary").textContent =
+      `${vote.proposer_name || "有人"} 发起 · 赞成 ${inFavor} / 需 ${required}` +
+      (against ? ` · 反对 ${against}` : "") +
+      ` · 剩 ${left} 秒`;
+
+    const forBtn = document.getElementById("gameVoteFor");
+    const againstBtn = document.getElementById("gameVoteAgainst");
+    const cancelBtn = document.getElementById("gameVoteCancel");
+    if (forBtn) {
+      forBtn.disabled = busy || vote.my_vote === "for";
+      forBtn.classList.toggle("is-active", vote.my_vote === "for");
+    }
+    if (againstBtn) {
+      againstBtn.disabled = busy || vote.my_vote === "against";
+      againstBtn.classList.toggle("is-active", vote.my_vote === "against");
+    }
+    if (cancelBtn) cancelBtn.hidden = !vote.is_proposer;
+    hint.textContent = vote.is_proposer
+      ? "你是提案人，可以随时撤回这条提案。"
+      : "赞成票达到所需数量后，房间会立即换到新玩法。";
+  }
+
+  async function proposeGameVote() {
+    if (busy || !room) return;
+    const select = document.getElementById("gameVoteTarget");
+    const target = select ? String(select.value || "") : "";
+    if (!target) return;
+    busy = true;
+    render();
+    try {
+      const data = await request("POST", "game/vote/propose", {
+        visitor_token: visitorToken,
+        game_type: target,
+      });
+      setRoom(data.room);
+      showToast("已发起换游戏投票");
+    } catch (error) {
+      showToast(error?.message || "发起投票失败");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  async function castGameVote(approve) {
+    if (busy || !room || !room.game_vote) return;
+    busy = true;
+    render();
+    try {
+      const data = await request("POST", "game/vote/cast", {
+        visitor_token: visitorToken,
+        approve: Boolean(approve),
+      });
+      setRoom(data.room);
+    } catch (error) {
+      showToast(error?.message || "投票失败");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  async function cancelGameVote() {
+    if (busy || !room || !room.game_vote) return;
+    busy = true;
+    render();
+    try {
+      const data = await request("POST", "game/vote/cancel", {
+        visitor_token: visitorToken,
+      });
+      setRoom(data.room);
+      showToast("已撤回换游戏提案");
+    } catch (error) {
+      showToast(error?.message || "撤回失败");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
   // —— 开局「换边提醒」：每局开始时告诉玩家这一局执什么颜色 ——
   const SIDE_BANNER_MS = 3600;
 
@@ -6191,6 +6335,10 @@
     if (!button || button.disabled) return;
     setDifficulty(button.getAttribute("data-difficulty"));
   });
+  document.getElementById("gameVotePropose").addEventListener("click", proposeGameVote);
+  document.getElementById("gameVoteFor").addEventListener("click", () => castGameVote(true));
+  document.getElementById("gameVoteAgainst").addEventListener("click", () => castGameVote(false));
+  document.getElementById("gameVoteCancel").addEventListener("click", cancelGameVote);
   document.getElementById("rematchChoice").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-rotation]");
     if (!button || button.disabled) return;
