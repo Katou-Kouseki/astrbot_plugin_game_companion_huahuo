@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.55"
+    assert metadata["version"] == "0.5.56"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -1170,3 +1170,40 @@ def test_page_api_handlers_read_body_from_request_not_signature() -> None:
         "page_undercover_words_llm_generate_batch",
     ):
         assert f"async def {name}(self) -> dict[str, Any]:" in main
+
+
+def test_stats_poster_rows_start_below_header() -> None:
+    """战绩海报的数据行必须从表头下方开始，否则第一名会压在表头上。"""
+    script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+
+    # 表头高度已计入画布总高，数据行起点也要带上它
+    assert "const height = padTop + headerH + nRows * rowH + footerH;" in script
+    assert "const rowTop = padTop + headerH;" in script
+    assert "const y = rowTop + i * rowH;" in script
+    # 旧写法（行起点等于表头起点）不能再出现
+    assert "const y = padTop + i * rowH;" not in script
+
+
+def test_manager_game_labels_cover_all_supported_games() -> None:
+    """管理台玩法中文名必须覆盖全部支持玩法（曾漏 weiqi 导致海报显示英文键名）。"""
+    script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+
+    block = script.split("const GAME_LABELS = {", 1)[1].split("};", 1)[0]
+    for game in (
+        "gomoku",
+        "xiangqi",
+        "weiqi",
+        "tictactoe",
+        "othello",
+        "turtle_soup",
+        "pig_dice",
+        "draw_guess",
+        "blackjack",
+        "undercover",
+    ):
+        assert f"{game}:" in block, f"管理台缺少 {game} 的中文名"
+    assert 'weiqi: "围棋"' in block
+    # 后端 SUPPORTED_GAMES 里的每个玩法都要有中文名
+    for game in ("gomoku", "xiangqi", "weiqi", "tictactoe", "othello"):
+        assert f'"{game}"' in models
