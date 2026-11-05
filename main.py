@@ -8691,6 +8691,12 @@ class GameCompanionPlugin(Star):
         self.manager.duel_turn_timeout = self.duel_turn_timeout
         self.manager.duel_offline_grace = self.duel_offline_grace
         self.manager.duel_afk_seat_timeout = self.duel_afk_seat_timeout
+        # 已有房间的每步时长也同步成最新配置：房间里的 turn_timeout_seconds 是建房
+        # 时的快照，不同步的话管理台改完「对弈每步时间」，老房间会一直用旧值。
+        # 只改快照，不动当前这一手的 deadline（正在倒计时的回合保持原参数）。
+        for room in self.manager.rooms.values():
+            if room.game_type in DUEL_GAMES and room.multiplayer.enabled:
+                room.multiplayer.turn_timeout_seconds = self.duel_turn_timeout
         # ---- 谁是卧底：管理台里能改，就必须在保存后同步到 manager ----
         # 以前整段漏掉了，管理台显示已保存、实际对局仍用启动时的旧值。
         self.undercover_max_players = self._cfg_int(

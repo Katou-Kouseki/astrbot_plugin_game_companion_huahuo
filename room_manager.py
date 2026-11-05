@@ -5395,6 +5395,10 @@ class RoomManager:
         if isinstance(game, BOARD_GAME_CLASSES):
             # 棋类对弈：只有轮到真人座位时才走倒计时；掉线暂停期间保持不变，
             # 由 _tick_duel_locked 决定恢复或判负。
+            # 每步时长按 manager 当前配置实时刷新：房间里的 turn_timeout_seconds 只是
+            # 建房时的快照，管理台改完「对弈每步时间」后老房间会一直用旧值。
+            if state.turn_timeout_seconds != self.duel_turn_timeout:
+                state.turn_timeout_seconds = self.duel_turn_timeout
             if state.duel_paused:
                 return
             base = time.time() if now is None else float(now)
@@ -5410,6 +5414,10 @@ class RoomManager:
                 else 0.0
             )
             return
+        # 人数型玩法（海龟汤 / 二十一点）的回合时长同样按 manager 当前配置刷新：
+        # 房间里的 turn_timeout_seconds 是建房快照，不同步的话管理台改完不生效。
+        if state.turn_timeout_seconds != self.multiplayer_turn_timeout:
+            state.turn_timeout_seconds = self.multiplayer_turn_timeout
         active = bool(
             state.turn_timeout_seconds
             and state.seats

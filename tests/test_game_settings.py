@@ -165,6 +165,45 @@ def test_invalid_game_settings_are_rejected_atomically(payload: dict) -> None:
     assert plugin.config == {}
 
 
+@pytest.mark.asyncio
+async def test_duel_settings_reach_existing_rooms_after_management_save() -> None:
+    """管理台改「对弈每步时间」必须作用到已经开着的棋类房间。
+
+    房间里的 turn_timeout_seconds 是建房快照，以前管理台保存只更新 manager，
+    老房间继续按旧值倒计时（表现就是「改了没用」）。
+    """
+    plugin = make_plugin()
+    plugin.config = {
+        "multiplayer": {
+            "duel_turn_timeout_seconds": 180,
+            "duel_offline_grace_seconds": 90,
+            "duel_afk_seat_timeout_seconds": 60,
+        }
+    }
+    plugin._apply_game_settings_runtime()
+    room = await plugin.manager.create_room(
+        source="group",
+        session_id="aiocqhttp:group:39003",
+        platform="aiocqhttp",
+        group_id="39003",
+        creator_qq="10001",
+        creator_name="甲",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    assert room.multiplayer.turn_timeout_seconds == 180
+
+    changes = plugin._validated_game_settings(
+        {"games": {"gomoku": {"duel_turn_timeout_seconds": 30}}}
+    )
+    await plugin._persist_game_settings(plugin._game_settings_config_patch(changes))
+    plugin._apply_game_settings_runtime()
+
+    assert plugin.manager.duel_turn_timeout == 30
+    assert room.multiplayer.turn_timeout_seconds == 30
+
+
 def test_undercover_settings_apply_without_reloading_plugin() -> None:
     """管理台里能改的卧底参数必须同步到 manager。
 
