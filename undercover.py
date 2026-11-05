@@ -114,6 +114,9 @@ class UCPlayer:
     is_out: bool = False
     player_id: int = 0
     uid: str = ""
+    # 对局中掉线后由系统接管：座位保留（别人的投票/发言不会因缺人卡住），
+    # 重连后自动解除。注意这不是「出局」，不参与胜负判定。
+    autopilot: bool = False
 
     @property
     def label(self) -> str:
@@ -726,6 +729,7 @@ class UndercoverGame:
                 "uid": p.uid,
                 "display_name": p.display_name or f"{p.number}号",
                 "is_out": p.is_out,
+                "autopilot": bool(p.autopilot),
                 "is_current_speaking": (
                     self.phase in ("speech", "pk")
                     and self.expected_speaker_number == p.number

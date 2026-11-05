@@ -2276,6 +2276,13 @@ body.dark .uc-badge-gold { color: #f0c957; }
 }
 .chip-ready { color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, transparent); background: color-mix(in srgb, var(--green) 12%, transparent); }
 .chip-not-ready { color: var(--muted); }
+/* 对局中掉线、由花火托管代打的玩家：用灰调区分「已出局」（红）与「离线」（灰） */
+.chip-afk {
+  color: var(--muted);
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--muted) 45%, transparent);
+  background: color-mix(in srgb, var(--muted) 10%, transparent);
+}
 /* 谁是卧底房间右侧「阶段 / 发言者 / 倒计时」状态条 */
 .uc-room-panel {
   display: grid;

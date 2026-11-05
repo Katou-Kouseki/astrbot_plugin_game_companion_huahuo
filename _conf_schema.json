@@ -245,6 +245,12 @@
         "default": 90,
         "hint": "轮到的一方掉线后暂停对局，超过该时间未回来则判负；0 表示掉线立即判负。"
       },
+      "duel_afk_seat_timeout_seconds": {
+        "description": "棋类备战挂机让座秒数",
+        "type": "int",
+        "default": 120,
+        "hint": "两人对弈等待开局时，座位上的人心跳正常但超过该秒数没有任何操作（入座/落子/选边/再来一局），且房间里有其他人等着入座，就自动让座；新人入座时也会先提示是否顶替该座位。0 表示关闭。"
+      },
       "swap_request_cooldown_seconds": {
         "description": "观众交换申请冷却秒数",
         "type": "int",

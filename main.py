@@ -235,6 +235,17 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "unit": "秒",
                 "hint": "轮到的一方掉线后暂停对局，超过该时间未回来则判负；0 表示掉线立即判负。",
             },
+            {
+                "key": "duel_afk_seat_timeout_seconds",
+                "config_key": "multiplayer.duel_afk_seat_timeout_seconds",
+                "label": "备战挂机让座",
+                "type": "int",
+                "default": 120,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "等待开局时，座位上的人心跳正常但超过该秒数没有任何操作，且房间里有其他人在等着入座，就自动让座；新人入座时也会提示是否顶替。0 表示关闭。",
+            },
         ),
     },
     {
@@ -279,6 +290,17 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "maximum": 3600,
                 "unit": "秒",
                 "hint": "轮到的一方掉线后暂停对局，超过该时间未回来则判负；0 表示掉线立即判负。",
+            },
+            {
+                "key": "duel_afk_seat_timeout_seconds",
+                "config_key": "multiplayer.duel_afk_seat_timeout_seconds",
+                "label": "备战挂机让座",
+                "type": "int",
+                "default": 120,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "等待开局时，座位上的人心跳正常但超过该秒数没有任何操作，且房间里有其他人在等着入座，就自动让座；新人入座时也会提示是否顶替。0 表示关闭。",
             },
         ),
     },
@@ -335,6 +357,17 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "maximum": 3600,
                 "unit": "秒",
                 "hint": "轮到的一方掉线后暂停对局，超过该时间未回来则判负；0 表示掉线立即判负。",
+            },
+            {
+                "key": "duel_afk_seat_timeout_seconds",
+                "config_key": "multiplayer.duel_afk_seat_timeout_seconds",
+                "label": "备战挂机让座",
+                "type": "int",
+                "default": 120,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "等待开局时，座位上的人心跳正常但超过该秒数没有任何操作，且房间里有其他人在等着入座，就自动让座；新人入座时也会提示是否顶替。0 表示关闭。",
             },
         ),
     },
@@ -1579,6 +1612,10 @@ class GameCompanionPlugin(Star):
         self.duel_offline_grace = self._cfg_non_negative(
             "multiplayer.duel_offline_grace_seconds", 90
         )
+        # 棋类备战阶段的「挂机让座」阈值：页面开着但长时间没有有效操作。
+        self.duel_afk_seat_timeout = self._cfg_non_negative(
+            "multiplayer.duel_afk_seat_timeout_seconds", 120
+        )
         # 围棋：盘路（9/13/19）与黑贴目；只作用于新开的一局
         self.weiqi_board_size = self._cfg_int(
             "weiqi.board_size", 13, minimum=9, maximum=19
@@ -1644,6 +1681,7 @@ class GameCompanionPlugin(Star):
             multiplayer_turn_timeout=self.multiplayer_turn_timeout,
             duel_turn_timeout=self.duel_turn_timeout,
             duel_offline_grace=self.duel_offline_grace,
+            duel_afk_seat_timeout=self.duel_afk_seat_timeout,
             swap_request_cooldown=self.swap_request_cooldown,
             swap_request_expiry=self.swap_request_expiry,
             game_vote_enabled=self.game_vote_enabled,
@@ -3073,6 +3111,9 @@ class GameCompanionPlugin(Star):
             return
         if event_name == "undercover_turn_timeout":
             self._spawn(self._undercover_turn_timeout(room))
+            return
+        if event_name == "undercover_autopilot":
+            self._spawn(self._undercover_autopilot_tick(room))
             return
         if event_name == "game_started":
             self._capture_round_participants(room, reset=True)
@@ -8574,6 +8615,12 @@ class GameCompanionPlugin(Star):
         self.duel_offline_grace = self._cfg_int(
             "multiplayer.duel_offline_grace_seconds", 90, minimum=0, maximum=3600
         )
+        self.duel_afk_seat_timeout = self._cfg_int(
+            "multiplayer.duel_afk_seat_timeout_seconds",
+            120,
+            minimum=0,
+            maximum=3600,
+        )
         self.swap_request_cooldown = self._cfg_int(
             "multiplayer.swap_request_cooldown_seconds",
             30,
@@ -8609,6 +8656,7 @@ class GameCompanionPlugin(Star):
         self.manager.multiplayer_turn_timeout = self.multiplayer_turn_timeout
         self.manager.duel_turn_timeout = self.duel_turn_timeout
         self.manager.duel_offline_grace = self.duel_offline_grace
+        self.manager.duel_afk_seat_timeout = self.duel_afk_seat_timeout
         # ---- 谁是卧底：管理台里能改，就必须在保存后同步到 manager ----
         # 以前整段漏掉了，管理台显示已保存、实际对局仍用启动时的旧值。
         self.undercover_max_players = self._cfg_int(
@@ -8999,6 +9047,57 @@ class GameCompanionPlugin(Star):
             # 合法的本地票，保证即使供应商故障（429/断连）本轮也能收敛、不会永久卡在“投票进行中”。
             await self._undercover_force_all_votes(room)
 
+    def _uc_seat_detached(self, room: GameRoom, seat) -> bool:
+        """该座位是否「没人操作」：托管中、访客已离开、或心跳超时。"""
+        return self.manager._undercover_seat_detached(room, seat, time.time())
+
+    async def _undercover_autopilot_tick(self, room: GameRoom) -> None:
+        """托管代打：离线玩家正卡着发言/投票时，立刻让 LLM 接管，不等整轮超时。
+
+        和整轮超时兜底的区别：这里只处理「已经不在的人」，而且在轮到他的那一刻
+        就动手，不会让在线玩家干等 60 秒；投票也走 LLM（按被托管人的词条与阵营
+        判断），而不是机械地投最高票。
+        """
+        game = room.game
+        if (
+            not isinstance(game, UndercoverGame)
+            or game.finished
+            or room.status != "active"
+        ):
+            return
+        if game.phase in ("speech", "pk"):
+            expected = game.expected_speaker_number
+            if expected is None:
+                return
+            seat = self._uc_seat_for_number(room, int(expected))
+            if seat is None or not self._uc_seat_detached(room, seat):
+                return
+            # 和 AI 座位共用一个「同房间只允许一个动作在途」的锁，避免托管
+            # 与 AI 自动发言同时提交、互相把指针推乱。
+            lock = self._uc_ai_lock.setdefault(room.room_id, asyncio.Lock())
+            async with lock:
+                await asyncio.sleep(0.6)
+                # 等锁期间局面可能已经变化（玩家重连自己说了、或别人推进了轮次）
+                if room.game is not game or game.finished:
+                    return
+                if game.phase not in ("speech", "pk"):
+                    return
+                if game.expected_speaker_number != int(expected):
+                    return
+                await self._undercover_ai_do_speech(room, seat, autopilot=True)
+            return
+        if game.phase == "voting":
+            pending = game.pending_round
+            if pending is None:
+                return
+            for number in list(pending.vote_player_numbers):
+                if pending.has_voted(int(number)):
+                    continue
+                seat = self._uc_seat_for_number(room, int(number))
+                if seat is None or not self._uc_seat_detached(room, seat):
+                    continue
+                await self._undercover_ai_do_vote(room, seat, autopilot=True)
+
     @staticmethod
     def _uc_player_for_seat(room: GameRoom, seat) -> Any:
         """按稳定 uid 找出座位对应的卧底玩家（座位号中途会重编，不能用来反查）。"""
@@ -9100,6 +9199,11 @@ class GameCompanionPlugin(Star):
             seat = seats_by_num.get(voter_num)
             if seat is None:
                 continue
+            # 托管/离线玩家：让 LLM 按他的词条与当局局面接管这一票，
+            # 而不是机械地投当前最高票（最高票只留给「在线但挂机」的真人兜底）。
+            if self._uc_seat_detached(room, seat):
+                await self._undercover_ai_do_vote(room, seat, autopilot=True)
+                continue
             eligible = _uc_eligible_vote_targets(game, voter_num)
             if not eligible:
                 continue
@@ -9114,7 +9218,7 @@ class GameCompanionPlugin(Star):
                 continue
 
     async def _undercover_ai_do_speech(
-        self, room: GameRoom, seat
+        self, room: GameRoom, seat, *, autopilot: bool = False
     ) -> None:
         game: UndercoverGame = room.game  # type: ignore[assignment]
         ai_player = self._uc_player_for_seat(room, seat)
@@ -9146,11 +9250,21 @@ class GameCompanionPlugin(Star):
             if own_history
             else f"这是第{round_no}轮发言，你还没有说过任何话。"
         )
+        # 托管代打：用被托管玩家本人的名义说话，别让其他人看出是花火在替
+        speaker_label = (
+            (seat.display_name or f"{my_number}号") if autopilot else "花火"
+        )
+        autopilot_hint = (
+            f"（{speaker_label} 暂时掉线，你正在替他托管代打，"
+            "必须完全代入他的身份与词条。）"
+            if autopilot
+            else ""
+        )
         if camp == "whiteboard":
             prompt = (
                 "你正在玩中文「谁是卧底」，你抽到的是【白板】（没有词条，只能靠猜）。"
-                f"{anti_repeat}。{others_context}。"
-                "请以「花火」的身份，像真人玩家一样，顺着前一位玩家的语气和话题方向，"
+                f"{autopilot_hint}{anti_repeat}。{others_context}。"
+                f"请以「{speaker_label}」的身份，像真人玩家一样，顺着前一位玩家的语气和话题方向，"
                 "用一句 20-45 字的话随口圆一个合群的描述，让人感觉你手里确实有词条。"
                 "绝对不要直接说出或试探性说出平民或卧底的词条，也不要问『你们说的是不是XX』；"
                 "别说得太空泛（例如『大家都懂的东西』这种一句带过），尽量聊一个具体的生活细节或感受；"
@@ -9162,8 +9276,8 @@ class GameCompanionPlugin(Star):
             other = "卧底" if camp == "civilian" else "平民"
             prompt = (
                 f"你正在玩中文「谁是卧底」，你是{role}，抽到的词条是【{word}】。"
-                f"{anti_repeat}。{others_context}。"
-                f"请以「花火」的身份，像真人玩家闲聊一样，用一句 20-45 字的话，"
+                f"{autopilot_hint}{anti_repeat}。{others_context}。"
+                f"请以「{speaker_label}」的身份，像真人玩家闲聊一样，用一句 20-45 字的话，"
                 f"只从【{word}】的某一个具体生活侧面入手（比如你最近用到它的一个场景、对它的一个感受、"
                 "一个联想或一句随口吐槽），说得自然、有画面感，像在聊天而不是在做谜题描述。"
                 "硬性要求："
@@ -9226,7 +9340,7 @@ class GameCompanionPlugin(Star):
                     )
 
     async def _undercover_ai_do_vote(
-        self, room: GameRoom, seat
+        self, room: GameRoom, seat, *, autopilot: bool = False
     ) -> None:
         game: UndercoverGame = room.game  # type: ignore[assignment]
         ai_vp = self._uc_player_for_seat(room, seat)
@@ -9280,8 +9394,15 @@ class GameCompanionPlugin(Star):
                 + ("平民要尽量投出卧底；" if my_camp == "civilian" else "卧底要尽量投掉平民；")
             )
         )
+        autopilot_hint = (
+            f"（{getattr(ai_vp, 'display_name', '') or f'{my_number}号'} 暂时掉线，"
+            "由你托管代打：必须站在他/她的身份与词条立场上判断谁最可疑，"
+            "不要机械地跟票。）"
+            if autopilot
+            else ""
+        )
         prompt = (
-            f"你正在玩「谁是卧底」。{hint}"
+            f"你正在玩「谁是卧底」。{autopilot_hint}{hint}"
             f"以下是本轮除你之外所有存活玩家的发言：\n"
             + "\n".join(lines[:8])
             + f"\n请判断谁最可疑（最不像自己阵营的人），只返回一个整数（玩家编号 1-{max(live_nums)}），"

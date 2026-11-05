@@ -332,11 +332,15 @@ class GameRoomServer:
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
         await self.manager.require_visitor_identity(room, visitor_token)
-        await self.manager.claim_and_start(
+        result = await self.manager.claim_and_start(
             room,
             visitor_token,
             str(payload.get("side") or "human_black"),
+            takeover=bool(payload.get("takeover")),
         )
+        if result.get("need_confirm"):
+            # 对手长时间没操作：先回给前端弹确认，这一步不做任何座位变更
+            return self._response(result)
         self._log_room_op(room, "room_claim", "落座玩家席", visitor_token)
         return self._response(
             {"room": self._room_payload(room, visitor_token)}

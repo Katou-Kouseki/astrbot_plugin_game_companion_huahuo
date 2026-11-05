@@ -3574,6 +3574,13 @@
       statusChip.className = p.is_out ? "chip chip-out" : "chip chip-live";
       statusChip.textContent = p.is_out ? "已出局" : "存活";
       meta.appendChild(statusChip);
+      if (p.autopilot && !p.is_out) {
+        const afkChip = document.createElement("span");
+        afkChip.className = "chip chip-afk";
+        afkChip.textContent = "离线·托管";
+        afkChip.title = "该玩家已掉线，由花火代为发言与投票；重新连接后自动解除";
+        meta.appendChild(afkChip);
+      }
       if (inAssembly && seatReadyMap.has(Number(p.player_number))) {
         const readyChip = document.createElement("span");
         readyChip.className = seatReadyMap.get(Number(p.player_number))
@@ -5918,7 +5925,26 @@
     renderSeat();
     try {
       if (!room.is_player) {
-        await request("POST", "claim", { visitor_token: visitorToken, side: selectedSide });
+        const claimPayload = { visitor_token: visitorToken, side: selectedSide };
+        const claimed = await request("POST", "claim", claimPayload);
+        // 对面坐着一个「页面开着但人走了」的玩家：先确认要不要顶替，
+        // 避免一坐下就被锁进一局没人应手的棋（要等回合超时判负）。
+        if (claimed?.need_confirm) {
+          const idleMinutes = Math.max(
+            1,
+            Math.round(Number(claimed.opponent_idle_seconds || 0) / 60),
+          );
+          const agreed = await askConfirm({
+            title: "对手长时间未操作",
+            message:
+              `对手 ${sanitizeDisplayText(claimed.opponent_name || "")} 已 ${idleMinutes} 分钟未操作，` +
+              "是否顶替该座位？顶替后可以等另一位玩家，也可以直接和花火对局。",
+            confirmText: "顶替座位",
+            cancelText: "取消",
+          });
+          if (!agreed) return;
+          await request("POST", "claim", { ...claimPayload, takeover: true });
+        }
       } else if (
         isDuelGame(room)
         && room.status === "setup"

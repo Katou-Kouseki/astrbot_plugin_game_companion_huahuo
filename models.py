@@ -72,6 +72,10 @@ class PlayerSeat:
     display_name: str = ""
     identity_confirmed: bool = False
     seated_at: float = field(default_factory=time.time)
+    # 最后一次「有效操作」时间（入座、落子、选边、再来一局）。
+    # 心跳不刷新它：用来识别「页面还开着但人已经走了」的挂机占座，
+    # 这种人在服务端眼里永远在线，靠 left_at / 心跳都清不掉。
+    last_action_at: float = field(default_factory=time.time)
     is_ai: bool = False
     # 两人对弈类玩法的执色（"black" / "white"）；其余玩法留空。
     # 由座位顺序决定，再来一局时可整体交换，用于实现先后手轮换。
@@ -370,6 +374,9 @@ class GameRoom:
     # 自动开局任务在途标记：满员/就绪触发自动开局后置位，任务结束清位。
     # 用于防止取词（可能调 LLM）期间看门狗下一轮又重复触发同一场自动开局。
     undercover_auto_starting: bool = False
+    # 托管代打的节流时间戳：离线玩家卡住发言/投票时，看门狗每 2 秒一轮，
+    # 这里记下上次触发时间，避免同一行动点被反复 emit。
+    undercover_autopilot_at: float = 0.0
     # 引用管理器「卧底分阵营胜场」同一 dict；存在时座位徽章按实时数据计算
     camp_wins_store: dict[str, dict[str, int]] | None = None
     # 单局群通报与复盘缓存：按 game_uid 记录，保证「一局只通报一次」「复盘缓存不重复请求 LLM」

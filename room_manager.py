@@ -207,6 +207,7 @@ class RoomManager:
         multiplayer_turn_timeout: int = 60,
         duel_turn_timeout: int = 180,
         duel_offline_grace: int = 90,
+        duel_afk_seat_timeout: int = 120,
         weiqi_board_size: int = WEIQI_DEFAULT_SIZE,
         weiqi_komi: float = WEIQI_DEFAULT_KOMI,
         swap_request_cooldown: int = 30,
@@ -254,6 +255,9 @@ class RoomManager:
         # 棋类对弈：每步倒计时（0 关闭）与掉线后等待重连的宽限秒数
         self.duel_turn_timeout = max(0, int(duel_turn_timeout))
         self.duel_offline_grace = max(0, int(duel_offline_grace))
+        # 棋类「备战阶段挂机让座」：页面开着但人走了，心跳一直新鲜，服务端只能靠
+        # 「多久没有有效操作」判断。0 表示关闭（不自动让座、也不弹顶替确认）。
+        self.duel_afk_seat_timeout = max(0, int(duel_afk_seat_timeout))
         # 围棋盘路与贴目：只允许 9 / 13 / 19 路，贴目按 0.5 的整数倍保存
         self.weiqi_board_size = (
             int(weiqi_board_size) if int(weiqi_board_size) in {9, 13, 19} else WEIQI_DEFAULT_SIZE
@@ -956,9 +960,18 @@ class RoomManager:
         return bool(room.player_token and room.player_token == visitor_token)
 
     async def claim_and_start(
-        self, room: GameRoom, visitor_token: str, side: str
-    ) -> None:
-        """Claim a normal room's empty player seat and start the first game."""
+        self,
+        room: GameRoom,
+        visitor_token: str,
+        side: str,
+        *,
+        takeover: bool = False,
+    ) -> dict[str, Any]:
+        """Claim a normal room's empty player seat and start the first game.
+
+        ``takeover=True`` 表示用户已确认「顶掉对面那个长时间没操作的座位」；
+        未确认时如果检测到对手挂机，只返回 ``need_confirm``，不做任何座位变更。
+        """
         self.require_game_enabled(room.game_type)
         start_required = False
         async with room.lock:
@@ -985,6 +998,33 @@ class RoomManager:
                     # 两人对弈：先坐下、再决定对手。空位可以等真人，也可以让花火补位；
                     # 花火已经坐着时真人来了就让位（局间才会让，对局中上面已拦住）。
                     capacity = int(room.multiplayer.capacity or 2)
+                    now = time.time()
+                    # 坐下时会和对面直接开局：先确认对面不是「页面开着但人走了」的
+                    # 挂机座位，否则会被锁进一局没人应手的棋，还要等 180 秒判负。
+                    afk_seat = self._duel_afk_seat(room, now)
+                    if afk_seat is not None:
+                        if not takeover:
+                            last = float(
+                                getattr(afk_seat, "last_action_at", 0.0)
+                                or afk_seat.seated_at
+                            )
+                            return {
+                                "need_confirm": True,
+                                "opponent_name": afk_seat.display_name
+                                or f"{afk_seat.number}号",
+                                "opponent_idle_seconds": int(max(0.0, now - last)),
+                            }
+                        afk_visitor = room.visitors.get(afk_seat.visitor_token)
+                        label = (
+                            self._visitor_label(afk_visitor)
+                            if afk_visitor is not None
+                            else "对手"
+                        )
+                        self._remove_multiplayer_seat(room, afk_seat.visitor_token)
+                        self._assign_duel_sides(room)
+                        room.add_message(
+                            "system", f"{label} 长时间未操作，已让出座位。"
+                        )
                     vacated_ai: PlayerSeat | None = None
                     if len(room.multiplayer.seats) >= capacity:
                         vacated_ai = self._ai_seat(room)
@@ -1103,6 +1143,7 @@ class RoomManager:
             await self.start_game(room, visitor_token, side)
         else:
             await self._emit("seats_changed", room, {"joined": visitor.number})
+        return {"claimed": True, "seated": True}
 
     async def assign_player(
         self,
@@ -1419,6 +1460,8 @@ class RoomManager:
                 raise PermissionError("只有当前玩家可以开始对局")
             if room.status not in {"setup", "finished", "rematch_pending"}:
                 raise ValueError("当前房间状态不能开始新对局")
+            # 点「开始 / 再来一局」也算一次真实操作，刷新挂机让座判定
+            self._touch_seat_action(room, visitor.token)
             if room.game_type == "xiangqi":
                 engine = self._require_xiangqi_engine()
                 # 空字符串表示「沿用入座时选好的执方」，不能当成默认红方覆盖掉
@@ -1787,6 +1830,8 @@ class RoomManager:
                     seat_name=self._seat_display(seat),
                     side=self._seat_side(room, seat),
                 )
+                # 真实落子 = 人在电脑前，刷新挂机判定
+                seat.last_action_at = time.time()
             room.touch()
             finished = room.game.finished
             if isinstance(room.game, BOARD_GAME_CLASSES) and not finished:
@@ -1828,6 +1873,7 @@ class RoomManager:
                     seat_name=self._seat_display(seat),
                     side=self._seat_side(room, seat),
                 )
+                seat.last_action_at = time.time()
             room.touch()
             if not finished:
                 room.multiplayer.duel_paused = False
@@ -2450,6 +2496,8 @@ class RoomManager:
                     raise PermissionError("和真人对局时不能调整花火棋力")
             elif visitor.token != room.player_token:
                 raise PermissionError("请你先入座，再调整花火棋力")
+            # 调难度也是真实操作，刷新挂机让座判定
+            self._touch_seat_action(room, visitor.token)
             room.difficulty = difficulty
             # 玩家手动选过就锁定，再战时不让模型把难度改回去
             room.difficulty_chosen_by_player = True
@@ -4215,6 +4263,11 @@ class RoomManager:
         半局状态（执色、回合归属都对不上）。判负结束、状态变成 finished 后，
         下一次清扫就会把这个座位释放掉。
 
+        **谁是卧底对局中也不摘座位**，改为标记「托管」：局内玩家的存活状态由
+        `is_out` 决定，摘掉座位不会让他出局，投票名单里照样有他，但补票逻辑只能
+        按座位找人——结果整局永远差一张票、卡死在投票轮。保留座位后，托管由
+        LLM 代发言/代投票，重连还能自动解除。
+
         为什么不能只清 waiting/setup：以前结算阶段不清，棋类掉线判负后输家一直
         占着座位，玩家席永久停在 2/2；对局中（人数型玩法）不清，关掉网页的人
         也会一直占着位置，别人进不来。
@@ -4230,6 +4283,11 @@ class RoomManager:
         )
         if duel_in_progress:
             return
+        undercover_live = bool(
+            room.status == "active"
+            and isinstance(game, UndercoverGame)
+            and not game.finished
+        )
         for seat in list(state.seats):
             if seat.is_ai:
                 continue
@@ -4247,6 +4305,14 @@ class RoomManager:
             if not departed:
                 continue
             label = self._visitor_label(visitor)  # 已含（X号）
+            if undercover_live:
+                # 对局中只切托管，不摘座位：座位是「补票/跳过」定位玩家的锚点
+                player = game.player_for_uid(_visitor_uid(seat.visitor_token))
+                if player is None or player.autopilot:
+                    continue
+                player.autopilot = True
+                room.add_message("system", f"{label} 掉线，已切换托管。")
+                continue
             self._remove_multiplayer_seat(room, seat.visitor_token)
             if room.multiplayer.seats:
                 self._sync_primary_player(room)
@@ -4272,12 +4338,199 @@ class RoomManager:
             if room.game_type == "undercover":
                 self._undercover_all_ready_at.pop(room.room_id, None)
 
+    def _touch_seat_action(
+        self, room: GameRoom, visitor_token: str, *, now: float | None = None
+    ) -> None:
+        """记录一次「真实操作」的时间，供挂机让座判断。心跳不调用这里。"""
+        state = room.multiplayer
+        if not state.enabled:
+            return
+        seat = state.seat_for_token(visitor_token)
+        if seat is None:
+            return
+        seat.last_action_at = time.time() if now is None else float(now)
+
+    def _duel_afk_seat(self, room: GameRoom, now: float) -> PlayerSeat | None:
+        """找一个「页面上仍在线、但长时间没有任何操作」的真人棋类座位。
+
+        和离线不同：这种访客心跳一直新鲜，`left_at` 也一直是空，服务端不认为他走了；
+        只有「最后一次有效操作」能暴露他其实不在电脑前。
+        """
+        if not self.duel_afk_seat_timeout:
+            return None
+        for seat in room.multiplayer.seats:
+            if seat.is_ai or not seat.visitor_token:
+                continue
+            visitor = room.visitors.get(seat.visitor_token)
+            if visitor is None or not visitor.connected:
+                continue
+            if now - visitor.last_seen_at >= self.DEPARTED_HEARTBEAT_TIMEOUT_SECONDS:
+                continue
+            last = float(getattr(seat, "last_action_at", 0.0) or seat.seated_at)
+            if now - last >= self.duel_afk_seat_timeout:
+                return seat
+        return None
+
+    def _duel_has_standby_visitor(self, room: GameRoom, now: float) -> bool:
+        """房间里是否有「没座位的在线真人」在等着入座。"""
+        seat_tokens = {seat.visitor_token for seat in room.multiplayer.seats}
+        for visitor in room.visitors.values():
+            if visitor.token in seat_tokens:
+                continue
+            if (
+                visitor.connected
+                and now - visitor.last_seen_at
+                < self.DEPARTED_HEARTBEAT_TIMEOUT_SECONDS
+            ):
+                return True
+        return False
+
+    def _release_afk_duel_seats(self, room: GameRoom, now: float) -> None:
+        """备战阶段让座：有人在等着入座时，把长时间没操作的座位腾出来。
+
+        只在 waiting/setup 生效——对局中（active/paused）有「掉线暂停 → 判负」，
+        这里插手会把棋局直接打断。没有候补观众时也不动，避免误伤「在等朋友」的人。
+        """
+        if not self.duel_afk_seat_timeout:
+            return
+        if room.game_type not in DUEL_GAMES or room.status not in ("waiting", "setup"):
+            return
+        state = room.multiplayer
+        if not state.enabled or not state.seats:
+            return
+        if not self._duel_has_standby_visitor(room, now):
+            return
+        for seat in list(state.seats):
+            if seat.is_ai or not seat.visitor_token:
+                continue
+            visitor = room.visitors.get(seat.visitor_token)
+            if visitor is None:
+                continue
+            # 真正离线的人交给 _vacate_departed_seats（有自己的 8 秒 / 90 秒宽限）
+            if (
+                not visitor.connected
+                or now - visitor.last_seen_at
+                >= self.DEPARTED_HEARTBEAT_TIMEOUT_SECONDS
+            ):
+                continue
+            last = float(getattr(seat, "last_action_at", 0.0) or seat.seated_at)
+            if now - last < self.duel_afk_seat_timeout:
+                continue
+            label = self._visitor_label(visitor)
+            self._remove_multiplayer_seat(room, seat.visitor_token)
+            if state.seats:
+                self._sync_primary_player(room)
+                self._assign_duel_sides(room)
+            else:
+                self._clear_primary_player(room)
+                room.player_empty_since = now
+                room.game = None
+                room.status = "waiting"
+                state.turn_deadline = 0.0
+            room.touch()
+            room.add_message("system", f"{label} 长时间未操作，已让出座位。")
+
+    def _undercover_seat_for_number(
+        self, room: GameRoom, number: int
+    ) -> PlayerSeat | None:
+        """按局内冻结号码找当前座位（座位号可能被重编，优先按稳定 uid 匹配）。"""
+        game = room.game
+        if not isinstance(game, UndercoverGame):
+            return None
+        player = next(
+            (p for p in game.players if int(p.number) == int(number)), None
+        )
+        if player is not None and player.uid:
+            for seat in room.multiplayer.seats:
+                if _visitor_uid(seat.visitor_token) == player.uid:
+                    return seat
+        return next(
+            (s for s in room.multiplayer.seats if int(s.number) == int(number)),
+            None,
+        )
+
+    def _undercover_seat_detached(
+        self, room: GameRoom, seat: PlayerSeat | None, now: float
+    ) -> bool:
+        """该座位是否「没人操作」：托管中、访客已离开、或心跳超时。"""
+        if seat is None:
+            return True
+        player = self._undercover_player_for_seat(room, seat)
+        if player is not None and getattr(player, "autopilot", False):
+            return True
+        visitor = room.visitors.get(seat.visitor_token)
+        if visitor is None or not visitor.connected:
+            return True
+        return now - visitor.last_seen_at >= self.DUEL_OFFLINE_SECONDS
+
+    def _restore_undercover_autopilot(self, room: GameRoom, now: float) -> None:
+        """玩家重新连上（心跳恢复）后自动解除托管。"""
+        game = room.game
+        if not isinstance(game, UndercoverGame) or game.finished:
+            return
+        for player in game.players:
+            if not getattr(player, "autopilot", False):
+                continue
+            seat = next(
+                (
+                    s
+                    for s in room.multiplayer.seats
+                    if player.uid and _visitor_uid(s.visitor_token) == player.uid
+                ),
+                None,
+            )
+            if seat is None:
+                # 座位已经不在（开局前离席/退到观众席）：清标记，避免状态残留
+                player.autopilot = False
+                continue
+            visitor = room.visitors.get(seat.visitor_token)
+            if visitor is None or not visitor.connected:
+                continue
+            if now - visitor.last_seen_at >= self.DUEL_OFFLINE_SECONDS:
+                continue
+            player.autopilot = False
+            room.add_message(
+                "system", f"{self._visitor_label(visitor)} 已重新连接，托管已解除。"
+            )
+
+    def _undercover_autopilot_due(self, room: GameRoom, now: float) -> bool:
+        """是否有「托管/离线玩家」正卡着当前行动点，需要立刻代打。
+
+        发言轮：当前发言人已经离线 → 不等 60 秒超时，马上跳过；
+        投票轮：还有已离线的投票者没投 → 立刻让他这一票由 LLM 接管。
+        """
+        game = room.game
+        if not isinstance(game, UndercoverGame) or game.finished:
+            return False
+        if room.status != "active":
+            return False
+        if now - float(getattr(room, "undercover_autopilot_at", 0.0) or 0.0) < 3.0:
+            return False
+        if game.phase in ("speech", "pk"):
+            expected = game.expected_speaker_number
+            if expected is None:
+                return False
+            seat = self._undercover_seat_for_number(room, int(expected))
+            return self._undercover_seat_detached(room, seat, now)
+        if game.phase == "voting":
+            pending = game.pending_round
+            if pending is None:
+                return False
+            for number in pending.vote_player_numbers:
+                if pending.has_voted(int(number)):
+                    continue
+                seat = self._undercover_seat_for_number(room, int(number))
+                if self._undercover_seat_detached(room, seat, now):
+                    return True
+        return False
+
     async def _tick_multiplayer_room(self, room: GameRoom, now: float) -> None:
         """Expire swap requests and rotate an overdue active turn."""
         dealer_ready = False
         duel_finished = False
         need_start_undercover: None | tuple[GameRoom, str] = None
         need_undercover_timeout: GameRoom | None = None
+        need_undercover_autopilot: GameRoom | None = None
         async with room.lock:
             state = room.multiplayer
             if not state.enabled:
@@ -4285,6 +4538,8 @@ class RoomManager:
             self._purge_swap_requests(room, now)
             # 等待/准备阶段先把已离开的玩家移出玩家席，避免离线占座挡住就绪与开局
             self._vacate_departed_seats(room, now)
+            # 再处理「在线但人不在」的挂机占座：有人候补时把超时未操作的座位让出来
+            self._release_afk_duel_seats(room, now)
             game = room.game
             if isinstance(game, BlackjackGame):
                 dealer_ready = self._tick_blackjack_locked(room, now)
@@ -4368,8 +4623,15 @@ class RoomManager:
             ):
                 # 谁是卧底对局中：维护轮次/发言/投票倒计时，超时驱动 AI 或跳过挂机真人，
                 # 避免因某个 AI/真人一直不出招而把整局卡死在“该谁发言”上。
+                self._restore_undercover_autopilot(room, now)
                 if game.finished or not state.turn_timeout_seconds:
                     state.turn_deadline = 0.0
+                elif self._undercover_autopilot_due(room, now):
+                    # 托管/离线玩家正卡着行动点：不等整轮超时，立刻让 LLM 代打。
+                    # 3 秒节流由 _undercover_autopilot_due 控制，避免每轮清扫重复触发。
+                    room.undercover_autopilot_at = now
+                    self._reset_turn_deadline(room, now=now)
+                    need_undercover_autopilot = room
                 elif not state.turn_deadline:
                     self._reset_turn_deadline(room, now=now)
                 elif now >= state.turn_deadline:
@@ -4415,6 +4677,12 @@ class RoomManager:
             await self._emit(
                 "undercover_turn_timeout",
                 need_undercover_timeout,
+                {},
+            )
+        if need_undercover_autopilot is not None:
+            await self._emit(
+                "undercover_autopilot",
+                need_undercover_autopilot,
                 {},
             )
 
@@ -5885,6 +6153,8 @@ class RoomManager:
             requester = self._visitor(room, visitor_token)
             if room.multiplayer.seat_for_token(requester.token) is None:
                 raise PermissionError("请你先入座，再和花火对局")
+            # 「和花火对局」是明确操作：刷新挂机让座判定
+            self._touch_seat_action(room, requester.token)
             if self._ai_seat(room) is not None:
                 return {
                     "added": False,
@@ -5954,6 +6224,8 @@ class RoomManager:
                 and room.multiplayer.seat_for_token(requester.token) is None
             ):
                 raise PermissionError("只有玩家席上的玩家才能更换对手")
+            # 「等对手来」是明确操作：刷新挂机让座判定
+            self._touch_seat_action(room, requester.token)
             removed = self._remove_ai_seats_locked(room)
             if not removed:
                 return {
