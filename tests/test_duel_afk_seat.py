@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 import pytest
 
-from astrbot_plugin_game_companion_huahuo.room_manager import DUEL_GAMES, RoomManager
+from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_every_duel_game_panel_exposes_afk_setting() -> None:
-    """四个棋类玩法的管理台面板都要能改「备战挂机让座」——黑白棋曾漏过一次。"""
-    from astrbot_plugin_game_companion_huahuo.main import GAME_CATALOG
-
-    catalog = {item["game_type"]: item for item in GAME_CATALOG}
-    for game_type in DUEL_GAMES:
-        keys = {field["key"] for field in catalog[game_type]["fields"]}
-        assert "duel_afk_seat_timeout_seconds" in keys, game_type
+def test_duel_time_settings_stay_in_plugin_config() -> None:
+    """棋类时间配置从管理台移除后，插件配置项必须仍然存在（唯一入口）。"""
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    items = schema["multiplayer"]["items"]
+    for key in (
+        "duel_turn_timeout_seconds",
+        "duel_offline_grace_seconds",
+        "duel_afk_seat_timeout_seconds",
+    ):
+        assert key in items
 
 
 async def make_room(manager: RoomManager):

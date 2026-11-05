@@ -165,6 +165,24 @@ def test_invalid_game_settings_are_rejected_atomically(payload: dict) -> None:
     assert plugin.config == {}
 
 
+def test_game_catalog_has_no_duplicate_config_keys() -> None:
+    """管理台按 config_key 合并提交，同一 key 不能出现在多个玩法面板里。
+
+    棋类时间配置曾在五子棋/象棋/围棋/黑白棋四个面板各放一份，保存时前端提交
+    全量字段，后遍历的玩法会用旧值覆盖前面的新值——表现就是「改哪个都不生效」。
+    """
+    from astrbot_plugin_game_companion_huahuo.main import GAME_CATALOG
+
+    seen: dict[str, str] = {}
+    for game in GAME_CATALOG:
+        for field in game["fields"]:
+            config_key = str(field["config_key"])
+            assert config_key not in seen, (
+                f"{config_key} 同时出现在 {seen[config_key]} 和 {game['game_type']}"
+            )
+            seen[config_key] = str(game["game_type"])
+
+
 def test_undercover_settings_apply_without_reloading_plugin() -> None:
     """管理台里能改的卧底参数必须同步到 manager。
 
