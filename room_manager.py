@@ -207,7 +207,7 @@ class RoomManager:
         multiplayer_turn_timeout: int = 60,
         duel_turn_timeout: int = 180,
         duel_offline_grace: int = 90,
-        duel_afk_seat_timeout: int = 120,
+        duel_afk_seat_timeout: int = 60,
         weiqi_board_size: int = WEIQI_DEFAULT_SIZE,
         weiqi_komi: float = WEIQI_DEFAULT_KOMI,
         swap_request_cooldown: int = 30,

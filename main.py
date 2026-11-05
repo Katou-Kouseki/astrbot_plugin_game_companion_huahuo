@@ -222,7 +222,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "minimum": 0,
                 "maximum": 3600,
                 "unit": "秒",
-                "hint": "棋类对局（五子棋 / 黑白棋 / 象棋）「两位真人」共用，超时判负；和花火练习局不计时，0 表示关闭。",
+                "hint": "棋类对局（五子棋 / 黑白棋 / 象棋 / 围棋）「两位真人」共用，超时判负；和花火练习局不计时，0 表示关闭。",
             },
             {
                 "key": "duel_offline_grace_seconds",
@@ -240,7 +240,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "config_key": "multiplayer.duel_afk_seat_timeout_seconds",
                 "label": "备战挂机让座",
                 "type": "int",
-                "default": 120,
+                "default": 60,
                 "minimum": 0,
                 "maximum": 3600,
                 "unit": "秒",
@@ -296,7 +296,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "config_key": "multiplayer.duel_afk_seat_timeout_seconds",
                 "label": "备战挂机让座",
                 "type": "int",
-                "default": 120,
+                "default": 60,
                 "minimum": 0,
                 "maximum": 3600,
                 "unit": "秒",
@@ -363,7 +363,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "config_key": "multiplayer.duel_afk_seat_timeout_seconds",
                 "label": "备战挂机让座",
                 "type": "int",
-                "default": 120,
+                "default": 60,
                 "minimum": 0,
                 "maximum": 3600,
                 "unit": "秒",
@@ -381,7 +381,41 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
         "game_type": "othello",
         "label": "黑白棋",
         "description": "8×8 棋盘，合法落子会夹住并翻转对方棋子。",
-        "fields": (),
+        "fields": (
+            {
+                "key": "duel_turn_timeout_seconds",
+                "config_key": "multiplayer.duel_turn_timeout_seconds",
+                "label": "对弈每步时间",
+                "type": "int",
+                "default": 180,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "棋类对局（五子棋 / 黑白棋 / 象棋 / 围棋）「两位真人」共用，超时判负；和花火练习局不计时，0 表示关闭。",
+            },
+            {
+                "key": "duel_offline_grace_seconds",
+                "config_key": "multiplayer.duel_offline_grace_seconds",
+                "label": "掉线等待重连",
+                "type": "int",
+                "default": 90,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "轮到的一方掉线后暂停对局，超过该时间未回来则判负；0 表示掉线立即判负。",
+            },
+            {
+                "key": "duel_afk_seat_timeout_seconds",
+                "config_key": "multiplayer.duel_afk_seat_timeout_seconds",
+                "label": "备战挂机让座",
+                "type": "int",
+                "default": 60,
+                "minimum": 0,
+                "maximum": 3600,
+                "unit": "秒",
+                "hint": "等待开局时，座位上的人心跳正常但超过该秒数没有任何操作，且房间里有其他人在等着入座，就自动让座；新人入座时也会提示是否顶替。0 表示关闭。",
+            },
+        ),
     },
     {
         "game_type": "turtle_soup",
@@ -1614,7 +1648,7 @@ class GameCompanionPlugin(Star):
         )
         # 棋类备战阶段的「挂机让座」阈值：页面开着但长时间没有有效操作。
         self.duel_afk_seat_timeout = self._cfg_non_negative(
-            "multiplayer.duel_afk_seat_timeout_seconds", 120
+            "multiplayer.duel_afk_seat_timeout_seconds", 60
         )
         # 围棋：盘路（9/13/19）与黑贴目；只作用于新开的一局
         self.weiqi_board_size = self._cfg_int(
@@ -8617,7 +8651,7 @@ class GameCompanionPlugin(Star):
         )
         self.duel_afk_seat_timeout = self._cfg_int(
             "multiplayer.duel_afk_seat_timeout_seconds",
-            120,
+            60,
             minimum=0,
             maximum=3600,
         )

@@ -4,7 +4,17 @@ import time
 
 import pytest
 
-from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
+from astrbot_plugin_game_companion_huahuo.room_manager import DUEL_GAMES, RoomManager
+
+
+def test_every_duel_game_panel_exposes_afk_setting() -> None:
+    """四个棋类玩法的管理台面板都要能改「备战挂机让座」——黑白棋曾漏过一次。"""
+    from astrbot_plugin_game_companion_huahuo.main import GAME_CATALOG
+
+    catalog = {item["game_type"]: item for item in GAME_CATALOG}
+    for game_type in DUEL_GAMES:
+        keys = {field["key"] for field in catalog[game_type]["fields"]}
+        assert "duel_afk_seat_timeout_seconds" in keys, game_type
 
 
 async def make_room(manager: RoomManager):
