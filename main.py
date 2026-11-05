@@ -8655,6 +8655,11 @@ class GameCompanionPlugin(Star):
             minimum=0,
             maximum=3600,
         )
+        # 「再来一局换先」也在这里重读：以前只把旧属性同步给 manager，
+        # 管理台/配置改了之后不重启插件不生效。
+        self.duel_side_rotation = self._cfg_bool(
+            "multiplayer.duel_side_rotation", True
+        )
         self.swap_request_cooldown = self._cfg_int(
             "multiplayer.swap_request_cooldown_seconds",
             30,
