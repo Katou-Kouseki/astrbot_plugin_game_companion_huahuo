@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.57"
+    assert metadata["version"] == "0.5.58"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -1267,3 +1267,30 @@ def test_game_vote_wiring_is_complete() -> None:
     page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
     assert 'id="gameVotePanel"' in page
     assert 'id="gameVoteTarget"' in page
+
+
+def test_board_poster_renders_loser_on_its_own_line() -> None:
+    """战报海报：败方必须另起一行渲染（HTML 与 Pillow 两条路径都要有）。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    # 数据层：sub 只放胜方信息，败方单独走 sub2
+    assert '"sub2": loser_line' in main
+    assert 'loser_line = f"败方：' in main
+    # HTML/t2i 模板：第二行可选渲染
+    assert '{% if sub2 %}<div class="sub2">{{ sub2 }}</div>{% endif %}' in main
+    assert ".sub2 {" in main
+    # Pillow 兜底：同样画第二行
+    assert 'sub2 = str(data.get("sub2") or "")' in main
+
+
+def test_series_report_names_the_loser() -> None:
+    """连战播报每一局都要写清「谁胜谁负」，不能只写胜方。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    entry = main.split("def _board_announce_entry", 1)[1].split("def _queue_board_announce", 1)[0]
+    assert '"loser_name"' in entry
+    assert '"loser_side"' in entry
+
+    series = main.split("def _board_series_text", 1)[1].split("async def _send_board_series", 1)[0]
+    assert "loser_name" in series
+    assert "胜 {loser_text}" in series or "胜 {loser}" in series

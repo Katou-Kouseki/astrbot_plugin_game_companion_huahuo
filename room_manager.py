@@ -3447,10 +3447,62 @@ class RoomManager:
                 continue
             room.visitors.pop(token, None)
 
+    def _finished_room_departed(
+        self, room: GameRoom, current: float
+    ) -> tuple[str, str] | None:
+        """结算后「玩家都走了且没有观众」→ 快速回收房间。
+
+        必须在 `_tick_multiplayer_room` **之前**判断：tick 会把离线的座位清掉
+        （finished 阶段也会清，见 `_vacate_departed_seats`），座位清空后
+        `room.player` 变成 None，这条规则再也不会命中，房间只能等更长的超时。
+        """
+        player = room.player
+        if room.status != "finished" or not self.empty_player_timeout:
+            return None
+        if player is None:
+            # 座位已经被清空（离线玩家被判负后释放了座位）：只要没人在场就可以回收，
+            # 否则房间会一直挂到「无操作超时」，白占着群聊房间配额。
+            if room.multiplayer.seats:
+                return None
+            if self._has_present_visitors(room, current):
+                return None
+            return (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
+        seated_visitors = (
+            [
+                room.visitors[seat.visitor_token]
+                for seat in room.multiplayer.seats
+                if seat.visitor_token in room.visitors
+            ]
+            if room.multiplayer.enabled
+            else [player]
+        )
+        all_departed = bool(seated_visitors) and all(
+            (
+                visitor.left_at is not None
+                and current - visitor.left_at
+                >= self.FINISHED_PLAYER_LEAVE_GRACE_SECONDS
+            )
+            or current - visitor.last_seen_at
+            >= self.FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS
+            for visitor in seated_visitors
+        )
+        # 玩家都离开了，但房间里还有观众（或其他真人访客）在线时，
+        # 不能当作「本局结束、人去房空」销毁——观众可能还在看、或等下一局。
+        # 另外：这条「人去房空快速回收」属于「玩家席无人」这一类自动销毁，
+        # 已由开头的 `empty_player_timeout` 判断单独控制——设为 0（关闭该项）时
+        # 一并停用，玩家走光后不再被 8 秒回收，只能等「房间无有效操作」超时
+        # 或手动关闭。否则「只把玩家席无人设 0 仍被秒杀」不符合直觉。
+        if all_departed and not self._has_present_visitors(room, current):
+            return (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
+        return None
+
     async def _sweep_room(
         self, room: GameRoom, current: float
     ) -> tuple[str, str] | None:
         """检查单个房间；命中销毁规则时返回 (room_id, 原因)，否则 None。"""
+        departed = self._finished_room_departed(room, current)
+        if departed is not None:
+            return departed
         await self._tick_multiplayer_room(room, current)
         self._prune_visitors(room, current)
         if (
@@ -3463,39 +3515,6 @@ class RoomManager:
                 room.game.timeout()
                 room.touch()
             await self._finish_game(room)
-        player = room.player
-        if room.status == "finished" and player is not None:
-            seated_visitors = (
-                [
-                    room.visitors[seat.visitor_token]
-                    for seat in room.multiplayer.seats
-                    if seat.visitor_token in room.visitors
-                ]
-                if room.multiplayer.enabled
-                else [player]
-            )
-            all_departed = bool(seated_visitors) and all(
-                (
-                    visitor.left_at is not None
-                    and current - visitor.left_at
-                    >= self.FINISHED_PLAYER_LEAVE_GRACE_SECONDS
-                )
-                or current - visitor.last_seen_at
-                >= self.FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS
-                for visitor in seated_visitors
-            )
-            # 玩家都离开了，但房间里还有观众（或其他真人访客）在线时，
-            # 不能当作「本局结束、人去房空」销毁——观众可能还在看、或等下一局。
-            # 另外：这条「人去房空快速回收」属于「玩家席无人」这一类自动销毁，
-            # 应由「玩家席无人自动销毁秒数」单独控制——设为 0（关闭该项）时
-            # 一并停用，玩家走光后不再被 8 秒回收，只能等「房间无有效操作」超时
-            # 或手动关闭。否则「只把玩家席无人设 0 仍被秒杀」不符合直觉。
-            if (
-                all_departed
-                and not self._has_present_visitors(room, current)
-                and self.empty_player_timeout
-            ):
-                return (room.room_id, "本局结束后玩家已离开，房间已自动销毁")
         # 海龟汤「出题中」既没有玩家入座、也没有操作，容易被两条规则秒杀，
         # 所以豁免「玩家席无人」；但不能连 idle 一起豁免——出题链路异常时
         # 房间会永远留在内存里，还占着群房配额。
@@ -4185,16 +4204,31 @@ class RoomManager:
             await self.event_callback(event, room, payload)
 
     def _vacate_departed_seats(self, room: GameRoom, now: float) -> None:
-        """等待/准备阶段把「已离开」的玩家移出玩家席（对局中不清理）。
+        """把「已经不在」的玩家移出玩家席，任何阶段都清。
 
-        - 显式关闭网页（leave 已设置 left_at）：宽限数秒后移出，刷新后心跳会清掉 left_at；
-        - 心跳超时（断网/崩溃/后台标签节流）：按较长阈值移出，避免误踢切后台的玩家。
+        - 显式关闭网页（leave 已设置 left_at）：宽限 8 秒后移出，刷新会清掉 left_at；
+        - 心跳中断（断网/崩溃/后台标签节流）：按 90 秒阈值移出，避免误踢切后台的玩家。
         移出后保留访客记录（QQ 绑定身份不丢），回到观众席；AI 座位不清理。
+
+        **唯一例外是「棋类对弈还在进行中」**：那一局必须先走完
+        「掉线暂停 → 宽限 → 判负」，否则座位先被摘掉，棋盘就会停在没有对手的
+        半局状态（执色、回合归属都对不上）。判负结束、状态变成 finished 后，
+        下一次清扫就会把这个座位释放掉。
+
+        为什么不能只清 waiting/setup：以前结算阶段不清，棋类掉线判负后输家一直
+        占着座位，玩家席永久停在 2/2；对局中（人数型玩法）不清，关掉网页的人
+        也会一直占着位置，别人进不来。
         """
-        if room.status not in ("waiting", "setup"):
-            return
         state = room.multiplayer
         if not state.enabled or not state.seats:
+            return
+        game = room.game
+        duel_in_progress = bool(
+            room.status in ("active", "paused")
+            and isinstance(game, BOARD_GAME_CLASSES)
+            and not game.finished
+        )
+        if duel_in_progress:
             return
         for seat in list(state.seats):
             if seat.is_ai:
@@ -4216,13 +4250,22 @@ class RoomManager:
             self._remove_multiplayer_seat(room, seat.visitor_token)
             if room.multiplayer.seats:
                 self._sync_primary_player(room)
+            elif room.status == "finished":
+                # 结算阶段座位全空：只释放座位，保留终局盘面给还在场的观众看，
+                # 交给「玩家席无人超时」兜底回收房间。
+                self._clear_primary_player(room)
+                room.player_empty_since = now
+                room.multiplayer.turn_deadline = 0.0
             else:
                 self._clear_primary_player(room)
-                room.player_empty_since = time.time()
+                room.player_empty_since = now
                 room.game = None
                 room.status = "waiting"
                 room.multiplayer.turn_deadline = 0.0
-            room.touch()
+            if room.status != "finished":
+                # 结算阶段清座位属于「收尾」，不算房间活跃：不能刷新 last_activity_at，
+                # 否则玩家走光后「无操作超时」会被无限推迟，房间一直占着配额。
+                room.touch()
             room.add_message(
                 "system", f"{label} 已离线，已移出玩家席。"
             )

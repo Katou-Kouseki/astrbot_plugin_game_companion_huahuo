@@ -178,7 +178,8 @@ async def test_board_poster_data_includes_ai_difficulty() -> None:
 
     data = _plugin(manager)._board_poster_data(room)
 
-    assert "花火（普通）" in data["sub"]
+    # 花火作为败方时，难度跟着败方那一行走
+    assert "花火（普通）" in (data["sub"] + data["sub2"])
 
 
 @pytest.mark.asyncio
@@ -449,7 +450,9 @@ async def test_cooldown_games_merge_into_one_series_message() -> None:
     assert len(plugin.sent_texts) == 1
     text = plugin.sent_texts[0]
     assert "连战 2 局" in text
-    assert "花火获胜" in text and "小明获胜" in text
+    # 连战文案要写清「谁胜谁负」，负方名字不能缺
+    assert "花火（执白）胜 小明（执黑）" in text
+    assert "小明（执白）胜 花火（执黑）" in text
     assert "12 手" in text and "9 手" in text
     assert "花火 1 胜" in text and "玩家 1 胜" in text
     assert room.pending_board_announces == []
@@ -841,7 +844,9 @@ async def test_board_poster_data_includes_loser_player_wins() -> None:
     data = _plugin(manager)._board_poster_data(room)
 
     assert data["title"] == "小明 获胜"
-    assert "胜 花火（普通）执白" in data["sub"]
+    # 败方另起一行，不再和胜方挤在 sub 里
+    assert "胜 " not in data["sub"]
+    assert data["sub2"] == "败方：花火（普通） · 执白"
 
 
 @pytest.mark.asyncio
@@ -857,7 +862,8 @@ async def test_board_poster_data_includes_loser_ai_wins() -> None:
     data = _plugin(manager)._board_poster_data(room)
 
     assert data["title"] == "花火 获胜"
-    assert "胜 小明执黑" in data["sub"]
+    assert data["sub"] == "五子棋 · 花火（普通）执白 · 共 2 手"
+    assert data["sub2"] == "败方：小明 · 执黑"
 
 
 @pytest.mark.asyncio
@@ -892,7 +898,8 @@ async def test_board_poster_data_includes_loser_for_two_humans() -> None:
     data = _plugin(manager)._board_poster_data(room)
 
     assert data["title"] == "小明 获胜"
-    assert "胜 小红执白" in data["sub"]
+    assert "胜 " not in data["sub"]
+    assert data["sub2"] == "败方：小红 · 执白"
     assert "花火" not in data["sub"]
 
 

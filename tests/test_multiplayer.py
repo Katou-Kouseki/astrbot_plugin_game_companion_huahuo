@@ -175,7 +175,11 @@ async def test_model_processing_pauses_turn_deadline_and_failure_restores_it() -
     )
     assert room.multiplayer.turn_deadline == 0
 
-    await manager.sweep_expired(now=time.time() + 1000)
+    # 时间往前跳时必须让心跳跟上：现在任何阶段都会把「已离线」的玩家移出玩家席，
+    # 这个用例要测的是「模型处理期间倒计时暂停」，不是掉线清理。
+    future = time.time() + 1000
+    player.last_seen_at = future
+    await manager.sweep_expired(now=future)
     assert room.multiplayer.current_token == player.token
     await manager.cancel_turtle_soup_interaction(room, game, "模型失败")
     assert room.multiplayer.turn_deadline > time.time()
@@ -311,3 +315,31 @@ async def test_finished_multiplayer_room_waits_until_all_players_leave() -> None
 
     await manager.leave(room, second.token)
     assert await manager.sweep_expired(now=future) == [room.room_id]
+
+
+@pytest.mark.asyncio
+async def test_departed_player_leaves_seat_while_game_is_active() -> None:
+    """对局进行中（人数型玩法）玩家关掉网页，也要把座位清出来，别人才能补位。"""
+    manager = RoomManager(multiplayer_turn_timeout=60, idle_timeout=0)
+    room = await make_room(manager)
+    first = await manager.join(room)
+    second = await manager.join(room)
+    await manager.claim_and_start(room, first.token, "")
+    await manager.claim_and_start(room, second.token, "")
+    assert room.status == "active"  # 关键：对局进行中
+
+    now = time.time()
+    for visitor in room.visitors.values():
+        visitor.last_seen_at = now
+        visitor.connected = True
+    assert len(room.multiplayer.seats) == 2
+
+    # 第一位玩家关闭网页（leave 会写 left_at 并把 connected 置 False）
+    first.left_at = now
+    first.connected = False
+    second.last_seen_at = now + 9
+    await manager.sweep_expired(now=now + 9)
+
+    assert first.token not in [
+        seat.visitor_token for seat in room.multiplayer.seats
+    ]

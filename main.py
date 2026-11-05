@@ -966,7 +966,9 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
     position: relative; overflow-wrap: anywhere; word-break: break-all; }
   .sub { margin-top: 8px; text-align: center; font-size: 18px; font-weight: 600;
     color: rgba(255,255,255,.8); position: relative; overflow-wrap: anywhere; word-break: break-all; }
-  .boardwrap { margin-top: 42px; display: flex; justify-content: center; position: relative; }
+  .sub2 { margin-top: 5px; text-align: center; font-size: 16px; font-weight: 500;
+    color: rgba(255,255,255,.58); position: relative; overflow-wrap: anywhere; word-break: break-all; }
+  .boardwrap { margin-top: 30px; display: flex; justify-content: center; position: relative; }
   .boardwrap svg { width: 410px; height: 410px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
   .wm { margin-top: auto; text-align: right; font-size: 14px; color: rgba(255,255,255,.4); position: relative; }
 </style>
@@ -976,6 +978,7 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
   <div class="head"><span class="t">{{ icon }} {{ label }} · 战报</span><span class="r">{{ badge }}</span></div>
   <div class="big">{{ title }}</div>
   {% if sub %}<div class="sub">{{ sub }}</div>{% endif %}
+  {% if sub2 %}<div class="sub2">{{ sub2 }}</div>{% endif %}
   <div class="boardwrap">{{ board_svg | safe }}</div>
   <div class="wm">由 花火 生成</div>
   <div class="bar"></div>
@@ -5649,6 +5652,7 @@ class GameCompanionPlugin(Star):
                 return f"花火（{ai_difficulty}）"
             return raw_name
 
+        loser_line = ""
         if name:
             # 昵称过长时截断，避免战报标题/副信息溢出画布「显示不全」
             if len(name) > 10:
@@ -5658,20 +5662,19 @@ class GameCompanionPlugin(Star):
             loser_side_text = {"red": "红", "black": "黑", "white": "白"}.get(
                 str(payload.get("loser_side") or ""), ""
             )
+            title = f"{name} 获胜"
+            # 胜方信息在第一行；败方另起一行，避免整句挤成一条读不清
+            sub = (
+                f"{label} · {_huahuo_label(name)}执{side_text} · {count_text}"
+                if side_text
+                else f"{label} · {count_text}"
+            )
             if loser and loser != name:
                 if len(loser) > 10:
                     loser = loser[:10] + "…"
-                loser_text = f" 胜 {_huahuo_label(loser)}" + (
-                    f"执{loser_side_text}" if loser_side_text else ""
-                )
-            else:
-                loser_text = ""
-            title = f"{name} 获胜"
-            sub = (
-                f"{label} · {_huahuo_label(name)}执{side_text}{loser_text} · {count_text}"
-                if side_text
-                else f"{label}{loser_text} · {count_text}"
-            )
+                loser_line = f"败方：{_huahuo_label(loser)}"
+                if loser_side_text:
+                    loser_line += f" · 执{loser_side_text}"
             badge, accent = "🏆", "#ffd166"
         elif draw:
             title, sub, badge, accent = (
@@ -5706,6 +5709,8 @@ class GameCompanionPlugin(Star):
             "label": label,
             "title": title,
             "sub": sub,
+            # 副信息第二行（目前只用于「败方：xxx · 执黑」），空串时不渲染
+            "sub2": loser_line,
             "badge": badge,
             "accent": accent,
             "board_svg": self._board_svg(room),
@@ -5917,11 +5922,20 @@ class GameCompanionPlugin(Star):
         sub_font = _pillow_font(False, int(19 * S))
         sub_text = _pillow_truncate(d, data["sub"], max_w, sub_font, ef_b)
         _pillow_draw_text(
-            d, W / 2, int(228 * S), sub_text, sub_font, (255, 255, 255, 204), anchor="mm", efont=ef_b,
+            d, W / 2, int(226 * S), sub_text, sub_font, (255, 255, 255, 204), anchor="mm", efont=ef_b,
         )
-        # 棋盘
-        board = int(560 * S)
-        bx, by = (W - board) // 2, int(264 * S)
+        # 副信息第二行（败方）：另起一行，别和胜方挤在一起
+        sub2 = str(data.get("sub2") or "")
+        if sub2:
+            sub2_font = _pillow_font(False, int(17 * S))
+            sub2_text = _pillow_truncate(d, sub2, max_w, sub2_font, ef_b)
+            _pillow_draw_text(
+                d, W / 2, int(254 * S), sub2_text, sub2_font,
+                (255, 255, 255, 148), anchor="mm", efont=ef_b,
+            )
+        # 棋盘：必须整块落在画布内（以前 fixed 560*S 从 264*S 起算，底部会被裁掉）
+        board = int(380 * S)
+        bx, by = (W - board) // 2, int(292 * S)
         GameCompanionPlugin._pillow_draw_board(d, room, bx, by, board)
         # 脚标
         _pillow_draw_text(
@@ -6373,6 +6387,9 @@ class GameCompanionPlugin(Star):
             "draw": bool(payload.get("draw")),
             "winner_name": str(payload.get("winner_name") or ""),
             "winner_side": str(payload.get("winner_side") or ""),
+            # 连战文案要写清「谁输给了谁」，负方信息随条目一起存下来
+            "loser_name": str(payload.get("loser_name") or ""),
+            "loser_side": str(payload.get("loser_side") or ""),
             "winner_is_ai": winner_is_ai,
             "human_won": None if human_won is None else bool(human_won),
         }
@@ -6550,14 +6567,34 @@ class GameCompanionPlugin(Star):
                 str(entry.get("winner_side") or ""), ""
             )
             side_text = f"（执{side}）" if side else ""
+            loser_side = {"red": "红", "black": "黑", "white": "白"}.get(
+                str(entry.get("loser_side") or ""), ""
+            )
             moves = int(entry.get("moves") or 0)
             if entry.get("draw"):
                 result = "🤝 平局"
             elif entry.get("winner_is_ai"):
-                result = f"🏆 花火获胜{side_text}"
+                winner = f"花火{side_text}"
+                loser = str(entry.get("loser_name") or "")
+                result = (
+                    f"🏆 {winner}胜 {loser}（执{loser_side}）"
+                    if loser and loser_side
+                    else f"🏆 {winner}胜 {loser}"
+                    if loser
+                    else f"🏆 花火获胜{side_text}"
+                )
             else:
                 name = str(entry.get("winner_name") or "")
-                result = f"🏆 {name}获胜{side_text}" if name else f"🏆 玩家获胜{side_text}"
+                loser = str(entry.get("loser_name") or "")
+                if name and loser:
+                    loser_text = (
+                        f"{loser}（执{loser_side}）" if loser_side else loser
+                    )
+                    result = f"🏆 {name}{side_text}胜 {loser_text}"
+                elif name:
+                    result = f"🏆 {name}获胜{side_text}"
+                else:
+                    result = f"🏆 玩家获胜{side_text}"
             lines.append(f"{index}. {result} · {moves} 手")
         if len(entries) > len(shown):
             lines.append(f"…另有 {len(entries) - len(shown)} 局略")

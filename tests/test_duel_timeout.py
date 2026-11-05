@@ -185,3 +185,69 @@ async def test_practice_game_against_ai_has_no_turn_clock() -> None:
     # 和花火练习：掉线不暂停、不判负
     assert room.status == "active"
     assert room.multiplayer.duel_paused is False
+
+
+@pytest.mark.asyncio
+async def test_offline_forfeit_releases_the_seat() -> None:
+    """掉线判负后，输家不回来就必须让出座位，否则别人永远落不了座。"""
+    manager, room, _first, _second = await two_human_duel()
+    now = time.time()
+    for visitor in room.visitors.values():
+        visitor.last_seen_at = now
+        visitor.connected = True
+    manager._reset_turn_deadline(room, now=now)
+
+    seat = manager._duel_turn_owner(room)
+    assert seat is not None
+    loser = room.visitors[seat.visitor_token]
+    loser.connected = False
+    loser.last_seen_at = now - 30
+
+    await manager.sweep_expired(now=now)  # 掉线暂停
+    keep_others_online(room, loser.token, now + 91)
+    loser.last_seen_at = now - 30
+    await manager.sweep_expired(now=now + 91)  # 宽限结束 → 判负
+    assert room.status == "finished"
+    # 判负那一轮里「清座位」早于「判负」，所以此刻还占着
+    assert len(room.multiplayer.seats) == 2
+
+    keep_others_online(room, loser.token, now + 95)
+    loser.last_seen_at = now - 30
+    await manager.sweep_expired(now=now + 95)  # 下一轮：释放离线座位
+    assert len(room.multiplayer.seats) == 1
+    assert all(s.visitor_token != loser.token for s in room.multiplayer.seats)
+    # 终局盘面要留给观众看，不能因为清座位被抹掉
+    assert room.game is not None
+    assert room.game.finished
+
+
+@pytest.mark.asyncio
+async def test_offline_forfeit_frees_seat_for_a_new_challenger() -> None:
+    """座位释放后，观众可以直接落座补位。"""
+    manager, room, _first, _second = await two_human_duel()
+    now = time.time()
+    for visitor in room.visitors.values():
+        visitor.last_seen_at = now
+        visitor.connected = True
+    manager._reset_turn_deadline(room, now=now)
+
+    seat = manager._duel_turn_owner(room)
+    assert seat is not None
+    loser = room.visitors[seat.visitor_token]
+    loser.connected = False
+    loser.last_seen_at = now - 200
+
+    await manager.sweep_expired(now=now)
+    keep_others_online(room, loser.token, now + 91)
+    loser.last_seen_at = now - 200
+    await manager.sweep_expired(now=now + 91)
+    keep_others_online(room, loser.token, now + 95)
+    loser.last_seen_at = now - 200
+    await manager.sweep_expired(now=now + 95)
+    assert len(room.multiplayer.seats) == 1
+
+    challenger = await manager.join(room)
+    await manager.claim_and_start(room, challenger.token, "")
+
+    assert len(room.multiplayer.seats) == 2
+    assert room.status == "active"
