@@ -356,7 +356,10 @@ def test_soup_sample_room_has_full_content_but_snapshot_never_leaks_solution(
     assert payload["solved"] is True
     assert payload["end_reason"] == "solved"
     assert payload["question_count"] == 5
+    assert plugin._soup_announce_text(room).count("👥 玩家：张三 · 李四 · 王五") == 1
     assert "solution" not in payload, "快照会被推给前端，绝不能带汤底"
+    # 战报要写清谁在这场里；花火是主持人，不能混进玩家名单
+    assert [p["name"] for p in payload["players"]] == ["张三", "李四", "王五"]
     dumped = json.dumps(payload, ensure_ascii=False)
     for secret in ("心梗", "柜子最深处"):
         assert secret not in dumped
@@ -369,6 +372,7 @@ def test_soup_poster_data_keeps_strong_questions_only(tmp_path: Path) -> None:
     data = plugin._soup_poster_data(plugin._soup_sample_room(solved=True))
 
     assert data["title"] == "每天两副碗筷"
+    assert data["players"] == "张三 · 李四 · 王五"
     assert data["stats"].startswith("提问 5 次")
     assert len(data["questions"]) == 4
     assert any("意外" in q for q in data["questions"])

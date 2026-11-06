@@ -4431,6 +4431,11 @@
     if (snap && typeof snap === "object" && (snap.title || snap.surface)) {
       return {
         title: String(snap.title || "海龟汤"),
+        // 参与玩家（花火是主持人，服务端快照里已剔除 AI 座位）
+        players: (Array.isArray(snap.players) ? snap.players : [])
+          .map((entry) => String(entry?.name || "").trim())
+          .filter(Boolean)
+          .join(" · "),
         surface: String(snap.surface || ""),
         questions: Number(snap.question_count || 0),
         hints: Number(snap.hints_used || 0),
@@ -4546,7 +4551,9 @@
     });
     const statsH = 54;
     const questionH = questionLines.length ? 44 + questionLines.length * 26 : 0;
-    const H = 152 + 46 + surfaceLines.length * 32 + statsH + questionH + 150;
+    const playersLine = String(result.players || "").trim();
+    const playersH = playersLine ? 26 : 0;
+    const H = 152 + 46 + playersH + surfaceLines.length * 32 + statsH + questionH + 150;
     const cv = document.createElement("canvas");
     cv.width = W * scale; cv.height = H * scale;
     const c = cv.getContext("2d");
@@ -4580,8 +4587,15 @@
     }
     c.fillStyle = "#ffffff";
     c.fillText(truncatePosterText(c, titleText, W - M * 2), M, 108);
-    // 汤面
+    // 参与玩家（花火是主持人，不在名单里）
     let y = 194;
+    if (playersLine) {
+      c.textAlign = "left";
+      c.fillStyle = "#c0a887"; c.font = fontOf(false, 17);
+      c.fillText(`👥 ${truncatePosterText(c, playersLine, W - M * 2)}`, M, y);
+      y += playersH;
+    }
+    // 汤面
     c.fillStyle = "#f0e4d2"; c.font = fontOf(false, 21);
     surfaceLines.forEach((line) => { c.fillText(line, M, y); y += 32; });
     // 统计

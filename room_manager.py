@@ -3423,11 +3423,20 @@ class RoomManager:
                     "player_number": entry.player_number,
                 }
             )
+        # 参与玩家：战报要写清「谁在这场里」，花火是主持人不是玩家，跳过 AI 座位
+        players: list[dict[str, object]] = []
+        for seat in getattr(room.multiplayer, "seats", []) or []:
+            if bool(getattr(seat, "is_ai", False)):
+                continue
+            number = int(getattr(seat, "number", 0) or 0)
+            name = str(getattr(seat, "display_name", "") or "").strip()
+            players.append({"number": number, "name": name or f"{number} 号位"})
         room.last_soup_result = {
             "game_uid": str(getattr(game, "game_uid", "") or ""),
             "completed_games": int(room.completed_games),
             "game_type": "turtle_soup",
             "mode": game.mode,
+            "players": players,
             "title": puzzle.title,
             "surface": puzzle.surface,
             "theme": puzzle.theme,

@@ -971,11 +971,12 @@ _SOUP_POSTER_TMPL = """<!DOCTYPE html>
   .head .t { font-size: 20px; font-weight: 700; color: #e5c99a; }
   .head .r { font-size: 14px; color: rgba(229,201,154,.7); }
   .title {
-    margin-top: 24px; font-size: 40px; font-weight: 900; line-height: 1.22; color: #fff;
+    margin-top: 38px; font-size: 40px; font-weight: 900; line-height: 1.22; color: #fff;
     position: relative; overflow-wrap: anywhere; word-break: break-all;
   }
+  .players { margin-top: 18px; font-size: 16px; color: #c0a887; position: relative; }
   .surface {
-    margin-top: 14px; font-size: 21px; line-height: 1.55; color: #f0e4d2;
+    margin-top: 18px; font-size: 21px; line-height: 1.55; color: #f0e4d2;
     position: relative; overflow-wrap: anywhere; word-break: break-all;
   }
   .stats { margin-top: 14px; font-size: 16px; color: #c0a887; position: relative; }
@@ -1004,6 +1005,7 @@ _SOUP_POSTER_TMPL = """<!DOCTYPE html>
 <div class="poster">
   <div class="head"><span class="t">🐢 海龟汤 · 单局战报</span><span class="r">{{ date }}</span></div>
   <div class="title">{{ title }}</div>
+  {% if players %}<div class="players">👥 {{ players }}</div>{% endif %}
   {% if surface %}<div class="surface">{{ surface }}</div>{% endif %}
   <div class="stats">{{ stats }}</div>
   {% if questions %}
@@ -2641,7 +2643,15 @@ class GameCompanionPlugin(Star):
             completed_games=3,
             status="finished",
             difficulty="normal",
-            multiplayer=SimpleNamespace(seats=[]),
+            multiplayer=SimpleNamespace(
+                seats=[
+                    SimpleNamespace(number=1, display_name="张三", is_ai=False),
+                    SimpleNamespace(number=2, display_name="李四", is_ai=False),
+                    SimpleNamespace(number=3, display_name="王五", is_ai=False),
+                    # 花火是主持人（AI 座位），不该出现在「玩家」里
+                    SimpleNamespace(number=4, display_name="花火", is_ai=True),
+                ]
+            ),
             game=game,
             recap_cache={},
         )
@@ -5951,6 +5961,22 @@ class GameCompanionPlugin(Star):
             picked.append(entry)
         return list(reversed(picked))
 
+    @staticmethod
+    def _soup_player_line(payload: dict[str, Any], limit: int = 6) -> str:
+        """把参与玩家拼成一行（战报文案与海报共用）；花火是主持人，已在快照里剔除。"""
+        names = [
+            str(entry.get("name") or "").strip()
+            for entry in (payload.get("players") or [])
+            if isinstance(entry, dict)
+        ]
+        names = [name for name in names if name]
+        if not names:
+            return ""
+        line = " · ".join(names[:limit])
+        if len(names) > limit:
+            line += f" 等 {len(names)} 人"
+        return line
+
     def _soup_announce_text(self, room: GameRoom) -> str:
         """群通知文案：只给汤面和几条提问，制造「想知道答案」的钩子。
 
@@ -5973,6 +5999,9 @@ class GameCompanionPlugin(Star):
         lines.append(
             f"—— 本局提问 {questions} 次 · 提示 {hints} 次 · 推理 {attempts} 次"
         )
+        player_line = self._soup_player_line(payload)
+        if player_line:
+            lines.append(f"👥 玩家：{player_line}")
         for entry in self._soup_pick_questions(payload, limit=4):
             prompt = str(entry.get("prompt") or "").strip()
             verdict = str(entry.get("response") or "").strip()
@@ -6050,6 +6079,7 @@ class GameCompanionPlugin(Star):
         return {
             "date": time.strftime("%Y-%m-%d"),
             "title": str(payload.get("title") or "海龟汤"),
+            "players": self._soup_player_line(payload, limit=8),
             "surface": str(payload.get("surface") or "").strip(),
             "stats": stats,
             "questions": qa,
@@ -6107,15 +6137,25 @@ class GameCompanionPlugin(Star):
         f_surface = _pillow_font(False, int(21 * S))
         f_stats = _pillow_font(False, int(16 * S))
         f_qa = _pillow_font(False, int(17 * S))
+        f_players = _pillow_font(False, int(16 * S))
         f_small = _pillow_font(False, int(13 * S))
         ef = _pillow_emoji_font(int(22 * S))
         title_lines = _pillow_wrap(probe, data["title"], text_w, f_title, 2, ef)
+        players_text = str(data.get("players") or "").strip()
+        players_lines = (
+            _pillow_wrap(probe, f"👥 {players_text}", text_w, f_players, 1, ef)
+            if players_text
+            else []
+        )
         surface_lines = _pillow_wrap(probe, data["surface"], text_w, f_surface, 8, ef)
         qa_lines: list[str] = []
         for line in data["questions"]:
             qa_lines.extend(_pillow_wrap(probe, line, text_w - int(28 * S), f_qa, 2, ef))
         # 先用宽松的高度建画布，画完再裁到内容底部（省得手算每一段间距）
-        est = 96 + len(title_lines) * 52 + 14 + len(surface_lines) * 32 + 34
+        est = 126 + len(title_lines) * 52
+        if players_lines:
+            est += len(players_lines) * 26 + 8
+        est += 16 + len(surface_lines) * 32 + 34
         if qa_lines:
             est += 30 + len(qa_lines) * 26 + 40
         H = int((est + 86 + 110) * S)
@@ -6141,11 +6181,19 @@ class GameCompanionPlugin(Star):
             (229, 201, 154, 178), anchor="rs",
         )
         d.rectangle([pad, int(68 * S), W - pad, int(72 * S)], fill=(255, 209, 102, 255))
-        y = int(104 * S)
+        # 标题与顶部金线之间留足呼吸感（贴太近会显得挤）
+        y = int(126 * S)
         for line in title_lines:
             _pillow_draw_text(d, pad, y, line, f_title, (255, 255, 255, 255), efont=ef)
             y += int(52 * S)
-        y += int(14 * S)
+        if players_lines:
+            y += int(8 * S)
+            for line in players_lines:
+                _pillow_draw_text(
+                    d, pad, y, line, f_players, (192, 168, 135, 255), efont=ef,
+                )
+                y += int(26 * S)
+        y += int(16 * S)
         for line in surface_lines:
             _pillow_draw_text(d, pad, y, line, f_surface, (240, 228, 210, 255), efont=ef)
             y += int(32 * S)
