@@ -3684,6 +3684,11 @@ class RoomManager:
             return None
         if isinstance(game, (TurtleSoupGame, DrawGuessGame)):
             return None
+        # 不是花火的回合就不要白算（象棋一次搜索要 900ms，围棋 600ms）。
+        # 正常调度下不会走到这里，但「再来一局换先」「两位真人」等场景下
+        # 旧任务可能醒在一个不该它走的局面上。
+        if not self._is_bot_turn(room):
+            return None
         marker = self._bot_plan_marker(game)
         if isinstance(game, XiangqiGame):
             try:
@@ -3782,9 +3787,20 @@ class RoomManager:
                         else RuntimeError("象棋引擎暂时不可用")
                     )
                 if kind == "xiangqi":
-                    await game.apply_bot_move(
-                        self._require_xiangqi_engine(), str(plan["move"])
-                    )
+                    try:
+                        await game.apply_bot_move(
+                            self._require_xiangqi_engine(), str(plan["move"])
+                        )
+                    except Exception:
+                        # 落子阶段引擎故障（搜索能过、perft 挂了、进程中途退出）：
+                        # 和以前一样先暂停并播报。不暂停的话房间会停在
+                        # 「轮到花火、但没有任务会再来重试」的半局状态。
+                        room.status = "paused"
+                        room.add_message(
+                            "system",
+                            "象棋引擎暂时不可用，对局已暂停。恢复引擎后可在 QQ 或管理台继续。",
+                        )
+                        raise
                 elif kind == "gomoku":
                     move = plan["move"]
                     game.place(move[0], move[1], game.bot_color)

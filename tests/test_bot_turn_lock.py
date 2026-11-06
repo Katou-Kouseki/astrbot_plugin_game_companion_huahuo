@@ -10,6 +10,11 @@ from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 
 
 async def make_bot_room(manager: RoomManager):
+    """走真实开局流程，拿到「花火坐 AI 座位、轮到她走」的房间。
+
+    注意不能只塞一个 GomokuGame 进 room：`_is_bot_turn` 是房间级判定，
+    没有 AI 座位时它会认为是「两位真人」，花火本来就不该落子。
+    """
     room = await manager.create_room(
         source="group",
         session_id="aiocqhttp:group:41001",
@@ -21,10 +26,14 @@ async def make_bot_room(manager: RoomManager):
         game_type="gomoku",
         difficulty="normal",
     )
-    game = GomokuGame(human_color=BLACK, difficulty="normal")
-    game.turn = WHITE  # 轮到花火
-    room.game = game
-    room.status = "active"
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "human_black")
+    await manager.start_game(room, visitor.token, "human_black")
+    game = room.game
+    assert isinstance(game, GomokuGame)
+    # 玩家先落一子，把回合交给花火（白）
+    game.place(7, 7, game.human_color)
+    assert room.game.turn == game.bot_color
     return room, game
 
 
@@ -45,7 +54,7 @@ async def test_bot_thinking_does_not_hold_room_lock(monkeypatch) -> None:
     def slow_choose(self, **_kwargs):
         started.set()
         release.wait(5.0)
-        return (7, 7)
+        return (7, 8)
 
     monkeypatch.setattr(GomokuGame, "choose_bot_move", slow_choose)
 
@@ -60,8 +69,8 @@ async def test_bot_thinking_does_not_hold_room_lock(monkeypatch) -> None:
     release.set()
     await asyncio.wait_for(task, timeout=5.0)
 
-    assert len(game.history) == 1
-    assert game.history[0][:2] == (7, 7)
+    assert len(game.history) == 2, "花火这一手应该落到棋盘上"
+    assert game.history[-1][:2] == (7, 8)
 
 
 @pytest.mark.asyncio
@@ -71,16 +80,18 @@ async def test_stale_bot_plan_is_discarded(monkeypatch) -> None:
     manager.bot_think_delay = lambda _room: 0.0  # type: ignore[method-assign]
     room, game = await make_bot_room(manager)
 
+    before = len(game.history)
+
     def choose_but_board_changes(self, **_kwargs):
         # 模拟「计算期间局面变了」：回合被交还给真人
         self.turn = self.human_color
-        return (7, 7)
+        return (7, 8)
 
     monkeypatch.setattr(GomokuGame, "choose_bot_move", choose_but_board_changes)
 
     await asyncio.wait_for(manager._bot_turn(room), timeout=5.0)
 
-    assert game.history == [], "局面已经变了，花火这一手不该落下去"
+    assert len(game.history) == before, "局面已经变了，花火这一手不该落下去"
 
 
 @pytest.mark.asyncio
@@ -91,3 +102,16 @@ async def test_marker_tracks_turn_and_move_count() -> None:
     game.place(7, 7, WHITE)
     after = RoomManager._bot_plan_marker(game)
     assert before != after
+
+
+def test_xiangqi_apply_bot_move_still_checks_turn() -> None:
+    """拆出来的 apply_bot_move 必须保留「不是花火回合就拒绝」的校验。"""
+    from types import SimpleNamespace
+
+    from astrbot_plugin_game_companion_huahuo.xiangqi import RED, XiangqiGame
+
+    game = XiangqiGame(human_side=RED, difficulty="normal")
+    assert game.turn == RED  # 轮到真人
+
+    with pytest.raises(ValueError):
+        asyncio.run(game.apply_bot_move(SimpleNamespace(), "h2e2"))
