@@ -28,6 +28,7 @@ from .models import (
     Visitor,
     _undercover_badges_for,
     _undercover_identity_key,
+    _qq_avatar_url,
     _visitor_uid,
     soup_reveal_required,
 )
@@ -1592,6 +1593,9 @@ class RoomManager:
                     content_level=self.turtle_soup_content_level,
                     mode=room.turtle_soup_mode,
                 )
+                # 正常开局（花火出题）要清掉没提交的出题申请，否则面板会一直显示
+                # 「X 正在出题」，而这一局其实已经由花火出了
+                room.soup_host_number = 0
                 side_label = ""
             room.status = "active"
             room.touch()
@@ -3036,6 +3040,7 @@ class RoomManager:
                 raise ValueError("当前海龟汤尚未结束，需要明确放弃后才能切换玩法")
             room.turtle_soup_mode = mode
             room.game = None
+            room.soup_host_number = 0
             room.status = "setup" if room.player_token else "waiting"
             room.touch()
             room.add_message(
@@ -3067,6 +3072,307 @@ class RoomManager:
             self._reset_turn_deadline(room)
         await self._emit("game_started", room, {"turtle_soup": True})
         return True
+
+    # ---------------- 海龟汤：玩家出题人 ----------------
+
+    def _soup_host_seat(self, room: GameRoom) -> PlayerSeat | None:
+        """房间当前自荐的出题人座位（还没开局时用 room.soup_host_number）。"""
+        number = int(getattr(room, "soup_host_number", 0) or 0)
+        if not number:
+            return None
+        return next(
+            (seat for seat in room.multiplayer.seats if int(seat.number) == number),
+            None,
+        )
+
+    def _seat_label(self, seat: PlayerSeat | None, number: int = 0) -> str:
+        if seat is not None and seat.display_name:
+            return seat.display_name
+        if number:
+            return f"{number} 号位"
+        return "玩家"
+
+    async def apply_soup_host(
+        self, room: GameRoom, visitor_token: str
+    ) -> dict[str, object]:
+        """玩家自荐当出题人（默认仍是花火出题，这只是可选玩法）。
+
+        只改「谁来出题」，不动座位与身份：申请人必须已经在玩家席上，
+        免得一个观众悄悄把这一局的出题权拿走。
+        """
+        async with room.lock:
+            if room.game_type != "turtle_soup":
+                raise ValueError("当前房间不是海龟汤")
+            visitor = self._visitor(room, visitor_token)
+            seat = (
+                room.multiplayer.seat_for_token(visitor.token)
+                if room.multiplayer.enabled
+                else None
+            )
+            if seat is None:
+                raise ValueError("请先入座再申请当出题人")
+            if room.status in {"active", "paused"}:
+                raise ValueError("本局还在进行，等这一局结束后再申请出题")
+            number = int(seat.number)
+            label = self._seat_label(seat, number)
+            if int(getattr(room, "soup_host_number", 0) or 0) == number:
+                return {"host_number": number, "host_name": label, "already": True}
+            room.soup_host_number = number
+            room.game = None
+            room.touch()
+            room.add_message("system", f"{label} 自荐当出题人，正在想题目。")
+        await self._emit(
+            "soup_host_applied", room, {"host_number": number, "host_name": label}
+        )
+        return {"host_number": number, "host_name": label, "already": False}
+
+    async def cancel_soup_host(
+        self, room: GameRoom, visitor_token: str = "", *, force: bool = False
+    ) -> bool:
+        """撤回出题申请（出题人自己或管理员）；已经开局后不能用这个取消。"""
+        async with room.lock:
+            if room.game_type != "turtle_soup":
+                raise ValueError("当前房间不是海龟汤")
+            seat = (
+                room.multiplayer.seat_for_token(visitor_token)
+                if room.multiplayer.enabled
+                else None
+            )
+            number = int(getattr(room, "soup_host_number", 0) or 0)
+            if not number:
+                return False
+            if not force and (seat is None or int(seat.number) != number):
+                raise PermissionError("只有申请出题的人可以撤回")
+            room.soup_host_number = 0
+            room.touch()
+            room.add_message("system", "出题申请已撤回，改回花火出题。")
+        await self._emit("soup_host_cancelled", room, {})
+        return True
+
+    async def start_soup_host_game(
+        self,
+        room: GameRoom,
+        visitor_token: str,
+        *,
+        title: str,
+        surface: str,
+        solution: str,
+        hints: list[str] | None = None,
+    ) -> TurtleSoupGame:
+        """出题人提交汤面 + 汤底，直接开一局（不经过 LLM 出题）。"""
+        from .turtle_soup import SoupPuzzle
+
+        cleaned_surface = str(surface or "").strip()
+        cleaned_solution = str(solution or "").strip()
+        if len(cleaned_surface) < 8:
+            raise ValueError("汤面太短了，至少写清「谁、在哪、发生了什么」")
+        if len(cleaned_solution) < 8:
+            raise ValueError("汤底太短了，至少写清真正的原因")
+        hint_list = [str(item).strip()[:80] for item in (hints or []) if str(item).strip()]
+        hint_list = hint_list[:3]
+        async with room.lock:
+            if room.game_type != "turtle_soup":
+                raise ValueError("当前房间不是海龟汤")
+            visitor = self._visitor(room, visitor_token)
+            seat = (
+                room.multiplayer.seat_for_token(visitor.token)
+                if room.multiplayer.enabled
+                else None
+            )
+            if seat is None or int(seat.number) != int(
+                getattr(room, "soup_host_number", 0) or 0
+            ):
+                raise PermissionError("只有申请出题的人可以提交题目")
+            if room.status in {"active", "paused"}:
+                raise ValueError("本局还在进行，等结束后再出题")
+            puzzle = SoupPuzzle(
+                title=(str(title or "").strip()[:40] or f"{self._seat_label(seat)} 的汤"),
+                surface=cleaned_surface[:800],
+                solution=cleaned_solution[:1600],
+                key_facts=(),
+                acceptable_variants=(),
+                hints=tuple(hint_list),
+                content_level=self.turtle_soup_content_level,
+                theme="玩家出题",
+                trick="玩家出题",
+            )
+            game = TurtleSoupGame(
+                difficulty=room.difficulty,
+                max_hints=self.turtle_soup_max_hints,
+                content_level=self.turtle_soup_content_level,
+                mode="bot_host",
+            )
+            game.host_number = int(seat.number)
+            game.set_puzzle(puzzle)
+            room.game = game
+            room.status = "active"
+            room.soup_host_number = 0
+            # 轮转从第一位不是出题人的座位开始
+            for index, item in enumerate(room.multiplayer.seats):
+                if int(item.number) != game.host_number:
+                    room.multiplayer.current_turn_index = index
+                    break
+            self._reset_turn_deadline(room)
+            room.touch()
+            room.add_message(
+                "system",
+                f"玩家出题模式：由 {self._seat_label(seat)} 出题，"
+                "其他人和花火一起猜，出题人负责回答。",
+            )
+        await self._emit(
+            "game_started", room, {"turtle_soup": True, "host_number": game.host_number}
+        )
+        return game
+
+    async def begin_soup_host_judgement(
+        self,
+        room: GameRoom,
+        text: str,
+        *,
+        kind: Literal["question", "answer"],
+        source: Literal["web", "qq"] = "web",
+        visitor_token: str = "",
+        actor_qq: str = "",
+        for_bot: bool = False,
+        limit: int = 200,
+    ) -> TurtleSoupGame:
+        """把玩家（或花火）的提问/推理挂到出题人面前，等他用按钮裁决。"""
+        cleaned = clean_player_text(text, limit=limit)
+        async with room.lock:
+            game = self._require_host_soup_game(room)
+            number = 0
+            name = "花火"
+            if not for_bot:
+                # 先认座位：出题人不管轮次，直接告诉他「你是出题人」
+                asker_seat = (
+                    room.multiplayer.seat_for_token(visitor_token)
+                    if source == "web" and visitor_token
+                    else (
+                        room.multiplayer.seat_for_qq(actor_qq)
+                        if source == "qq" and actor_qq
+                        else None
+                    )
+                )
+                if asker_seat is not None and int(asker_seat.number) == game.host_number:
+                    raise ValueError("你是出题人，负责回答，不用提问")
+                number = self._require_turtle_soup_player(
+                    room,
+                    source=source,
+                    visitor_token=visitor_token,
+                    actor_qq=actor_qq,
+                )
+                number = int(number)
+                seat = next(
+                    (s for s in room.multiplayer.seats if int(s.number) == number),
+                    None,
+                )
+                name = self._seat_label(seat, number)
+            game.set_pending_judge(
+                kind, cleaned, asker_number=number, asker_name=name, for_bot=for_bot
+            )
+            room.multiplayer.turn_deadline = 0.0
+            room.touch()
+        await self._emit(
+            "soup_host_question",
+            room,
+            {"kind": kind, "text": cleaned, "asker_name": name, "for_bot": for_bot},
+        )
+        return game
+
+    async def judge_soup_pending(
+        self,
+        room: GameRoom,
+        visitor_token: str,
+        *,
+        verdict: str,
+    ) -> dict[str, object]:
+        """出题人裁决：问题给四选一，推理给「猜对了 / 不对」。"""
+        finished = False
+        pending: dict[str, object] = {}
+        async with room.lock:
+            game = self._require_host_soup_game(room)
+            seat = (
+                room.multiplayer.seat_for_token(visitor_token)
+                if room.multiplayer.enabled
+                else None
+            )
+            if seat is None or int(seat.number) != game.host_number:
+                raise PermissionError("只有出题人可以裁决")
+            raw_pending = game.pending_judge
+            if not raw_pending:
+                raise ValueError("现在没有等待裁决的内容")
+            pending = game.clear_pending_judge() or {}
+            kind = str(pending.get("kind") or "question")
+            text = str(pending.get("text") or "")
+            asker = int(pending.get("asker_number") or 0)
+            for_bot = bool(pending.get("for_bot"))
+            if kind == "question":
+                normalized = verdict if verdict in {
+                    "yes", "no", "irrelevant", "partial", "compound",
+                } else "irrelevant"
+                game.record_question(
+                    text,
+                    normalized,  # type: ignore[arg-type]
+                    source="web",
+                    matched_facts=set(),
+                    player_number=None if for_bot else asker,
+                )
+            else:
+                correct = verdict == "correct"
+                if correct and for_bot:
+                    game.record_answer(
+                        text,
+                        solved=False,
+                        source="web",
+                        matched_facts=set(),
+                        player_number=None,
+                        reply="花火猜中了，汤底已经揭晓。",
+                    )
+                    game.bot_solved = True
+                    game.solved = False
+                    game.solver_number = 0
+                    game.end_reason = "bot_solved"
+                    game.phase = "finished"
+                else:
+                    game.record_answer(
+                        text,
+                        solved=correct,
+                        source="web",
+                        matched_facts=set(),
+                        player_number=asker,
+                        reply=(
+                            "出题人认可：推理成立，汤底揭晓。"
+                            if correct
+                            else "出题人觉得还不对，再想想。"
+                        ),
+                    )
+                    if correct:
+                        game.solver_number = asker
+            finished = game.finished
+            if not finished and not self._turtle_soup_free_mode(room):
+                self._advance_multiplayer_turn(room)
+            room.touch()
+        if finished:
+            await self._finish_game(room)
+        await self._emit(
+            "soup_host_judged",
+            room,
+            {"kind": kind, "verdict": verdict, "finished": finished, "for_bot": for_bot},
+        )
+        return {
+            "verdict": verdict,
+            "finished": finished,
+            "kind": kind,
+            "asker_number": int(pending.get("asker_number") or 0),
+        }
+
+    def _require_host_soup_game(self, room: GameRoom) -> TurtleSoupGame:
+        game = self._turtle_soup_game(room)
+        if not game.host_number:
+            raise ValueError("当前是花火出题，不需要裁决")
+        if room.status != "active":
+            raise ValueError("当前没有正在进行的海龟汤")
+        return game
 
     async def begin_turtle_soup_interaction(
         self,
@@ -3300,9 +3606,24 @@ class RoomManager:
         revealed = False
         async with room.lock:
             game = self._turtle_soup_game(room)
-            self._require_turtle_soup_player(
-                room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
+            early_host_seat = (
+                room.multiplayer.seat_for_token(visitor_token)
+                if source == "web" and visitor_token
+                else (
+                    room.multiplayer.seat_for_qq(actor_qq)
+                    if source == "qq" and actor_qq
+                    else None
+                )
             )
+            requester_is_host = bool(
+                game.host_number
+                and early_host_seat is not None
+                and int(early_host_seat.number) == game.host_number
+            )
+            if not requester_is_host:
+                self._require_turtle_soup_player(
+                    room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
+                )
             if room.status != "active":
                 raise ValueError("当前没有正在进行的海龟汤")
             if game.phase != "ready":
@@ -3310,12 +3631,28 @@ class RoomManager:
             uid = self._soup_player_uid(
                 room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
             )
-            result = game.request_reveal(uid)
-            required = soup_reveal_required(room)
-            votes = int(result.get("votes") or 0)
-            revealed = votes >= required
-            if revealed:
+            host_seat = (
+                room.multiplayer.seat_for_token(visitor_token)
+                if source == "web" and visitor_token
+                else (
+                    room.multiplayer.seat_for_qq(actor_qq)
+                    if source == "qq" and actor_qq
+                    else None
+                )
+            )
+            if game.host_number and host_seat is not None and int(
+                host_seat.number
+            ) == game.host_number:
+                # 玩家出题人：汤底是他写的，自己就能揭晓，不需要凑票
                 game.reveal(reason="revealed", source=source)
+                votes, required, revealed = 1, 1, True
+            else:
+                result = game.request_reveal(uid)
+                required = soup_reveal_required(room)
+                votes = int(result.get("votes") or 0)
+                revealed = votes >= required
+                if revealed:
+                    game.reveal(reason="revealed", source=source)
             room.touch()
         payload = {
             "votes": votes,
@@ -3430,7 +3767,17 @@ class RoomManager:
                 continue
             number = int(getattr(seat, "number", 0) or 0)
             name = str(getattr(seat, "display_name", "") or "").strip()
-            players.append({"number": number, "name": name or f"{number} 号位"})
+            players.append(
+                {
+                    "number": number,
+                    "name": name or f"{number} 号位",
+                    "avatar_url": (
+                        _qq_avatar_url(getattr(seat, "qq", ""))
+                        if getattr(seat, "identity_confirmed", False)
+                        else ""
+                    ),
+                }
+            )
         room.last_soup_result = {
             "game_uid": str(getattr(game, "game_uid", "") or ""),
             "completed_games": int(room.completed_games),
@@ -3448,6 +3795,19 @@ class RoomManager:
             "discovered_fact_count": len(game.discovered_facts),
             "solved": bool(game.solved),
             "gave_up": bool(game.gave_up),
+            # 玩家出题模式：谁出的题、谁猜中的（0 = 花火）
+            "host_number": int(getattr(game, "host_number", 0) or 0),
+            "host_name": next(
+                (
+                    str(seat.display_name or "")
+                    for seat in getattr(room.multiplayer, "seats", []) or []
+                    if int(getattr(seat, "number", 0) or 0)
+                    == int(getattr(game, "host_number", 0) or 0)
+                ),
+                "",
+            ),
+            "solver_number": int(getattr(game, "solver_number", 0) or 0),
+            "bot_solved": bool(game.bot_solved),
             "end_reason": str(game.end_reason or ("solved" if game.solved else "")),
             "entries": entries,
         }
@@ -5719,9 +6079,19 @@ class RoomManager:
         count = len(state.seats)
         start = state.current_turn_index % count
         chosen = start
+        # 玩家出题人只管裁决，不参与提问轮转
+        game = room.game
+        host_number = (
+            int(getattr(game, "host_number", 0) or 0)
+            if isinstance(game, TurtleSoupGame)
+            else 0
+        )
         for offset in range(1, count + 1):
             index = (start + offset) % count
-            visitor = room.visitors.get(state.seats[index].visitor_token)
+            seat = state.seats[index]
+            if host_number and int(seat.number) == host_number:
+                continue
+            visitor = room.visitors.get(seat.visitor_token)
             if visitor and visitor.connected and current - visitor.last_seen_at < 15:
                 chosen = index
                 break

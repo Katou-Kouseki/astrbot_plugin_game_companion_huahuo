@@ -113,6 +113,15 @@ class TurtleSoupGame:
     last_progress_at: float = field(default_factory=time.time)
     # 同一道题里已经因「连续接近」送过的提示数，避免每次都送
     auto_hints_sent: int = 0
+    # 玩家出题人座位号（0 = 花火出题）。出题人不参与提问与回合轮转，只负责裁决：
+    # 其他玩家和花火一起猜，他按「是/否/无关/部分正确」回答，并对推理判对错。
+    host_number: int = 0
+    # 等出题人裁决的一条提问/推理（同一时间只允许一条）
+    # {"kind": "question"|"answer", "text": str, "asker_number": int,
+    #  "asker_name": str, "for_bot": bool, "at": float}
+    pending_judge: dict[str, object] | None = None
+    # 猜中人：座位号；0 表示花火猜中（配合 bot_solved）
+    solver_number: int = 0
 
     def __post_init__(self) -> None:
         if self.mode == "player_host" and self.phase == "preparing":
@@ -132,6 +141,11 @@ class TurtleSoupGame:
             return ""
         if self.mode == "player_host":
             return "bot"
+        if self.host_number:
+            # 玩家出题：谁猜中算谁赢（花火猜中时 bot_solved 为真、solved 保持假）
+            if self.bot_solved:
+                return "bot"
+            return "human" if self.solved else "bot"
         return "human" if self.solved else "bot"
 
     @property
@@ -239,6 +253,36 @@ class TurtleSoupGame:
             self.end_reason = "solved"
             self.phase = "finished"
         return newly_discovered
+
+    def set_pending_judge(
+        self,
+        kind: Literal["question", "answer"],
+        text: str,
+        *,
+        asker_number: int = 0,
+        asker_name: str = "",
+        for_bot: bool = False,
+    ) -> dict[str, object]:
+        """把一条提问/推理挂到出题人面前，等他裁决（同一时间只允许一条）。"""
+        if self.phase != "ready":
+            raise ValueError("当前没有正在进行的海龟汤")
+        if self.pending_judge is not None:
+            raise ValueError("出题人还没回答上一个问题")
+        self.pending_judge = {
+            "kind": kind,
+            "text": str(text)[:600],
+            "asker_number": int(asker_number or 0),
+            "asker_name": str(asker_name or "")[:40],
+            "for_bot": bool(for_bot),
+            "at": time.time(),
+        }
+        self.last_progress_at = time.time()
+        return dict(self.pending_judge)
+
+    def clear_pending_judge(self) -> dict[str, object] | None:
+        pending = self.pending_judge
+        self.pending_judge = None
+        return dict(pending) if pending else None
 
     def request_reveal(self, uid: str) -> dict[str, object]:
         """发起「揭晓汤底」：多人房需要过半同意，单人房直接生效。"""
@@ -447,6 +491,10 @@ class TurtleSoupGame:
             },
             "coverage_last": self.coverage_history[-1] if self.coverage_history else 0.0,
             "missing_hint": self.last_missing,
+            # 玩家出题人（0 = 花火出题）：前端据此显示「我在出题」与裁决按钮
+            "host_number": self.host_number,
+            "pending_judge": dict(self.pending_judge) if self.pending_judge else None,
+            "solver_number": self.solver_number,
         }
 
 

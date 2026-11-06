@@ -372,7 +372,10 @@ def test_soup_poster_data_keeps_strong_questions_only(tmp_path: Path) -> None:
     data = plugin._soup_poster_data(plugin._soup_sample_room(solved=True))
 
     assert data["title"] == "每天两副碗筷"
-    assert data["players"] == "张三 · 李四 · 王五"
+    assert data["players_text"] == "张三 · 李四 · 王五"
+    assert [p["name"] for p in data["players"]] == ["张三", "李四", "王五"]
+    assert [p["initial"] for p in data["players"]] == ["张", "李", "王"]
+    assert all(p["avatar"] == "" for p in data["players"]), "没绑 QQ 时走首字圆牌"
     assert data["stats"].startswith("提问 5 次")
     assert len(data["questions"]) == 4
     assert any("意外" in q for q in data["questions"])
@@ -444,3 +447,17 @@ def test_soup_poster_test_commands_are_registered() -> None:
     assert '@filter.command("海龟汤战报"' in source
     assert '@filter.command("海龟汤海报"' in source
     assert "_SOUP_POSTER_TMPL" in source
+
+
+def test_soup_poster_embeds_avatar_and_falls_back_on_broken_image(tmp_path: Path) -> None:
+    """有头像就内联成 data URI；解码失败只让这张变回首字圆牌，不能整张海报挂掉。"""
+    plugin = sample_plugin(tmp_path)
+    room = plugin._soup_sample_room(solved=True)
+    avatars = {1: b"\xff\xd8\xff\xd9", 2: b"not-an-image"}
+    data = plugin._soup_poster_data(room, avatars)
+
+    assert data["players"][0]["avatar"].startswith("data:image/jpeg;base64,")
+    assert data["players"][2]["avatar"] == ""
+
+    raw = base64.b64decode(plugin._soup_poster_pillow(room, avatars))
+    assert raw.startswith(b"\x89PNG\r\n\x1a\n"), "坏图应回退首字圆牌，而不是抛错"

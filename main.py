@@ -841,6 +841,45 @@ def _pillow_draw_text(
         )
         x0 += d.textlength(seg, font=seg_font or f)
 
+
+def _pillow_draw_avatar(
+    img: Any,
+    d: Any,
+    raw: bytes,
+    initial: str,
+    color: str,
+    cx: float,
+    cy: float,
+    dia: int,
+    font: Any,
+    efont: Any = None,
+) -> None:
+    """在 (cx, cy) 画一个直径 dia 的圆形头像；没有 QQ 头像时画首字圆牌。
+
+    Pillow 的 paste 需要原图尺寸与蒙版一致，先 resize 再贴；解码失败
+    按「没有头像」处理，不能让一张坏图毁掉整张海报。
+    """
+    x0 = int(cx - dia / 2)
+    y0 = int(cy - dia / 2)
+    if raw:
+        try:
+            from io import BytesIO
+
+            from PIL import Image, ImageDraw
+
+            avatar = Image.open(BytesIO(raw)).convert("RGB").resize((dia, dia))
+            mask = Image.new("L", (dia, dia), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, dia, dia), fill=255)
+            img.paste(avatar, (x0, y0), mask)
+            return
+        except Exception:
+            pass
+    rgb = tuple(int(color.lstrip("#")[index : index + 2], 16) for index in (0, 2, 4))
+    d.ellipse([x0, y0, x0 + dia, y0 + dia], fill=rgb + (255,))
+    _pillow_draw_text(
+        d, cx, cy, initial, font, (255, 245, 230, 255), anchor="mm", efont=efont
+    )
+
 # 服务端「战况通知」海报的 HTML/Jinja2 模板（AstrBot t2i 渲染，样式与前端战况大字报一致）。
 # 由 t2i 服务端做 Jinja2 渲染，支持循环/条件；浏览器渲染天然支持 emoji/渐变/描边，效果优于 Pillow。
 _UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
@@ -974,7 +1013,6 @@ _SOUP_POSTER_TMPL = """<!DOCTYPE html>
     margin-top: 38px; font-size: 40px; font-weight: 900; line-height: 1.22; color: #fff;
     position: relative; overflow-wrap: anywhere; word-break: break-all;
   }
-  .players { margin-top: 18px; font-size: 16px; color: #c0a887; position: relative; }
   .surface {
     margin-top: 18px; font-size: 21px; line-height: 1.55; color: #f0e4d2;
     position: relative; overflow-wrap: anywhere; word-break: break-all;
@@ -990,6 +1028,27 @@ _SOUP_POSTER_TMPL = """<!DOCTYPE html>
     overflow-wrap: anywhere; word-break: break-all;
   }
   .card .qa div + div { margin-top: 4px; }
+  .pcard {
+    margin-top: 18px; padding: 14px 18px 16px; border-radius: 12px; position: relative;
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,209,102,.22);
+  }
+  .pcard .ptitle { font-size: 15px; color: #e5c99a; }
+  .plist { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px 14px; justify-content: center; }
+  .pitem {
+    width: 84px; display: flex; flex-direction: column; align-items: center;
+  }
+  .pav {
+    width: 54px; height: 54px; border-radius: 50%; object-fit: cover;
+    display: block; background: rgba(255,255,255,.08);
+  }
+  .pinit {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px; font-weight: 800; color: #fff5e6;
+  }
+  .pname {
+    margin-top: 6px; max-width: 84px; font-size: 13px; color: #dccdb6;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .result { margin-top: 18px; padding: 13px 18px; border-radius: 12px; position: relative; }
   .result.solved { background: rgba(255,209,102,.16); }
   .result.failed { background: rgba(255,255,255,.06); }
@@ -1005,13 +1064,25 @@ _SOUP_POSTER_TMPL = """<!DOCTYPE html>
 <div class="poster">
   <div class="head"><span class="t">🐢 海龟汤 · 单局战报</span><span class="r">{{ date }}</span></div>
   <div class="title">{{ title }}</div>
-  {% if players %}<div class="players">👥 {{ players }}</div>{% endif %}
   {% if surface %}<div class="surface">{{ surface }}</div>{% endif %}
   <div class="stats">{{ stats }}</div>
   {% if questions %}
   <div class="card">
     <div class="ct">他们问过</div>
     <div class="qa">{% for q in questions %}<div>{{ q }}</div>{% endfor %}</div>
+  </div>
+  {% endif %}
+  {% if players %}
+  <div class="pcard">
+    <div class="ptitle">本局玩家</div>
+    <div class="plist">
+      {% for p in players %}
+      <div class="pitem">
+        {% if p.avatar %}<img class="pav" src="{{ p.avatar }}" alt="">{% else %}<span class="pav pinit" style="background:{{ p.color }}">{{ p.initial }}</span>{% endif %}
+        <span class="pname">{{ p.name }}</span>
+      </div>
+      {% endfor %}
+    </div>
   </div>
   {% endif %}
   <div class="result {{ 'solved' if solved else 'failed' }}">
@@ -3358,6 +3429,15 @@ class GameCompanionPlugin(Star):
         self, event_name: str, room: GameRoom, payload: dict[str, Any]
     ) -> None:
         game_label = self._game_label(room.game_type)
+        if event_name == "soup_host_judged":
+            game = room.game
+            if (
+                isinstance(game, TurtleSoupGame)
+                and game.host_number
+                and not game.finished
+            ):
+                self._spawn(self._soup_bot_turn(room, game))
+            return
         if event_name == "soup_generation_requested":
             if isinstance(room.game, TurtleSoupGame):
                 self._spawn(self._prepare_turtle_soup(room, room.game))
@@ -3697,11 +3777,15 @@ class GameCompanionPlugin(Star):
                 "闲家先决定要牌或停牌，全部完成后庄家才翻开暗牌并按规则补牌。"
             )
         elif isinstance(game, TurtleSoupGame):
-            facts = (
-                "新题已经准备完成，由 Bot 出题、玩家提问。"
-                if game.mode == "bot_host"
-                else "当前由玩家提供公开线索，Bot 负责提问和猜测。"
-            )
+            if game.host_number:
+                facts = (
+                    f"本局由 {game.host_number} 号玩家出题并负责回答，"
+                    "其他玩家和花火一起提问、一起猜。"
+                )
+            elif game.mode == "bot_host":
+                facts = "新题已经准备完成，由 Bot 出题、玩家提问。"
+            else:
+                facts = "当前由玩家提供公开线索，Bot 负责提问和猜测。"
         else:
             facts = f"新的一局{cls._game_label(room.game_type)}已经开始。"
         return (
@@ -3716,6 +3800,12 @@ class GameCompanionPlugin(Star):
     ) -> str:
         game = room.game
         if isinstance(game, TurtleSoupGame):
+            if game.host_number:
+                if game.bot_solved:
+                    return "花火猜中了玩家的汤底"
+                if game.solved:
+                    return "有玩家猜中了汤底"
+                return "出题人揭晓了汤底"
             if game.mode == "player_host":
                 return "Bot 成功猜中玩家的汤底" if game.bot_solved else "玩家结束了出题"
             return "玩家成功解开汤底" if game.solved else "玩家放弃，汤底已揭晓"
@@ -4730,6 +4820,79 @@ class GameCompanionPlugin(Star):
                 last_error or "模型不可用",
             )
 
+    async def _soup_bot_turn(self, room: GameRoom, game: TurtleSoupGame) -> None:
+        """玩家出题人模式：花火作为「一起猜的人」，隔几轮问一句、偶尔提交推理。
+
+        节奏按公开提问数算，简单可预期：人类每问 2 句，花火插一句；
+        花火问过 2 句、人类问满 5 句之后，改为提交一次完整推理。
+        花火不知道汤底——它和玩家一样只能看汤面与已公开问答。
+        """
+        try:
+            if (
+                not game.host_number
+                or game.finished
+                or game.pending_judge
+                or game.puzzle is None
+                or room.status != "active"
+            ):
+                return
+            questions = [entry for entry in game.entries if entry.kind == "question"]
+            human_asked = sum(1 for entry in questions if entry.player_number)
+            bot_asked = sum(1 for entry in questions if not entry.player_number)
+            if human_asked < 2 or human_asked - 2 * bot_asked < 2:
+                return
+            guess_due = bot_asked >= 2 and human_asked >= 5
+            history = "\n".join(
+                f"- {'花火' if not entry.player_number else f'{entry.player_number} 号'}"
+                f" 问：{entry.prompt} → {entry.response}"
+                for entry in questions[-10:]
+            )
+            task = (
+                "现在请你提交一次完整推理（你并不知道汤底，必须按已公开的信息推断）。\n"
+                '输出 JSON：{"action":"guess","answer":"……"}，answer 不超过 120 字。'
+                if guess_due
+                else "现在轮到你提问：提出一个能推进真相的是非问题，不要重复已问过的。\n"
+                '输出 JSON：{"action":"question","text":"……"}，问题不超过 60 字。'
+            )
+            prompt = (
+                "你在和一群玩家玩海龟汤，你是参与者「花火」，不是主持人。\n"
+                f"汤面：{game.puzzle.surface}\n"
+                f"已经问过的内容：\n{history or '（还没有）'}\n\n"
+                + task
+                + "\n只输出 JSON，不要解释。"
+            )
+            raw = await self._call_room_model(
+                room,
+                system_prompt="你是海龟汤玩家「花火」，只输出 JSON。",
+                prompt=prompt,
+                timeout=20,
+            )
+            data = extract_json_object(raw)
+            if not isinstance(data, dict):
+                return
+            action = str(data.get("action") or "").strip().lower()
+            if action == "guess":
+                answer = str(data.get("answer") or "").strip()
+                if not answer:
+                    return
+                await self.manager.begin_soup_host_judgement(
+                    room, answer, kind="answer", for_bot=True
+                )
+                return
+            question = str(data.get("text") or "").strip()
+            if not question:
+                return
+            if any(
+                question in entry.prompt or entry.prompt in question
+                for entry in questions
+            ):
+                return
+            await self.manager.begin_soup_host_judgement(
+                room, question, kind="question", for_bot=True
+            )
+        except Exception as exc:
+            logger.info("[GameCompanion] 花火参与玩家出题的回合失败: %s", exc)
+
     async def submit_turtle_soup_question(
         self,
         room: GameRoom,
@@ -4739,6 +4902,27 @@ class GameCompanionPlugin(Star):
         visitor_token: str = "",
         actor_qq: str = "",
     ) -> dict[str, Any]:
+        # 玩家出题人：不经过 LLM，直接把问题挂到他面前等裁决
+        host_game = (
+            self.manager._turtle_soup_game(room)
+            if room.game_type == "turtle_soup"
+            else None
+        )
+        if host_game is not None and host_game.host_number:
+            await self.manager.begin_soup_host_judgement(
+                room,
+                text,
+                kind="question",
+                source=source,
+                visitor_token=visitor_token,
+                actor_qq=actor_qq,
+            )
+            return {
+                "action": "awaiting_host",
+                "verdict": None,
+                "reply": "问题已提交，等出题人回答。",
+                "question_count": host_game.question_count,
+            }
         game, question = await self.manager.begin_turtle_soup_interaction(
             room,
             text,
@@ -4833,6 +5017,27 @@ class GameCompanionPlugin(Star):
         visitor_token: str = "",
         actor_qq: str = "",
     ) -> dict[str, Any]:
+        host_game = (
+            self.manager._turtle_soup_game(room)
+            if room.game_type == "turtle_soup"
+            else None
+        )
+        if host_game is not None and host_game.host_number:
+            await self.manager.begin_soup_host_judgement(
+                room,
+                text,
+                kind="answer",
+                source=source,
+                visitor_token=visitor_token,
+                actor_qq=actor_qq,
+                limit=800,
+            )
+            return {
+                "action": "awaiting_host",
+                "solved": False,
+                "reply": "推理已提交，等出题人判断。",
+                "answer_attempts": host_game.answer_attempts,
+            }
         game, answer = await self.manager.begin_turtle_soup_interaction(
             room,
             text,
@@ -6009,7 +6214,9 @@ class GameCompanionPlugin(Star):
                 continue
             prompt = prompt if len(prompt) <= 60 else prompt[:58] + "…"
             lines.append(f"💬 「{prompt}」→ {verdict or '已答'}")
-        if solved:
+        if bool(payload.get("bot_solved")):
+            lines.append("🤖 花火和玩家一起猜，最后被花火猜中了——汤底先不告诉你。")
+        elif solved:
             lines.append("🏆 这道题被解开了——但汤底是什么，先不告诉你。")
         elif end_reason == "timeout":
             lines.append("🌫 这题问了很久也没人解开，汤底已经悄悄揭晓。")
@@ -6043,11 +6250,29 @@ class GameCompanionPlugin(Star):
             f"玩家主要问过：{asked or '（还没来得及提问）'}"
         )
 
-    def _soup_poster_data(self, room: GameRoom) -> dict[str, Any]:
+    # 首字占位头像的底色（没有 QQ 头像时用）：按名字+座位号稳定取色
+    _SOUP_AVATAR_COLORS = (
+        "#8c5a3c", "#a8574b", "#6b7f4e", "#4f6f8c", "#7a5c8c", "#8c7a3c",
+    )
+
+    @classmethod
+    def _soup_avatar_color(cls, name: str, number: int) -> str:
+        seed = f"{name}:{number}"
+        digest = 0
+        for char in seed:
+            digest = (digest * 31 + ord(char)) & 0xFFFFFFFF
+        return cls._SOUP_AVATAR_COLORS[digest % len(cls._SOUP_AVATAR_COLORS)]
+
+    def _soup_poster_data(
+        self, room: GameRoom, avatars: dict[int, bytes] | None = None
+    ) -> dict[str, Any]:
         """提取海龟汤战报海报所需数据（t2i 模板与 Pillow 兜底共用）。
 
         与 `_soup_announce_text` 同一套取舍：只给汤面、提问摘录与结果，**不含汤底**，
         也不复述玩家最后猜中的原话——海报会被转到别的群里，剧透就废题。
+
+        avatars 是「座位号 → 头像字节」的预下载结果；没有头像（未绑定 QQ / 拉取失败）
+        时前端口径会回退成「首字圆牌」，不会出现破图。
         """
         payload = self._soup_result_payload(room) or {}
         questions = int(payload.get("question_count") or 0)
@@ -6070,16 +6295,42 @@ class GameCompanionPlugin(Star):
             qa.append(f"「{prompt}」→ {answer[:40]}")
         solved = bool(payload.get("solved"))
         end_reason = str(payload.get("end_reason") or "")
-        if solved:
+        if bool(payload.get("bot_solved")):
+            result_text = "🤖 花火猜中了"
+        elif solved:
             result_text = "🏆 汤底被解开了"
         elif end_reason == "timeout":
             result_text = "🌫 没人解开，超时揭晓"
         else:
             result_text = "🌫 这道题没人解开"
+        avatar_bytes = avatars or {}
+        players: list[dict[str, Any]] = []
+        for entry in payload.get("players") or []:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            number = int(entry.get("number") or 0)
+            raw = avatar_bytes.get(number) or b""
+            players.append(
+                {
+                    "number": number,
+                    "name": name,
+                    "initial": name[:1] or "？",
+                    "color": self._soup_avatar_color(name, number),
+                    "avatar": (
+                        "data:image/jpeg;base64," + base64.b64encode(raw).decode("ascii")
+                        if raw
+                        else ""
+                    ),
+                }
+            )
         return {
             "date": time.strftime("%Y-%m-%d"),
             "title": str(payload.get("title") or "海龟汤"),
-            "players": self._soup_player_line(payload, limit=8),
+            "players": players,
+            "players_text": self._soup_player_line(payload, limit=8),
             "surface": str(payload.get("surface") or "").strip(),
             "stats": stats,
             "questions": qa,
@@ -6088,6 +6339,59 @@ class GameCompanionPlugin(Star):
             "result_sub": "汤底？先卖个关子。",
         }
 
+    async def _soup_avatar_bytes(self, url: str) -> bytes:
+        """拉取一张 QQ 头像并缓存（t2i 要内联 data URI，Pillow 要字节流）。
+
+        头像拉不到（网络/隐私设置/未绑定 QQ）时返回空字节，海报回退成首字圆牌。
+        """
+        if not url:
+            return b""
+        cache = getattr(self, "_avatar_bytes_cache", None)
+        if cache is None:
+            cache = {}
+            self._avatar_bytes_cache = cache
+        now = time.time()
+        hit = cache.get(url)
+        if hit and now - hit[0] < 6 * 3600:
+            return hit[1]
+        try:
+            import aiohttp
+
+            timeout = aiohttp.ClientTimeout(total=4)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return b""
+                    raw = await resp.read()
+        except Exception as exc:
+            logger.debug("[GameCompanion] 战报头像拉取失败: %s", exc)
+            return b""
+        if not raw or len(raw) > 512 * 1024:
+            return b""
+        cache[url] = (now, raw)
+        return raw
+
+    async def _soup_poster_avatars(self, payload: dict[str, Any]) -> dict[int, bytes]:
+        """并发预取本局玩家头像（最多 8 张，单张 4 秒超时）。"""
+        targets: list[tuple[int, str]] = []
+        for entry in payload.get("players") or []:
+            if not isinstance(entry, dict):
+                continue
+            url = str(entry.get("avatar_url") or "")
+            if url:
+                targets.append((int(entry.get("number") or 0), url))
+        if not targets:
+            return {}
+        results = await asyncio.gather(
+            *[self._soup_avatar_bytes(url) for _number, url in targets],
+            return_exceptions=True,
+        )
+        avatars: dict[int, bytes] = {}
+        for (number, _url), raw in zip(targets, results):
+            if isinstance(raw, bytes) and raw:
+                avatars[number] = raw
+        return avatars
+
     async def _soup_announce_poster(self, room: GameRoom) -> str:
         """生成「海龟汤战报」海报，返回 base64 PNG。
 
@@ -6095,18 +6399,23 @@ class GameCompanionPlugin(Star):
         由调用方回退纯文字。注意：前端「分享战报」走的是浏览器 canvas，与本函数
         同款视觉但各自独立，改版时两边要一起看。
         """
+        payload = self._soup_result_payload(room) or {}
+        avatars = await self._soup_poster_avatars(payload)
+        data = self._soup_poster_data(room, avatars)
         try:
-            return await self._soup_poster_t2i(room)
+            return await self._soup_poster_t2i(room, data)
         except Exception as exc:
             logger.warning("[GameCompanion] t2i 渲染海龟汤战报海报失败，回退 Pillow: %s", exc)
-        return await asyncio.to_thread(self._soup_poster_pillow, room)
+        return await asyncio.to_thread(self._soup_poster_pillow, room, avatars)
 
-    async def _soup_poster_t2i(self, room: GameRoom) -> str:
+    async def _soup_poster_t2i(
+        self, room: GameRoom, data: dict[str, Any] | None = None
+    ) -> str:
         """用 AstrBot 的 t2i（HTML 渲染）生成海龟汤战报海报，返回 base64 PNG。"""
         render = getattr(self, "html_render", None)
         if not callable(render):
             raise RuntimeError("当前 AstrBot 未提供 html_render（t2i）能力")
-        data = self._soup_poster_data(room)
+        data = data or self._soup_poster_data(room)
         options = {
             "type": "png",
             "full_page": True,
@@ -6121,13 +6430,15 @@ class GameCompanionPlugin(Star):
             raise RuntimeError("t2i 渲染返回空结果")
         return await self._download_image_base64(url)
 
-    def _soup_poster_pillow(self, room: GameRoom) -> str:
+    def _soup_poster_pillow(
+        self, room: GameRoom, avatars: dict[int, bytes] | None = None
+    ) -> str:
         """Pillow 手绘「海龟汤战报」海报（t2i 不可用时的兜底），返回 base64 PNG。"""
         from PIL import Image, ImageDraw  # 可选依赖，缺失时回退纯文字
 
         import io
 
-        data = self._soup_poster_data(room)
+        data = self._soup_poster_data(room, avatars)
         S = 1.5
         W = int(720 * S)
         pad = int(46 * S)
@@ -6137,27 +6448,23 @@ class GameCompanionPlugin(Star):
         f_surface = _pillow_font(False, int(21 * S))
         f_stats = _pillow_font(False, int(16 * S))
         f_qa = _pillow_font(False, int(17 * S))
-        f_players = _pillow_font(False, int(16 * S))
         f_small = _pillow_font(False, int(13 * S))
+        f_ptitle = _pillow_font(False, int(15 * S))
         ef = _pillow_emoji_font(int(22 * S))
         title_lines = _pillow_wrap(probe, data["title"], text_w, f_title, 2, ef)
-        players_text = str(data.get("players") or "").strip()
-        players_lines = (
-            _pillow_wrap(probe, f"👥 {players_text}", text_w, f_players, 1, ef)
-            if players_text
-            else []
-        )
         surface_lines = _pillow_wrap(probe, data["surface"], text_w, f_surface, 8, ef)
+        players = list(data.get("players") or [])
         qa_lines: list[str] = []
         for line in data["questions"]:
             qa_lines.extend(_pillow_wrap(probe, line, text_w - int(28 * S), f_qa, 2, ef))
+        avatar_dia = int(54 * S)
+        avatar_row_h = int(54 * S) + int(30 * S)  # 圆头像 + 昵称
+        players_h = (int(26 * S) + avatar_row_h + int(16 * S)) if players else 0
         # 先用宽松的高度建画布，画完再裁到内容底部（省得手算每一段间距）
-        est = 126 + len(title_lines) * 52
-        if players_lines:
-            est += len(players_lines) * 26 + 8
-        est += 16 + len(surface_lines) * 32 + 34
+        est = 126 + len(title_lines) * 52 + 16 + len(surface_lines) * 32 + 34
         if qa_lines:
             est += 30 + len(qa_lines) * 26 + 40
+        est += (players_h / S if players_h else 0) + 16
         H = int((est + 86 + 110) * S)
         img = Image.new("RGBA", (W, H), (20, 14, 9, 255))
         d = ImageDraw.Draw(img, "RGBA")
@@ -6186,13 +6493,6 @@ class GameCompanionPlugin(Star):
         for line in title_lines:
             _pillow_draw_text(d, pad, y, line, f_title, (255, 255, 255, 255), efont=ef)
             y += int(52 * S)
-        if players_lines:
-            y += int(8 * S)
-            for line in players_lines:
-                _pillow_draw_text(
-                    d, pad, y, line, f_players, (192, 168, 135, 255), efont=ef,
-                )
-                y += int(26 * S)
         y += int(16 * S)
         for line in surface_lines:
             _pillow_draw_text(d, pad, y, line, f_surface, (240, 228, 210, 255), efont=ef)
@@ -6220,6 +6520,54 @@ class GameCompanionPlugin(Star):
                     d, pad + int(14 * S), qy, line, f_qa, (220, 205, 182, 255), efont=ef,
                 )
                 qy += int(26 * S)
+            y = card_top + card_h + int(18 * S)
+        # 玩家板块（结果条上方独立一张卡）：圆头像 + 昵称
+        if players:
+            card_top = y - int(4 * S)
+            card_h = int((26 + 54 + 30 + 16) * S)
+            d.rounded_rectangle(
+                [pad, card_top, W - pad, card_top + card_h],
+                radius=int(12 * S),
+                fill=_pillow_blend(base_at(card_top), (255, 255, 255), 13),
+                outline=_pillow_blend(base_at(card_top), (255, 209, 102), 56),
+                width=max(1, int(1 * S)),
+            )
+            _pillow_draw_text(
+                d, pad + int(14 * S), card_top + int(24 * S), "本局玩家",
+                f_ptitle, (229, 201, 154, 255), efont=ef,
+            )
+            count = len(players)
+            gap = int(10 * S)
+            cell_w = min(
+                int(96 * S),
+                (text_w - int(28 * S) - gap * max(0, count - 1)) // max(1, count),
+            )
+            # 人数少时整行居中，避免头像挤在左边、右侧留一大片空
+            total_w = count * cell_w + gap * max(0, count - 1)
+            start_x = (W - total_w) // 2 + cell_w // 2
+            cy = card_top + int(30 * S) + avatar_dia // 2
+            f_init = _pillow_font(True, int(24 * S))
+            for index, player in enumerate(players):
+                cx = start_x + index * (cell_w + gap)
+                _pillow_draw_avatar(
+                    img,
+                    d,
+                    (avatars or {}).get(int(player.get("number") or 0)) or b"",
+                    str(player.get("initial") or "？"),
+                    str(player.get("color") or "#8c5a3c"),
+                    cx,
+                    cy,
+                    avatar_dia,
+                    f_init,
+                    ef,
+                )
+                name = _pillow_truncate(
+                    d, str(player.get("name") or ""), cell_w, f_small, ef
+                )
+                _pillow_draw_text(
+                    d, cx, cy + avatar_dia // 2 + int(20 * S), name,
+                    f_small, (220, 205, 182, 255), anchor="mm", efont=ef,
+                )
             y = card_top + card_h + int(18 * S)
         # 结果条
         solved = bool(data["solved"])

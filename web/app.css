@@ -3964,3 +3964,57 @@ body.dark .eval-bar-white {
   .side-banner-body strong { font-size: 14px; }
   .side-banner-body span { font-size: 11px; }
 }
+
+/* 海龟汤「玩家出题」：申请 / 填题 / 裁决 */
+.soup-host {
+  margin: 0 26px 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-alt);
+}
+.soup-host[hidden] { display: none; }
+.soup-host-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.soup-host-head strong { font-size: 14px; color: var(--text-strong); }
+.soup-host-hint { color: var(--muted); font-size: 12px; }
+.soup-host-actions { display: flex; gap: 8px; margin-top: 8px; }
+.soup-host-actions .secondary-action { min-height: 34px; font-size: 13px; }
+.soup-host-form { display: grid; gap: 8px; margin-top: 10px; }
+.soup-host-form[hidden] { display: none; }
+.soup-host-form input,
+.soup-host-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  resize: vertical;
+}
+.soup-host-form textarea { min-height: 62px; }
+.soup-judge {
+  margin: 0 26px 10px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning) 34%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning) 7%, var(--surface));
+}
+.soup-judge[hidden] { display: none; }
+.soup-judge-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.soup-judge-head strong { font-size: 14px; color: var(--warning); }
+.soup-judge-hint { color: var(--muted); font-size: 12px; }
+.soup-judge-text {
+  margin: 8px 0 0;
+  color: var(--text-strong);
+  font-size: 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.soup-judge-text:empty { display: none; }
+.soup-judge-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.soup-judge-actions:empty { margin-top: 0; }
+.soup-judge-actions button { min-height: 34px; font-size: 13px; }

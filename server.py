@@ -123,6 +123,8 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/soup/reverse", self._soup_reverse)
         app.router.add_post("/api/room/{access_token}/soup/correct", self._soup_correct)
         app.router.add_post("/api/room/{access_token}/soup/reveal", self._soup_reveal)
+        app.router.add_post("/api/room/{access_token}/soup/host", self._soup_host)
+        app.router.add_post("/api/room/{access_token}/soup/judge", self._soup_judge)
         app.router.add_post("/api/room/{access_token}/soup/announce", self._soup_announce)
         app.router.add_post("/api/room/{access_token}/soup/recap", self._soup_recap)
         app.router.add_post(
@@ -722,6 +724,62 @@ class GameRoomServer:
                 getattr(self.plugin, "turtle_soup_group_announce_enabled", False)
             ),
         })
+
+    async def _soup_host(self, request: web.Request) -> web.Response:
+        """玩家出题人：申请 / 撤回 / 提交题目（汤面 + 汤底）。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        action = str(payload.get("action") or "apply").strip().lower()
+        if action == "cancel":
+            await self.manager.cancel_soup_host(room, visitor_token)
+            return self._response(
+                {
+                    "host_number": 0,
+                    "cancelled": True,
+                    "room": self._room_payload(room, visitor_token),
+                }
+            )
+        if action == "submit":
+            hints = payload.get("hints") or []
+            if isinstance(hints, str):
+                hints = [line for line in hints.splitlines() if line.strip()]
+            if not isinstance(hints, list):
+                hints = []
+            game = await self.manager.start_soup_host_game(
+                room,
+                visitor_token,
+                title=str(payload.get("title") or ""),
+                surface=str(payload.get("surface") or ""),
+                solution=str(payload.get("solution") or ""),
+                hints=[str(item) for item in hints][:3],
+            )
+            self._log_room_op(
+                room, "room_announce", "玩家出题并开局", visitor_token
+            )
+            return self._response(
+                {
+                    "started": True,
+                    "host_number": game.host_number,
+                    "room": self._room_payload(room, visitor_token),
+                }
+            )
+        result = await self.manager.apply_soup_host(room, visitor_token)
+        return self._response({**result, "room": self._room_payload(room, visitor_token)})
+
+    async def _soup_judge(self, request: web.Request) -> web.Response:
+        """出题人裁决：问题给四选一，推理给「猜对了 / 不对」。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        result = await self.manager.judge_soup_pending(
+            room, visitor_token, verdict=str(payload.get("verdict") or "")
+        )
+        return self._response(
+            {**result, "room": self._room_payload(room, visitor_token)}
+        )
 
     async def _soup_recap(self, request: web.Request) -> web.Response:
         """结算卡「花火复盘」：按局（completed_games）缓存，同局只请求一次 LLM。"""

@@ -2961,6 +2961,7 @@
     solution.hidden = playerHosted || !puzzle?.solution;
     document.getElementById("soupSolutionText").textContent = sanitizeDisplayText(puzzle?.solution || "");
 
+    renderSoupHost(game);
     renderSoupResult(game);
   }
 
@@ -4433,9 +4434,12 @@
         title: String(snap.title || "海龟汤"),
         // 参与玩家（花火是主持人，服务端快照里已剔除 AI 座位）
         players: (Array.isArray(snap.players) ? snap.players : [])
-          .map((entry) => String(entry?.name || "").trim())
-          .filter(Boolean)
-          .join(" · "),
+          .map((entry) => ({
+            number: Number(entry?.number || 0),
+            name: String(entry?.name || "").trim(),
+            avatar_url: String(entry?.avatar_url || ""),
+          }))
+          .filter((entry) => entry.name),
         surface: String(snap.surface || ""),
         questions: Number(snap.question_count || 0),
         hints: Number(snap.hints_used || 0),
@@ -4532,6 +4536,169 @@
     }
   }
 
+  // 玩家出题：申请 / 填题 / 裁决（默认仍是花火出题，这里整块都是可选项）
+  function renderSoupHost(game) {
+    const panel = document.getElementById("soupHostPanel");
+    if (!panel) return;
+    const myNumber = Number(room?.player_number || 0);
+    const hostNumber = Number(game?.host_number || 0);
+    const applied = Number(room?.soup_host_number || 0);
+    const finished = Boolean(game?.finished);
+    const inPlay = hostNumber > 0 && !finished;
+    const canApply = room?.game_type === "turtle_soup"
+      && Boolean(room?.is_player)
+      && !hostNumber
+      && !applied
+      && ["waiting", "setup", "finished"].includes(String(room?.status || ""));
+    const isHost = inPlay && myNumber > 0 && myNumber === hostNumber;
+    const isApplicant = applied > 0 && applied === myNumber;
+
+    panel.hidden = !(canApply || applied > 0 || inPlay || isHost);
+    const hint = document.getElementById("soupHostHint");
+    const applyRow = document.getElementById("soupHostApplyRow");
+    const applyBtn = document.getElementById("soupHostApply");
+    const withdraw = document.getElementById("soupHostWithdraw");
+    const form = document.getElementById("soupHostForm");
+    if (applyBtn) applyBtn.hidden = !canApply;
+    if (applyRow) applyRow.hidden = !(canApply || isApplicant);
+    if (withdraw) withdraw.hidden = !isApplicant;
+    if (form) form.hidden = !isApplicant;
+    if (hint) {
+      if (isApplicant) {
+        hint.textContent = "填好汤面和汤底就能开局，其他人和花火一起猜。";
+      } else if (applied > 0) {
+        hint.textContent = `${applied} 号正在出题，等 TA 提交题目。`;
+      } else if (inPlay) {
+        hint.textContent = isHost
+          ? "你是本局出题人：回答其他人的问题、判断推理对不对。"
+          : `本局由 ${hostNumber} 号出题，花火也会一起猜。`;
+      } else {
+        hint.textContent = "默认花火出题；想自己出题就点下面。";
+      }
+    }
+
+    const judge = document.getElementById("soupJudgePanel");
+    if (!judge) return;
+    judge.hidden = !isHost;
+    if (!isHost) return;
+    const pending = game?.pending_judge || null;
+    const title = document.getElementById("soupJudgeTitle");
+    const judgeHint = document.getElementById("soupJudgeHint");
+    const text = document.getElementById("soupJudgeText");
+    const actions = document.getElementById("soupJudgeActions");
+    if (!pending) {
+      if (title) title.textContent = "等待提问";
+      if (judgeHint) judgeHint.textContent = "其他人提问后，这里会出现是 / 否按钮。";
+      if (text) text.textContent = "";
+      if (actions) { actions.replaceChildren(); delete actions.dataset.key; }
+      return;
+    }
+    const asker = pending.for_bot
+      ? "花火"
+      : `${pending.asker_name || "玩家"}（${pending.asker_number || "?"}号）`;
+    const isAnswer = pending.kind === "answer";
+    if (title) title.textContent = isAnswer ? "有人提交了推理" : "有人提问";
+    if (judgeHint) judgeHint.textContent = `${asker} 提出 · 由你裁决`;
+    if (text) text.textContent = String(pending.text || "");
+    const key = `${pending.kind}:${pending.text}`;
+    if (actions && actions.dataset.key !== key) {
+      actions.dataset.key = key;
+      actions.replaceChildren();
+      const options = isAnswer
+        ? [["correct", "✅ 猜对了"], ["wrong", "❌ 还不对"]]
+        : [["yes", "是"], ["no", "否"], ["irrelevant", "无关"], ["partial", "部分正确"]];
+      options.forEach(([verdict, label]) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = verdict === "correct" || verdict === "yes"
+          ? "primary-action"
+          : "secondary-action";
+        btn.textContent = label;
+        btn.addEventListener("click", () => soupJudge(verdict));
+        actions.appendChild(btn);
+      });
+    }
+  }
+
+  async function soupHostAction(action, extra = {}) {
+    const data = await request("POST", "soup/host", {
+      visitor_token: visitorToken,
+      action,
+      ...extra,
+    });
+    if (data?.room) setRoom(data.room);
+    render();
+    return data;
+  }
+
+  async function soupHostApply() {
+    const btn = document.getElementById("soupHostApply");
+    if (btn) btn.disabled = true;
+    try {
+      await soupHostAction("apply");
+      showToast("已申请出题，填好汤面就能开始");
+    } catch (error) {
+      showToast(error?.message || "申请出题失败");
+    } finally {
+      if (btn) btn.disabled = false;
+      render();
+    }
+  }
+
+  async function soupHostWithdraw() {
+    try {
+      await soupHostAction("cancel");
+      showToast("已撤回，改回花火出题");
+    } catch (error) {
+      showToast(error?.message || "撤回失败");
+    } finally {
+      render();
+    }
+  }
+
+  async function soupHostSubmit(event) {
+    event?.preventDefault?.();
+    const title = String(document.getElementById("soupHostTitle")?.value || "").trim();
+    const surface = String(document.getElementById("soupHostSurface")?.value || "").trim();
+    const solution = String(document.getElementById("soupHostSolution")?.value || "").trim();
+    const hintRaw = String(document.getElementById("soupHostHints")?.value || "");
+    if (surface.length < 8 || solution.length < 8) {
+      showToast("汤面和汤底都要写清楚（至少 8 个字）");
+      return;
+    }
+    const hints = hintRaw.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 3);
+    const btn = document.getElementById("soupHostSubmit");
+    if (btn) btn.disabled = true;
+    try {
+      await soupHostAction("submit", { title, surface, solution, hints });
+      ["soupHostTitle", "soupHostSurface", "soupHostSolution", "soupHostHints"].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.value = "";
+      });
+      showToast("题目已开局，等其他人来猜吧");
+    } catch (error) {
+      showToast(error?.message || "出题失败");
+    } finally {
+      if (btn) btn.disabled = false;
+      render();
+    }
+  }
+
+  async function soupJudge(verdict) {
+    try {
+      const data = await request("POST", "soup/judge", {
+        visitor_token: visitorToken,
+        verdict,
+      });
+      if (data?.room) setRoom(data.room);
+      showToast(data?.finished ? "本局结束" : "已记录你的裁决");
+    } catch (error) {
+      showToast(error?.message || "裁决失败");
+    } finally {
+      render();
+    }
+  }
+
   // 海龟汤战报 PNG：汤面 + 提问摘录 + 结果，刻意不画汤底（保留悬念）
   async function soupSharePosterUrl(result) {
     if (!result) return "";
@@ -4551,9 +4718,22 @@
     });
     const statsH = 54;
     const questionH = questionLines.length ? 44 + questionLines.length * 26 : 0;
-    const playersLine = String(result.players || "").trim();
-    const playersH = playersLine ? 26 : 0;
-    const H = 152 + 46 + playersH + surfaceLines.length * 32 + statsH + questionH + 150;
+    // 参与玩家：头像 + 昵称单独一块，放在结果条上方（花火是主持人，不在名单里）
+    const players = Array.isArray(result.players) ? result.players.slice(0, 8) : [];
+    const avatarMap = players.length
+      ? await loadPosterAvatars(
+          players
+            .filter((player) => player.avatar_url)
+            .map((player) => ({ number: player.number, url: player.avatar_url })),
+        )
+      : new Map();
+    const avatarDia = 52;
+    const perRow = Math.min(6, Math.max(1, players.length));
+    const playerRows = players.length ? Math.ceil(players.length / perRow) : 0;
+    const playersH = players.length
+      ? 30 + playerRows * (avatarDia + 22) + 8
+      : 0;
+    const H = 152 + 46 + surfaceLines.length * 32 + statsH + questionH + playersH + 150;
     const cv = document.createElement("canvas");
     cv.width = W * scale; cv.height = H * scale;
     const c = cv.getContext("2d");
@@ -4587,15 +4767,8 @@
     }
     c.fillStyle = "#ffffff";
     c.fillText(truncatePosterText(c, titleText, W - M * 2), M, 108);
-    // 参与玩家（花火是主持人，不在名单里）
-    let y = 194;
-    if (playersLine) {
-      c.textAlign = "left";
-      c.fillStyle = "#c0a887"; c.font = fontOf(false, 17);
-      c.fillText(`👥 ${truncatePosterText(c, playersLine, W - M * 2)}`, M, y);
-      y += playersH;
-    }
     // 汤面
+    let y = 194;
     c.fillStyle = "#f0e4d2"; c.font = fontOf(false, 21);
     surfaceLines.forEach((line) => { c.fillText(line, M, y); y += 32; });
     // 统计
@@ -4616,6 +4789,35 @@
       c.fillStyle = "#dccdb6"; c.font = fontOf(false, 17);
       questionLines.forEach((line) => { c.fillText(line, M + 14, y); y += 26; });
       y += 14;
+    }
+    // 玩家板块（圆形头像 + 昵称），排布在结果条上方
+    if (players.length) {
+      const cardTop = y - 8;
+      rr(M, cardTop, W - M * 2, playersH, 12);
+      c.fillStyle = "rgba(255,255,255,.05)"; c.fill();
+      c.strokeStyle = "rgba(255,209,102,.22)"; c.lineWidth = 1; c.stroke();
+      c.textAlign = "left";
+      c.fillStyle = "#e5c99a"; c.font = fontOf(false, 15);
+      c.fillText("本局玩家", M + 14, cardTop + 22);
+      const innerW = W - M * 2 - 28;
+      const cellW = Math.min(84, innerW / perRow);
+      const startX = M + 14 + (innerW - cellW * perRow) / 2 + cellW / 2;
+      players.forEach((player, index) => {
+        const cx = startX + (index % perRow) * cellW;
+        const cy = cardTop + 30 + avatarDia / 2 + Math.floor(index / perRow) * (avatarDia + 22);
+        drawSoupAvatar(
+          c, cx, cy, avatarDia, player, avatarMap.get(Number(player.number)),
+        );
+        c.textAlign = "center";
+        c.fillStyle = "#dccdb6"; c.font = fontOf(false, 13);
+        c.fillText(
+          truncatePosterText(c, String(player.name || ""), cellW - 6),
+          cx,
+          cy + avatarDia / 2 + 16,
+        );
+        c.textAlign = "left";
+      });
+      y = cardTop + playersH + 8;
     }
     // 结果条
     const solved = Boolean(result.solved);
@@ -6642,6 +6844,19 @@
   if (soupRevealButton) {
     soupRevealButton.addEventListener("click", soupReveal);
   }
+  const soupHostApplyBtn = document.getElementById("soupHostApply");
+  if (soupHostApplyBtn) soupHostApplyBtn.addEventListener("click", soupHostApply);
+  const soupHostWithdrawBtn = document.getElementById("soupHostWithdraw");
+  if (soupHostWithdrawBtn) soupHostWithdrawBtn.addEventListener("click", soupHostWithdraw);
+  const soupHostFormEl = document.getElementById("soupHostForm");
+  if (soupHostFormEl) soupHostFormEl.addEventListener("submit", soupHostSubmit);
+  const soupHostCancelFormBtn = document.getElementById("soupHostCancelForm");
+  if (soupHostCancelFormBtn) {
+    soupHostCancelFormBtn.addEventListener("click", () => {
+      const el = document.getElementById("soupHostForm");
+      if (el) el.hidden = true;
+    });
+  }
   // 海龟汤「花火复盘」：同局缓存（后端按 completed_games 记忆），点一下生成
   const soupResultRecapBtn = document.getElementById("soupResultRecapBtn");
   if (soupResultRecapBtn) {
@@ -7494,6 +7709,40 @@
 
   // 预载分享战报里的 QQ 头像：CORS 允许才返回可绘制图片，否则返回 null
   // （qlogo 未带 Access-Control-Allow-Origin 时会触发 onerror，从而避免污染 canvas）
+  // 海龟汤战报的圆形头像：有 QQ 头像就贴图，没有就用首字圆牌（配色与服务端一致）
+  const SOUP_AVATAR_COLORS = ["#8c5a3c", "#a8574b", "#6b7f4e", "#4f6f8c", "#7a5c8c", "#8c7a3c"];
+  function soupAvatarColor(name, number) {
+    const seed = `${name || ""}:${Number(number) || 0}`;
+    let hash = 0;
+    for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+    return SOUP_AVATAR_COLORS[hash % SOUP_AVATAR_COLORS.length];
+  }
+  function drawSoupAvatar(c, cx, cy, dia, player, img) {
+    const radius = dia / 2;
+    c.save();
+    c.beginPath();
+    c.arc(cx, cy, radius, 0, Math.PI * 2);
+    c.closePath();
+    c.clip();
+    if (img) {
+      c.drawImage(img, cx - radius, cy - radius, dia, dia);
+    } else {
+      c.fillStyle = soupAvatarColor(player?.name, player?.number);
+      c.fillRect(cx - radius, cy - radius, dia, dia);
+      c.textAlign = "center";
+      c.fillStyle = "#fff5e6";
+      c.font = `bold ${Math.round(dia * 0.42)}px 'PingFang SC','Microsoft YaHei',sans-serif`;
+      const initial = String(player?.name || "？").trim().charAt(0) || "？";
+      c.fillText(initial, cx, cy + dia * 0.16);
+    }
+    c.restore();
+    c.beginPath();
+    c.arc(cx, cy, radius - 0.5, 0, Math.PI * 2);
+    c.strokeStyle = "rgba(255,209,102,.35)";
+    c.lineWidth = 1;
+    c.stroke();
+  }
+
   function loadPosterAvatars(items, timeoutMs = 5000) {
     return Promise.all(
       (items || []).map(({ number, url }) => loadPosterImage(url, number, timeoutMs))

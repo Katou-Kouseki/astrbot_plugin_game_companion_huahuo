@@ -107,6 +107,36 @@
           </button>
         </div>
         <p id="soupTurn" class="soup-turn" aria-live="polite"></p>
+        <section id="soupHostPanel" class="soup-host" hidden>
+          <header class="soup-host-head">
+            <strong>玩家出题</strong>
+            <span id="soupHostHint" class="soup-host-hint"></span>
+          </header>
+          <div id="soupHostApplyRow" class="soup-host-actions">
+            <button id="soupHostApply" class="secondary-action" type="button">
+              <i data-lucide="pen-line"></i><span>我来出题</span>
+            </button>
+            <button id="soupHostWithdraw" class="secondary-action" type="button" hidden>撤回申请</button>
+          </div>
+          <form id="soupHostForm" class="soup-host-form" hidden>
+            <input id="soupHostTitle" type="text" maxlength="40" placeholder="标题（可留空，默认用你的昵称）">
+            <textarea id="soupHostSurface" rows="3" maxlength="800" placeholder="汤面：其他人看到的谜面，写清谁在哪发生了什么"></textarea>
+            <textarea id="soupHostSolution" rows="3" maxlength="1600" placeholder="汤底：只有你知道的真相，用来判分与揭晓"></textarea>
+            <textarea id="soupHostHints" rows="2" maxlength="240" placeholder="提示，每行一条（可选，最多 3 条）"></textarea>
+            <div class="soup-host-actions">
+              <button id="soupHostSubmit" class="primary-action" type="submit">开始这一局</button>
+              <button id="soupHostCancelForm" class="secondary-action" type="button">取消</button>
+            </div>
+          </form>
+        </section>
+        <section id="soupJudgePanel" class="soup-judge" hidden>
+          <header class="soup-judge-head">
+            <strong id="soupJudgeTitle">等你裁决</strong>
+            <span id="soupJudgeHint" class="soup-judge-hint"></span>
+          </header>
+          <p id="soupJudgeText" class="soup-judge-text"></p>
+          <div id="soupJudgeActions" class="soup-judge-actions"></div>
+        </section>
         <div id="soupHistory" class="soup-history" aria-live="polite"></div>
         <section id="soupResultPanel" class="soup-result" hidden>
           <header class="soup-result-head">
