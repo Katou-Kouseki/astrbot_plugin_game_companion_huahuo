@@ -280,6 +280,49 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .soup-entry.hint .response { border-color: #b48924; background: #faf4df; color: #66531e; }
 .soup-entry.pending .response { border-color: var(--border); background: var(--surface-alt); color: var(--muted); }
 .soup-empty { margin: auto; color: var(--muted); font-size: 13px; }
+.soup-hint-row { gap: 8px; }
+.soup-hint-row #soupRevealButton {
+  border-color: color-mix(in srgb, var(--warning) 32%, transparent);
+  color: var(--warning);
+}
+.soup-result {
+  margin: 0 26px 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: linear-gradient(160deg, #fbf7ef, #f6f2ea);
+}
+.soup-result[hidden] { display: none; }
+.soup-result-head { display: flex; align-items: center; gap: 12px; }
+.soup-result-badge {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 21px;
+  background: color-mix(in srgb, var(--gold) 22%, transparent);
+}
+.soup-result-head strong { display: block; font-size: 15px; color: var(--text); }
+.soup-result-summary { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+.soup-result-recap {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--gold) 10%, transparent);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+.soup-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.soup-result-actions .secondary-action { min-height: 34px; font-size: 13px; }
 .soup-solution {
   margin: 0 26px 18px;
   padding: 14px 16px;

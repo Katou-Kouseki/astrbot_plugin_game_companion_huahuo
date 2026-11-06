@@ -102,9 +102,31 @@
           <button id="soupHintButton" class="secondary-action" type="button" hidden>
             <i data-lucide="lightbulb"></i><span id="soupHintLabel">获取提示</span>
           </button>
+          <button id="soupRevealButton" class="secondary-action" type="button" hidden>
+            <i data-lucide="unlock"></i><span id="soupRevealLabel">揭晓汤底</span>
+          </button>
         </div>
         <p id="soupTurn" class="soup-turn" aria-live="polite"></p>
         <div id="soupHistory" class="soup-history" aria-live="polite"></div>
+        <section id="soupResultPanel" class="soup-result" hidden>
+          <header class="soup-result-head">
+            <span id="soupResultBadge" class="soup-result-badge">🏆</span>
+            <div>
+              <strong id="soupResultTitle">本局结束</strong>
+              <p id="soupResultSummary" class="soup-result-summary"></p>
+            </div>
+          </header>
+          <p id="soupResultRecap" class="soup-result-recap" hidden></p>
+          <div class="soup-result-actions">
+            <button id="soupResultRecapBtn" class="secondary-action" type="button">✨ 花火复盘</button>
+            <button id="soupResultShare" class="secondary-action" type="button">
+              分享战报 <i data-lucide="share-2"></i>
+            </button>
+            <button id="soupResultAnnounce" class="secondary-action" type="button" hidden>
+              📢 通知到群
+            </button>
+          </div>
+        </section>
         <section id="soupSolution" class="soup-solution" hidden>
           <span class="label">完整汤底</span>
           <p id="soupSolutionText"></p>

@@ -29,6 +29,7 @@ from .models import (
     _undercover_badges_for,
     _undercover_identity_key,
     _visitor_uid,
+    soup_reveal_required,
 )
 from .othello import BLACK as OTHELLO_BLACK
 from .othello import WHITE as OTHELLO_WHITE
@@ -46,6 +47,7 @@ from .turtle_soup import (
     TurtleSoupGame,
     clean_player_text,
 )
+from .turtle_soup_deck import redact_spoiler
 from .undercover import UndercoverGame, UCPlayer
 from .undercover_words import UndercoverWordStore
 from .xiangqi import BLACK as XIANGQI_BLACK
@@ -204,6 +206,7 @@ class RoomManager:
         turtle_soup_max_players: int = 6,
         turtle_soup_free_questioning: bool = False,
         turtle_soup_free_question_cooldown: int = 1,
+        turtle_soup_auto_reveal_seconds: int = 1800,
         multiplayer_turn_timeout: int = 60,
         duel_turn_timeout: int = 180,
         duel_offline_grace: int = 90,
@@ -251,6 +254,10 @@ class RoomManager:
         self.turtle_soup_max_players = max(0, int(turtle_soup_max_players))
         self.turtle_soup_free_questioning = bool(turtle_soup_free_questioning)
         self.turtle_soup_free_question_cooldown = max(0, int(turtle_soup_free_question_cooldown))
+        # 海龟汤超时兜底揭晓：0 表示不自动揭晓（只能由玩家投票结束）
+        self.turtle_soup_auto_reveal_seconds = max(
+            0, int(turtle_soup_auto_reveal_seconds)
+        )
         self.multiplayer_turn_timeout = max(0, int(multiplayer_turn_timeout))
         # 棋类对弈：每步倒计时（0 关闭）与掉线后等待重连的宽限秒数
         self.duel_turn_timeout = max(0, int(duel_turn_timeout))
@@ -2597,7 +2604,30 @@ class RoomManager:
                     self._advance_blackjack_turn(room)
                     blackjack_continues = True
             elif isinstance(room.game, TurtleSoupGame):
-                room.game.give_up()
+                # 海龟汤不按「投降」处理：单人房直接揭晓；多人房先表决（过半同意），
+                # 票数不够时只记一票，函数尾部的 _finish_game 会因为 game 未结束而返回。
+                soup_game = room.game
+                if soup_game.mode == "player_host":
+                    soup_game.give_up()
+                else:
+                    if soup_game.phase != "ready":
+                        raise ValueError("题目还没有准备好，暂时不能揭晓")
+                    uid = _visitor_uid(visitor_token) if visitor_token else ""
+                    if soup_game.reveal_requested_by:
+                        votes = int(
+                            soup_game.cast_reveal_vote(uid, True).get("votes") or 0
+                        )
+                    else:
+                        votes = int(soup_game.request_reveal(uid).get("votes") or 0)
+                    required = soup_reveal_required(room)
+                    if votes >= required:
+                        soup_game.reveal(reason="revealed", source="qq")
+                    else:
+                        room.add_message(
+                            "system",
+                            f"已发起揭晓汤底（{votes}/{required}），"
+                            f"还需要 {required - votes} 位玩家同意。",
+                        )
             elif isinstance(room.game, XiangqiGame):
                 # 两人对局：认输的是哪个座位，就把胜利判给对面
                 loser_side = ""
@@ -3129,6 +3159,9 @@ class RoomManager:
         solved: bool,
         source: Literal["web", "qq"],
         matched_facts: set[int],
+        reply: str = "",
+        coverage: float = 0.0,
+        missing: str = "",
     ) -> bool:
         async with room.lock:
             if room.game is not game or room.status != "active":
@@ -3139,6 +3172,9 @@ class RoomManager:
                 source=source,
                 matched_facts=matched_facts,
                 player_number=game.processing_player_number,
+                reply=reply,
+                coverage=coverage,
+                missing=missing,
             )
             room.touch()
             if not self._turtle_soup_free_mode(room):
@@ -3228,6 +3264,184 @@ class RoomManager:
             {"source": source, "bot_action": bot_action},
         )
         return True
+
+    def _soup_player_uid(
+        self,
+        room: GameRoom,
+        *,
+        source: str,
+        visitor_token: str,
+        actor_qq: str,
+    ) -> str:
+        """揭晓投票用的稳定玩家标识：网页取访客、QQ 取座位绑定的访客。"""
+        if source == "web" and visitor_token:
+            return _visitor_uid(self._visitor(room, visitor_token).token)
+        if source == "qq" and actor_qq:
+            if room.multiplayer.enabled:
+                seat = room.multiplayer.seat_for_qq(actor_qq)
+                if seat is not None:
+                    return _visitor_uid(seat.visitor_token)
+            return f"qq:{actor_qq}"
+        return ""
+
+    async def request_soup_reveal(
+        self,
+        room: GameRoom,
+        *,
+        source: Literal["web", "qq"],
+        visitor_token: str = "",
+        actor_qq: str = "",
+    ) -> dict[str, object]:
+        """发起「揭晓汤底」。
+
+        与「投降」的区别：海龟汤是多人在玩的，一个人不能替全队认输，
+        所以这里只是发起表决——单人房（或已过半）立刻揭晓，多人房等其他人同意。
+        """
+        revealed = False
+        async with room.lock:
+            game = self._turtle_soup_game(room)
+            self._require_turtle_soup_player(
+                room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
+            )
+            if room.status != "active":
+                raise ValueError("当前没有正在进行的海龟汤")
+            if game.phase != "ready":
+                raise ValueError("题目还没有准备好，暂时不能揭晓")
+            uid = self._soup_player_uid(
+                room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
+            )
+            result = game.request_reveal(uid)
+            required = soup_reveal_required(room)
+            votes = int(result.get("votes") or 0)
+            revealed = votes >= required
+            if revealed:
+                game.reveal(reason="revealed", source=source)
+            room.touch()
+        payload = {
+            "votes": votes,
+            "required": required,
+            "revealed": revealed,
+            "text": (
+                "本题已揭晓汤底。"
+                if revealed
+                else f"已发起揭晓，还需要 {required - votes} 位玩家同意。"
+            ),
+        }
+        if revealed:
+            await self._finish_game(room)
+            await self._emit("soup_revealed", room, {"reason": "revealed", "source": source})
+        else:
+            await self._emit("soup_reveal_requested", room, payload)
+        return payload
+
+    async def vote_soup_reveal(
+        self,
+        room: GameRoom,
+        *,
+        agree: bool,
+        source: Literal["web", "qq"],
+        visitor_token: str = "",
+        actor_qq: str = "",
+    ) -> dict[str, object]:
+        revealed = False
+        async with room.lock:
+            game = self._turtle_soup_game(room)
+            self._require_turtle_soup_player(
+                room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
+            )
+            if room.status != "active":
+                raise ValueError("当前没有正在进行的海龟汤")
+            uid = self._soup_player_uid(
+                room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
+            )
+            result = game.cast_reveal_vote(uid, agree)
+            required = soup_reveal_required(room)
+            votes = int(result.get("votes") or 0)
+            revealed = bool(agree) and votes >= required
+            if revealed:
+                game.reveal(reason="revealed", source=source)
+            room.touch()
+        payload = {
+            "votes": votes,
+            "required": required,
+            "revealed": revealed,
+            "text": (
+                "本题已揭晓汤底。"
+                if revealed
+                else f"已记录你的意见（{votes}/{required}）。"
+            ),
+        }
+        if revealed:
+            await self._finish_game(room)
+            await self._emit("soup_revealed", room, {"reason": "revealed", "source": source})
+        else:
+            await self._emit("soup_reveal_voted", room, payload)
+        return payload
+
+    async def force_reveal_soup(self, room: GameRoom, *, reason: str = "timeout") -> bool:
+        """超时兜底：没人解出也没人发起表决时，自动收题并揭晓汤底。
+
+        没有这一步，一题可以无限期挂着——房间永远显示「进行中」，玩家也不好意思
+        主动点揭晓。判定为「无人解开」，比分记花火守住。
+        """
+        async with room.lock:
+            if room.game_type != "turtle_soup" or not isinstance(
+                room.game, TurtleSoupGame
+            ):
+                return False
+            game = room.game
+            if game.phase != "ready" or room.status != "active":
+                return False
+            game.reveal(reason=reason, source="web")
+            room.touch()
+        await self._finish_game(room)
+        await self._emit("soup_revealed", room, {"reason": reason, "source": "system"})
+        return True
+
+    def _snapshot_soup_result(self, room: GameRoom) -> None:
+        """冻结海龟汤本局信息，供群通知 / 分享战报 / 复盘使用。
+
+        注意：快照里**刻意不含 solution**。群通知与海报是「拉人入坑」的物料，
+        剧透了后来的人就没得玩了；需要汤底的地方（结算卡）直接从游戏对象读。
+        """
+        game = room.game
+        if not isinstance(game, TurtleSoupGame) or game.puzzle is None:
+            room.last_soup_result = None
+            return
+        puzzle = game.puzzle
+        entries: list[dict[str, object]] = []
+        for entry in game.entries[-24:]:
+            if entry.kind not in {"question", "answer", "hint"}:
+                continue
+            # 提问会出现在群通知里：把贴着汤底的片段遮掉，避免「一句话剧透」
+            entries.append(
+                {
+                    "kind": entry.kind,
+                    "prompt": redact_spoiler(entry.prompt, puzzle)[:220],
+                    "response": entry.response[:80],
+                    "verdict": entry.verdict,
+                    "player_number": entry.player_number,
+                }
+            )
+        room.last_soup_result = {
+            "game_uid": str(getattr(game, "game_uid", "") or ""),
+            "completed_games": int(room.completed_games),
+            "game_type": "turtle_soup",
+            "mode": game.mode,
+            "title": puzzle.title,
+            "surface": puzzle.surface,
+            "theme": puzzle.theme,
+            "content_level": puzzle.content_level,
+            "question_count": int(game.question_count),
+            "answer_attempts": int(game.answer_attempts),
+            "hints_used": int(game.hints_used),
+            "key_fact_count": len(puzzle.key_facts),
+            "discovered_fact_count": len(game.discovered_facts),
+            "solved": bool(game.solved),
+            "gave_up": bool(game.gave_up),
+            "end_reason": str(game.end_reason or ("solved" if game.solved else "")),
+            "entries": entries,
+        }
 
     async def confirm_reverse_turtle_soup_guess(
         self,
@@ -3413,6 +3627,7 @@ class RoomManager:
                 room.recap_cache.clear()
             room.pending_board_announces = []
             room.last_board_result = None
+            room.last_soup_result = None
         await self._emit("room_destroyed", room, {"reason": room.close_reason})
         return room
 
@@ -4079,6 +4294,9 @@ class RoomManager:
                 room.game, BOARD_GAME_CLASSES
             ):
                 self._snapshot_board_result(room)
+            # 海龟汤终局快照：群通知 / 海报 / 复盘都读它（同样为了防「秒点再战」）
+            if isinstance(room.game, TurtleSoupGame):
+                self._snapshot_soup_result(room)
             room.touch()
         await self._emit("game_finished", room, {"result": result})
 
@@ -4628,6 +4846,7 @@ class RoomManager:
         need_start_undercover: None | tuple[GameRoom, str] = None
         need_undercover_timeout: GameRoom | None = None
         need_undercover_autopilot: GameRoom | None = None
+        need_soup_reveal: GameRoom | None = None
         async with room.lock:
             state = room.multiplayer
             if not state.enabled:
@@ -4735,33 +4954,50 @@ class RoomManager:
                     state.turn_deadline = 0.0  # 先清零，防止每个 housekeeping 周期重复触发
                     need_undercover_timeout = room
             else:
-                # 自由提问模式不强制轮次：关闭回合超时轮换，玩家可随时提问
-                free_soup = self._turtle_soup_free_mode(room)
-                turn_active = bool(
+                # 海龟汤超时兜底：长时间没有任何推进（提问/推理/提示）且还没解开，
+                # 自动收题并揭晓汤底。必须放在下面的 return 之前判断，否则永远轮不到。
+                # 正在判定（processing）时跳过，避免和这一条判定抢同一个状态。
+                soup_reveal_due = bool(
                     room.status == "active"
                     and isinstance(game, TurtleSoupGame)
                     and game.phase == "ready"
                     and not game.processing
-                    and state.seats
-                    and state.turn_timeout_seconds
-                    and not free_soup
+                    and self.turtle_soup_auto_reveal_seconds > 0
+                    and now
+                    - float(getattr(game, "last_progress_at", now) or now)
+                    >= self.turtle_soup_auto_reveal_seconds
                 )
-                if not turn_active:
+                if soup_reveal_due:
                     state.turn_deadline = 0.0
-                    return
-                if not state.turn_deadline:
-                    self._reset_turn_deadline(room, now=now)
-                    return
-                if now < state.turn_deadline:
-                    return
-                previous = room.visitors.get(state.current_token)
-                self._advance_multiplayer_turn(room, now=now)
-                current = room.visitors.get(state.current_token)
-                if previous and current and previous.token != current.token:
-                    room.add_message(
-                        "system",
-                        f"{self._visitor_label(previous)}回合超时，已轮到 {self._visitor_label(current)}。",
+                    need_soup_reveal = room
+                else:
+                    # 自由提问模式不强制轮次：关闭回合超时轮换，玩家可随时提问
+                    free_soup = self._turtle_soup_free_mode(room)
+                    turn_active = bool(
+                        room.status == "active"
+                        and isinstance(game, TurtleSoupGame)
+                        and game.phase == "ready"
+                        and not game.processing
+                        and state.seats
+                        and state.turn_timeout_seconds
+                        and not free_soup
                     )
+                    if not turn_active:
+                        state.turn_deadline = 0.0
+                        return
+                    if not state.turn_deadline:
+                        self._reset_turn_deadline(room, now=now)
+                        return
+                    if now < state.turn_deadline:
+                        return
+                    previous = room.visitors.get(state.current_token)
+                    self._advance_multiplayer_turn(room, now=now)
+                    current = room.visitors.get(state.current_token)
+                    if previous and current and previous.token != current.token:
+                        room.add_message(
+                            "system",
+                            f"{self._visitor_label(previous)}回合超时，已轮到 {self._visitor_label(current)}。",
+                        )
         if dealer_ready:
             self._spawn_blackjack_dealer_turn(room)
         if duel_finished:
@@ -4782,6 +5018,9 @@ class RoomManager:
                 need_undercover_autopilot,
                 {},
             )
+        if need_soup_reveal is not None:
+            # 这里已经出了 room.lock，可以安全地走「加锁 → 结束 → 播报」的完整流程
+            await self.force_reveal_soup(need_soup_reveal, reason="timeout")
 
     def _tick_duel_locked(
         self, room: GameRoom, now: float

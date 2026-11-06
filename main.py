@@ -28,7 +28,14 @@ from .draw_guess import DrawGuessGame
 from .gomoku import BLACK as GOMOKU_BLACK
 from .gomoku import WHITE as GOMOKU_WHITE
 from .gomoku import Difficulty, GomokuGame
-from .models import GameRoom, GameType, TurtleSoupMode, Visitor, _visitor_uid
+from .models import (
+    GameRoom,
+    GameType,
+    TurtleSoupMode,
+    Visitor,
+    _visitor_uid,
+    soup_reveal_required,
+)
 from .othello import BLACK as OTHELLO_BLACK
 from .othello import WHITE as OTHELLO_WHITE
 from .othello import OthelloGame
@@ -45,20 +52,22 @@ from .server import GameRoomServer
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
 from .tictactoe import X as TICTACTOE_X
+from .turtle_soup_deck import SoupDeck, fetch_online_puzzles
 from .trusted_identity import TrustedIdentityStore
 from .tunnel import QuickTunnel
 from .turtle_soup import (
     VERDICT_LABELS,
     TurtleSoupGame,
-    fallback_puzzle,
+    all_fallback_puzzles,
     normalize_content_level,
     puzzle_from_mapping,
 )
 from .turtle_soup_ai import (
     answer_judge_prompt,
+    coverage_reply,
     extract_json_object,
     generation_prompt,
-    parse_answer_judgment,
+    parse_answer_judgment_detail,
     parse_question_judgment,
     parse_reverse_turn,
     public_judge_history,
@@ -360,6 +369,17 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "maximum": 600,
                 "unit": "秒",
                 "hint": "过期申请会自动清理。",
+            },
+            {
+                "key": "auto_reveal_seconds",
+                "config_key": "turtle_soup.auto_reveal_seconds",
+                "label": "超时揭晓汤底",
+                "type": "int",
+                "default": 1800,
+                "minimum": 0,
+                "maximum": 7200,
+                "unit": "秒",
+                "hint": "长时间没人提问、推理也没解开时，自动收题并公布汤底，避免一题永远挂着；0 表示关闭（只保留玩家投票揭晓）。",
             },
         ),
     },
@@ -1420,6 +1440,26 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_free_question_cooldown = self._cfg_int(
             "turtle_soup.free_question_cooldown", 1, minimum=0, maximum=30
         )
+        # 超时兜底揭晓：长时间没有推进就自动收题并公布汤底（0 = 关闭）
+        self.turtle_soup_auto_reveal_seconds = self._cfg_non_negative(
+            "turtle_soup.auto_reveal_seconds", 1800
+        )
+        # 网络题库：留空表示只用 LLM + 内置题库；地址需返回 JSON 题目数组
+        self.turtle_soup_online_pool_url = self._cfg_str(
+            "turtle_soup.online_pool_url", ""
+        ).strip()
+        self.turtle_soup_group_announce_enabled = self._cfg_bool(
+            "turtle_soup.group_announce_enabled", False
+        )
+        self.turtle_soup_group_announce_auto = self._cfg_bool(
+            "turtle_soup.group_announce_auto", False
+        )
+        self.turtle_soup_group_announce_style = self._cfg_str(
+            "turtle_soup.group_announce_style", "text"
+        ) or "text"
+        self.turtle_soup_group_announce_recap = self._cfg_bool(
+            "turtle_soup.group_announce_recap", True
+        )
         self.draw_guess_vision_provider_id = self._cfg_str(
             "draw_guess.vision_provider_id", "agnes-ai/agnes-image-2.5-flash"
         )
@@ -1572,6 +1612,8 @@ class GameCompanionPlugin(Star):
         self.undercover_word_store = UndercoverWordStore(
             self.data_dir / "undercover_words.json"
         )
+        # 海龟汤题库账本：跨房间、跨重启记录已出过的题目，用于汤面去重
+        self.soup_deck = SoupDeck(self.data_dir / "turtle_soup_deck.json")
         # 私聊「新增词条」后的待录入状态：发送者 QQ -> 过期时间戳（time.time）
         self._uc_word_pending: dict[str, float] = {}
         self.multiplayer_turn_timeout = self._cfg_non_negative(
@@ -1650,6 +1692,7 @@ class GameCompanionPlugin(Star):
             turtle_soup_max_players=self.turtle_soup_max_players,
             turtle_soup_free_questioning=self.turtle_soup_free_questioning,
             turtle_soup_free_question_cooldown=self.turtle_soup_free_question_cooldown,
+            turtle_soup_auto_reveal_seconds=self.turtle_soup_auto_reveal_seconds,
             multiplayer_turn_timeout=self.multiplayer_turn_timeout,
             duel_turn_timeout=self.duel_turn_timeout,
             duel_offline_grace=self.duel_offline_grace,
@@ -3243,6 +3286,13 @@ class GameCompanionPlugin(Star):
                 and self.group_announce_auto
             ):
                 self._spawn(self._auto_announce_undercover(room))
+            # 海龟汤自动播报：只发汤面 + 提问 + 结果，不剧透汤底
+            if (
+                room.game_type == "turtle_soup"
+                and self.turtle_soup_group_announce_enabled
+                and self.turtle_soup_group_announce_auto
+            ):
+                self._spawn(self._auto_announce_soup(room))
             # 棋类自动播报（board 配置）：
             # - group_announce_auto_all：所有对局结束都自动播报（玩家 vs 玩家 / 玩家 vs 花火，谁赢都播）
             # - group_announce_auto：仅「和花火对局」且花火获胜时自动播报
@@ -3708,13 +3758,23 @@ class GameCompanionPlugin(Star):
                     reply = "继续吧，当前进度没有变化。"
                 elif action == "resign":
                     await self.manager.resign(room, visitor_token=visitor.token)
-                    reply = (
-                        "好，这一题就先揭晓到这里。"
-                        if room.game_type == "turtle_soup"
-                        else "收到，这一手记为输。"
-                        if room.game_type == "blackjack"
-                        else "收到，本局按你认输结束。"
-                    )
+                    if room.game_type == "turtle_soup":
+                        game = room.game
+                        if isinstance(game, TurtleSoupGame) and not game.finished:
+                            # 多人房票数不够：只发起了表决，别说成「已揭晓」
+                            votes = sum(
+                                1 for value in game.reveal_votes.values() if value
+                            )
+                            required = soup_reveal_required(room)
+                            reply = (
+                                f"已发起揭晓（{votes}/{required}），要等其他玩家同意。"
+                            )
+                        else:
+                            reply = "好，这一题就先揭晓到这里。"
+                    elif room.game_type == "blackjack":
+                        reply = "收到，这一手记为输。"
+                    else:
+                        reply = "收到，本局按你认输结束。"
                 elif action == "soup_hint":
                     await self.manager.request_turtle_soup_hint(
                         room, source="web", visitor_token=visitor.token
@@ -4256,18 +4316,91 @@ class GameCompanionPlugin(Star):
                         room.status = "finished"
                         room.add_message("system", "再来一局暂时无法开始，房间已回到结束状态。")
 
+    def _soup_deck(self) -> SoupDeck:
+        """题库账本（懒初始化：方便单测里用 __new__ 造的最小实例）。"""
+        deck = getattr(self, "soup_deck", None)
+        if deck is None:
+            deck = SoupDeck(Path(getattr(self, "data_dir", Path("."))) / "turtle_soup_deck.json")
+            self.soup_deck = deck
+        return deck
+
+    def _pick_fallback_puzzle(
+        self,
+        content_level: str,
+        deck: SoupDeck,
+        excluded: set[str],
+    ):
+        """本地兜底：优先没出过的；全都出过就挑「最久以前出过」的那道。
+
+        旧实现「全部排除后随机」会导致刚玩过的题立刻再来一次，正是重复感的来源。
+        """
+        candidates = all_fallback_puzzles(content_level=content_level)
+        if not candidates:
+            raise ValueError("内置题库为空")
+        fresh = [
+            puzzle
+            for puzzle in candidates
+            if puzzle.signature not in excluded and not deck.has(puzzle)
+        ]
+        if fresh:
+            return random.choice(fresh)
+        ranked: list[tuple[float, object]] = []
+        for puzzle in candidates:
+            record = deck.find_duplicate(puzzle)
+            ranked.append((float(record.get("at") or 0.0) if record else 0.0, puzzle))
+        ranked.sort(key=lambda item: item[0])
+        return ranked[0][1]
+
     async def _prepare_turtle_soup(self, room: GameRoom, game: TurtleSoupGame) -> None:
+        """出题闭环：网络题库 → LLM 生成 → 本地兜底题库。
+
+        三段的共同约束是「不能和账本里的题目实质重复」，且任一环节成功就记账，
+        让下一次出题（不论哪个房间、是否重启）都能看到它。
+        """
         if game.mode != "bot_host":
             return
-        recent = list(room.turtle_soup_recent_signatures)
-        persona = await self._persona_prompt(room)
+        deck = self._soup_deck()
+        excluded = set(room.turtle_soup_recent_signatures) | set(
+            deck.recent_signatures(12)
+        )
         last_error = ""
+
+        # ① 网络题库（可选）：命中即用，省一次 LLM 生成 + 一次校验
+        if getattr(self, "turtle_soup_online_pool_url", ""):
+            try:
+                online = await fetch_online_puzzles(
+                    self.turtle_soup_online_pool_url,
+                    content_level=game.content_level,
+                    limit=12,
+                    timeout=12,
+                )
+                usable = [
+                    puzzle
+                    for puzzle in deck.would_repeat(online)
+                    if puzzle.signature not in excluded
+                ]
+                if usable:
+                    puzzle = random.choice(usable)
+                    if await self.manager.complete_turtle_soup_generation(
+                        room, game, puzzle
+                    ):
+                        deck.remember(puzzle, source="online")
+                        logger.info("[GameCompanion] 海龟汤采用网络题库题目：%s", puzzle.title)
+                        return
+            except (RuntimeError, ValueError, OSError) as exc:
+                last_error = f"网络题库不可用：{exc}"
+                logger.info("[GameCompanion] 网络题库拉取失败，改走 LLM：%s", exc)
+
+        # ② LLM 生成（最多 3 次）+ 独立校验
+        persona = await self._persona_prompt(room)
         for attempt in range(1, 4):
             try:
                 system_prompt, prompt = generation_prompt(
                     difficulty=room.difficulty,
                     content_level=game.content_level,
-                    recent_signatures=recent,
+                    recent_signatures=sorted(excluded),
+                    recent_titles=deck.recent_titles(5),
+                    recent_surfaces=deck.recent_surfaces(3),
                 )
                 if persona:
                     system_prompt = (
@@ -4281,8 +4414,10 @@ class GameCompanionPlugin(Star):
                 if data is None:
                     raise ValueError("出题结果不是有效 JSON")
                 puzzle = puzzle_from_mapping(data, content_level=game.content_level)
-                if puzzle.signature in set(recent):
-                    raise ValueError("题目与本房间最近的主题重复")
+                duplicate = deck.find_duplicate(puzzle)
+                if duplicate is not None or puzzle.signature in excluded:
+                    title = (duplicate or {}).get("title") or puzzle.title
+                    raise ValueError(f"题目与已出过的《{title}》重复")
                 check_system, check_prompt = validation_prompt(puzzle)
                 check = await self._call_room_model(
                     room,
@@ -4295,6 +4430,7 @@ class GameCompanionPlugin(Star):
                 if await self.manager.complete_turtle_soup_generation(
                     room, game, puzzle
                 ):
+                    deck.remember(puzzle, source="llm")
                     return
                 return
             except (RuntimeError, ValueError, OSError) as exc:
@@ -4304,14 +4440,19 @@ class GameCompanionPlugin(Star):
                     attempt,
                     exc,
                 )
-        puzzle = fallback_puzzle(
-            content_level=game.content_level,
-            excluded_signatures=set(recent),
-        )
+
+        # ③ 本地兜底题（按账本挑最久没出过的）
+        try:
+            puzzle = self._pick_fallback_puzzle(game.content_level, deck, excluded)
+        except ValueError as exc:
+            logger.warning("[GameCompanion] 海龟汤无可用兜底题：%s", exc)
+            return
         applied = await self.manager.complete_turtle_soup_generation(room, game, puzzle)
         if applied:
+            deck.remember(puzzle, source="fallback")
             logger.warning(
-                "[GameCompanion] Bot 出题连续失败，当前局使用内置兜底题: %s",
+                "[GameCompanion] Bot 出题连续失败，当前局使用内置兜底题《%s》: %s",
+                puzzle.title,
                 last_error or "模型不可用",
             )
 
@@ -4387,6 +4528,28 @@ class GameCompanionPlugin(Star):
                 raise
             raise RuntimeError("Bot 暂时无法判断这个问题，请稍后重试") from exc
 
+    @staticmethod
+    def _soup_bonus_hint(game: TurtleSoupGame, judgment: Any) -> str:
+        """连续三次「很接近」却解不出时，主动送一条中等强度的提示。
+
+        玩家反馈的死循环是：「一直是接近了、但还缺关键内容」，可模型不给方向、
+        提示又要自己花次数申请。这里的闭环是：连续 3 次覆盖率达到 0.6 仍未解开，
+        免费送一条题库中段的提示（最多一次），既推得动，也不至于直接泄底。
+        """
+        if judgment.solved or game.puzzle is None:
+            return ""
+        if int(getattr(game, "auto_hints_sent", 0) or 0) >= 1:
+            return ""
+        history = list(game.coverage_history[-2:]) + [float(judgment.coverage or 0.0)]
+        if len(history) < 3 or min(history) < 0.6:
+            return ""
+        hints = list(game.puzzle.hints)
+        if not hints:
+            return ""
+        index = min(len(hints) - 1, max(0, len(hints) // 2))
+        game.auto_hints_sent = int(getattr(game, "auto_hints_sent", 0) or 0) + 1
+        return hints[index]
+
     async def submit_turtle_soup_answer(
         self,
         room: GameRoom,
@@ -4415,29 +4578,41 @@ class GameCompanionPlugin(Star):
             raw = await self._call_room_model(
                 room, system_prompt=system_prompt, prompt=prompt, timeout=30
             )
-            solved, coverage, matched_facts = parse_answer_judgment(
-                raw, fact_count=len(game.puzzle.key_facts)
+            judgment = parse_answer_judgment_detail(
+                raw,
+                fact_count=len(game.puzzle.key_facts),
+                discovered_facts=game.discovered_facts,
+            )
+            bonus_hint = self._soup_bonus_hint(game, judgment)
+            reply = coverage_reply(
+                judgment.coverage,
+                judgment.missing,
+                solved=judgment.solved,
+                bonus_hint=bonus_hint,
             )
             applied = await self.manager.resolve_turtle_soup_answer(
                 room,
                 game,
                 answer,
-                solved=solved,
+                solved=judgment.solved,
                 source=source,
-                matched_facts=matched_facts,
+                matched_facts=judgment.matched,
+                reply=reply,
+                coverage=judgment.coverage,
+                missing=judgment.missing,
             )
             if not applied:
                 raise RuntimeError("房间状态已经变化，请重新查看当前题目")
             result: dict[str, Any] = {
-                "solved": solved,
-                "coverage": round(coverage, 2),
-                "reply": (
-                    "推理正确，汤底已经揭晓。"
-                    if solved
-                    else "已经接近了，但还缺少关键环节。"
-                ),
+                "solved": judgment.solved,
+                "coverage": round(judgment.coverage, 2),
+                "reply": reply,
+                # 差在哪一环：前端可以直接展示，也可以只用来渲染进度条
+                "missing": judgment.missing,
             }
-            if solved:
+            if bonus_hint:
+                result["bonus_hint"] = bonus_hint
+            if judgment.solved:
                 result["solution"] = game.puzzle.solution
             return result
         except Exception as exc:
@@ -5474,6 +5649,203 @@ class GameCompanionPlugin(Star):
             )
             return text if sent else ""
         return text
+
+    # ---------------- 海龟汤：群通知 / 分享战报 / 花火复盘 ----------------
+
+    def _soup_result_payload(self, room: GameRoom) -> dict[str, Any] | None:
+        """本局海龟汤快照（不带汤底）。
+
+        播报是异步任务，玩家可能已经点了「再来一道」；届时 room.game 已换成新题，
+        直接读游戏对象会播成新题的汤面。所以统一读 _finish_game 冻结的快照。
+        """
+        snap = getattr(room, "last_soup_result", None)
+        if isinstance(snap, dict) and snap:
+            return snap
+        return None
+
+    @staticmethod
+    def _soup_pick_questions(
+        payload: dict[str, Any], limit: int = 4
+    ) -> list[dict[str, Any]]:
+        """挑几条「有信息量」的提问：优先问出关键事实的，其次按时间取最近的。"""
+        entries = [
+            entry
+            for entry in (payload.get("entries") or [])
+            if isinstance(entry, dict) and entry.get("kind") == "question"
+        ]
+        if not entries:
+            return []
+        strong = [
+            entry
+            for entry in entries
+            if str(entry.get("verdict") or "") in {"yes", "partial", "compound"}
+        ]
+        picked: list[dict[str, Any]] = []
+        for entry in reversed(strong or entries):
+            if len(picked) >= limit:
+                break
+            picked.append(entry)
+        return list(reversed(picked))
+
+    def _soup_announce_text(self, room: GameRoom) -> str:
+        """群通知文案：只给汤面和几条提问，制造「想知道答案」的钩子。
+
+        硬性约束：不出现汤底、不复述玩家最后猜中的原话——群的通知会被还没玩的人
+        看到，剧透了这道题就废了。
+        """
+        payload = self._soup_result_payload(room)
+        if payload is None:
+            return ""
+        title = str(payload.get("title") or "海龟汤")
+        surface = str(payload.get("surface") or "").strip()
+        questions = int(payload.get("question_count") or 0)
+        hints = int(payload.get("hints_used") or 0)
+        attempts = int(payload.get("answer_attempts") or 0)
+        solved = bool(payload.get("solved"))
+        end_reason = str(payload.get("end_reason") or "")
+        lines = ["🐢 海龟汤 ·《" + title + "》"]
+        if surface:
+            lines.append(surface)
+        lines.append(
+            f"—— 本局提问 {questions} 次 · 提示 {hints} 次 · 推理 {attempts} 次"
+        )
+        for entry in self._soup_pick_questions(payload, limit=4):
+            prompt = str(entry.get("prompt") or "").strip()
+            verdict = str(entry.get("response") or "").strip()
+            if not prompt:
+                continue
+            prompt = prompt if len(prompt) <= 60 else prompt[:58] + "…"
+            lines.append(f"💬 「{prompt}」→ {verdict or '已答'}")
+        if solved:
+            lines.append("🏆 这道题被解开了——但汤底是什么，先不告诉你。")
+        elif end_reason == "timeout":
+            lines.append("🌫 这题问了很久也没人解开，汤底已经悄悄揭晓。")
+        else:
+            lines.append("🌫 这题最终没人解开，汤底已经揭晓。")
+        lines.append("想知道答案？开一局，或者去问玩过的人。")
+        return "\n".join(lines)
+
+    def _soup_game_summary(self, room: GameRoom) -> str:
+        """把本局关键信息拼成复盘用的摘要（明确排除汤底）。"""
+        payload = self._soup_result_payload(room)
+        if payload is None:
+            return ""
+        questions = int(payload.get("question_count") or 0)
+        hints = int(payload.get("hints_used") or 0)
+        attempts = int(payload.get("answer_attempts") or 0)
+        solved = bool(payload.get("solved"))
+        end_reason = str(payload.get("end_reason") or "")
+        outcome = (
+            "有人解开了汤底"
+            if solved
+            else ("无人解开，超时后揭晓" if end_reason == "timeout" else "无人解开，最后揭晓")
+        )
+        asked = "；".join(
+            str(entry.get("prompt") or "")[:40]
+            for entry in self._soup_pick_questions(payload, limit=5)
+        )
+        return (
+            f"《{payload.get('title') or '海龟汤'}》汤面：{payload.get('surface') or ''}\n"
+            f"本局共提问 {questions} 次、用了 {hints} 次提示、提交 {attempts} 次推理，{outcome}。\n"
+            f"玩家主要问过：{asked or '（还没来得及提问）'}"
+        )
+
+    async def soup_recap(self, room: GameRoom) -> str:
+        """生成一局海龟汤的短复盘（结算卡「花火复盘」/「通知到群」共用）。
+
+        按 completed_games 缓存，同一局只请求一次 LLM；输出**不得包含汤底**——
+        这段文字会跟着群通知一起发出去，剧透会毁掉后来人的乐趣。
+        """
+        payload = self._soup_result_payload(room)
+        if payload is None:
+            return ""
+        key = f"soup:{int(payload.get('completed_games') or 0)}"
+        cache = getattr(room, "recap_cache", None) or {}
+        if key in cache:
+            return str(cache[key] or "")
+        summary = self._soup_game_summary(room)
+        fallback = (
+            "这题的汤面看着平常，问起来才发现处处是坑；"
+            "下次别急着交答案，先把「为什么偏偏是他」问出来。"
+        )
+        if not summary:
+            text = fallback
+        else:
+            prompt = (
+                "请为一局海龟汤生成简短复盘（中文，2~4 句，轻松俏皮，可以带一点 emoji，"
+                "不要标题、不要编号、不要客套语）。\n"
+                f"本局信息：\n{summary}\n\n"
+                "硬性要求：\n"
+                "1. 只能谈论汤面、玩家提问的路线、大家在哪个方向打转；\n"
+                "2. 绝对不能写出、暗示或总结汤底内容，也不要说「其实就是……」，"
+                "因为这段文字会发到群里，看到的人可能还要玩这道题；\n"
+                "3. 可以调侃思路（比如一直围着某个细节问），但要善意，不要贬低玩家；\n"
+                "4. 结尾留一句「想知道答案就自己来试试」这类钩子。"
+            )
+            text = await self._llm_gen_neutral(
+                prompt,
+                system_prompt=(
+                    "你是古灵精怪但温和的复盘解说员「花火」，只聊推理过程、不剧透答案，"
+                    "只用中文输出复盘正文。"
+                ),
+            )
+            text = (text or fallback).strip()
+        if key:
+            room.recap_cache[key] = text
+        return text
+
+    async def soup_announce_result(
+        self, room: GameRoom, image_data: str = ""
+    ) -> str:
+        """把一局海龟汤的结果发到开房群，返回已发送文案。
+
+        走独立的 `turtle_soup.group_announce_*` 配置（与棋类 / 谁是卧底互不影响）。
+        文案只露汤面与提问，不露汤底；复盘由 soup_recap 生成（同样不剧透）。
+        """
+        if not getattr(self, "turtle_soup_group_announce_enabled", False):
+            return ""
+        if getattr(room, "game_type", "") != "turtle_soup":
+            return ""
+        text = self._soup_announce_text(room)
+        if not text:
+            return ""
+        recap = ""
+        if getattr(self, "turtle_soup_group_announce_recap", True):
+            try:
+                recap = await self.soup_recap(room)
+            except Exception:
+                recap = ""
+        style = (getattr(self, "turtle_soup_group_announce_style", "text") or "text").lower()
+        want_image = style in {"image", "both"}
+        want_text = style in {"text", "both"}
+        if not want_text and not want_image:
+            want_text = True
+        if want_image and image_data:
+            sent = await self._send_to_origin_image(
+                room, text if want_text else "", image_data, recap
+            )
+            return text if sent else ""
+        sent = await self._send_to_origin(
+            room, text + (f"\n📝 复盘：{recap}" if recap else "")
+        )
+        return text if sent else ""
+
+    async def _auto_announce_soup(self, room: GameRoom) -> None:
+        """局末自动播报（turtle_soup.group_announce_auto）。
+
+        与棋类一致：图文模式下服务端没有前端，先发文字；发送成功后写幂等标记，
+        避免玩家再手动点「通知到群」时重复刷群。
+        """
+        try:
+            # 自动播报发生在服务端，没有前端页面可以画海报；这里固定发文字，
+            # 图片由结算卡上的「通知到群」带（前端 canvas 生成），别让自动播报
+            # 因为等图而拖住结束流程。
+            text = await self.soup_announce_result(room, "")
+            if text:
+                room.last_announced_uid = f"soup:{int(room.completed_games)}"
+                room.last_announced_text = text
+        except Exception as exc:
+            logger.warning("[GameCompanion] 海龟汤自动播报失败: %s", exc)
 
     async def board_announce_result(
         self, room: GameRoom, image_data: str = ""
@@ -8640,6 +9012,9 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_free_question_cooldown = self._cfg_int(
             "turtle_soup.free_question_cooldown", 1, minimum=0, maximum=30
         )
+        self.turtle_soup_auto_reveal_seconds = self._cfg_int(
+            "turtle_soup.auto_reveal_seconds", 1800, minimum=0, maximum=7200
+        )
         self.multiplayer_turn_timeout = self._cfg_int(
             "multiplayer.turn_timeout_seconds", 60, minimum=0, maximum=3600
         )
@@ -8687,6 +9062,9 @@ class GameCompanionPlugin(Star):
         self.manager.turtle_soup_max_players = self.turtle_soup_max_players
         self.manager.turtle_soup_free_questioning = self.turtle_soup_free_questioning
         self.manager.turtle_soup_free_question_cooldown = self.turtle_soup_free_question_cooldown
+        self.manager.turtle_soup_auto_reveal_seconds = (
+            self.turtle_soup_auto_reveal_seconds
+        )
         self.manager.multiplayer_turn_timeout = self.multiplayer_turn_timeout
         self.manager.duel_turn_timeout = self.duel_turn_timeout
         self.manager.duel_offline_grace = self.duel_offline_grace

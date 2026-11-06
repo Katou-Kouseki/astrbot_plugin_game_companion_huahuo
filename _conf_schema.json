@@ -446,6 +446,52 @@
         "type": "int",
         "default": 1,
         "hint": "范围 0-30；限制两次 LLM 判定之间的最短间隔，防止玩家连续提问把模型打满。0 表示不额外限速（仍受单格判断锁约束）。"
+      },
+      "auto_reveal_seconds": {
+        "description": "超时揭晓汤底（秒）",
+        "type": "int",
+        "default": 1800,
+        "hint": "本题长时间没有任何推进（提问、推理、提示）且还没解开时，自动收题并公布汤底，避免一题永远挂着；0 表示关闭，只保留玩家投票揭晓。"
+      },
+      "online_pool_url": {
+        "description": "网络题库地址（可选）",
+        "type": "string",
+        "default": "",
+        "hint": "留空表示只用 LLM 生成 + 内置题库。填 http(s) 地址时优先从这里取题；需返回 JSON 数组或 {\"puzzles\": [...]}，字段与 LLM 出题一致（title/surface/solution/key_facts/hints/theme/trick）。拉取失败会自动回退 LLM。"
+      },
+      "group_announce_enabled": {
+        "description": "开启海龟汤群通报",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，结算面板上「通知到群」可用，把本局汤面、部分提问与结果发到开房群（一局一次，不含汤底）。"
+      },
+      "group_announce_auto": {
+        "description": "海龟汤自动播报",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后每局结束自动发群通报，无需手动点按钮；服务端没有页面可画图，自动播报固定为纯文字。"
+      },
+      "group_announce_style": {
+        "description": "海龟汤通报方式",
+        "type": "string",
+        "default": "text",
+        "options": [
+          "text",
+          "image",
+          "both"
+        ],
+        "labels": [
+          "仅文字",
+          "仅图片",
+          "文字+图片"
+        ],
+        "hint": "图片为结算面板生成的海龟汤战报（汤面 + 提问摘录，不含汤底）；自动播报始终为纯文字。"
+      },
+      "group_announce_recap": {
+        "description": "海龟汤通报附带复盘",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后随通报附带「花火复盘」（只聊提问路线，不剧透汤底）。"
       }
     }
   },

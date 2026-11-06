@@ -99,6 +99,20 @@ class TurtleSoupGame:
     last_bot_text: str = ""
     failure_reason: str = ""
     last_judge_at: float = 0.0
+    # 结束原因：solved（解开）/ revealed（玩家投票揭晓）/ timeout（超时兜底揭晓）
+    # / gave_up（旧版「放弃」入口，保留兼容）/ bot_solved（玩家出题、花火猜中）
+    end_reason: str = ""
+    # 揭晓汤底的投票：发起人 uid -> 投票 uid:是否同意。过半（单人房直接放行）即揭晓。
+    reveal_requested_by: str = ""
+    reveal_requested_at: float = 0.0
+    reveal_votes: dict[str, bool] = field(default_factory=dict)
+    # 每次提交推理的覆盖率历史：连续「很接近」却解不出时，给一条免费提示。
+    coverage_history: list[float] = field(default_factory=list)
+    last_missing: str = ""
+    # 最后一次有实质推进的时间（提问/推理/提示都算）：超时兜底揭晓的计时基准。
+    last_progress_at: float = field(default_factory=time.time)
+    # 同一道题里已经因「连续接近」送过的提示数，避免每次都送
+    auto_hints_sent: int = 0
 
     def __post_init__(self) -> None:
         if self.mode == "player_host" and self.phase == "preparing":
@@ -178,6 +192,7 @@ class TurtleSoupGame:
         self.processing_player_number = None
         self.failure_reason = ""
         self.last_judge_at = time.time()
+        self.last_progress_at = self.last_judge_at
         return newly_discovered
 
     def record_answer(
@@ -188,13 +203,19 @@ class TurtleSoupGame:
         source: Literal["web", "qq"],
         matched_facts: set[int] | None = None,
         player_number: int | None = None,
+        reply: str = "",
+        coverage: float = 0.0,
+        missing: str = "",
     ) -> set[int]:
         if self.phase != "ready":
             raise ValueError("当前不能提交答案")
         newly_discovered = set(matched_facts or ()) - self.discovered_facts
         self.discovered_facts.update(matched_facts or ())
         self.answer_attempts += 1
-        response = (
+        self.coverage_history.append(max(0.0, min(float(coverage or 0.0), 1.0)))
+        del self.coverage_history[:-12]
+        self.last_missing = str(missing or "")[:24]
+        response = reply or (
             "推理正确，汤底已经揭晓。" if solved else "已经接近了，但还缺少关键环节。"
         )
         self.entries.append(
@@ -204,6 +225,7 @@ class TurtleSoupGame:
                 response=response,
                 source=source,
                 player_number=player_number,
+                verdict="yes" if solved else "partial",
             )
         )
         del self.entries[:-80]
@@ -211,10 +233,70 @@ class TurtleSoupGame:
         self.processing_player_number = None
         self.failure_reason = ""
         self.last_judge_at = time.time()
+        self.last_progress_at = self.last_judge_at
         if solved:
             self.solved = True
+            self.end_reason = "solved"
             self.phase = "finished"
         return newly_discovered
+
+    def request_reveal(self, uid: str) -> dict[str, object]:
+        """发起「揭晓汤底」：多人房需要过半同意，单人房直接生效。"""
+        if self.phase != "ready":
+            raise ValueError("当前没有可以揭晓的海龟汤")
+        if self.mode == "player_host":
+            raise ValueError("玩家出题模式没有固定汤底可揭晓")
+        key = str(uid or "")
+        if not self.reveal_requested_by:
+            self.reveal_requested_by = key
+            self.reveal_requested_at = time.time()
+        self.reveal_votes[key] = True
+        return {
+            "requested_by": self.reveal_requested_by,
+            "votes": sum(1 for agree in self.reveal_votes.values() if agree),
+            "agreed": [token for token, agree in self.reveal_votes.items() if agree],
+        }
+
+    def cast_reveal_vote(self, uid: str, agree: bool) -> dict[str, object]:
+        if self.phase != "ready":
+            raise ValueError("当前没有可以揭晓的海龟汤")
+        if not self.reveal_requested_by:
+            raise ValueError("还没有人发起揭晓汤底")
+        key = str(uid or "")
+        self.reveal_votes[key] = bool(agree)
+        return {
+            "requested_by": self.reveal_requested_by,
+            "votes": sum(1 for value in self.reveal_votes.values() if value),
+            "agreed": [token for token, value in self.reveal_votes.items() if value],
+        }
+
+    def reveal(self, *, reason: str, source: Literal["web", "qq"] = "web") -> None:
+        """结束本题并揭晓汤底（玩家投票或超时兜底）。
+
+        语义与「投降」区分：这不是某一方认输，而是「这题到此为止，公布答案」，
+        比分记为花火守住（与放弃一致），战报文案写「无人解开」。
+        """
+        if self.phase == "finished":
+            return
+        self.solved = False
+        self.gave_up = False
+        self.end_reason = str(reason or "revealed")
+        self.phase = "finished"
+        self.processing = False
+        self.processing_player_number = None
+        self.entries.append(
+            SoupEntry(
+                kind="answer",
+                prompt=(
+                    "超时揭晓汤底"
+                    if self.end_reason == "timeout"
+                    else "投票揭晓汤底"
+                ),
+                response="本题已揭晓，汤底见下方。",
+                source=source,
+            )
+        )
+        del self.entries[:-80]
 
     def reveal_hint(
         self,
@@ -246,12 +328,14 @@ class TurtleSoupGame:
             )
         )
         del self.entries[:-80]
+        self.last_progress_at = time.time()
         return hint
 
     def give_up(self, *, source: Literal["web", "qq"] = "qq") -> None:
         if self.phase != "ready" or (self.mode == "bot_host" and self.puzzle is None):
             raise ValueError("当前没有可以放弃的海龟汤")
-        self.gave_up = True
+        self.gave_up = self.mode == "bot_host"
+        self.end_reason = "gave_up" if self.mode == "bot_host" else "host_ended"
         self.phase = "finished"
         self.processing = False
         self.processing_player_number = None
@@ -312,11 +396,14 @@ class TurtleSoupGame:
         if correct:
             self.bot_solved = True
             self.solved = False
+            self.end_reason = "bot_solved"
             self.phase = "finished"
         self.processing = False
         self.processing_player_number = None
 
-    def snapshot(self, viewer_uid: str | None = None) -> dict[str, object]:
+    def snapshot(
+        self, viewer_uid: str | None = None, *, reveal_required: int = 0
+    ) -> dict[str, object]:
         reveal_solution = self.finished and self.puzzle is not None
         available_hints = len(self.puzzle.hints) if self.puzzle else 0
         hint_limit = (
@@ -324,6 +411,7 @@ class TurtleSoupGame:
         )
         viewer_key = str(viewer_uid or "")
         viewer_used = self.hint_usage.get(viewer_key, 0) if viewer_key else 0
+        reveal_votes = sum(1 for agree in self.reveal_votes.values() if agree)
         return {
             "kind": "turtle_soup",
             "mode": self.mode,
@@ -349,6 +437,16 @@ class TurtleSoupGame:
             "last_bot_action": self.last_bot_action,
             "last_bot_text": self.last_bot_text,
             "finished": self.finished,
+            "end_reason": self.end_reason,
+            # 揭晓汤底的投票进度：前端据此显示「已有 1/2 人同意」并给投票按钮
+            "reveal": {
+                "requested": bool(self.reveal_requested_by),
+                "votes": reveal_votes,
+                "required": max(0, int(reveal_required or 0)),
+                "requested_at": self.reveal_requested_at,
+            },
+            "coverage_last": self.coverage_history[-1] if self.coverage_history else 0.0,
+            "missing_hint": self.last_missing,
         }
 
 
@@ -402,20 +500,53 @@ def puzzle_from_mapping(
     )
 
 
+def _content_rank(level: str) -> int:
+    return {"all_ages": 0, "normal": 1, "unrestricted": 2}.get(str(level), 1)
+
+
+def all_fallback_puzzles(
+    *, content_level: SoupContentLevel
+) -> list[SoupPuzzle]:
+    """内置题库按内容等级过滤后的全部题目（允许更轻的内容，不允许更重的）。"""
+    ceiling = _content_rank(content_level)
+    puzzles: list[SoupPuzzle] = []
+    for item in _FALLBACK_PUZZLES:
+        level = normalize_content_level(item.get("content_level"))
+        if _content_rank(level) > ceiling:
+            continue
+        try:
+            puzzles.append(puzzle_from_mapping(item, content_level=level))
+        except ValueError:  # 题库写坏了不该拖垮出题
+            continue
+    return puzzles
+
+
 def fallback_puzzle(
     *,
     content_level: SoupContentLevel,
     excluded_signatures: set[str] | None = None,
 ) -> SoupPuzzle:
-    excluded = excluded_signatures or set()
-    candidates = [
-        puzzle_from_mapping(
-            item,
-            content_level=normalize_content_level(item.get("content_level")),
+    """从内置题库挑一道：优先没出过的，全都出过就挑「最久以前出的」。
+
+    以前「全部排除后回退到全量随机」，会让刚玩过的题立刻再来一次；
+    现在交给调用方传入按账本排好序的候选（`preferred`），没有就随机。
+    """
+    candidates = all_fallback_puzzles(content_level=content_level)
+    if not candidates:
+        # 极端情况：题库被改空，构造一道最小可用题目保证流程能继续
+        return puzzle_from_mapping(
+            {
+                "title": "空白的一天",
+                "surface": "有个人一整天什么都没做，却说自己完成了一件重要的事。为什么？",
+                "solution": "他答应自己休息一天，整天没有工作、没有社交，只是安静地待着；对他来说「允许自己停下来」本身就是完成的事。",
+                "key_facts": ["他原本有必须完成的工作", "他刻意选择休息", "休息对他而言是难得的事"],
+                "hints": ["重点不在他做了什么。", "他平时很忙。", "他主动选择了停下。"],
+                "theme": "休息与自我",
+                "trick": "把「做事」当成唯一的价值",
+            },
+            content_level=content_level,
         )
-        for item in _FALLBACK_PUZZLES
-        if item["content_level"] == "all_ages" or content_level != "all_ages"
-    ]
+    excluded = excluded_signatures or set()
     available = [item for item in candidates if item.signature not in excluded]
     return secrets.choice(available or candidates)
 
@@ -504,5 +635,186 @@ _FALLBACK_PUZZLES: tuple[dict[str, Any], ...] = (
         ],
         "theme": "社区与平安确认",
         "trick": "空椅子是一种非语言信号",
+    },
+    {
+        "content_level": "all_ages",
+        "title": "窗边那块蛋糕",
+        "surface": "糕点店每天下午四点会把一块小蛋糕摆在窗边，从不标价也从不卖。熟客都知道这个规矩。某天新来的店员把它卖给了客人，老板立刻追出去把蛋糕要了回来。为什么？",
+        "solution": "那块蛋糕是给附近幼儿园一个孩子的路标。孩子放学独自回家，必须看到窗边的蛋糕才肯继续往前走——他的妈妈和店主约好，用这块蛋糕给他壮胆。新店员把它卖掉后，孩子停在门口不肯走，老板追出去用一个新蛋糕换回了它，重新摆回窗边，孩子才继续回家。",
+        "key_facts": [
+            "蛋糕不是商品，是给固定孩子的信号",
+            "那个孩子看到它才肯继续回家",
+            "孩子的妈妈与店主事先约定",
+            "老板换回蛋糕是为了恢复这个约定",
+        ],
+        "acceptable_variants": ["把蛋糕换成面包、摆件等固定标志物可视为等价"],
+        "hints": [
+            "它不是拿来卖的。",
+            "每天都有个人会经过这里。",
+            "那个孩子需要看到它才敢继续走。",
+            "老板追出去，是为了把信号放回原处。",
+        ],
+        "theme": "街道与约定",
+        "trick": "把非卖品当成商品",
+    },
+    {
+        "content_level": "all_ages",
+        "title": "多出来的第三把钥匙",
+        "surface": "房东交房时给了租客三把钥匙，说都是这扇门的。租客试了试，两把能开门，第三把怎么拧都不动，就把它挂在门口没再管。半年后房东来换锁，租客才知道那把钥匙一直是有用的。为什么？",
+        "solution": "第三把是楼下信箱的钥匙，齿形和门钥匙很像，房东当初随口说成了「都是这扇门的」。租客从没用过信箱，所以一直以为它坏了。房东换锁时只换了入户门，信箱锁没换，才顺口提起这件事。",
+        "key_facts": [
+            "第三把钥匙对应的是信箱锁",
+            "房东当初说错了用途",
+            "租客从未使用过信箱",
+            "换锁时只换了入户门",
+        ],
+        "acceptable_variants": ["把信箱换成储物柜、报箱等楼下附属锁具可视为等价"],
+        "hints": [
+            "它确实有用，只是不对这扇门。",
+            "楼下还有一个带锁的东西。",
+            "那东西平时没什么人打开。",
+        ],
+        "theme": "租房日常",
+        "trick": "钥匙长得像，被误认为同一把锁",
+    },
+    {
+        "content_level": "all_ages",
+        "title": "每年寄给自己的包裹",
+        "surface": "他每年生日都给自己寄一个包裹，收件地址写公司。今年包裹被退回了，他却说「这样更好」。为什么？",
+        "solution": "他寄包裹是想让前台在生日当天叫他去签收，好让同事知道他今天生日——那声生日快乐是他自己安排的。今年他换了独立办公室，前台不再代收，包裹被退回；他索性不再演这场戏，主动约了朋友一起吃饭。",
+        "key_facts": [
+            "包裹是他自己寄给自己的",
+            "目的是让前台在生日当天通知他",
+            "换办公室后前台不再代收，包裹被退回",
+            "他决定改用真实的方式过生日",
+        ],
+        "acceptable_variants": ["把公司换成学校、合租公寓等有代收点的场所可视为等价"],
+        "hints": [
+            "寄件人是谁，值得想一想。",
+            "他想要的不是包裹本身。",
+            "公司前台曾经帮了他一个忙。",
+        ],
+        "theme": "孤独与生日",
+        "trick": "用物流制造被人记得的错觉",
+    },
+    {
+        "content_level": "all_ages",
+        "title": "绕远路的出租车",
+        "surface": "司机明明知道一条更近的路，却每次都绕远。乘客从不投诉，还常常多给几块钱。为什么？",
+        "solution": "近路要经过一段被重车压坏的碎石路，颠得厉害。那位乘客刚做完腰部手术，坐不了颠簸的路；两人第一次走错时乘客疼得脸色发白，从此司机宁可绕远。多给的钱是乘客主动补的油费。",
+        "key_facts": [
+            "近路路况很差、非常颠簸",
+            "乘客身体不能承受颠簸",
+            "绕远是双方默契",
+            "多给的钱是乘客主动补偿",
+        ],
+        "acceptable_variants": ["把腰部手术换成其他不能受颠簸的情况可视为等价"],
+        "hints": [
+            "近路确实更近，但不是更好。",
+            "问题不在于距离。",
+            "乘客的身体对某件事很敏感。",
+        ],
+        "theme": "出行与体谅",
+        "trick": "把最近当成最合适",
+    },
+    {
+        "content_level": "normal",
+        "title": "凌晨三点的洗衣机",
+        "surface": "独居的她每天凌晨三点准时开洗衣机，邻居从不投诉，物业也管不了。为什么？",
+        "solution": "她是夜班护士，凌晨三点是下班回家的时间；房子在临街二楼，楼下是 24 小时营业的商铺而不是住户，洗衣机又放在铺了隔音垫的阳台。她入住前逐一和楼下商户打过招呼，而商户本来就通宵营业。",
+        "key_facts": [
+            "她上夜班，三点是她回家的时间",
+            "楼下不是住户而是商铺",
+            "洗衣位置做过隔音处理",
+            "她事先与楼下商户打过招呼",
+        ],
+        "acceptable_variants": ["夜班护士换成其他凌晨下班的职业可视为等价"],
+        "hints": [
+            "三点对她来说不是深夜。",
+            "楼下待着的不是住户。",
+            "她提前打过招呼。",
+        ],
+        "theme": "城市夜班",
+        "trick": "用自己的作息去推断别人的作息",
+    },
+    {
+        "content_level": "normal",
+        "title": "不存在的十三号",
+        "surface": "这条街的门牌从 12 号直接跳到 14 号，13 号不存在。但快递、外卖、挂号信都能准确送到 13 号那户人家。为什么？",
+        "solution": "13 号院子的大门开在与主街垂直的另一条街上，按另一条街的门牌登记（例如「光明路 5 号」）。主街这一侧只有围墙，没有入口。快递按院内实际入口的地址系统走，所以一直送得到。",
+        "key_facts": [
+            "13 号的院门开在另一条街上",
+            "该户按另一条街的门牌登记",
+            "主街这侧只有围墙没有入口",
+            "快递按实际入口地址投递",
+        ],
+        "acceptable_variants": ["把另一条街换成巷子、后街可视为等价"],
+        "hints": [
+            "13 号并不是不存在。",
+            "它的门不在这条街上。",
+            "换个地址系统就能找到它。",
+        ],
+        "theme": "城市地址",
+        "trick": "把这条街的门牌当成唯一坐标",
+    },
+    {
+        "content_level": "normal",
+        "title": "打烊不锁的后门",
+        "surface": "便利店老板每晚打烊都不锁后门，员工提醒他好几次，他说锁上反而更危险。为什么？",
+        "solution": "后门连着整栋楼的消防疏散通道，也是店里配电箱和总闸的唯一检修入口；按规定这扇门必须能从内部随时推开。店里夜间有值守的保安，卷帘门和报警器才是真正的防线。",
+        "key_facts": [
+            "后门是消防疏散通道的一部分",
+            "这扇门必须能从内部随时推开",
+            "店内夜间有保安值守",
+            "真正的防盗靠卷帘门与报警器",
+        ],
+        "acceptable_variants": ["把便利店换成小餐馆、药店可视为等价"],
+        "hints": [
+            "这扇门不是用来防贼的。",
+            "有一条规定要求它不能锁。",
+            "店里还有别人在。",
+        ],
+        "theme": "小店与安全",
+        "trick": "把防盗当成唯一的安全目标",
+    },
+    {
+        "content_level": "normal",
+        "title": "共撑一把伞的两个人",
+        "surface": "雨天，两个人共撑一把伞走进派出所，其中一个人被留下做笔录，另一个人撑着伞离开，两个人都很平静。为什么？",
+        "solution": "拾金不昧的路人把捡到的钱包送到派出所，失主正好也在附近，两人在门口遇上就共撑一把伞进来。留下的失主核对物品、做领取笔录；拾到者做完登记先走。伞是失主的，所以由他带走。",
+        "key_facts": [
+            "两人不是一伙的，是门口遇上",
+            "一个人来上交捡到的钱包",
+            "另一个人是失主",
+            "离开的人先做完了登记",
+        ],
+        "acceptable_variants": ["把钱包换成手机、证件等可辨识失物可视为等价"],
+        "hints": [
+            "被留下的不是嫌疑人。",
+            "他们本来并不认识。",
+            "伞是其中一个人的。",
+        ],
+        "theme": "雨天与失物",
+        "trick": "把一起进门当成一伙人",
+    },
+    {
+        "content_level": "all_ages",
+        "title": "只坐一站却买全程票",
+        "surface": "有位乘客每次只坐一站，却坚持买全程票。售票员提醒他可以少花钱，他说这样更划算。为什么？",
+        "solution": "全程票是当日不限次数乘坐的通票。他一天要来回很多趟（送孩子、跑医院、买菜），一张张买单程票更贵，而且通票还能在中途改乘另一条线路。",
+        "key_facts": [
+            "全程票是当日通票、不限次数",
+            "他一天要坐很多趟",
+            "通票可以换乘另一条线路",
+            "单次购票的总价更高",
+        ],
+        "acceptable_variants": ["把公交换成地铁、轮渡可视为等价"],
+        "hints": [
+            "他一天不只坐这一趟。",
+            "那张票的用法不止一次。",
+            "要算一整天的账。",
+        ],
+        "theme": "城市公交",
+        "trick": "只看单程，不看一天",
     },
 )

@@ -13,7 +13,7 @@ import aiohttp
 from aiohttp import web
 from astrbot.api import logger
 
-from .models import GameRoom
+from .models import GameRoom, soup_reveal_required
 from .room_manager import RoomManager
 
 
@@ -122,6 +122,9 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/soup/hint", self._soup_hint)
         app.router.add_post("/api/room/{access_token}/soup/reverse", self._soup_reverse)
         app.router.add_post("/api/room/{access_token}/soup/correct", self._soup_correct)
+        app.router.add_post("/api/room/{access_token}/soup/reveal", self._soup_reveal)
+        app.router.add_post("/api/room/{access_token}/soup/announce", self._soup_announce)
+        app.router.add_post("/api/room/{access_token}/soup/recap", self._soup_recap)
         app.router.add_post(
             "/api/room/{access_token}/undercover/speech", self._undercover_speech
         )
@@ -618,6 +621,125 @@ class GameRoomServer:
             room, source="web", visitor_token=visitor_token
         )
         return self._response({"room": self._room_payload(room, visitor_token)})
+
+    async def _soup_reveal(self, request: web.Request) -> web.Response:
+        """海龟汤「揭晓汤底」：action=request 发起、vote 表态、status 查票数。
+
+        与「投降」的区别：多人房要过半玩家同意，单人房直接生效；发起人第一票自动算同意。
+        """
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        action = str(payload.get("action") or "request").strip().lower()
+        if action == "vote":
+            agree = bool(payload.get("agree", True))
+            result = await self.manager.vote_soup_reveal(
+                room,
+                agree=agree,
+                source="web",
+                visitor_token=visitor_token,
+            )
+            self._log_room_op(
+                room,
+                "soup_reveal_vote",
+                "投票揭晓汤底" if agree else "不同意揭晓汤底",
+                visitor_token,
+            )
+        elif action == "status":
+            game = room.game
+            result = {
+                "revealed": bool(getattr(game, "finished", False)),
+                "votes": sum(
+                    1
+                    for value in getattr(game, "reveal_votes", {}).values()
+                    if value
+                ),
+                "required": soup_reveal_required(room),
+                "text": "",
+            }
+        else:
+            result = await self.manager.request_soup_reveal(
+                room,
+                source="web",
+                visitor_token=visitor_token,
+            )
+            self._log_room_op(
+                room, "soup_reveal_request", "发起揭晓汤底", visitor_token
+            )
+        return self._response(
+            {**result, "room": self._room_payload(room, visitor_token)}
+        )
+
+    async def _soup_announce(self, request: web.Request) -> web.Response:
+        """结算卡「通知到群」：把本局汤面、提问与结果发到开房群（不含汤底）。
+
+        按 room.completed_games 幂等：同一局只通知一次，重复点击返回已通知。
+        """
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        if getattr(room, "game_type", "") != "turtle_soup":
+            return web.json_response(
+                {"status": "error", "message": "当前玩法不支持通知到群"},
+                status=400,
+            )
+        try:
+            self.manager.require_seated_player(
+                room, str(payload.get("visitor_token") or "")
+            )
+        except PermissionError as exc:
+            return self._forbidden(exc)
+        key = f"soup:{int(getattr(room, 'completed_games', 0) or 0)}"
+        if room.last_announced_uid == key:
+            return self._response({
+                "announced": bool(room.last_announced_text),
+                "already": True,
+                "text": room.last_announced_text,
+            })
+        image_data = self._image_payload(payload)
+        try:
+            text = await self.plugin.soup_announce_result(room, image_data)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 海龟汤通知失败: %s", exc)
+            return web.json_response(
+                {"status": "error", "message": str(exc)}, status=400
+            )
+        if text:
+            room.last_announced_uid = key
+            room.last_announced_text = text
+            self._log_room_op(
+                room,
+                "room_announce",
+                "手动把海龟汤战报发送到群",
+                str(payload.get("visitor_token") or ""),
+            )
+        return self._response({
+            "announced": bool(text),
+            "already": False,
+            "text": text,
+            "disabled": not bool(
+                getattr(self.plugin, "turtle_soup_group_announce_enabled", False)
+            ),
+        })
+
+    async def _soup_recap(self, request: web.Request) -> web.Response:
+        """结算卡「花火复盘」：按局（completed_games）缓存，同局只请求一次 LLM。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        try:
+            self.manager.require_visitor(
+                room, str(payload.get("visitor_token") or "")
+            )
+        except PermissionError as exc:
+            return self._forbidden(exc)
+        try:
+            recap = await self.plugin.soup_recap(room)
+        except Exception as exc:
+            logger.warning("[GameCompanion] 生成海龟汤复盘失败: %s", exc)
+            recap = ""
+        return self._response({"recap": (recap or "").strip()})
 
     async def _seat_swap_request(self, request: web.Request) -> web.Response:
         self._require_origin(request)

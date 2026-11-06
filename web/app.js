@@ -2935,10 +2935,33 @@
       }
     }
 
+    // 揭晓汤底：不是投降，是「这题到此为止」；多人房需要过半玩家同意
+    const revealButton = document.getElementById("soupRevealButton");
+    const revealLabel = document.getElementById("soupRevealLabel");
+    const reveal = game?.reveal || {};
+    const revealVotes = Number(reveal.votes || 0);
+    const revealRequired = Number(reveal.required || 0);
+    const canReveal = !playerHosted
+      && room.is_player
+      && room.status === "active"
+      && game?.phase === "ready"
+      && !game?.processing
+      && (!revealRequired || revealVotes < revealRequired);
+    if (revealButton) {
+      revealButton.hidden = playerHosted || !room.is_player;
+      revealButton.disabled = !canReveal;
+      if (revealLabel) {
+        revealLabel.textContent = reveal?.requested
+          ? `同意揭晓（${revealVotes}/${revealRequired || 1}）`
+          : "揭晓汤底";
+      }
+    }
+
     const solution = document.getElementById("soupSolution");
     solution.hidden = playerHosted || !puzzle?.solution;
     document.getElementById("soupSolutionText").textContent = sanitizeDisplayText(puzzle?.solution || "");
 
+    renderSoupResult(game);
   }
 
   // 设置骰子的点数（1-6）或回到「尚未掷骰」的 waiting 态
@@ -4369,6 +4392,234 @@
       busy = false;
       render();
     }
+  }
+
+  // 海龟汤「揭晓汤底」：单人房直接生效；多人房发起后需过半玩家同意（不是投降）
+  async function soupReveal() {
+    if (busy || room?.game_type !== "turtle_soup") return;
+    const game = room.game;
+    if (!game || game.phase !== "ready") return;
+    const requested = Boolean(game?.reveal?.requested);
+    busy = true;
+    const btn = document.getElementById("soupRevealButton");
+    if (btn) btn.disabled = true;
+    try {
+      const data = await request("POST", "soup/reveal", {
+        visitor_token: visitorToken,
+        action: requested ? "vote" : "request",
+        agree: true,
+      });
+      if (data?.room) setRoom(data.room);
+      showToast(
+        data?.revealed
+          ? "本题已揭晓，汤底在下方"
+          : String(data?.text || "已发起揭晓，等待其他玩家同意"),
+      );
+      render();
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "发起揭晓失败");
+    } finally {
+      busy = false;
+      render();
+    }
+  }
+
+  // 本局海龟汤结果：优先读服务端冻结的快照（点「再来一道」后仍能分享上一局）
+  function buildSoupResult() {
+    const snap = room?.soup_result;
+    if (snap && typeof snap === "object" && (snap.title || snap.surface)) {
+      return {
+        title: String(snap.title || "海龟汤"),
+        surface: String(snap.surface || ""),
+        questions: Number(snap.question_count || 0),
+        hints: Number(snap.hints_used || 0),
+        attempts: Number(snap.answer_attempts || 0),
+        facts: Number(snap.key_fact_count || 0),
+        discovered: Number(snap.discovered_fact_count || 0),
+        solved: Boolean(snap.solved),
+        endReason: String(snap.end_reason || ""),
+        entries: Array.isArray(snap.entries) ? snap.entries : [],
+      };
+    }
+    const game = room?.game;
+    const puzzle = game?.puzzle;
+    if (!game || !puzzle) return null;
+    return {
+      title: String(puzzle.title || "海龟汤"),
+      surface: String(puzzle.surface || ""),
+      questions: Number(game.question_count || 0),
+      hints: Number(game.hints_used || 0),
+      attempts: Number(game.answer_attempts || 0),
+      facts: Number(game.key_fact_count || 0),
+      discovered: Number(game.discovered_fact_count || 0),
+      solved: Boolean(game.solved),
+      endReason: String(game.end_reason || ""),
+      entries: Array.isArray(game.entries) ? game.entries : [],
+    };
+  }
+
+  // 只挑问出过关键事实的提问（其次取最近的）：这些最能勾起「到底怎么回事」
+  function pickSoupQuestions(result, limit = 4) {
+    const all = (result?.entries || []).filter(
+      (entry) => entry && entry.kind === "question" && entry.prompt,
+    );
+    if (!all.length) return [];
+    const strong = all.filter((entry) =>
+      ["yes", "partial", "compound"].includes(String(entry.verdict || "")),
+    );
+    return (strong.length ? strong : all).slice(-limit);
+  }
+
+  let soupResultShownKey = "";
+  function renderSoupResult(game) {
+    const panel = document.getElementById("soupResultPanel");
+    if (!panel) return;
+    const finished = room?.game_type === "turtle_soup"
+      && room.status === "finished" && Boolean(game?.puzzle);
+    panel.hidden = !finished;
+    const recapBox = document.getElementById("soupResultRecap");
+    const recapBtn = document.getElementById("soupResultRecapBtn");
+    if (!finished) {
+      if (soupResultShownKey) {
+        soupResultShownKey = "";
+        if (recapBox) { recapBox.hidden = true; recapBox.textContent = ""; }
+        if (recapBtn) { recapBtn.disabled = false; recapBtn.textContent = "✨ 花火复盘"; }
+      }
+      return;
+    }
+    const result = buildSoupResult();
+    if (!result) { panel.hidden = true; return; }
+    // 只在「换了一局」时重置按钮与复盘区，避免每秒轮询把已展示的复盘清掉
+    const key = `soup:${Number(room.score?.games || 0)}`;
+    if (soupResultShownKey !== key) {
+      soupResultShownKey = key;
+      if (recapBox) { recapBox.hidden = true; recapBox.textContent = ""; }
+      if (recapBtn) { recapBtn.disabled = false; recapBtn.textContent = "✨ 花火复盘"; }
+    }
+    const badge = document.getElementById("soupResultBadge");
+    const title = document.getElementById("soupResultTitle");
+    const summary = document.getElementById("soupResultSummary");
+    if (badge) badge.textContent = result.solved ? "🏆" : "🌫️";
+    if (title) {
+      title.textContent = result.solved
+        ? "汤底被解开了"
+        : (result.endReason === "timeout" ? "没人解开，超时揭晓" : "没人解开，已揭晓汤底");
+    }
+    if (summary) {
+      summary.textContent = [
+        `提问 ${result.questions} 次`,
+        `提示 ${result.hints} 次`,
+        `推理 ${result.attempts} 次`,
+        result.facts ? `关键事实 ${result.discovered}/${result.facts}` : "",
+      ].filter(Boolean).join(" · ");
+    }
+    const announceBtn = document.getElementById("soupResultAnnounce");
+    if (announceBtn) {
+      announceBtn.hidden = !room?.is_player;
+      if (room?.soup_announced) {
+        announceBtn.disabled = true;
+        announceBtn.textContent = "✅ 已通知（本局一次）";
+      } else {
+        announceBtn.disabled = false;
+        announceBtn.textContent = "📢 通知到群";
+      }
+    }
+  }
+
+  // 海龟汤战报 PNG：汤面 + 提问摘录 + 结果，刻意不画汤底（保留悬念）
+  async function soupSharePosterUrl(result) {
+    if (!result) return "";
+    const scale = 2;
+    const W = 640;
+    const M = 30;
+    const fontOf = (bold, px) =>
+      `${bold ? "bold " : ""}${px}px 'PingFang SC','Microsoft YaHei',sans-serif`;
+    const measure = document.createElement("canvas").getContext("2d");
+    const surfaceLines = wrapPosterLines(measure, result.surface, W - M * 2, fontOf(false, 21), 8);
+    const questions = pickSoupQuestions(result, 4);
+    const questionLines = [];
+    questions.forEach((entry) => {
+      const text = `「${String(entry.prompt || "").trim()}」→ ${entry.response || "已答"}`;
+      wrapPosterLines(measure, text, W - M * 2 - 24, fontOf(false, 17), 2)
+        .forEach((line) => questionLines.push(line));
+    });
+    const statsH = 54;
+    const questionH = questionLines.length ? 44 + questionLines.length * 26 : 0;
+    const H = 152 + 46 + surfaceLines.length * 32 + statsH + questionH + 150;
+    const cv = document.createElement("canvas");
+    cv.width = W * scale; cv.height = H * scale;
+    const c = cv.getContext("2d");
+    c.scale(scale, scale);
+    const rr = (x, y, w, h, r) => {
+      c.beginPath(); c.moveTo(x + r, y);
+      c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r);
+      c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath();
+    };
+    // 背景：深夜汤屋的暖棕，配顶部一点汤汽辉光
+    const g = c.createLinearGradient(0, 0, W, H);
+    g.addColorStop(0, "#2b1d13"); g.addColorStop(1, "#140e09");
+    c.fillStyle = g; c.fillRect(0, 0, W, H);
+    const glow = c.createRadialGradient(W / 2, 40, 10, W / 2, 40, 420);
+    glow.addColorStop(0, "rgba(255, 209, 102, .18)"); glow.addColorStop(1, "rgba(255, 209, 102, 0)");
+    c.fillStyle = glow; c.fillRect(0, 0, W, H);
+    // 顶部横幅
+    const hg = c.createLinearGradient(0, 0, W, 152);
+    hg.addColorStop(0, "#4a3324"); hg.addColorStop(1, "#2a1c12");
+    c.fillStyle = hg; c.fillRect(0, 0, W, 152);
+    c.fillStyle = "#ffd166"; c.fillRect(0, 148, W, 4);
+    c.textAlign = "left";
+    c.fillStyle = "#e5c99a"; c.font = fontOf(false, 19);
+    c.fillText("🐢 海龟汤 · 单局战报", M, 44);
+    let titlePx = 42;
+    const titleText = result.title || "海龟汤";
+    c.font = fontOf(true, titlePx);
+    while (titlePx > 24 && c.measureText(titleText).width > W - M * 2) {
+      titlePx -= 4;
+      c.font = fontOf(true, titlePx);
+    }
+    c.fillStyle = "#ffffff";
+    c.fillText(truncatePosterText(c, titleText, W - M * 2), M, 108);
+    // 汤面
+    let y = 194;
+    c.fillStyle = "#f0e4d2"; c.font = fontOf(false, 21);
+    surfaceLines.forEach((line) => { c.fillText(line, M, y); y += 32; });
+    // 统计
+    y += 6;
+    c.fillStyle = "#c0a887"; c.font = fontOf(false, 16);
+    const facts = result.facts ? ` · 关键事实 ${result.discovered}/${result.facts}` : "";
+    c.fillText(`提问 ${result.questions} 次 · 提示 ${result.hints} 次 · 推理 ${result.attempts} 次${facts}`, M, y);
+    y += 34;
+    // 提问摘录（卡片式）
+    if (questionLines.length) {
+      const boxH = 34 + questionLines.length * 26;
+      rr(M, y - 22, W - M * 2, boxH, 12);
+      c.fillStyle = "rgba(255,255,255,.05)"; c.fill();
+      c.strokeStyle = "rgba(255,209,102,.22)"; c.lineWidth = 1; c.stroke();
+      c.fillStyle = "#e5c99a"; c.font = fontOf(false, 15);
+      c.fillText("他们问过", M + 14, y + 4);
+      y += 30;
+      c.fillStyle = "#dccdb6"; c.font = fontOf(false, 17);
+      questionLines.forEach((line) => { c.fillText(line, M + 14, y); y += 26; });
+      y += 14;
+    }
+    // 结果条
+    const solved = Boolean(result.solved);
+    rr(M, y - 8, W - M * 2, 62, 12);
+    c.fillStyle = solved ? "rgba(255,209,102,.16)" : "rgba(255,255,255,.06)";
+    c.fill();
+    c.fillStyle = solved ? "#ffd166" : "#c9bda8";
+    c.font = fontOf(true, 22);
+    c.fillText(solved ? "🏆 汤底被解开了" : "🌫 这道题没人解开", M + 16, y + 30);
+    c.fillStyle = "rgba(240,228,210,.55)"; c.font = fontOf(false, 13);
+    c.fillText("汤底？先卖个关子。", M + 16, y + 50);
+    // 底部
+    c.textAlign = "center";
+    c.fillStyle = "#ffd166"; c.font = fontOf(true, 18);
+    c.fillText("花火陪你玩 · 想知道答案，就自己来试一局", W / 2, H - 46);
+    c.fillStyle = "rgba(229,201,154,.55)"; c.font = fontOf(false, 13);
+    c.fillText(new Date().toISOString().slice(0, 10), W / 2, H - 20);
+    return cv.toDataURL("image/png");
   }
 
   async function diceAction(action) {
@@ -6373,6 +6624,83 @@
   document.getElementById("diceRollAction").addEventListener("click", () => diceAction("roll"));
   document.getElementById("diceHoldAction").addEventListener("click", () => diceAction("hold"));
   document.getElementById("soupHintButton").addEventListener("click", soupHint);
+  const soupRevealButton = document.getElementById("soupRevealButton");
+  if (soupRevealButton) {
+    soupRevealButton.addEventListener("click", soupReveal);
+  }
+  // 海龟汤「花火复盘」：同局缓存（后端按 completed_games 记忆），点一下生成
+  const soupResultRecapBtn = document.getElementById("soupResultRecapBtn");
+  if (soupResultRecapBtn) {
+    soupResultRecapBtn.addEventListener("click", async () => {
+      const btn = soupResultRecapBtn;
+      const recapBox = document.getElementById("soupResultRecap");
+      btn.disabled = true;
+      btn.textContent = "复盘生成中…";
+      try {
+        const data = await request("POST", "soup/recap", { visitor_token: visitorToken });
+        const text = String(data?.recap || "").trim() || "暂未生成复盘，稍后再试试。";
+        if (recapBox) { recapBox.textContent = text; recapBox.hidden = false; }
+        btn.textContent = "✨ 花火复盘";
+      } catch (error) {
+        showToast(error?.message || "复盘生成失败");
+        btn.textContent = "✨ 花火复盘";
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+  // 海龟汤「分享战报」：汤面 + 提问摘录（不画汤底）
+  const soupResultShare = document.getElementById("soupResultShare");
+  if (soupResultShare) {
+    soupResultShare.addEventListener("click", async () => {
+      const btn = soupResultShare;
+      btn.disabled = true;
+      try {
+        const url = await soupSharePosterUrl(buildSoupResult());
+        if (!url) throw new Error("empty");
+        savePosterImage(url, `海龟汤战报_${new Date().toISOString().slice(0, 10)}.png`);
+      } catch (_error) {
+        showToast("生成战报失败：请稍后重试");
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+  // 海龟汤「通知到群」：带上战报图，后端按本局幂等
+  const soupResultAnnounce = document.getElementById("soupResultAnnounce");
+  if (soupResultAnnounce) {
+    soupResultAnnounce.addEventListener("click", async () => {
+      const btn = soupResultAnnounce;
+      btn.disabled = true;
+      btn.textContent = "通知中…";
+      let image = "";
+      try {
+        image = await soupSharePosterUrl(buildSoupResult()) || "";
+      } catch (_imageError) { image = ""; }
+      try {
+        const data = await request("POST", "soup/announce", {
+          image,
+          visitor_token: visitorToken,
+        });
+        if (data?.announced) {
+          btn.textContent = "✅ 已通知（本局一次）";
+          showToast(data?.already ? "本局已通知过，未重复发送" : "已通知到群");
+        } else {
+          btn.textContent = "📢 通知到群";
+          btn.disabled = false;
+          showToast(
+            data?.disabled === false
+              ? "群发送失败（可能被禁言或机器人不在群里），稍后可以重试"
+              : "群通知未开启：请在插件配置开启 turtle_soup.group_announce_enabled",
+          );
+        }
+      } catch (error) {
+        showToast(error?.message || "通知失败");
+        btn.textContent = "📢 通知到群";
+        btn.disabled = false;
+      }
+    });
+  }
   document.getElementById("blackjackHitAction").addEventListener("click", () => blackjackAction("hit"));
   document.getElementById("blackjackStandAction").addEventListener("click", () => blackjackAction("stand"));
   drawCanvas.addEventListener("pointerdown", beginDrawing);

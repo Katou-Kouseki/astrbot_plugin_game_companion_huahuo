@@ -82,16 +82,18 @@ def test_judge_parsers_reject_unknown_verdict_and_overconfident_answer() -> None
     verdict, facts, solved_flag = parse_question_judgment(
         '{"verdict":"maybe","matched_facts":[0,9,"1"]}', fact_count=3
     )
+    # 「自信但没说到点子上」仍要拒绝；0.7 覆盖且命中全部事实的情况在
+    # tests/test_turtle_soup_upgrade.py 里另有正向用例（判定已放宽，见 CHANGELOG）
     solved, coverage, answer_facts = parse_answer_judgment(
-        '{"solved":true,"coverage":0.7,"matched_facts":[0,1,2]}', fact_count=3
+        '{"solved":true,"coverage":0.4,"matched_facts":[0]}', fact_count=3
     )
 
     assert verdict == "irrelevant"
     assert facts == {0, 1}
     assert not solved_flag
     assert not solved
-    assert coverage == 0.7
-    assert answer_facts == {0, 1, 2}
+    assert coverage == 0.4
+    assert answer_facts == {0}
 
     _, _, solved_flag2 = parse_question_judgment(
         '{"verdict":"yes","solved":true}',

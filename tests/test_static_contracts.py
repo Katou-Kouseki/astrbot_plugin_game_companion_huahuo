@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.65"
+    assert metadata["version"] == "0.5.66"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -1312,3 +1312,29 @@ def test_state_polling_supports_unchanged_rev() -> None:
     assert "&rev=${encodeURIComponent(String(room.rev))}" in script
     assert "if (data?.data?.unchanged) {" in script
     assert "function applyUnchangedState(" in script
+
+
+def test_turtle_soup_upgrade_contracts() -> None:
+    """海龟汤升级的三块关键链路不能只做后端或只做前端。"""
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    # 路由：揭晓 / 通知 / 复盘
+    for path in ("soup/reveal", "soup/announce", "soup/recap"):
+        assert path in server
+    # 结束流程必须冻结海龟汤快照，否则「再来一道」后播报会读到新题
+    assert "self._snapshot_soup_result(room)" in manager
+    # 超时兜底揭晓必须在 tick 里触发，而不是只有玩家手动点
+    assert 'await self.force_reveal_soup(need_soup_reveal, reason="timeout")' in manager
+    # 快照不含汤底
+    assert '"solution"' not in manager.split("def _snapshot_soup_result", 1)[1].split(
+        "def ", 1
+    )[0]
+    # 前端结算面板与海报
+    assert 'id="soupResultPanel"' in page
+    assert 'id="soupRevealButton"' in page
+    assert "function soupSharePosterUrl(" in script
+    assert "function renderSoupResult(" in script
+    assert "renderSoupResult(game);" in script

@@ -185,6 +185,24 @@ def _undercover_identity_key(seat: "PlayerSeat") -> tuple[str, str]:
     return f"name:{name or '?'}", name
 
 
+def soup_reveal_required(room: "GameRoom") -> int:
+    """海龟汤「揭晓汤底」需要多少人同意：在席真人过半，单人房直接放行。
+
+    这里不把 AI 座位算进分母：花火是出题方，不该参与「要不要看答案」的表决。
+    """
+    state = room.multiplayer
+    if not state.enabled:
+        return 1
+    people = sum(
+        1
+        for seat in state.seats
+        if not seat.is_ai and str(seat.visitor_token or "")
+    )
+    if people <= 1:
+        return 1
+    return people // 2 + 1
+
+
 def _seat_badges(seat: "PlayerSeat", room: "GameRoom") -> list[dict[str, object]]:
     """按玩家身份（QQ 稳定键 / 名字）即时计算「藏品/护身符」徽章。
 
@@ -402,6 +420,8 @@ class GameRoom:
     # 棋类终局快照：播报 / 复盘 / 海报都读这里。玩家可能立刻点「再来一局」，
     # room.game 会被新对局替换，异步任务若直接读 room.game 就会播成新局的 0/1 手。
     last_board_result: dict[str, object] | None = None
+    # 海龟汤终局快照：群通知 / 分享战报 / 复盘读取本局汤面、提问与结果（不含汤底）
+    last_soup_result: dict[str, object] | None = None
     # 上一次自动播报的时间戳（0 = 从未播报），用于刷屏节流
     last_board_announce_at: float = 0.0
     # 冷却窗口内结束的对局先攒在这里，窗口结束时合并成一条「连战 N 局」发出，
@@ -844,7 +864,8 @@ class GameRoom:
                 )
                 if isinstance(self.game, XiangqiGame)
                 else self.game.snapshot(
-                    viewer_uid=_visitor_uid(visitor.token) if visitor else None
+                    viewer_uid=_visitor_uid(visitor.token) if visitor else None,
+                    reveal_required=soup_reveal_required(self),
                 )
                 if isinstance(self.game, TurtleSoupGame)
                 else self.game.snapshot()
@@ -862,6 +883,14 @@ class GameRoom:
                 self.game_type in {"gomoku", "othello", "xiangqi", "weiqi"}
                 and self.last_announced_uid
                 == f"board:{int(self.completed_games or 0)}"
+            ),
+            # 海龟汤本局结果快照（不含汤底）：分享战报 / 花火复盘 / 通知到群都读它，
+            # 这样玩家点「再来一道」后仍能取到上一局的汤面与提问。
+            "soup_result": self.last_soup_result,
+            "soup_announced": bool(
+                self.game_type == "turtle_soup"
+                and self.last_announced_uid
+                == f"soup:{int(self.completed_games or 0)}"
             ),
             "leaderboard": (
                 [
