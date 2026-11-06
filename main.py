@@ -944,6 +944,87 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
 </body>
 </html>"""
 
+# 服务端「海龟汤战报」海报的 HTML/Jinja2 模板（深夜汤屋的暖棕渐变，与前端 canvas 海报
+# 同一套视觉：汤面 → 统计 → 「他们问过」卡片 → 结果条）。刻意不含汤底。
+_SOUP_POSTER_TMPL = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=720">
+<style>
+  html, body { margin: 0; padding: 0; background: #140e09; }
+  .poster {
+    width: 720px; min-height: 720px; box-sizing: border-box;
+    padding: 30px 46px 26px; display: flex; flex-direction: column; position: relative;
+    background: linear-gradient(160deg, #2b1d13 0%, #140e09 100%);
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif; color: #fff;
+  }
+  .poster::before {
+    content: ''; position: absolute; inset: 0; pointer-events: none;
+    background: radial-gradient(70% 30% at 50% 0%, rgba(255,209,102,.18), transparent 70%);
+  }
+  .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 10px; background: #ffd166; }
+  .head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    position: relative; padding-bottom: 12px; border-bottom: 4px solid #ffd166;
+  }
+  .head .t { font-size: 20px; font-weight: 700; color: #e5c99a; }
+  .head .r { font-size: 14px; color: rgba(229,201,154,.7); }
+  .title {
+    margin-top: 24px; font-size: 40px; font-weight: 900; line-height: 1.22; color: #fff;
+    position: relative; overflow-wrap: anywhere; word-break: break-all;
+  }
+  .surface {
+    margin-top: 14px; font-size: 21px; line-height: 1.55; color: #f0e4d2;
+    position: relative; overflow-wrap: anywhere; word-break: break-all;
+  }
+  .stats { margin-top: 14px; font-size: 16px; color: #c0a887; position: relative; }
+  .card {
+    margin-top: 18px; padding: 14px 18px; border-radius: 12px; position: relative;
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,209,102,.22);
+  }
+  .card .ct { font-size: 15px; color: #e5c99a; }
+  .card .qa {
+    margin-top: 8px; font-size: 17px; line-height: 1.5; color: #dccdb6;
+    overflow-wrap: anywhere; word-break: break-all;
+  }
+  .card .qa div + div { margin-top: 4px; }
+  .result { margin-top: 18px; padding: 13px 18px; border-radius: 12px; position: relative; }
+  .result.solved { background: rgba(255,209,102,.16); }
+  .result.failed { background: rgba(255,255,255,.06); }
+  .result .rt { font-size: 22px; font-weight: 800; color: #ffd166; }
+  .result.failed .rt { color: #c9bda8; }
+  .result .rs { margin-top: 4px; font-size: 13px; color: rgba(240,228,210,.55); }
+  .foot { margin-top: auto; padding-top: 22px; text-align: center; position: relative; }
+  .foot .f1 { font-size: 18px; font-weight: 800; color: #ffd166; }
+  .foot .f2 { margin-top: 6px; font-size: 13px; color: rgba(229,201,154,.55); }
+</style>
+</head>
+<body>
+<div class="poster">
+  <div class="head"><span class="t">🐢 海龟汤 · 单局战报</span><span class="r">{{ date }}</span></div>
+  <div class="title">{{ title }}</div>
+  {% if surface %}<div class="surface">{{ surface }}</div>{% endif %}
+  <div class="stats">{{ stats }}</div>
+  {% if questions %}
+  <div class="card">
+    <div class="ct">他们问过</div>
+    <div class="qa">{% for q in questions %}<div>{{ q }}</div>{% endfor %}</div>
+  </div>
+  {% endif %}
+  <div class="result {{ 'solved' if solved else 'failed' }}">
+    <div class="rt">{{ result_text }}</div>
+    <div class="rs">{{ result_sub }}</div>
+  </div>
+  <div class="foot">
+    <div class="f1">花火陪你玩 · 想知道答案，就自己来试一局</div>
+    <div class="f2">{{ date }}</div>
+  </div>
+  <div class="bar"></div>
+</div>
+</body>
+</html>"""
+
 # 服务端「战绩日报/周报」排行榜海报的 HTML/Jinja2 模板（深蓝榜单卡风格：图标头、
 # 金色圆章奖牌 + 名字 + 进度条 + 胜场，前三名金色高亮）。
 _UNDERCOVER_REPORT_TMPL = """<!DOCTYPE html>
@@ -2384,6 +2465,189 @@ class GameCompanionPlugin(Star):
             )
         except Exception as exc:
             yield event.plain_result(text + f"\n\n（海报已生成但发送失败：{exc}）")
+
+    @filter.command("海龟汤战报", alias={"汤战报", "海龟汤战报样式测试"})
+    async def soup_report_test(self, event: AstrMessageEvent, state: str = ""):
+        """用示例数据生成一局海龟汤的战报（群通知文案 + 花火复盘 + 战报海报）。
+
+        顶层指令：直接发送「海龟汤战报 / 汤战报」即可触发。
+        可选参数：解开 / 未解开（默认解开），例如「海龟汤战报 未解开」。
+        示例数据是完整的（含汤底与 5 条提问），汤底只在聊天文字里给出并标注「仅测试」：
+        正式的海报与群通知都不含汤底，这样没玩过的人还能自己玩。
+        """
+        room = self._soup_sample_room(solved=not self._soup_state_unsolved(state))
+        announce = self._soup_announce_text(room) or "示例战报文案生成失败"
+        header = "🧪 海龟汤战报测试（示例数据）\n\n"
+        tail = (
+            f"\n\n🔒 汤底（仅测试指令展示，正式海报 / 群通知都不包含）："
+            f"{getattr(room, 'sample_solution', '')}"
+            f"\n\n📝 复盘（示例文案，真实场景由 AI 生成）："
+            "这局大家一直围着「他在等谁」打转，好几次都摸到门口了，"
+            "可惜最后一步没敢问下去。想知道答案就自己来试一局吧～"
+        )
+        try:
+            image_data = await self._soup_announce_poster(room)
+        except Exception as exc:
+            yield event.plain_result(header + announce + tail + f"\n\n（海报生成失败：{exc}）")
+            return
+        try:
+            from astrbot.api.message_components import Image
+
+            yield event.chain_result(
+                MessageChain(
+                    [Plain(header + announce + tail + "\n\n"), Image(file=f"base64://{image_data}")]
+                )
+            )
+        except Exception as exc:
+            yield event.plain_result(header + announce + tail + f"\n\n（海报已生成但发送失败：{exc}）")
+
+    @filter.command("海龟汤海报", alias={"汤海报", "海龟汤海报样式测试"})
+    async def soup_poster_test(self, event: AstrMessageEvent, state: str = ""):
+        """只用示例数据出一张海龟汤战报海报（纯图，方便快速看版式）。
+
+        顶层指令：直接发送「海龟汤海报 / 汤海报」即可触发。
+        可选参数：解开 / 未解开（默认解开），例如「海龟汤海报 未解开」。
+        """
+        room = self._soup_sample_room(solved=not self._soup_state_unsolved(state))
+        try:
+            image_data = await self._soup_announce_poster(room)
+        except Exception as exc:
+            yield event.plain_result(
+                f"生成测试海报失败：{exc}（需要 AstrBot t2i 或服务端 Pillow + 中文字体）"
+            )
+            return
+        try:
+            from astrbot.api.message_components import Image
+
+            yield event.chain_result(
+                MessageChain([Image(file=f"base64://{image_data}")])
+            )
+        except Exception as exc:
+            yield event.plain_result(f"海报已生成但发送失败：{exc}")
+
+    @staticmethod
+    def _soup_state_unsolved(state: str) -> bool:
+        """战报测试指令的参数解析：判断要不要出「没人解开」的版式。"""
+        text = str(state or "").strip().lower()
+        return text in {
+            "未解开", "没解开", "失败", "无人解开", "timeout", "failed", "unsolved", "no",
+        }
+
+    def _soup_sample_room(self, *, solved: bool = True) -> Any:
+        """构造一局示例海龟汤（含汤底与 5 条提问），供战报/海报测试指令使用。
+
+        走真实的 TurtleSoupGame + manager._snapshot_soup_result，等于顺带验证了
+        「快照 → 文案 / 海报」这条链路（含提问的剧透遮蔽）。
+        """
+        from types import SimpleNamespace
+
+        from .turtle_soup import SoupEntry, SoupPuzzle, TurtleSoupGame
+
+        puzzle = SoupPuzzle(
+            title="每天两副碗筷",
+            surface=(
+                "男人独居十年，每天下班回家都要摆两副碗筷，把饭吃完，"
+                "再把另一副洗干净收进橱柜。邻居劝过他很多次，他总说「她只是还没回来」。"
+                "这是为什么？"
+            ),
+            solution=(
+                "妻子三年前在那个雨夜突发心梗，倒在厨房里再没醒过来。"
+                "他从此每天摆出第二副碗筷，好像她只是加班晚归；"
+                "直到妹妹带他去看医生，他才把碗筷收进了柜子最深处。"
+            ),
+            key_facts=(
+                "他一个人住",
+                "第二副碗筷不是给客人的",
+                "妻子已经去世",
+                "摆碗筷是他不肯承认的习惯",
+            ),
+            acceptable_variants=(),
+            hints=(
+                "和「等待」有关",
+                "屋子里发生过一件事",
+                "问题不在碗筷，在谁缺席",
+            ),
+            content_level="normal",
+            theme="家庭",
+            trick="独居男人多摆一副碗筷，是留给再也回不来的妻子",
+        )
+        game = TurtleSoupGame(difficulty="normal", max_hints=3, content_level="normal")
+        game.puzzle = puzzle
+        game.phase = "finished"
+        game.entries = [
+            SoupEntry(
+                kind="question",
+                prompt="他在等人回来吗？",
+                response="是",
+                source="web",
+                verdict="yes",
+                player_number=1,
+            ),
+            SoupEntry(
+                kind="question",
+                prompt="等的人已经不在人世了吗？",
+                response="是，而且走得很突然",
+                source="web",
+                verdict="yes",
+                player_number=2,
+            ),
+            SoupEntry(
+                kind="hint",
+                prompt="提示 1",
+                response="和「等待」有关",
+                source="system",
+            ),
+            SoupEntry(
+                kind="question",
+                prompt="是不是和一场意外有关？",
+                response="部分正确，是一起突发的意外",
+                source="qq",
+                verdict="partial",
+                player_number=3,
+            ),
+            SoupEntry(
+                kind="answer",
+                prompt="他是在给去世的妻子留位置",
+                response="还差一点：不是「留位置」，是「不肯承认」",
+                source="web",
+                verdict="partial",
+                player_number=1,
+            ),
+            SoupEntry(
+                kind="question",
+                prompt="邻居知道这件事吗？",
+                response="无关",
+                source="web",
+                verdict="irrelevant",
+                player_number=2,
+            ),
+            SoupEntry(
+                kind="question",
+                prompt="他后来停下来了吗？",
+                response="停了，但花了好几年",
+                source="web",
+                verdict="yes",
+                player_number=3,
+            ),
+        ]
+        game.question_count = 5
+        game.hints_used = 2
+        game.answer_attempts = 2 if solved else 3
+        game.discovered_facts = {0, 1, 3} if solved else {0, 2}
+        game.solved = solved
+        game.end_reason = "solved" if solved else "timeout"
+        room = SimpleNamespace(
+            game_type="turtle_soup",
+            completed_games=3,
+            status="finished",
+            difficulty="normal",
+            multiplayer=SimpleNamespace(seats=[]),
+            game=game,
+            recap_cache={},
+        )
+        self.manager._snapshot_soup_result(room)
+        room.sample_solution = puzzle.solution
+        return room
 
     async def _bind_game_player_text(
         self, event: AstrMessageEvent, identity_token: str
@@ -5750,6 +6014,205 @@ class GameCompanionPlugin(Star):
             f"玩家主要问过：{asked or '（还没来得及提问）'}"
         )
 
+    def _soup_poster_data(self, room: GameRoom) -> dict[str, Any]:
+        """提取海龟汤战报海报所需数据（t2i 模板与 Pillow 兜底共用）。
+
+        与 `_soup_announce_text` 同一套取舍：只给汤面、提问摘录与结果，**不含汤底**，
+        也不复述玩家最后猜中的原话——海报会被转到别的群里，剧透就废题。
+        """
+        payload = self._soup_result_payload(room) or {}
+        questions = int(payload.get("question_count") or 0)
+        hints = int(payload.get("hints_used") or 0)
+        attempts = int(payload.get("answer_attempts") or 0)
+        facts = int(payload.get("key_fact_count") or 0)
+        discovered = int(payload.get("discovered_fact_count") or 0)
+        stats = f"提问 {questions} 次 · 提示 {hints} 次 · 推理 {attempts} 次"
+        if facts:
+            stats += f" · 关键事实 {discovered}/{facts}"
+        qa: list[str] = []
+        for entry in self._soup_pick_questions(payload, limit=4):
+            prompt = str(entry.get("prompt") or "").strip()
+            if not prompt:
+                continue
+            # 提问常是一长串假设，海报一行放不下：按字符截断，别把版面撑爆
+            if len(prompt) > 60:
+                prompt = prompt[:58] + "…"
+            answer = str(entry.get("response") or "已答").strip() or "已答"
+            qa.append(f"「{prompt}」→ {answer[:40]}")
+        solved = bool(payload.get("solved"))
+        end_reason = str(payload.get("end_reason") or "")
+        if solved:
+            result_text = "🏆 汤底被解开了"
+        elif end_reason == "timeout":
+            result_text = "🌫 没人解开，超时揭晓"
+        else:
+            result_text = "🌫 这道题没人解开"
+        return {
+            "date": time.strftime("%Y-%m-%d"),
+            "title": str(payload.get("title") or "海龟汤"),
+            "surface": str(payload.get("surface") or "").strip(),
+            "stats": stats,
+            "questions": qa,
+            "solved": solved,
+            "result_text": result_text,
+            "result_sub": "汤底？先卖个关子。",
+        }
+
+    async def _soup_announce_poster(self, room: GameRoom) -> str:
+        """生成「海龟汤战报」海报，返回 base64 PNG。
+
+        t2i（HTML 渲染）优先，不可用时回退 Pillow 手绘；两者都失败则抛异常，
+        由调用方回退纯文字。注意：前端「分享战报」走的是浏览器 canvas，与本函数
+        同款视觉但各自独立，改版时两边要一起看。
+        """
+        try:
+            return await self._soup_poster_t2i(room)
+        except Exception as exc:
+            logger.warning("[GameCompanion] t2i 渲染海龟汤战报海报失败，回退 Pillow: %s", exc)
+        return await asyncio.to_thread(self._soup_poster_pillow, room)
+
+    async def _soup_poster_t2i(self, room: GameRoom) -> str:
+        """用 AstrBot 的 t2i（HTML 渲染）生成海龟汤战报海报，返回 base64 PNG。"""
+        render = getattr(self, "html_render", None)
+        if not callable(render):
+            raise RuntimeError("当前 AstrBot 未提供 html_render（t2i）能力")
+        data = self._soup_poster_data(room)
+        options = {
+            "type": "png",
+            "full_page": True,
+            "viewport_width": 720,
+            "device_scale_factor_level": "ultra",
+            "timeout": 20000,
+        }
+        url = await asyncio.wait_for(
+            render(_SOUP_POSTER_TMPL, data, options=options), timeout=8
+        )
+        if not url:
+            raise RuntimeError("t2i 渲染返回空结果")
+        return await self._download_image_base64(url)
+
+    def _soup_poster_pillow(self, room: GameRoom) -> str:
+        """Pillow 手绘「海龟汤战报」海报（t2i 不可用时的兜底），返回 base64 PNG。"""
+        from PIL import Image, ImageDraw  # 可选依赖，缺失时回退纯文字
+
+        import io
+
+        data = self._soup_poster_data(room)
+        S = 1.5
+        W = int(720 * S)
+        pad = int(46 * S)
+        text_w = W - pad * 2
+        probe = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
+        f_title = _pillow_font(True, int(38 * S))
+        f_surface = _pillow_font(False, int(21 * S))
+        f_stats = _pillow_font(False, int(16 * S))
+        f_qa = _pillow_font(False, int(17 * S))
+        f_small = _pillow_font(False, int(13 * S))
+        ef = _pillow_emoji_font(int(22 * S))
+        title_lines = _pillow_wrap(probe, data["title"], text_w, f_title, 2, ef)
+        surface_lines = _pillow_wrap(probe, data["surface"], text_w, f_surface, 8, ef)
+        qa_lines: list[str] = []
+        for line in data["questions"]:
+            qa_lines.extend(_pillow_wrap(probe, line, text_w - int(28 * S), f_qa, 2, ef))
+        # 先用宽松的高度建画布，画完再裁到内容底部（省得手算每一段间距）
+        est = 96 + len(title_lines) * 52 + 14 + len(surface_lines) * 32 + 34
+        if qa_lines:
+            est += 30 + len(qa_lines) * 26 + 40
+        H = int((est + 86 + 110) * S)
+        img = Image.new("RGBA", (W, H), (20, 14, 9, 255))
+        d = ImageDraw.Draw(img, "RGBA")
+        top_c, bottom_c = (43, 29, 19), (20, 14, 9)
+
+        def base_at(yy: float) -> tuple[int, int, int]:
+            """渐变背景在某个高度上的底色（半透明色块要先混上去，见 _pillow_blend）。"""
+            t = max(0.0, min(1.0, yy / max(1, H - 1)))
+            return tuple(round(c + (b - c) * t) for c, b in zip(top_c, bottom_c))
+
+        for y in range(H):
+            d.line([(0, y), (W, y)], fill=base_at(y) + (255,))
+        # 顶部横幅（题头 + 日期 + 金色分隔线）
+        ef_h = _pillow_emoji_font(int(20 * S))
+        _pillow_draw_text(
+            d, pad, int(46 * S), "🐢 海龟汤 · 单局战报",
+            _pillow_font(False, int(20 * S)), (229, 201, 154, 255), efont=ef_h,
+        )
+        _pillow_draw_text(
+            d, W - pad, int(46 * S), data["date"], f_small,
+            (229, 201, 154, 178), anchor="rs",
+        )
+        d.rectangle([pad, int(68 * S), W - pad, int(72 * S)], fill=(255, 209, 102, 255))
+        y = int(104 * S)
+        for line in title_lines:
+            _pillow_draw_text(d, pad, y, line, f_title, (255, 255, 255, 255), efont=ef)
+            y += int(52 * S)
+        y += int(14 * S)
+        for line in surface_lines:
+            _pillow_draw_text(d, pad, y, line, f_surface, (240, 228, 210, 255), efont=ef)
+            y += int(32 * S)
+        y += int(26 * S)
+        _pillow_draw_text(d, pad, y, data["stats"], f_stats, (192, 168, 135, 255), efont=ef)
+        y += int(22 * S)
+        if qa_lines:
+            card_top = y
+            card_h = int((30 + len(qa_lines) * 26 + 14) * S)
+            d.rounded_rectangle(
+                [pad, card_top, W - pad, card_top + card_h],
+                radius=int(12 * S),
+                fill=_pillow_blend(base_at(card_top), (255, 255, 255), 13),
+                outline=_pillow_blend(base_at(card_top), (255, 209, 102), 56),
+                width=max(1, int(1 * S)),
+            )
+            _pillow_draw_text(
+                d, pad + int(14 * S), card_top + int(24 * S), "他们问过",
+                _pillow_font(False, int(15 * S)), (229, 201, 154, 255), efont=ef,
+            )
+            qy = card_top + int(50 * S)
+            for line in qa_lines:
+                _pillow_draw_text(
+                    d, pad + int(14 * S), qy, line, f_qa, (220, 205, 182, 255), efont=ef,
+                )
+                qy += int(26 * S)
+            y = card_top + card_h + int(18 * S)
+        # 结果条
+        solved = bool(data["solved"])
+        bar_h = int(62 * S)
+        d.rounded_rectangle(
+            [pad, y, W - pad, y + bar_h], radius=int(12 * S),
+            fill=(
+                _pillow_blend(base_at(y), (255, 209, 102), 41)
+                if solved
+                else _pillow_blend(base_at(y), (255, 255, 255), 15)
+            ),
+        )
+        _pillow_draw_text(
+            d, pad + int(16 * S), y + int(30 * S), data["result_text"],
+            _pillow_font(True, int(22 * S)),
+            (255, 209, 102, 255) if solved else (201, 189, 168, 255), efont=ef,
+        )
+        _pillow_draw_text(
+            d, pad + int(16 * S), y + int(50 * S), data["result_sub"], f_small,
+            (240, 228, 210, 140),
+        )
+        y += bar_h
+        # 脚标 + 裁切（auto 高度）
+        foot_y = y + int(36 * S)
+        _pillow_draw_text(
+            d, W / 2, foot_y, "花火陪你玩 · 想知道答案，就自己来试一局",
+            _pillow_font(True, int(18 * S)), (255, 209, 102, 255), anchor="mm", efont=ef,
+        )
+        _pillow_draw_text(
+            d, W / 2, foot_y + int(24 * S), data["date"], f_small,
+            (229, 201, 154, 140), anchor="mm",
+        )
+        crop_bottom = min(H, foot_y + int(46 * S))
+        img = img.crop((0, 0, W, crop_bottom))
+        ImageDraw.Draw(img, "RGBA").rectangle(
+            [0, crop_bottom - int(10 * S), W, crop_bottom], fill=(255, 209, 102, 255)
+        )
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, "PNG")
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+
     async def soup_recap(self, room: GameRoom) -> str:
         """生成一局海龟汤的短复盘（结算卡「花火复盘」/「通知到群」共用）。
 
@@ -5833,14 +6296,28 @@ class GameCompanionPlugin(Star):
     async def _auto_announce_soup(self, room: GameRoom) -> None:
         """局末自动播报（turtle_soup.group_announce_auto）。
 
-        与棋类一致：图文模式下服务端没有前端，先发文字；发送成功后写幂等标记，
-        避免玩家再手动点「通知到群」时重复刷群。
+        与棋类一致：图文模式下服务端没有前端，用 t2i / Pillow 现画一张海报；
+        发送成功后写幂等标记，避免玩家再手动点「通知到群」时重复刷群。
         """
         try:
-            # 自动播报发生在服务端，没有前端页面可以画海报；这里固定发文字，
-            # 图片由结算卡上的「通知到群」带（前端 canvas 生成），别让自动播报
-            # 因为等图而拖住结束流程。
-            text = await self.soup_announce_result(room, "")
+            # 播报关掉时直接返回：别为了一个不会发出去的图白跑一次 t2i 渲染。
+            if not getattr(self, "turtle_soup_group_announce_enabled", False):
+                return
+            if getattr(room, "game_type", "") != "turtle_soup":
+                return
+            image_data = ""
+            style = (
+                getattr(self, "turtle_soup_group_announce_style", "text") or "text"
+            ).lower()
+            if style in {"image", "both"}:
+                try:
+                    image_data = await self._soup_announce_poster(room)
+                except Exception as exc:
+                    logger.warning(
+                        "[GameCompanion] 自动播报生成本局海龟汤海报失败，改发纯文字: %s", exc
+                    )
+                    image_data = ""
+            text = await self.soup_announce_result(room, image_data)
             if text:
                 room.last_announced_uid = f"soup:{int(room.completed_games)}"
                 room.last_announced_text = text

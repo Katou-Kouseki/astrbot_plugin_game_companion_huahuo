@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import time
 from pathlib import Path
@@ -331,3 +332,111 @@ def test_soup_settings_exist_in_schema_and_panel() -> None:
 
     panel = next(item for item in GAME_CATALOG if item["game_type"] == "turtle_soup")
     assert "auto_reveal_seconds" in {field["key"] for field in panel["fields"]}
+
+
+# ---------------- 战报 / 海报测试指令 ----------------
+
+
+def sample_plugin(tmp_path: Path) -> GameCompanionPlugin:
+    plugin = make_plugin(tmp_path)
+    plugin.manager = RoomManager(turtle_soup_max_players=4)
+    return plugin
+
+
+def test_soup_sample_room_has_full_content_but_snapshot_never_leaks_solution(
+    tmp_path: Path,
+) -> None:
+    """测试指令的示例数据要「完整」，但快照（会推给前端）不能带汤底。"""
+    plugin = sample_plugin(tmp_path)
+    room = plugin._soup_sample_room(solved=True)
+    payload = room.last_soup_result
+
+    assert payload["title"] == "每天两副碗筷"
+    assert payload["surface"].startswith("男人独居十年")
+    assert payload["solved"] is True
+    assert payload["end_reason"] == "solved"
+    assert payload["question_count"] == 5
+    assert "solution" not in payload, "快照会被推给前端，绝不能带汤底"
+    dumped = json.dumps(payload, ensure_ascii=False)
+    for secret in ("心梗", "柜子最深处"):
+        assert secret not in dumped
+    # 汤底只在测试指令的聊天文字里给出（room.sample_solution）
+    assert "心梗" in room.sample_solution
+
+
+def test_soup_poster_data_keeps_strong_questions_only(tmp_path: Path) -> None:
+    plugin = sample_plugin(tmp_path)
+    data = plugin._soup_poster_data(plugin._soup_sample_room(solved=True))
+
+    assert data["title"] == "每天两副碗筷"
+    assert data["stats"].startswith("提问 5 次")
+    assert len(data["questions"]) == 4
+    assert any("意外" in q for q in data["questions"])
+    assert all("邻居" not in q for q in data["questions"]), "无关提问不该上海报"
+    assert data["result_text"].startswith("🏆")
+    assert "心梗" not in json.dumps(data, ensure_ascii=False)
+
+
+def test_soup_poster_data_marks_timeout_variant(tmp_path: Path) -> None:
+    plugin = sample_plugin(tmp_path)
+    data = plugin._soup_poster_data(plugin._soup_sample_room(solved=False))
+
+    assert data["solved"] is False
+    assert data["result_text"] == "🌫 没人解开，超时揭晓"
+
+
+def test_soup_poster_pillow_renders_png(tmp_path: Path) -> None:
+    pytest.importorskip("PIL")
+    plugin = sample_plugin(tmp_path)
+    for solved in (True, False):
+        raw = base64.b64decode(
+            plugin._soup_poster_pillow(plugin._soup_sample_room(solved=solved))
+        )
+        assert raw.startswith(b"\x89PNG\r\n\x1a\n")
+        assert len(raw) > 5000
+
+
+@pytest.mark.asyncio
+async def test_auto_announce_draws_poster_only_when_style_needs_image(
+    tmp_path: Path,
+) -> None:
+    plugin = sample_plugin(tmp_path)
+    plugin.turtle_soup_group_announce_recap = False
+    calls: dict[str, object] = {}
+
+    async def fake_poster(_room: object) -> str:
+        calls["poster"] = True
+        return "BASE64"
+
+    async def fake_image(_room: object, text: str, image: str, recap: str = "") -> bool:
+        calls["image"] = (text, image, recap)
+        return True
+
+    async def fake_text(_room: object, text: str) -> bool:
+        calls["text"] = text
+        return True
+
+    plugin._soup_announce_poster = fake_poster  # type: ignore[assignment]
+    plugin._send_to_origin_image = fake_image  # type: ignore[assignment]
+    plugin._send_to_origin = fake_text  # type: ignore[assignment]
+
+    plugin.turtle_soup_group_announce_style = "text"
+    text_room = plugin._soup_sample_room(solved=True)
+    text_room.last_announced_uid = ""
+    await plugin._auto_announce_soup(text_room)
+    assert "poster" not in calls, "纯文字模式不该白花时间画图"
+    assert text_room.last_announced_uid == f"soup:{int(text_room.completed_games)}"
+
+    calls.clear()
+    image_room = plugin._soup_sample_room(solved=True)
+    plugin.turtle_soup_group_announce_style = "both"
+    await plugin._auto_announce_soup(image_room)
+    assert calls.get("poster") is True
+    assert calls["image"][1] == "BASE64"  # type: ignore[index]
+
+
+def test_soup_poster_test_commands_are_registered() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert '@filter.command("海龟汤战报"' in source
+    assert '@filter.command("海龟汤海报"' in source
+    assert "_SOUP_POSTER_TMPL" in source
