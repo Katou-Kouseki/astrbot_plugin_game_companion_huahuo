@@ -209,7 +209,6 @@ class RoomManager:
         turtle_soup_free_question_cooldown: int = 1,
         turtle_soup_auto_reveal_seconds: int = 1800,
         turtle_soup_bot_join: bool = True,
-        turtle_soup_bot_join_every: int = 1,
         multiplayer_turn_timeout: int = 60,
         duel_turn_timeout: int = 180,
         duel_offline_grace: int = 90,
@@ -261,9 +260,8 @@ class RoomManager:
         self.turtle_soup_auto_reveal_seconds = max(
             0, int(turtle_soup_auto_reveal_seconds)
         )
-        # 玩家出题时花火是否参与、每隔几次玩家行动跟一次（1 = 与玩家同节奏）
+        # 玩家出题时花火是否作为普通参与者一起猜；节奏按在线玩家数自动换算
         self.turtle_soup_bot_join = bool(turtle_soup_bot_join)
-        self.turtle_soup_bot_join_every = max(1, int(turtle_soup_bot_join_every))
         self.multiplayer_turn_timeout = max(0, int(multiplayer_turn_timeout))
         # 棋类对弈：每步倒计时（0 关闭）与掉线后等待重连的宽限秒数
         self.duel_turn_timeout = max(0, int(duel_turn_timeout))
@@ -3080,6 +3078,28 @@ class RoomManager:
         return True
 
     # ---------------- 海龟汤：玩家出题人 ----------------
+
+    def _online_soup_players(self, room: GameRoom, now: float | None = None) -> int:
+        """当前在线、能提问的玩家数（不含玩家出题人）。
+
+        花火的参与节奏按这个数算：N 个在线玩家各问一次，才轮到花火问一次，
+        所以人越多它越不会抢话。单机位房间按 1 人算，保证它不会一直不动。
+        阈值比回合轮转的 15 秒宽一点，免得浏览器后台节流把人数算少。
+        """
+        current = time.time() if now is None else float(now)
+        state = room.multiplayer
+        if not state.enabled or not state.seats:
+            return 1
+        game = room.game
+        host = int(getattr(game, "host_number", 0) or 0) if game is not None else 0
+        count = 0
+        for seat in state.seats:
+            if host and int(seat.number) == host:
+                continue
+            visitor = room.visitors.get(seat.visitor_token)
+            if visitor and visitor.connected and current - visitor.last_seen_at < 30:
+                count += 1
+        return max(1, count)
 
     def _soup_host_seat(self, room: GameRoom) -> PlayerSeat | None:
         """房间当前自荐的出题人座位（还没开局时用 room.soup_host_number）。"""

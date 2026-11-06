@@ -197,14 +197,13 @@ def test_host_mode_routes_and_ui_are_wired() -> None:
 # ---------------- 花火参与的开关与节奏 ----------------
 
 
-def make_bot_plugin(manager: RoomManager, *, join: bool, every: int = 1):
+def make_bot_plugin(manager: RoomManager, *, join: bool):
     """构造一个只跑「花火回合」的插件实例，模型调用换成可控桩。"""
     from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
 
     plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
     plugin.manager = manager
     plugin.turtle_soup_bot_join = join
-    plugin.turtle_soup_bot_join_every = every
     calls: list[str] = []
     reply = {"value": '{"action":"question","text":"这件事和一场意外有关吗？"}'}
 
@@ -244,12 +243,12 @@ async def test_bot_join_switch_off_never_calls_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bot_join_rhythm_is_one_for_one() -> None:
-    """默认 every=1：玩家问一句，花火跟一句，交替进行。"""
+async def test_bot_join_rhythm_is_one_for_one_when_only_one_player() -> None:
+    """只有 1 位在线玩家时，玩家问一句、花火跟一句（人数就是 1）。"""
     manager = RoomManager(turtle_soup_max_players=4)
     room, visitors = await make_room(manager)
     game = await start_host_game(manager, room, visitors[0].token)
-    plugin, calls, _ = make_bot_plugin(manager, join=True, every=1)
+    plugin, calls, _ = make_bot_plugin(manager, join=True)
 
     await ask_and_judge(manager, room, visitors[1], visitors[0].token, "他是不是在等人？")
     await plugin._soup_bot_turn(room, game)
@@ -269,17 +268,37 @@ async def test_bot_join_rhythm_is_one_for_one() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bot_join_every_two_waits_for_second_player_move() -> None:
-    manager = RoomManager(turtle_soup_max_players=4, turtle_soup_bot_join_every=2)
-    room, visitors = await make_room(manager)
+async def test_bot_join_waits_for_every_online_player_once() -> None:
+    """2 位在线玩家：两人各问一次，才轮到花火一次，不再一句一交替。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    room, visitors = await make_room(manager, seats=3)
     game = await start_host_game(manager, room, visitors[0].token)
-    plugin, calls, _ = make_bot_plugin(manager, join=True, every=2)
+    plugin, calls, _ = make_bot_plugin(manager, join=True)
+
+    assert manager._online_soup_players(room) == 2, "出题人不算参与人数"
 
     await ask_and_judge(manager, room, visitors[1], visitors[0].token, "他是不是在等人？")
     await plugin._soup_bot_turn(room, game)
-    assert calls == [], "every=2 时第一个玩家行动还不够"
+    assert calls == [], "第 1 位玩家问过还不该轮到花火"
 
-    await ask_and_judge(manager, room, visitors[1], visitors[0].token, "和钱有关吗？")
+    await ask_and_judge(manager, room, visitors[2], visitors[0].token, "和钱有关吗？")
+    await plugin._soup_bot_turn(room, game)
+    assert calls == ["called"]
+    assert game.pending_judge is not None
+
+
+@pytest.mark.asyncio
+async def test_bot_join_interval_shrinks_when_a_player_drops_offline() -> None:
+    """掉线的人不算人数：2 人局掉到 1 人后，玩家问一次就能轮到花火。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    room, visitors = await make_room(manager, seats=3)
+    game = await start_host_game(manager, room, visitors[0].token)
+    plugin, calls, _ = make_bot_plugin(manager, join=True)
+
+    visitors[2].connected = False
+    assert manager._online_soup_players(room) == 1
+
+    await ask_and_judge(manager, room, visitors[1], visitors[0].token, "他是不是在等人？")
     await plugin._soup_bot_turn(room, game)
     assert calls == ["called"]
     assert game.pending_judge is not None
@@ -310,7 +329,10 @@ def test_bot_join_settings_are_exposed_in_schema() -> None:
     items = schema["turtle_soup"]["items"]
 
     assert items["bot_join_player_host"]["default"] is True
-    assert items["bot_join_every"]["default"] == 1
+    assert "bot_join_every" not in items, "节奏改为按在线人数自动，不再暴露配置"
     source = (root / "main.py").read_text(encoding="utf-8")
     assert '"turtle_soup.bot_join_player_host"' in source
-    assert '"turtle_soup.bot_join_every"' in source
+    assert "bot_join_every" not in source
+    manager = (root / "room_manager.py").read_text(encoding="utf-8")
+    assert "def _online_soup_players" in manager
+    assert "turtle_soup_bot_join_every" not in manager

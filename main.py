@@ -1629,12 +1629,9 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_group_announce_recap = self._cfg_bool(
             "turtle_soup.group_announce_recap", True
         )
-        # 玩家出题时花火是否作为参与者一起猜；节奏 = 每隔几次玩家行动跟一次
+        # 玩家出题时花火是否作为参与者一起猜；节奏按在线玩家数自动换算
         self.turtle_soup_bot_join = self._cfg_bool(
             "turtle_soup.bot_join_player_host", True
-        )
-        self.turtle_soup_bot_join_every = self._cfg_int(
-            "turtle_soup.bot_join_every", 1, minimum=1, maximum=5
         )
         self.draw_guess_vision_provider_id = self._cfg_str(
             "draw_guess.vision_provider_id", "agnes-ai/agnes-image-2.5-flash"
@@ -1870,7 +1867,6 @@ class GameCompanionPlugin(Star):
             turtle_soup_free_question_cooldown=self.turtle_soup_free_question_cooldown,
             turtle_soup_auto_reveal_seconds=self.turtle_soup_auto_reveal_seconds,
             turtle_soup_bot_join=self.turtle_soup_bot_join,
-            turtle_soup_bot_join_every=self.turtle_soup_bot_join_every,
             multiplayer_turn_timeout=self.multiplayer_turn_timeout,
             duel_turn_timeout=self.duel_turn_timeout,
             duel_offline_grace=self.duel_offline_grace,
@@ -4845,13 +4841,12 @@ class GameCompanionPlugin(Star):
             )
 
     async def _soup_bot_turn(self, room: GameRoom, game: TurtleSoupGame) -> None:
-        """玩家出题人模式：花火作为普通参与者，和玩家一个节奏。
+        """玩家出题人模式：花火作为普通参与者，节奏按在线玩家数自动换算。
 
-        节奏只看「自花火上次行动之后，玩家提交了几条问答」：够
-        `turtle_soup.bot_join_every` 条就轮到它（默认 1，即玩家问一句它跟一句，
-        与玩家轮流发言一致）。轮到它时自己决定提问还是推理；公开问答太少时
-        只允许提问，免得开局就瞎猜。花火不知道汤底——它和玩家一样只能看汤面
-        与已公开问答。
+        规则是「在线玩家各问一次，才轮到花火问一次」：3 个玩家在线就攒够 3 条
+        玩家问答才行动，2 个就攒 2 条。所以人越多它越不抢话，不会出现玩家问一句
+        它跟一句的交替。轮到它时自己决定提问还是推理；公开问答太少时只允许提问，
+        免得开局就瞎猜。花火不知道汤底——它和玩家一样只能看汤面与已公开问答。
         """
         try:
             if not getattr(self, "turtle_soup_bot_join", True):
@@ -4864,7 +4859,8 @@ class GameCompanionPlugin(Star):
                 or room.status != "active"
             ):
                 return
-            interval = max(1, int(getattr(self, "turtle_soup_bot_join_every", 1) or 1))
+            # 一位在线玩家一票：攒够「人数」条玩家问答才轮到花火
+            interval = max(1, int(self.manager._online_soup_players(room)))
             timeline = [
                 entry for entry in game.entries if entry.kind in {"question", "answer"}
             ]
@@ -9938,9 +9934,6 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_bot_join = self._cfg_bool(
             "turtle_soup.bot_join_player_host", True
         )
-        self.turtle_soup_bot_join_every = self._cfg_int(
-            "turtle_soup.bot_join_every", 1, minimum=1, maximum=5
-        )
         self.multiplayer_turn_timeout = self._cfg_int(
             "multiplayer.turn_timeout_seconds", 60, minimum=0, maximum=3600
         )
@@ -9992,7 +9985,6 @@ class GameCompanionPlugin(Star):
             self.turtle_soup_auto_reveal_seconds
         )
         self.manager.turtle_soup_bot_join = self.turtle_soup_bot_join
-        self.manager.turtle_soup_bot_join_every = self.turtle_soup_bot_join_every
         # 已经在房间里的对局也要跟上，否则页面提示还写着「花火也会一起猜」
         for room in self.manager.rooms.values():
             if room.game_type == "turtle_soup":
