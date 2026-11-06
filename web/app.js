@@ -1616,12 +1616,13 @@
       await loadState();
       setConnection("online", "已连接");
       clearTransientOverlay();
-      // 花火正在生成解说时也提速：否则开局第一句话最多要等 1 秒才被轮询捞到
+      // 花火正在生成解说 / 正在写聊天回复时也提速：聊天接口改成异步后，
+      // 回复只能靠轮询捞回来，1 秒的间隔会让「刚发完就看到回复」变成明显等待。
       const fastPolling = (
         room?.game_type === "pig_dice" && room.game?.turn === "bot"
       ) || (
         room?.game_type === "blackjack" && room.game?.phase === "dealer_turn"
-      ) || Boolean(room?.bot_typing);
+      ) || Boolean(room?.bot_typing) || Boolean(room?.bot_chat_typing);
       const interval = fastPolling ? 300 : 1000;
       pollTimer = window.setTimeout(poll, interval);
     } catch (error) {
@@ -2629,6 +2630,7 @@
       last?.sender_number ?? "",
       last?.content ?? "",
       room?.bot_typing ? 1 : 0,
+      room?.bot_chat_typing ? 1 : 0,
       thinking ? 1 : 0,
     ].join("|");
   }
@@ -2755,8 +2757,8 @@
       ].join("");
       think.appendChild(indicator);
       list.appendChild(think);
-    } else if (room?.bot_typing) {
-      // 花火正在写解说（开局 / 关键局面）：先给一行占位，别让对话框空着等
+    } else if (room?.bot_typing || room?.bot_chat_typing) {
+      // 花火正在写解说（开局 / 关键局面）或正在回聊天：先给一行占位，别让对话框空着等
       const think = document.createElement("article");
       think.className = "message bot chat thinking-wrap";
       const meta = document.createElement("span");
@@ -2765,13 +2767,15 @@
       think.appendChild(meta);
       const indicator = document.createElement("p");
       indicator.className = "message-content typing-indicator";
-      const botTypingLabel = {
-        blackjack: "花火正在思考要不要牌",
-        pig_dice: "花火正在掷骰",
-        turtle_soup: "花火正在思考",
-        draw_guess: "花火正在看图",
-        undercover: "花火正在思考",
-      }[room.game_type] || "花火正在看着棋盘";
+      const botTypingLabel = room?.bot_chat_typing
+        ? "花火正在打字"
+        : ({
+          blackjack: "花火正在思考要不要牌",
+          pig_dice: "花火正在掷骰",
+          turtle_soup: "花火正在思考",
+          draw_guess: "花火正在看图",
+          undercover: "花火正在思考",
+        }[room.game_type] || "花火正在看着棋盘");
       indicator.innerHTML = [
         `<span class="thinking-label">${botTypingLabel}</span>`,
         "<span class=\"dots\"><b></b><b></b><b></b></span>",

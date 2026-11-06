@@ -77,19 +77,22 @@ async def test_spectator_game_command_is_denied_and_never_changes_room() -> None
     result = await plugin.submit_room_chat(
         room, "我投降", visitor_token=spectator.token
     )
+    await plugin.wait_room_chat_turns()
 
-    assert result["action"] == "denied"
-    assert "观众席" in result["reply"]
+    # 接口本身只负责落库并立即返回，回复走后台任务
+    assert result["action"] == "chat_pending"
+    assert result["pending"] is True
+    assert "观众席" in str(room.messages[-1]["content"])
     assert room.status == "waiting"
     assert room.messages[-1]["message_type"] == "permission"
 
     bound = await manager.join(room)
     await bind_visitor(manager, room, bound, qq="10002", name="小明")
-    bound_result = await plugin.submit_room_chat(
+    await plugin.submit_room_chat(
         room, "换成井字棋", visitor_token=bound.token
     )
+    await plugin.wait_room_chat_turns()
 
-    assert bound_result["action"] == "denied"
     assert room.game_type == "gomoku"
     assert [entry["role"] for entry in room.chat_transcripts["10002"]] == [
         "user",
@@ -117,12 +120,14 @@ async def test_anonymous_spectator_can_receive_normal_room_chat_reply() -> None:
     result = await plugin.submit_room_chat(
         room, "你在做什么？", visitor_token=spectator.token
     )
+    await plugin.wait_room_chat_turns()
 
-    assert result == {"action": "chat", "reply": "我在房间里听着呢。"}
+    assert result["action"] == "chat_pending"
     prompt = provider.text_chat.await_args.kwargs["prompt"]
     assert "身份=匿名观众" in prompt
     assert "是否当前回合玩家=否" in prompt
     assert room.messages[-1]["role"] == "bot"
+    assert room.messages[-1]["content"] == "我在房间里听着呢。"
     assert room.chat_transcripts == {}
 
 
@@ -172,11 +177,11 @@ async def test_player_can_switch_game_from_room_chat() -> None:
     plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
     plugin.manager = manager
 
-    result = await plugin.submit_room_chat(
+    await plugin.submit_room_chat(
         room, "换成井字棋吧", visitor_token=player.token
     )
+    await plugin.wait_room_chat_turns()
 
-    assert result["action"] == "switch_game"
     assert room.game_type == "tictactoe"
     assert room.status == "setup"
-    assert "井字棋" in result["reply"]
+    assert "井字棋" in str(room.messages[-1]["content"])

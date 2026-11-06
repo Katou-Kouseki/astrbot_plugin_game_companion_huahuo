@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.61"
+    assert metadata["version"] == "0.5.62"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -733,7 +733,7 @@ def test_opening_commentary_does_not_wait_on_memory_and_shows_typing() -> None:
     assert '"bot_typing": self.bot_typing_pending > 0,' in models
     # 前端占位 + 快轮询 + 长句打字机加速
     assert "花火正在看着棋盘" in script
-    assert ") || Boolean(room?.bot_typing);" in script
+    assert ") || Boolean(room?.bot_typing) || Boolean(room?.bot_chat_typing);" in script
     assert "function typingPace(length)" in script
 
 

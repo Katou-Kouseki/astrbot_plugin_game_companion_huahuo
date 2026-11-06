@@ -454,6 +454,9 @@ class GameRoom:
     last_commentary_at: float = 0.0
     # 正在生成的解说条数：>0 时网页显示「花火正在组织语言」占位并加快轮询
     bot_typing_pending: int = 0
+    # 正在生成的聊天回复条数：聊天接口改成异步后，回复在后台生成、由轮询推给前端，
+    # 这里用独立计数器，让网页显示「花火正在打字」而不是「正在看着棋盘」。
+    bot_chat_pending: int = 0
     # 房间内玩家获胜次数排行榜：visitor_token -> {"name": str, "wins": int}
     player_win_counts: dict[str, dict[str, object]] = field(default_factory=dict)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -739,6 +742,7 @@ class GameRoom:
             "server_time": now,
             # 花火正在生成解说：网页据此显示占位并把轮询提速到 400ms
             "bot_typing": self.bot_typing_pending > 0,
+            "bot_chat_typing": self.bot_chat_pending > 0,
             "player_confirmed": (
                 visitor.identity_confirmed
                 if visitor is not None

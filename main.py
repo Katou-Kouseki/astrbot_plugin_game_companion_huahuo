@@ -3558,11 +3558,69 @@ class GameCompanionPlugin(Star):
     async def submit_room_chat(
         self, room: GameRoom, text: str, *, visitor_token: str
     ) -> dict[str, Any]:
-        """Handle one isolated WebUI conversation turn without sending to QQ."""
-        async with room.chat_lock:
-            visitor, cleaned, is_player, is_current_player = (
-                await self.manager.begin_room_chat(room, visitor_token, text)
+        """WebUI 发一条消息：只负责落库并立刻返回，花火的回复交给后台任务补齐。
+
+        以前这个接口要等模型（最长 35 秒）才返回，而前端 12 秒就 abort——于是
+        「消息其实已经记进房间了，界面却弹请求超时、把文字塞回输入框」。
+        现在 HTTP 只做三件事：记录消息、挂上「正在打字」占位、把生成丢进后台；
+        回复由每秒一次的轮询推给前端，模型再慢也只是多等一会儿，不会报错。
+        """
+        visitor, cleaned, is_player, is_current_player = (
+            await self.manager.begin_room_chat(room, visitor_token, text)
+        )
+        room.bot_chat_pending += 1
+        task = self._spawn(
+            self._room_chat_turn(
+                room,
+                visitor,
+                cleaned,
+                is_player=is_player,
+                is_current_player=is_current_player,
             )
+        )
+        chat_tasks = self.__dict__.setdefault("_chat_tasks", set())
+        chat_tasks.add(task)
+
+        def finish(finished: asyncio.Task) -> None:
+            chat_tasks.discard(finished)
+            room.bot_chat_pending = max(0, room.bot_chat_pending - 1)
+            try:
+                finished.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001 - 后台聊天失败不能拖垮房间
+                logger.warning("[GameCompanion] 房间聊天后台处理失败：%s", exc)
+
+        task.add_done_callback(finish)
+        return {"action": "chat_pending", "reply": "", "pending": True}
+
+    async def wait_room_chat_turns(self) -> None:
+        """等所有在途的聊天后台任务结束（测试、关房前收尾用）。"""
+        pending = [
+            task
+            for task in list(self.__dict__.get("_chat_tasks") or ())
+            if not task.done()
+        ]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _room_chat_turn(
+        self,
+        room: GameRoom,
+        visitor: Visitor,
+        cleaned: str,
+        *,
+        is_player: bool,
+        is_current_player: bool,
+    ) -> dict[str, Any]:
+        """后台收尾一条聊天：串行执行游戏指令 / 生成回复，回复以 Bot 消息入库。
+
+        同一间房仍然串行（room.chat_lock），保证「先问先答」，但不再把 HTTP 请求
+        卡在模型上——聊天框提示超时的根因就在这里。
+        """
+        async with room.chat_lock:
+            if room.status == "closed" or room.room_id not in self.manager.rooms:
+                return {"action": "closed", "reply": ""}
             # 谁是卧底：当前发言玩家的聊天消息自动记作本轮发言（优先级高于控制命令）
             if (
                 room.game_type == "undercover"
@@ -9714,10 +9772,13 @@ class GameCompanionPlugin(Star):
 
     def _spawn(self, operation: Any) -> asyncio.Task:
         task = asyncio.create_task(operation)
-        self._background_tasks.add(task)
+        # 用 setdefault 兜底：测试里常用 __new__ 直接造实例（不走 __init__），
+        # 没有这个字段时也要能正常派发后台任务。
+        tasks = self.__dict__.setdefault("_background_tasks", set())
+        tasks.add(task)
 
         def finish(finished: asyncio.Task) -> None:
-            self._background_tasks.discard(finished)
+            tasks.discard(finished)
             try:
                 finished.result()
             except asyncio.CancelledError:
