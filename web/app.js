@@ -1442,6 +1442,22 @@
     room = nextRoom;
   }
 
+  // 快照指纹一致（服务端判定「内容没变」）时的轻量更新：
+  // 只同步时钟与「正在打字」标记，再重绘一次——棋盘回合倒计时的文案是在 render 里算的，
+  // 完全不渲染会把它冻住；但消息列表/棋盘有签名短路，这一步很便宜。
+  function applyUnchangedState(payload) {
+    if (!room) return;
+    const serverTime = Number(payload?.server_time || 0);
+    if (serverTime > 0) {
+      room.server_time = serverTime;
+      room._snapshot_local_ms = Date.now();
+    }
+    if (payload?.rev) room.rev = payload.rev;
+    room.bot_typing = Boolean(payload?.bot_typing);
+    room.bot_chat_typing = Boolean(payload?.bot_chat_typing);
+    render();
+  }
+
   // 每秒刷新 谁是卧底 setup 阶段倒计时（不用等长轮询）
   window.setInterval(() => {
     if (!room || room.game_type !== "undercover") {
@@ -1647,10 +1663,14 @@
   }
 
   async function loadState() {
+    // 带上上一条快照的指纹：内容没变时服务端只回一个小包，省掉 20KB 的全量传输
+    const revParam = room?.rev
+      ? `&rev=${encodeURIComponent(String(room.rev))}`
+      : "";
     const response = await timedFetch(
       endpoint(
         "state",
-        `?visitor_token=${encodeURIComponent(visitorToken)}&remember_identity=${rememberIdentity() ? "1" : "0"}`,
+        `?visitor_token=${encodeURIComponent(visitorToken)}&remember_identity=${rememberIdentity() ? "1" : "0"}${revParam}`,
       ),
       { cache: "no-store" },
     );
@@ -1664,6 +1684,10 @@
     // 名册差量会误报「全员离开房间」
     if (!response.ok || data?.status === "error") {
       throw new Error(data?.message || data?.error || "房间状态不可用");
+    }
+    if (data?.data?.unchanged) {
+      applyUnchangedState(data.data);
+      return;
     }
     const previousType = room?.game_type;
     const previousMessageId = latestMessageId(room);

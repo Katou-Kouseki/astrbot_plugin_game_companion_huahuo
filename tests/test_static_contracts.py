@@ -78,7 +78,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.63"
+    assert metadata["version"] == "0.5.64"
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:
@@ -1294,3 +1294,21 @@ def test_series_report_names_the_loser() -> None:
     series = main.split("def _board_series_text", 1)[1].split("async def _send_board_series", 1)[0]
     assert "loser_name" in series
     assert "胜 {loser_text}" in series or "胜 {loser}" in series
+
+
+def test_state_polling_supports_unchanged_rev() -> None:
+    """轮询带指纹：内容没变只回小包，但时钟与「正在打字」标记必须照发。"""
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "def _snapshot_rev(" in server
+    assert 'if key not in ("server_time", "rev")' in server
+    assert 'snapshot["rev"] = self._snapshot_rev(snapshot)' in server
+    # 短路响应必须带 clock 与 typing 标记，否则倒计时会冻住、回复会慢一拍
+    assert '"unchanged": True,' in server
+    assert '"server_time": snapshot.get("server_time"),' in server
+    assert '"bot_chat_typing": bool(snapshot.get("bot_chat_typing")),' in server
+    # 前端：带上上一条指纹，并处理小包
+    assert "&rev=${encodeURIComponent(String(room.rev))}" in script
+    assert "if (data?.data?.unchanged) {" in script
+    assert "function applyUnchangedState(" in script

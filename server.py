@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import re
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -296,12 +298,35 @@ class GameRoomServer:
         room = self._room(request)
         visitor_token = str(request.query.get("visitor_token") or "")
         visitor = await self.manager.heartbeat(room, visitor_token)
+        remember = str(request.query.get("remember_identity") or "") == "1"
+        client_rev = str(request.query.get("rev") or "")
+        snapshot = self._room_payload(room, visitor.token)
+        # 每秒一次的轮询里绝大部分时间内容根本没变：这时只回一个小包，
+        # 把 20KB 的全量快照换成 ~200B（稳态流量约省 99%）。
+        # 心跳已经在上面刷过了，所以「在线状态」不会因为走这条短路而停更。
+        if (
+            client_rev
+            and client_rev == snapshot.get("rev")
+            and not getattr(visitor, "trusted_browser_enrollment_pending", False)
+        ):
+            return self._response(
+                {
+                    "unchanged": True,
+                    "rev": snapshot.get("rev"),
+                    # 时钟和「正在打字」标记必须照发：前者用于倒计时校准，
+                    # 后者决定前端是否把轮询提速到 300ms（聊天回复靠它推送）。
+                    "server_time": snapshot.get("server_time"),
+                    "bot_typing": bool(snapshot.get("bot_typing")),
+                    "bot_chat_typing": bool(snapshot.get("bot_chat_typing")),
+                }
+            )
         return await self._identity_response(
             request,
             room,
             visitor,
             {},
-            remember=str(request.query.get("remember_identity") or "") == "1",
+            remember=remember,
+            snapshot=snapshot,
         )
 
     async def _forget_identity(self, request: web.Request) -> web.Response:
@@ -1103,7 +1128,33 @@ class GameRoomServer:
                 "explicit": False,
             }
         snapshot["activity_toast"] = self._activity_toast_snapshot()
+        # 快照指纹：前端下一次轮询带上它，内容没变就只回一个几十字节的小包。
+        # 必须放在最后——指纹覆盖这里之前的所有字段。
+        snapshot["rev"] = self._snapshot_rev(snapshot)
         return snapshot
+
+    @staticmethod
+    def _snapshot_rev(snapshot: dict[str, Any]) -> str:
+        """给房间快照算内容指纹，用来判断「这一秒的内容和上一秒是否一样」。
+
+        `server_time` 每轮都不同，必须排除（但真正返回时仍要带上，前端靠它算倒计时）；
+        `rev` 自己也要排除，否则会自己套自己。
+        指纹就是快照内容本身，不依赖「哪些地方要记得 +1」，所以不会漏更新。
+        """
+        stable = {
+            key: value
+            for key, value in snapshot.items()
+            if key not in ("server_time", "rev")
+        }
+        try:
+            raw = json.dumps(
+                stable, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+        except (TypeError, ValueError):
+            # 极端情况：快照里混进不可 JSON 序列化的对象。退化成「每次都不同」，
+            # 前端就会一直拿全量快照——功能不受影响，只是省不到带宽。
+            return f"fallback-{time.time():.6f}"
+        return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
     async def _undercover_add_ai_seat(self, request: web.Request) -> web.Response:
         """房主/管理员手动追加一位 AI 玩家（计入总数，不可超容量）。"""
@@ -1205,6 +1256,7 @@ class GameRoomServer:
         *,
         remember: bool,
         trusted_identity: Any | None = None,
+        snapshot: dict[str, Any] | None = None,
     ) -> web.Response:
         issued_token = ""
         identity = (
@@ -1242,7 +1294,8 @@ class GameRoomServer:
                 active = True
         if enrollment_pending:
             visitor.trusted_browser_enrollment_pending = False
-        snapshot = self._room_payload(room, visitor.token)
+        if snapshot is None:
+            snapshot = self._room_payload(room, visitor.token)
         snapshot.update(
             self._trusted_browser_snapshot(
                 active=active,
