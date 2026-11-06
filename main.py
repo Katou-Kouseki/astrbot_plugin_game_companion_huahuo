@@ -6,6 +6,7 @@ import binascii
 import inspect
 import json
 import logging
+import random
 import re
 import socket
 import sys
@@ -68,6 +69,7 @@ from .turtle_soup_ai import (
     validation_prompt,
 )
 from .undercover import UndercoverGame
+from .undercover import _text_similarity as _uc_text_similarity
 from .undercover_words import UndercoverWordStore
 from .xiangqi import BLACK as XIANGQI_BLACK
 from .xiangqi import RED as XIANGQI_RED
@@ -1193,8 +1195,14 @@ def _undercover_game_summary(game: Any) -> str:
         return ""
 
 
-def _uc_ai_fallback(camp: str, round_no: int, seed: int = 0) -> str:
-    """谁是卧底 AI 发言的本地兜底文案：按轮次 + 座号偏移轮换，避免同轮多名 AI 复读同一句，且尽量不露馅。"""
+def _uc_ai_fallback(
+    camp: str, round_no: int, seed: int = 0, *, used: list[str] | None = None
+) -> str:
+    """谁是卧底 AI 发言的本地兜底文案：按轮次 + 座号偏移轮换，且尽量不重复已说过的话。
+
+    `used` 传入该玩家（或全场）已经说过的句子时，会跳过与自己历史雷同的候选，
+    只挑一句新的；连兜底都被用光时才退回相似度最低的那句。
+    """
     if camp == "whiteboard":
         pool = [
             "刚看到它的时候我还愣了一下，好像之前在哪见过。",
@@ -1205,6 +1213,10 @@ def _uc_ai_fallback(camp: str, round_no: int, seed: int = 0) -> str:
             "说起来也不贵，但用着用着就觉得离不开它了。",
             "反正我第一个想到的就是它，没别的想法。",
             "奇奇怪怪的，我怎么越看越觉得它眼熟。",
+            "哎，这东西摆在那儿总让我有种说不上来的熟悉感。",
+            "要说的话，我大概只会用一个词形容它，可惜不能说。",
+            "上次还跟人聊起过它，结果谁也没说出个所以然。",
+            "我对它的态度一直是可有可无，但真没了会别扭。",
         ]
     else:
         pool = [
@@ -1216,9 +1228,66 @@ def _uc_ai_fallback(camp: str, round_no: int, seed: int = 0) -> str:
             "它对我来说就是顺手两个字，没什么好纠结的。",
             "对了，上次它还帮了我一把，一直印象很深。",
             "别的不好说，反正它挺对我的胃口。",
+            "我妈那边也备了一个，用起来差不多。",
+            "说起来有点怪，我好像越用越挑。",
+            "平时不怎么在意，缺了才发现挺要紧的。",
+            "我一般不会主动买，都是别人送的。",
         ]
-    index = max(0, (round_no + int(seed or 0) - 1) % len(pool))
-    return pool[index]
+    ordered = pool[round_no % len(pool) :] + pool[: round_no % len(pool)]
+    # 座号偏移：同轮多名 AI 兜底时不会撞到同一句
+    if seed:
+        shift = int(seed) % len(ordered)
+        ordered = ordered[shift:] + ordered[:shift]
+    history = [str(item) for item in (used or []) if str(item or "").strip()]
+    best_line = ordered[0]
+    best_score = 2.0
+    for line in ordered:
+        if not _uc_speech_is_repeat(line, history):
+            return line
+        score = max((_uc_text_similarity(line, old) for old in history), default=0.0)
+        if score < best_score:
+            best_line, best_score = line, score
+    return best_line
+
+
+# AI 发言的「角度」池：每次发言随机分配一个，PK 加赛时再换一个，
+# 避免模型在同一个词条上反复输出同一句话（平票加赛后重复发言的根因）。
+UC_SPEECH_ANGLES: tuple[str, ...] = (
+    "最近一次亲手用它时的具体场景",
+    "它在你家里固定摆放的位置",
+    "用它时出过的一个小意外或小麻烦",
+    "别人对它的一句评价",
+    "第一次接触它时的印象",
+    "它和你家人或朋友之间的一件小事",
+    "你和它之间的一个固定时间点（早上、睡前之类）",
+    "它的手感、声音或者气味",
+    "它和你用过的同类东西的一次比较",
+    "弄丢或弄坏它时的一次着急",
+    "一个跟它有关的小习惯",
+    "最近一次因为它被夸或被吐槽",
+)
+
+
+def _uc_speech_is_repeat(
+    content: str, history: list[str] | tuple[str, ...], *, threshold: float = 0.72
+) -> bool:
+    """这句话是否和自己（或全场）已经说过的某句重复。
+
+    完全一致直接算重复；短句只差几个字时 SequenceMatcher 的比例仍然很高，
+    所以用相似度阈值兜住「换个词说同一件事」的复读。
+    """
+    text = "".join(str(content or "").split())
+    if not text:
+        return False
+    for old in history or ():
+        candidate = "".join(str(old or "").split())
+        if not candidate:
+            continue
+        if text == candidate:
+            return True
+        if _uc_text_similarity(text, candidate) >= threshold:
+            return True
+    return False
 
 
 @register(
@@ -9065,9 +9134,16 @@ class GameCompanionPlugin(Star):
         if camp == "none":
             camp = ""
         round_no = max(1, int(game.current_round_number or 0))
+        used = [
+            str(item.get("content") or "")
+            for item in game.rounds_speeches()
+            if str(item.get("content") or "").strip()
+        ]
         try:
             await self.manager.player_undercover_speech(
-                room, seat.visitor_token, _uc_ai_fallback(camp, round_no, my_number)
+                room,
+                seat.visitor_token,
+                _uc_ai_fallback(camp, round_no, my_number, used=used),
             )
         except Exception as exc:
             # 本地兜底提交仍失败（相似度命中 / 座椅 token 失效等）：至少推进发言指针，
@@ -9129,7 +9205,11 @@ class GameCompanionPlugin(Star):
     ) -> None:
         game: UndercoverGame = room.game  # type: ignore[assignment]
         ai_player = self._uc_player_for_seat(room, seat)
-        my_number = int(ai_player.number) if ai_player is not None else int(my_number)
+        my_number = (
+            int(ai_player.number)
+            if ai_player is not None
+            else int(getattr(seat, "number", 0) or 0)
+        )
         snap = game.snapshot(visitor_uid=_visitor_uid(seat.visitor_token))
         # 注意：不能用快照里的 my.camp/my.word——「告知身份」关闭时快照会隐去阵营，
         # AI 必须直接从游戏内部拿到自己的真实阵营与词条，否则会因 camp 为空而沉默卡局。
@@ -9144,19 +9224,24 @@ class GameCompanionPlugin(Star):
         others_context = (
             ("已发言玩家：" + "；".join(prev_speeches[-6:])) if prev_speeches else "本轮你第一个发言"
         )
-        # 收集 AI 自己之前几轮说过的话，提示它不要重复（这是“连续两轮一模一样”的根因之一）
+        # 收集 AI 自己之前说过的话（这是“连续两轮一模一样”的根因之一）
         own_history = [
             str(s["content"])
             for s in game.rounds_speeches()
             if int(s.get("player_number", 0)) == int(my_number)
         ]
+        # 全场历史（含别人）只用于兜底挑句：躲开自己时别撞上别人刚说过的话
+        all_history = [
+            str(item.get("content") or "")
+            for item in game.rounds_speeches()
+            if str(item.get("content") or "").strip()
+        ]
         round_no = max(1, int(game.current_round_number or 0))
-        anti_repeat = (
-            f"这是第{round_no}轮发言，你之前已经说过：{'；'.join(own_history[-3:])}。"
-            f"请务必换一种新的说法和套路，绝不要重复或大幅雷同自己之前任何一句，要有差异化。"
-            if own_history
-            else f"这是第{round_no}轮发言，你还没有说过任何话。"
-        )
+        is_pk = bool(getattr(getattr(game, "pending_round", None), "pk_reason", ""))
+        # 每次发言换一个「角度」：同一个词条 + 同一套提示词，模型很容易原样复述；
+        # 强制换角度是最省事也最有效的去重手段（平票 PK 加赛尤其明显）。
+        angles = list(UC_SPEECH_ANGLES)
+        random.shuffle(angles)
         # 托管代打：用被托管玩家本人的名义说话，别让其他人看出是花火在替
         speaker_label = (
             (seat.display_name or f"{my_number}号") if autopilot else "花火"
@@ -9167,34 +9252,55 @@ class GameCompanionPlugin(Star):
             if autopilot
             else ""
         )
-        if camp == "whiteboard":
-            prompt = (
-                "你正在玩中文「谁是卧底」，你抽到的是【白板】（没有词条，只能靠猜）。"
-                f"{autopilot_hint}{anti_repeat}。{others_context}。"
-                f"请以「{speaker_label}」的身份，像真人玩家一样，顺着前一位玩家的语气和话题方向，"
-                "用一句 20-45 字的话随口圆一个合群的描述，让人感觉你手里确实有词条。"
-                "绝对不要直接说出或试探性说出平民或卧底的词条，也不要问『你们说的是不是XX』；"
-                "别说得太空泛（例如『大家都懂的东西』这种一句带过），尽量聊一个具体的生活细节或感受；"
-                "可以有语气词、口头禅或小犹豫，越自然越好；"
-                "不要输出任何引号或说明；只输出你要说的那一句话。"
-            )
-        elif camp in ("civilian", "undercover"):
+
+        def _build_prompt(angle: str, rejected: str = "") -> str:
+            """按「随机角度 + 禁用历史原句」拼提示词；rejected 是被判重复的上一版输出。"""
+            if own_history:
+                anti_repeat = (
+                    f"这是第{round_no}轮发言{'（平票加赛）' if is_pk else ''}，"
+                    f"你之前已经说过：{'；'.join(own_history[-3:])}。"
+                    "这些句子一律算重复，禁止原句复用，也禁止只换几个词说同一件事；"
+                    f"这一轮必须换成【{angle}】这个角度来说。"
+                )
+            else:
+                anti_repeat = f"这是第{round_no}轮发言，请从【{angle}】这个角度说。"
+            if is_pk:
+                anti_repeat += (
+                    "本轮是平票加赛，所有人上一轮刚听过你说的话，"
+                    "再说一遍会立刻被当成复读、被投出去。"
+                )
+            if rejected:
+                anti_repeat += (
+                    f"你刚才那句『{rejected}』已被判定与历史重复，这次必须完全不同。"
+                )
+            if camp == "whiteboard":
+                return (
+                    "你正在玩中文「谁是卧底」，你抽到的是【白板】（没有词条，只能靠猜）。"
+                    f"{autopilot_hint}{anti_repeat}。{others_context}。"
+                    f"请以「{speaker_label}」的身份，像真人玩家一样，顺着前一位玩家的语气和话题方向，"
+                    "用一句 20-45 字的话随口圆一个合群的描述，让人感觉你手里确实有词条。"
+                    "绝对不要直接说出或试探性说出平民或卧底的词条，也不要问『你们说的是不是XX』；"
+                    f"别说得太空泛，就聊【{angle}】这一件具体的小事；"
+                    "可以有语气词、口头禅或小犹豫，越自然越好；"
+                    "不要输出任何引号或说明；只输出你要说的那一句话。"
+                )
             role = "平民" if camp == "civilian" else "卧底"
             other = "卧底" if camp == "civilian" else "平民"
-            prompt = (
+            return (
                 f"你正在玩中文「谁是卧底」，你是{role}，抽到的词条是【{word}】。"
                 f"{autopilot_hint}{anti_repeat}。{others_context}。"
                 f"请以「{speaker_label}」的身份，像真人玩家闲聊一样，用一句 20-45 字的话，"
-                f"只从【{word}】的某一个具体生活侧面入手（比如你最近用到它的一个场景、对它的一个感受、"
-                "一个联想或一句随口吐槽），说得自然、有画面感，像在聊天而不是在做谜题描述。"
+                f"只从【{word}】的一个具体生活侧面入手，这一轮限定在【{angle}】这个角度上，"
+                "说得自然、有画面感，像在聊天而不是在做谜题描述。"
                 "硬性要求："
                 f"话里绝不能出现【{word}】本身、它的同义词或它含有的字眼；"
                 "不要用『我抽到/我的词条/它是一款』这类暴露句式；"
-                "不要列点罗列特征（颜色、形状、用途、价格逐项说），那一眼就会被{other}锁定；"
+                f"不要列点罗列特征（颜色、形状、用途、价格逐项说），那一眼就会被{other}锁定；"
                 "可以带语气词和日常感，但别机械、别每句都用『嗯嗯』开头；"
                 "不要输出任何引号或说明；只输出你要说的那一句话。"
             )
-        else:
+
+        if camp not in ("whiteboard", "civilian", "undercover"):
             return
         # 注入性格人设（出自「火花·调皮(AI)」中的形容词）+ 阶段性措辞 + 长度约束
         m = re.search(r"·([^·()（）]+)\(AI\)", seat.display_name or "")
@@ -9207,51 +9313,79 @@ class GameCompanionPlugin(Star):
             stage_hint = f"现在是第{round_no}轮：可以稍微具体一点点了，但仍要委婉合群，别把特征说得太实在，别点名词条。"
         else:
             stage_hint = f"现在是第{round_no}轮：局势拉开，可以适当说具体些争取信任，但仍绝不能点名词条。"
-        prompt += persona + stage_hint + "整句务必控制在20字以内、最多1个逗号，越简短利落越好。不要输出任何表情代码、括号提示或说明。"
-        try:
-            content = await asyncio.wait_for(
-                self._generate_persona_text(room, prompt),
-                timeout=8,  # 供应商故障时尽快落本地兜底，避免发言轮停滞
-            )
-            content = str(content or "").strip()
+        suffix = (
+            persona
+            + stage_hint
+            + "整句务必控制在20字以内、最多1个逗号，越简短利落越好。"
+            "不要输出任何表情代码、括号提示或说明。"
+        )
+        # 复读拦截用的历史：自己说过的优先，再加上全场，保证“换一句”真的换得掉
+        history_for_check = list(
+            dict.fromkeys([item for item in (own_history + all_history) if item])
+        )
+        content = ""
+        rejected = ""
+        # 最多生成两次：第一次被判重复就换一个角度再来一次，仍重复则落本地兜底。
+        for attempt in range(2):
+            angle = angles[attempt % len(angles)]
+            prompt = _build_prompt(angle, rejected) + suffix
+            try:
+                raw = await asyncio.wait_for(
+                    self._generate_persona_text(room, prompt),
+                    timeout=8,  # 供应商故障时尽快落本地兜底，避免发言轮停滞
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[GameCompanion] AI 发言生成失败，改用本地兜底：%s", exc
+                )
+                break
             # 规整为「≤1 逗号、≤20 字」的短句
-            content = _sanitize_uc_ai_speech(content)
-            if len(content) < 4:
-                content = _uc_ai_fallback(camp, round_no, my_number)
-            # 白板 AI 兜底：一旦模型说出的内容泄露了任一词条（含「刷牙」之于「牙刷」这类），
-            # 立即换成安全的兜底文案，避免 AI 因“白板说词直接获胜”而莫名其妙结束整局。
-            if camp == "whiteboard" and game.leaks_word(content):
-                content = _uc_ai_fallback(camp, round_no, my_number)
+            candidate = _sanitize_uc_ai_speech(str(raw or "").strip())
+            if len(candidate) < 4:
+                rejected = candidate
+                continue
+            # 白板 AI：一旦说出的内容泄露了任一词条（含「刷牙」之于「牙刷」这类），
+            # 立即换下一版，避免 AI 因“白板说词直接获胜”而莫名其妙结束整局。
+            if camp == "whiteboard" and game.leaks_word(candidate):
+                rejected = candidate
+                continue
+            # 本地去重：AI 发言不走服务端相似度拦截（本地兜底文案模板有限，会被自己卡死），
+            # 所以「和自己上一轮一模一样」只能在这里拦——PK 加赛复读就是从这漏出去的。
+            if _uc_speech_is_repeat(candidate, history_for_check):
+                logger.info(
+                    "[GameCompanion] AI 发言与历史重复，换角度重生成：%s", candidate
+                )
+                rejected = candidate
+                continue
+            content = candidate
+            break
+        if not content:
+            content = _uc_ai_fallback(camp, round_no, my_number, used=history_for_check)
+        try:
             await self.manager.player_undercover_speech(
                 room, seat.visitor_token, content
             )
-        except Exception as exc:
+        except Exception as exc2:
             logger.warning(
-                "[GameCompanion] AI 发言生成失败，改用本地兜底：%s", exc
+                "[GameCompanion] AI 本地兜底发言提交也失败（将跳过，防卡局）：%s", exc2
             )
-            # 失败时用一句本地兜底文案（按轮次轮换，避免整局一句复读），避免卡住整轮
-            fallback = _uc_ai_fallback(camp, round_no, my_number)
             try:
-                await self.manager.player_undercover_speech(
-                    room, seat.visitor_token, fallback
-                )
-            except Exception as exc2:
+                await self.manager.skip_undercover_speaker(room, seat.visitor_token)
+            except Exception as exc3:
                 logger.warning(
-                    "[GameCompanion] AI 本地兜底发言提交也失败（将跳过，防卡局）：%s", exc2
+                    "[GameCompanion] AI 发言失败后跳过也失败：%s", exc3
                 )
-                try:
-                    await self.manager.skip_undercover_speaker(room, seat.visitor_token)
-                except Exception as exc3:
-                    logger.warning(
-                        "[GameCompanion] AI 发言失败后跳过也失败：%s", exc3
-                    )
 
     async def _undercover_ai_do_vote(
         self, room: GameRoom, seat, *, autopilot: bool = False
     ) -> None:
         game: UndercoverGame = room.game  # type: ignore[assignment]
         ai_vp = self._uc_player_for_seat(room, seat)
-        my_number = int(ai_vp.number) if ai_vp is not None else int(my_number)
+        my_number = (
+            int(ai_vp.number)
+            if ai_vp is not None
+            else int(getattr(seat, "number", 0) or 0)
+        )
         my_snap = game.snapshot(visitor_uid=_visitor_uid(seat.visitor_token))
         rounds = my_snap.get("rounds_public") or []
         live_players = my_snap.get("players_public") or []
