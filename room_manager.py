@@ -3668,6 +3668,72 @@ class RoomManager:
         if pending:
             await asyncio.gather(*pending, return_exceptions=True)
 
+    async def _plan_bot_move(
+        self, room: GameRoom, game_at_start: Any
+    ) -> dict[str, Any] | None:
+        """锁外计算花火这一手：只读棋局，不修改任何状态。
+
+        围棋搜索（默认 0.6 秒）、象棋引擎（movetime 900ms、启动/IO 最长 8 秒）
+        都发生在这里。以前它们跑在 `async with room.lock` 里面，期间网页每秒一次
+        的心跳轮询、落子、入座全部排队，整间房发木——这才是「房间卡顿」的主因之一。
+        """
+        game = room.game
+        if game is None or game is not game_at_start:
+            return None
+        if room.status != "active" or getattr(game, "finished", False):
+            return None
+        if isinstance(game, (TurtleSoupGame, DrawGuessGame)):
+            return None
+        marker = self._bot_plan_marker(game)
+        if isinstance(game, XiangqiGame):
+            try:
+                move = await self._require_xiangqi_engine().choose_move(
+                    game.moves, game.difficulty
+                )
+            except Exception as exc:  # noqa: BLE001 - 引擎故障交给锁内那段统一暂停播报
+                return {"kind": "xiangqi_error", "marker": marker, "error": exc}
+            return {"kind": "xiangqi", "move": move, "marker": marker}
+        if isinstance(game, GomokuGame):
+            return {
+                "kind": "gomoku",
+                "move": await asyncio.to_thread(game.choose_bot_move),
+                "marker": marker,
+            }
+        if isinstance(game, WeiqiGame):
+            return {
+                "kind": "weiqi",
+                "move": await asyncio.to_thread(game.choose_bot_move),
+                "marker": marker,
+            }
+        if isinstance(game, OthelloGame):
+            return {
+                "kind": "othello",
+                "move": await asyncio.to_thread(game.choose_bot_move),
+                "marker": marker,
+            }
+        return {"kind": "plain", "move": game.choose_bot_move(), "marker": marker}
+
+    @staticmethod
+    def _bot_plan_marker(game: Any) -> tuple[Any, ...]:
+        """「锁外算棋」期间的局面指纹：轮到谁 + 是否已结束 + 手数。
+
+        算完回到锁里时用它比对：只要对手在计算期间悔棋、停一手或被判负，
+        指纹就会变，这一手直接丢弃——否则花火的棋会落到一个已经变过的局面上。
+        """
+        history = getattr(game, "history", None)
+        moves = getattr(game, "moves", None)
+        if isinstance(history, list):
+            count = len(history)
+        elif isinstance(moves, list):
+            count = len(moves)
+        else:
+            count = 0
+        return (
+            getattr(game, "turn", None),
+            bool(getattr(game, "finished", False)),
+            count,
+        )
+
     async def _bot_turn(self, room: GameRoom) -> None:
         # 记下这一局：睡眠期间玩家可能「再来一局」或退席，room.game 会被换掉，
         # 旧任务醒来后不能再往新棋盘上落子。
@@ -3677,14 +3743,22 @@ class RoomManager:
             if isinstance(room.game, PigDiceGame):
                 await self._pig_dice_bot_turn(room)
                 return
+            # 第一段（不持锁）：只读棋局，算出「这一手走哪儿」。
+            plan = await self._plan_bot_move(room, game_at_start)
+            if plan is None:
+                return
             board_event: dict[str, object] = {"actor": "bot"}
+            finished = False
+            # 第二段（持锁）：校验局面没被改过，再把这一手写进去（毫秒级）。
             async with room.lock:
-                if room.game is not game_at_start:
-                    return
-                if room.status != "active" or room.game is None or room.game.finished:
+                if room.game is not game_at_start or room.status != "active":
                     return
                 game = room.game
-                if isinstance(game, (TurtleSoupGame, DrawGuessGame)):
+                if game is None or game.finished:
+                    return
+                if self._bot_plan_marker(game) != plan["marker"]:
+                    # 计算期间棋盘变了（悔棋 / 换局 / 判负）：这一手作废，
+                    # 改局面的那一方会重新触发一次花火回合。
                     return
                 ai_seat = self._ai_seat(room)
                 if ai_seat is not None:
@@ -3694,24 +3768,31 @@ class RoomManager:
                         seat_name="花火",
                         side=self._seat_side(room, ai_seat),
                     )
-                if isinstance(game, XiangqiGame):
-                    try:
-                        await game.place_bot(self._require_xiangqi_engine())
-                    except Exception:
-                        room.status = "paused"
-                        room.add_message(
-                            "system",
-                            "象棋引擎暂时不可用，对局已暂停。恢复引擎后可在 QQ 或管理台继续。",
-                        )
-                        raise
-                elif isinstance(game, GomokuGame):
-                    move = await asyncio.to_thread(game.choose_bot_move)
+                kind = str(plan["kind"])
+                if kind == "xiangqi_error":
+                    room.status = "paused"
+                    room.add_message(
+                        "system",
+                        "象棋引擎暂时不可用，对局已暂停。恢复引擎后可在 QQ 或管理台继续。",
+                    )
+                    error = plan.get("error")
+                    raise (
+                        error
+                        if isinstance(error, BaseException)
+                        else RuntimeError("象棋引擎暂时不可用")
+                    )
+                if kind == "xiangqi":
+                    await game.apply_bot_move(
+                        self._require_xiangqi_engine(), str(plan["move"])
+                    )
+                elif kind == "gomoku":
+                    move = plan["move"]
                     game.place(move[0], move[1], game.bot_color)
                     board_event.update(
                         row=move[0], column=move[1], color=game.bot_color
                     )
-                elif isinstance(game, WeiqiGame):
-                    move = await asyncio.to_thread(game.choose_bot_move)
+                elif kind == "weiqi":
+                    move = plan["move"]
                     if move is None:
                         # Bot 判断局面已经收官，停一手；双方连续停手由规则层结算
                         game.pass_turn(game.bot_color)
@@ -3732,8 +3813,8 @@ class RoomManager:
                             ],
                             eval=game.evaluate(),
                         )
-                elif isinstance(game, OthelloGame):
-                    move = await asyncio.to_thread(game.choose_bot_move)
+                elif kind == "othello":
+                    move = plan["move"]
                     game.place(move[0], move[1], game.bot_color)
                     board_event.update(
                         row=move[0],
@@ -3752,7 +3833,7 @@ class RoomManager:
                             "system", f"{passed}方没有合法落子，本回合跳过。"
                         )
                 else:
-                    move = game.choose_bot_move()
+                    move = plan["move"]
                     game.place(move[0], move[1], game.bot_mark)
                     board_event.update(
                         row=move[0], column=move[1], color=game.bot_mark

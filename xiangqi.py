@@ -97,14 +97,24 @@ class XiangqiGame:
             engine, self.human_side, from_row, from_column, to_row, to_column
         )
 
-    async def place_bot(self, engine: PikafishService) -> str:
+    async def apply_bot_move(self, engine: PikafishService, move: str) -> str:
+        """把已经算好的着法落到棋盘上。
+
+        单独拆出来，是为了让「引擎搜索（几百毫秒）」能在房间锁外跑完，
+        回到锁里只做「校验 + 落子」，不把整间房卡住。
+        """
         if self.finished or self.turn != self.bot_side:
             raise ValueError("当前不是 Bot 的象棋回合")
-        move = await engine.choose_move(self.moves, self.difficulty)
         if move not in self.legal_moves:
             raise RuntimeError("Pikafish 返回了当前局面的非法着法")
         await self._apply(engine, move)
         return move
+
+    async def place_bot(self, engine: PikafishService) -> str:
+        if self.finished or self.turn != self.bot_side:
+            raise ValueError("当前不是 Bot 的象棋回合")
+        move = await engine.choose_move(self.moves, self.difficulty)
+        return await self.apply_bot_move(engine, move)
 
     async def undo_round(self, engine: PikafishService) -> int:
         if not self.moves:
