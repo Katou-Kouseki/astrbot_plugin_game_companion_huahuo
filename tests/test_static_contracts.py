@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -78,7 +79,16 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.70"
+    assert metadata["version"] == "0.5.71"
+
+
+def test_plugin_version_reads_metadata_instead_of_hardcoding() -> None:
+    """版本号只保留在 metadata.yaml，避免升级后管理台还显示旧版本。"""
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "PLUGIN_VERSION = _read_plugin_version()" in source
+    assert re.search(r"PLUGIN_VERSION = \"", source) is None
+    assert "def _read_plugin_version() -> str:" in source
 
 
 def test_frontends_do_not_use_external_cdn_or_inline_scripts() -> None:

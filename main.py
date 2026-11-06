@@ -86,7 +86,22 @@ from .xiangqi import XiangqiGame
 from .weiqi import WeiqiGame
 
 PLUGIN_NAME = "astrbot_plugin_game_companion_huahuo"
-PLUGIN_VERSION = "0.5.20"
+
+
+def _read_plugin_version() -> str:
+    """从 metadata.yaml 读版本号，全局只保留这一处来源。
+
+    以前这里写死过一个常量，升级时忘了同步，管理台就一直显示旧版本。
+    """
+    try:
+        text = Path(__file__).with_name("metadata.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return "0.0.0"
+    match = re.search(r'''^version:\s*["']?([0-9][^"'\s#]*)''', text, re.MULTILINE)
+    return match.group(1).strip() if match else "0.0.0"
+
+
+PLUGIN_VERSION = _read_plugin_version()
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 # 管理台手动开的房间没有 QQ 会话，用这个假 session 占位：
 # 版本/人格/解说回退到默认 Provider，主动发消息会被 _send_to_origin 静默吞掉。
