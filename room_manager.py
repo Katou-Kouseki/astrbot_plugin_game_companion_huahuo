@@ -208,6 +208,8 @@ class RoomManager:
         turtle_soup_free_questioning: bool = False,
         turtle_soup_free_question_cooldown: int = 1,
         turtle_soup_auto_reveal_seconds: int = 1800,
+        turtle_soup_bot_join: bool = True,
+        turtle_soup_bot_join_every: int = 1,
         multiplayer_turn_timeout: int = 60,
         duel_turn_timeout: int = 180,
         duel_offline_grace: int = 90,
@@ -259,6 +261,9 @@ class RoomManager:
         self.turtle_soup_auto_reveal_seconds = max(
             0, int(turtle_soup_auto_reveal_seconds)
         )
+        # 玩家出题时花火是否参与、每隔几次玩家行动跟一次（1 = 与玩家同节奏）
+        self.turtle_soup_bot_join = bool(turtle_soup_bot_join)
+        self.turtle_soup_bot_join_every = max(1, int(turtle_soup_bot_join_every))
         self.multiplayer_turn_timeout = max(0, int(multiplayer_turn_timeout))
         # 棋类对弈：每步倒计时（0 关闭）与掉线后等待重连的宽限秒数
         self.duel_turn_timeout = max(0, int(duel_turn_timeout))
@@ -751,6 +756,7 @@ class RoomManager:
                 # 围棋盘路跟房间走：建好之后首位入座的玩家还能再改
                 weiqi_size=self.weiqi_board_size,
                 weiqi_komi=self.weiqi_komi,
+                soup_bot_join=self.turtle_soup_bot_join,
             )
             self._configure_multiplayer(room)
             room.camp_wins_store = self.undercover_camp_wins  # 让座位徽章按实时阵营胜场计算
@@ -3214,10 +3220,11 @@ class RoomManager:
                     break
             self._reset_turn_deadline(room)
             room.touch()
+            others = "其他人和花火一起猜" if room.soup_bot_join else "其他人来猜"
             room.add_message(
                 "system",
                 f"玩家出题模式：由 {self._seat_label(seat)} 出题，"
-                "其他人和花火一起猜，出题人负责回答。",
+                f"{others}，出题人负责回答。",
             )
         await self._emit(
             "game_started", room, {"turtle_soup": True, "host_number": game.host_number}

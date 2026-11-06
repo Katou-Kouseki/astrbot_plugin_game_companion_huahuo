@@ -379,6 +379,8 @@ class GameRoom:
     # 自荐当出题人的座位号（0 = 花火出题）。开局后转到 game.host_number，
     # 这里只用于「还没开局时」把「X 正在出题」展示给房间。
     soup_host_number: int = 0
+    # 玩家出题时花火是否作为普通参与者一起猜（插件配置 turtle_soup.bot_join_player_host）
+    soup_bot_join: bool = True
     # 围棋盘路与贴目：房间级设置。首位入座的玩家可以在开局前自行调整，
     # 调整后连空棋盘也一起重绘（见 RoomManager.set_weiqi_board）。
     weiqi_size: int = 13
@@ -783,6 +785,7 @@ class GameRoom:
             ),
             "turtle_soup_mode": self.turtle_soup_mode,
             "soup_host_number": int(self.soup_host_number or 0),
+            "soup_bot_join": bool(self.soup_bot_join),
             "difficulty": self.difficulty,
             # 房间内投票换游戏：可选玩法（只含管理员已开放、且不是当前玩法的）
             # 以及正在进行的提案。门槛由后端算好，前端只负责展示。
@@ -956,6 +959,7 @@ class GameRoom:
             "game_type": self.game_type,
             "turtle_soup_mode": self.turtle_soup_mode,
             "soup_host_number": int(self.soup_host_number or 0),
+            "soup_bot_join": bool(self.soup_bot_join),
             "status": self.status,
             "created_at": self.created_at,
             "last_activity_at": self.last_activity_at,

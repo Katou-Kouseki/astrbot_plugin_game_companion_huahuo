@@ -192,3 +192,125 @@ def test_host_mode_routes_and_ui_are_wired() -> None:
     assert 'request("POST", "soup/host"' in script
     assert 'request("POST", "soup/judge"' in script
     assert "drawSoupAvatar" in script
+
+
+# ---------------- 花火参与的开关与节奏 ----------------
+
+
+def make_bot_plugin(manager: RoomManager, *, join: bool, every: int = 1):
+    """构造一个只跑「花火回合」的插件实例，模型调用换成可控桩。"""
+    from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+
+    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin.manager = manager
+    plugin.turtle_soup_bot_join = join
+    plugin.turtle_soup_bot_join_every = every
+    calls: list[str] = []
+    reply = {"value": '{"action":"question","text":"这件事和一场意外有关吗？"}'}
+
+    async def fake_model(_room, **_kwargs):  # type: ignore[no-untyped-def]
+        calls.append("called")
+        return reply["value"]
+
+    plugin._call_room_model = fake_model  # type: ignore[assignment]
+    return plugin, calls, reply
+
+
+async def ask_and_judge(manager: RoomManager, room, visitor, host_token: str, text: str):
+    """让某位玩家提一个问题，出题人答「是」，模拟一个完整的玩家行动。"""
+    for index, seat in enumerate(room.multiplayer.seats):
+        if seat.visitor_token == visitor.token:
+            room.multiplayer.current_turn_index = index
+            break
+    await manager.begin_soup_host_judgement(
+        room, text, kind="question", visitor_token=visitor.token
+    )
+    await manager.judge_soup_pending(room, host_token, verdict="yes")
+
+
+@pytest.mark.asyncio
+async def test_bot_join_switch_off_never_calls_model() -> None:
+    manager = RoomManager(turtle_soup_max_players=4, turtle_soup_bot_join=False)
+    room, visitors = await make_room(manager)
+    game = await start_host_game(manager, room, visitors[0].token)
+    plugin, calls, _ = make_bot_plugin(manager, join=False)
+
+    await ask_and_judge(manager, room, visitors[1], visitors[0].token, "他是不是在等人？")
+    await plugin._soup_bot_turn(room, game)
+
+    assert calls == [], "关掉之后不该再花一次模型调用"
+    assert game.pending_judge is None
+    assert room.soup_bot_join is False, "房间快照要带上开关，前端才知道怎么写提示"
+
+
+@pytest.mark.asyncio
+async def test_bot_join_rhythm_is_one_for_one() -> None:
+    """默认 every=1：玩家问一句，花火跟一句，交替进行。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    room, visitors = await make_room(manager)
+    game = await start_host_game(manager, room, visitors[0].token)
+    plugin, calls, _ = make_bot_plugin(manager, join=True, every=1)
+
+    await ask_and_judge(manager, room, visitors[1], visitors[0].token, "他是不是在等人？")
+    await plugin._soup_bot_turn(room, game)
+    assert calls == ["called"]
+    assert game.pending_judge is not None
+    assert game.pending_judge["for_bot"] is True
+    assert game.pending_judge["kind"] == "question"
+
+    # 花火自己的提问被裁决后，还没等到新的玩家行动，不能连着再动一次
+    await manager.judge_soup_pending(room, visitors[0].token, verdict="no")
+    await plugin._soup_bot_turn(room, game)
+    assert calls == ["called"], "花火不能自己接自己"
+
+    await ask_and_judge(manager, room, visitors[1], visitors[0].token, "和钱有关吗？")
+    await plugin._soup_bot_turn(room, game)
+    assert calls == ["called", "called"], "玩家再问一句，花火才跟下一句"
+
+
+@pytest.mark.asyncio
+async def test_bot_join_every_two_waits_for_second_player_move() -> None:
+    manager = RoomManager(turtle_soup_max_players=4, turtle_soup_bot_join_every=2)
+    room, visitors = await make_room(manager)
+    game = await start_host_game(manager, room, visitors[0].token)
+    plugin, calls, _ = make_bot_plugin(manager, join=True, every=2)
+
+    await ask_and_judge(manager, room, visitors[1], visitors[0].token, "他是不是在等人？")
+    await plugin._soup_bot_turn(room, game)
+    assert calls == [], "every=2 时第一个玩家行动还不够"
+
+    await ask_and_judge(manager, room, visitors[1], visitors[0].token, "和钱有关吗？")
+    await plugin._soup_bot_turn(room, game)
+    assert calls == ["called"]
+    assert game.pending_judge is not None
+
+
+@pytest.mark.asyncio
+async def test_bot_cannot_guess_before_three_public_questions() -> None:
+    """线索太少时模型想猜也不许，让它继续提问——避免开局就蒙一个。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    room, visitors = await make_room(manager)
+    game = await start_host_game(manager, room, visitors[0].token)
+    plugin, calls, reply = make_bot_plugin(manager, join=True)
+    reply["value"] = '{"action":"guess","answer":"她替去世的丈夫带伞。"}'
+
+    await ask_and_judge(manager, room, visitors[1], visitors[0].token, "她是不是在等人？")
+    await plugin._soup_bot_turn(room, game)
+
+    assert calls == ["called"]
+    assert game.pending_judge is None, "少于 3 条公开问答时不该提交推理"
+    assert game.finished is False
+
+
+def test_bot_join_settings_are_exposed_in_schema() -> None:
+    import json
+
+    root = Path(__file__).resolve().parents[1]
+    schema = json.loads((root / "_conf_schema.json").read_text(encoding="utf-8"))
+    items = schema["turtle_soup"]["items"]
+
+    assert items["bot_join_player_host"]["default"] is True
+    assert items["bot_join_every"]["default"] == 1
+    source = (root / "main.py").read_text(encoding="utf-8")
+    assert '"turtle_soup.bot_join_player_host"' in source
+    assert '"turtle_soup.bot_join_every"' in source

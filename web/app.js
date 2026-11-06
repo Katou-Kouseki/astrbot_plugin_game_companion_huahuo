@@ -4552,6 +4552,8 @@
       && ["waiting", "setup", "finished"].includes(String(room?.status || ""));
     const isHost = inPlay && myNumber > 0 && myNumber === hostNumber;
     const isApplicant = applied > 0 && applied === myNumber;
+    // 花火是否作为普通参与者一起猜：由插件配置决定，房间快照里带下来
+    const botJoins = room?.soup_bot_join !== false;
 
     panel.hidden = !(canApply || applied > 0 || inPlay || isHost);
     const hint = document.getElementById("soupHostHint");
@@ -4565,13 +4567,15 @@
     if (form) form.hidden = !isApplicant;
     if (hint) {
       if (isApplicant) {
-        hint.textContent = "填好汤面和汤底就能开局，其他人和花火一起猜。";
+        hint.textContent = botJoins
+          ? "填好汤面和汤底就能开局，其他人和花火一起猜。"
+          : "填好汤面和汤底就能开局，其他人来猜。";
       } else if (applied > 0) {
         hint.textContent = `${applied} 号正在出题，等 TA 提交题目。`;
       } else if (inPlay) {
         hint.textContent = isHost
           ? "你是本局出题人：回答其他人的问题、判断推理对不对。"
-          : `本局由 ${hostNumber} 号出题，花火也会一起猜。`;
+          : `本局由 ${hostNumber} 号出题，${botJoins ? "花火也会一起猜。" : "由其他玩家来猜。"}`;
       } else {
         hint.textContent = "默认花火出题；想自己出题就点下面。";
       }
