@@ -7,12 +7,15 @@
   `request_turtle_soup_hint` / `request_soup_reveal`），不碰房间内部状态——
   以后把海龟汤拆成独立插件时，这层跟着搬走即可。
 
-设计上的两个取舍：
+设计上的三个取舍：
 
 1. **不做会话接管**。参考项目开局后会接管群里所有消息（`session_waiter`），
    自然但会吞掉群聊、和别的插件抢消息。我们的房间以网页为主，群里是"顺手
    问一句"的补充通道，所以用显式指令，只在有房间时响应。
-2. **指令失败要说人话**。没绑座位是最高频的失败，直接给绑定引导，
+2. **@ 花火说话也算提问**（见 :func:`classify_at_message`）。只接管「已绑定玩家席
+   的人 @ 花火」的消息，其他人 @ 花火照常聊天；判不准时一律当提问而不是推理——
+   推理判错可能直接揭晓汤底，代价比多问一句高得多。
+3. **指令失败要说人话**。没绑座位是最高频的失败，直接给绑定引导，
    而不是把 `PermissionError` 原文丢到群里。
 """
 
@@ -70,7 +73,7 @@ def parse_soup_command(message: str) -> tuple[str, str] | None:
     「汤」是单字，群里说「汤圆好吃」也会撞上前缀，所以要求「汤」后面必须是
     空白或已知动作词——否则整句当普通聊天放过。
     """
-    text = _PREFIX_RE.sub("", str(message or "")).strip()
+    text = _PREFIX_RE.sub("", _strip_at_prefix(str(message or ""))).strip()
     if text.startswith("海龟汤"):
         rest = text[len("海龟汤") :]
     elif text.startswith("汤"):
@@ -280,3 +283,176 @@ async def handle_soup_command(plugin: Any, event: Any) -> str:
         return ""
 
     return await run_soup_action(plugin, room, action, body, qq)
+
+# ---------------- @ 花火 直接说话（不用指令） ----------------
+
+# 纯寒暄与应答：这些不该变成一次提问，否则群里一句「谢谢」也会被问出去。
+_AT_GREETINGS: frozenset[str] = frozenset(
+    {
+        "你好",
+        "您好",
+        "在吗",
+        "在不在",
+        "嗨",
+        "hi",
+        "hello",
+        "哈喽",
+        "谢谢",
+        "谢谢你",
+        "多谢",
+        "好的",
+        "好",
+        "行",
+        "嗯",
+        "嗯嗯",
+        "收到",
+        "辛苦了",
+        "晚安",
+        "早安",
+        "早上好",
+        "晚上好",
+        "哈哈",
+        "哈哈哈",
+        "笑死",
+        "666",
+        "牛",
+        "厉害",
+        "随便",
+        "算了",
+        "没事",
+        "没事了",
+    }
+)
+_AT_GREETINGS_LOWER = frozenset(word.lower() for word in _AT_GREETINGS)
+
+# 短句里带这些词八成是搭话而不是提问（「谢谢花火」「哈哈哈哈」）。
+_AT_GREETING_PARTS: tuple[str, ...] = (
+    "谢谢",
+    "多谢",
+    "辛苦",
+    "哈哈",
+    "笑死",
+    "晚安",
+    "早安",
+    "早上好",
+    "晚上好",
+    "在吗",
+    "在不在",
+    "你好",
+    "您好",
+    "收到",
+    "嗯嗯",
+    "666",
+)
+_AT_SHORT_CHARS = 6
+
+# 疑问特征：命中就当提问。提问判错的代价只是多问一句，
+# 而推理判错会推进覆盖率甚至直接揭晓，所以宁可把模糊的句子当提问。
+_AT_QUESTION_MARKERS: tuple[str, ...] = (
+    "吗",
+    "？",
+    "?",
+    "是不是",
+    "是否",
+    "有没有",
+    "为什么",
+    "怎么",
+    "哪里",
+    "哪儿",
+    "谁",
+    "多少",
+    "几个",
+    "多久",
+    "能不能",
+    "可不可以",
+    "会不会",
+)
+
+# 明确的推理措辞：即使句子不长，也可以当推理提交。
+_AT_ANSWER_HINTS: tuple[str, ...] = (
+    "我觉得",
+    "我猜",
+    "我认为",
+    "我怀疑",
+    "我的推理",
+    "答案是",
+    "真相是",
+    "他其实",
+    "她其实",
+    "所以整个",
+    "故事是",
+)
+# 陈述句多长才敢当推理提交。太短的陈述（「灯灭了」）更像感叹，按提问处理。
+_MIN_ANSWER_CHARS = 12
+
+_AT_PREFIX_RE = re.compile(r"^(?:\s*\[CQ:at[^\]]*\]|\s*@\S+)\s*")
+
+
+def _strip_at_prefix(text: str) -> str:
+    return _AT_PREFIX_RE.sub("", str(text or "")).strip()
+
+
+def classify_at_message(text: str) -> str | None:
+    """把「@花火 说的一句话」判成 question / answer；不值得处理时返回 None。
+
+    判据是**句式**而不是关键词：带疑问特征（问号、吗、是不是、为什么……）就是
+    提问；不带疑问特征、又够长的陈述句，按推理提交——这样「@花火 他是灯塔管理员，
+    灯灭了导致沉船」也能直接当推理，不用写「汤 推理」。
+
+    模糊时偏向提问：多问一句只是浪费一轮，而推理判错会推进覆盖率甚至直接揭晓汤底。
+    """
+    normalized = str(text or "").strip()
+    if not normalized:
+        return None
+    bare = re.sub(
+        r"[\s，。！？!?、,.~～…·:：;；\"'“”‘’()（）\[\]【】<>《》]",
+        "",
+        normalized,
+    )
+    if not bare:
+        return None
+    if bare.lower() in _AT_GREETINGS_LOWER:
+        return None
+    # 短短一句又带着搭话的词，当作招呼而不是提问
+    if len(bare) <= _AT_SHORT_CHARS and any(
+        part in bare for part in _AT_GREETING_PARTS
+    ):
+        return None
+    if any(marker in normalized for marker in _AT_QUESTION_MARKERS):
+        return "question"
+    if len(bare) >= _MIN_ANSWER_CHARS or any(
+        hint in normalized for hint in _AT_ANSWER_HINTS
+    ):
+        return "answer"
+    return "question"
+
+
+def _qq_has_seat(room: GameRoom, qq: str) -> bool:
+    if not qq:
+        return False
+    if room.multiplayer.enabled:
+        return room.multiplayer.seat_for_qq(qq) is not None
+    return bool(getattr(room, "player_qq", "")) and str(room.player_qq) == qq
+
+
+async def handle_soup_at_message(plugin: Any, event: Any) -> str:
+    """@ 花火说的一句话 → 这一局的一次提问/推理；不该接管时返回空串。
+
+    只在「有进行中的海龟汤 + 发送者已在玩家席」时接管。其他群友 @ 花火仍然是
+    正常聊天——不能因为群里开了一局，就把所有人的搭话都吃掉。
+    """
+    session_id = str(getattr(event, "unified_msg_origin", "") or "")
+    room = soup_room_for_session(plugin, session_id)
+    if room is None:
+        return ""
+    qq = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
+    if not _qq_has_seat(room, qq):
+        return ""
+    text = _strip_at_prefix(str(getattr(event, "message_str", "") or ""))
+    # 已经写成指令的交给指令入口，避免两个入口各回一条
+    if parse_soup_command(text) is not None:
+        return ""
+    action = classify_at_message(text)
+    if action is None:
+        return ""
+    return await run_soup_action(plugin, room, action, text, qq)

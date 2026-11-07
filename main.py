@@ -41,7 +41,12 @@ from .othello import WHITE as OTHELLO_WHITE
 from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
-from .qq_bridge import handle_soup_command, run_soup_action, soup_room_for_session
+from .qq_bridge import (
+    handle_soup_at_message,
+    handle_soup_command,
+    run_soup_action,
+    soup_room_for_session,
+)
 from .room_manager import (
     BOARD_GAME_CLASSES,
     DUEL_GAMES,
@@ -1630,6 +1635,10 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_library_enabled = self._cfg_bool(
             "turtle_soup.library_enabled", True
         )
+        # 群里 @ 花火直接说话是否当作这一局的提问（不用写「汤 提问」）
+        self.turtle_soup_qq_at_question = self._cfg_bool(
+            "turtle_soup.qq_at_question", True
+        )
         self.turtle_soup_group_announce_enabled = self._cfg_bool(
             "turtle_soup.group_announce_enabled", False
         )
@@ -2862,7 +2871,8 @@ class GameCompanionPlugin(Star):
         )
 
     @filter.regex(
-        r"^\s*[/!！]?\s*(?:海龟汤|汤(?=\s|$|提问|问一下|推理|答题|答案|看答案|揭晓"
+        r"^\s*(?:\[CQ:at[^\]]*\]\s*|@[^\s]{1,24}\s+)?[/!！]?\s*"
+        r"(?:海龟汤|汤(?=\s|$|提问|问一下|推理|答题|答案|看答案|揭晓"
         r"|附议|同意|反对|提示|状态|查看|帮助|菜单))"
     )
     async def soup_qq_command(self, event: AstrMessageEvent):
@@ -2872,6 +2882,29 @@ class GameCompanionPlugin(Star):
         让这条消息继续走正常聊天（「汤圆好吃」之类不能被当成指令）。
         """
         reply = await handle_soup_command(self, event)
+        if not reply:
+            return
+        stop = getattr(event, "stop_event", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        yield event.plain_result(reply)
+
+    @filter.regex(r"^[\s\S]+$")
+    async def soup_qq_at_say(self, event: AstrMessageEvent):
+        """群里 @ 花火直接说话，就当作这一局的提问，不用写「汤 提问」。
+
+        只接管「有进行中的海龟汤 + 发送者已在玩家席」的消息。其他群友 @ 花火
+        仍然是正常聊天——不能因为群里开了一局，就把所有人的搭话都吃掉。
+        想回到纯指令模式，把 `turtle_soup.qq_at_question` 关掉即可。
+        """
+        if not getattr(self, "turtle_soup_qq_at_question", True):
+            return
+        if not getattr(event, "is_at_or_wake_command", False):
+            return
+        reply = await handle_soup_at_message(self, event)
         if not reply:
             return
         stop = getattr(event, "stop_event", None)

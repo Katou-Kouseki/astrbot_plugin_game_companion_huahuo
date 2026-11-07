@@ -79,7 +79,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.77"
+    assert metadata["version"] == "0.5.78"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1376,6 +1376,10 @@ def test_qq_bridge_contracts() -> None:
 
     assert "def soup_qq_command" in main_src
     assert "handle_soup_command(self, event)" in main_src
+    # @花火 直接说话也要能当提问，否则群里必须先写「汤 提问」
+    assert "def soup_qq_at_say" in main_src
+    assert "handle_soup_at_message(self, event)" in main_src
+    assert "classify_at_message" in bridge
     # LLM 工具也要能真的答题，而不是只回「请去网页」
     assert "run_soup_action(self, room, target, text, qq)" in main_src
     assert "soup_room_for_session(self, session_id)" in main_src
@@ -1403,4 +1407,5 @@ def test_soup_library_is_shipped() -> None:
     schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
     soup = schema["turtle_soup"]["items"]
     assert soup["library_enabled"]["default"] is True
+    assert soup["qq_at_question"]["default"] is True
 

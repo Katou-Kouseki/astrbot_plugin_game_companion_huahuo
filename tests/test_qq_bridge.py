@@ -74,6 +74,24 @@ def make_room(*, status: str = "active") -> SimpleNamespace:
     )
 
 
+def make_at_room(*, seated: bool = True) -> SimpleNamespace:
+    """多人房：10001 已绑座位（seated=False 时未绑）。"""
+    return SimpleNamespace(
+        game_type="turtle_soup",
+        status="active",
+        player_qq="",
+        multiplayer=SimpleNamespace(
+            enabled=True,
+            seat_for_qq=lambda qq: (
+                SimpleNamespace(visitor_token="tk")
+                if seated and qq == "10001"
+                else None
+            ),
+        ),
+        visitors={"tk": SimpleNamespace(last_seen_at=0.0, connected=False)},
+    )
+
+
 def make_plugin(room: SimpleNamespace | None = None) -> SimpleNamespace:
     game = TurtleSoupGame(difficulty="normal", max_hints=3, content_level="normal")
     plugin = SimpleNamespace(
@@ -197,3 +215,140 @@ async def test_qq_activity_marks_player_online() -> None:
     _mark_active(room, "10001")
     assert visitor.connected is True
     assert visitor.last_seen_at > 0
+
+
+# ---------------- @ 花火 直接说话 ----------------
+
+
+class TestAtMessage:
+    """@ 一句就当提问：判得准，且不能把别人的搭话也吃进去。"""
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("和灯塔有关吗？", "question"),
+            ("是不是跟他的工作有关", "question"),
+            ("他是不是瞎了", "question"),
+            ("他为什么自杀", "question"),
+            ("我觉得他是灯塔管理员，因为灯灭了导致船只失事，他愧疚自杀", "answer"),
+            ("我的推理是：他其实是守塔人，那天喝多了忘了点灯", "answer"),
+            # 不带「我觉得」这类措辞，但明显是一整段陈述 → 也算推理
+            ("他是灯塔管理员，灯灭了他才发现，所以自责跳楼", "answer"),
+            ("就是灯塔管理员忘了点灯，船撞礁沉了", "answer"),
+            # 太短的陈述更像感叹，按提问处理（多问一句代价更小）
+            ("灯灭了", "question"),
+            # 寒暄不该变成提问
+            ("你好", None),
+            ("在吗", None),
+            ("谢谢花火", None),
+            ("哈哈哈哈", None),
+            ("好的", None),
+            ("", None),
+            ("。。。", None),
+        ],
+    )
+    def test_classify(self, text: str, expected: str | None) -> None:
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            classify_at_message,
+        )
+
+        assert classify_at_message(text) == expected
+
+    @pytest.mark.asyncio
+    async def test_at_message_becomes_question(self) -> None:
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room())
+        reply = await handle_soup_at_message(
+            plugin, make_event("@花火 和灯塔有关吗？")
+        )
+
+        assert "第 3 问" in reply
+        kwargs = plugin.submit_turtle_soup_question.await_args.kwargs
+        assert kwargs["source"] == "qq"
+        assert kwargs["actor_qq"] == "10001"
+        # @ 前缀必须剥掉，否则问的内容里会带着「@花火」
+        _room, text = plugin.submit_turtle_soup_question.await_args.args
+        assert text == "和灯塔有关吗？"
+
+    @pytest.mark.asyncio
+    async def test_at_message_without_seat_is_ignored(self) -> None:
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room(seated=False))
+        assert (
+            await handle_soup_at_message(plugin, make_event("@花火 和灯塔有关吗？"))
+            == ""
+        )
+        plugin.submit_turtle_soup_question.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_at_message_without_room_is_ignored(self) -> None:
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(None)
+        assert (
+            await handle_soup_at_message(plugin, make_event("@花火 和灯塔有关吗？"))
+            == ""
+        )
+
+    @pytest.mark.asyncio
+    async def test_at_command_is_not_handled_twice(self) -> None:
+        """@花火 汤 提问 xxx 交给指令入口，不能两个入口各回一条。"""
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room())
+        assert (
+            await handle_soup_at_message(plugin, make_event("@花火 汤 提问 是灯塔吗"))
+            == ""
+        )
+        plugin.submit_turtle_soup_question.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_greeting_is_not_sent_as_question(self) -> None:
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room())
+        assert await handle_soup_at_message(plugin, make_event("@花火 在吗")) == ""
+        plugin.submit_turtle_soup_question.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_at_statement_becomes_answer(self) -> None:
+        """@花火 直接讲一段推理（不写「汤 推理」）也要能提交。"""
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room())
+        reply = await handle_soup_at_message(
+            plugin, make_event("@花火 他是灯塔管理员，灯灭了他才发现，所以自责跳楼")
+        )
+
+        plugin.submit_turtle_soup_answer.assert_awaited_once()
+        plugin.submit_turtle_soup_question.assert_not_awaited()
+        kwargs = plugin.submit_turtle_soup_answer.await_args.kwargs
+        assert kwargs["source"] == "qq"
+        _room, text = plugin.submit_turtle_soup_answer.await_args.args
+        assert text.startswith("他是灯塔管理员")
+        assert "50%" in reply
+
+    @pytest.mark.asyncio
+    async def test_at_question_still_goes_to_question(self) -> None:
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room())
+        await handle_soup_at_message(plugin, make_event("@花火 是不是和灯塔有关"))
+        plugin.submit_turtle_soup_question.assert_awaited_once()
+        plugin.submit_turtle_soup_answer.assert_not_awaited()
