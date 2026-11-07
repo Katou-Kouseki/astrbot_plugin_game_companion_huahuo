@@ -359,11 +359,11 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "config_key": "turtle_soup.max_players",
                 "label": "最大玩家席",
                 "type": "int",
-                "default": 6,
+                "default": 0,
                 "minimum": 0,
                 "maximum": 100,
                 "unit": "人",
-                "hint": "0 表示不限制人数。",
+                "hint": "0 表示不限制人数（默认），群里谁想加入都能坐下。",
             },
             {
                 "key": "turn_timeout_seconds",
@@ -1614,7 +1614,7 @@ class GameCompanionPlugin(Star):
             self._cfg("turtle_soup.content_level", "normal")
         )
         self.turtle_soup_max_players = self._cfg_non_negative(
-            "turtle_soup.max_players", 6
+            "turtle_soup.max_players", 0
         )
         self.turtle_soup_free_questioning = self._cfg_bool(
             "turtle_soup.free_questioning", False
@@ -1638,6 +1638,10 @@ class GameCompanionPlugin(Star):
         # 群里 @ 花火直接说话是否当作这一局的提问（不用写「汤 提问」）
         self.turtle_soup_qq_at_question = self._cfg_bool(
             "turtle_soup.qq_at_question", True
+        )
+        # 群里说话的人还没坐进玩家席时，自动安排一个空位（座位满了才回退到绑定引导）
+        self.turtle_soup_qq_auto_bind = self._cfg_bool(
+            "turtle_soup.qq_auto_bind", True
         )
         self.turtle_soup_group_announce_enabled = self._cfg_bool(
             "turtle_soup.group_announce_enabled", False
@@ -2321,7 +2325,14 @@ class GameCompanionPlugin(Star):
             )
         if target in {"question", "answer"} and not text:
             return self._json_error("text 不能为空：把用户的问题或推理原话放进来")
-        reply = await run_soup_action(self, room, target, text, qq)
+        reply = await run_soup_action(
+            self,
+            room,
+            target,
+            text,
+            qq,
+            actor_name=str(getattr(event, "get_sender_name", lambda: "")() or "").strip(),
+        )
         return json.dumps({"ok": True, "reply": reply}, ensure_ascii=False)
 
     @filter.command("花火陪你玩")
@@ -10161,7 +10172,7 @@ class GameCompanionPlugin(Star):
             self._cfg("turtle_soup.content_level", "normal")
         )
         self.turtle_soup_max_players = self._cfg_int(
-            "turtle_soup.max_players", 6, minimum=0, maximum=100
+            "turtle_soup.max_players", 0, minimum=0, maximum=100
         )
         self.turtle_soup_free_questioning = self._cfg_bool(
             "turtle_soup.free_questioning", False

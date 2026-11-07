@@ -35,6 +35,10 @@ def make_plugin(*, room: SimpleNamespace | None) -> GameCompanionPlugin:
         for_session=lambda _sid: [room] if room is not None else [],
         _turtle_soup_game=lambda _room: active_game,
         request_turtle_soup_hint=AsyncMock(return_value="灯不是他关的。"),
+        join=AsyncMock(
+            return_value=SimpleNamespace(number=7, display_name="", qq="")
+        ),
+        assign_player=AsyncMock(return_value=None),
     )
     plugin.submit_turtle_soup_question = AsyncMock(
         return_value={"verdict": "no", "reply": "否", "question_count": 2}
@@ -52,8 +56,10 @@ def make_room(*, mode: str = "bot_host", host_number: int = 0) -> SimpleNamespac
     return SimpleNamespace(
         game_type="turtle_soup",
         status="active",
+        player_qq="",
         multiplayer=SimpleNamespace(enabled=False),
         visitors={},
+        add_message=lambda *_args, **_kwargs: None,
         game=TurtleSoupGame(
             difficulty="normal",
             max_hints=3,

@@ -65,6 +65,8 @@ _PREFIX_RE = re.compile(r"^\s*[/!！]\s*")
 _NO_ROOM_ACTIONS = frozenset(
     {"question", "answer", "hint", "reveal", "agree", "disagree", "status", "history"}
 )
+# 看进度、看历史、看帮助不需要座位，观众也能用
+_NO_SEAT_ACTIONS = frozenset({"status", "history", "help"})
 
 
 def parse_soup_command(message: str) -> tuple[str, str] | None:
@@ -243,16 +245,26 @@ async def _dispatch(
 
 
 async def run_soup_action(
-    plugin: Any, room: GameRoom, action: str, body: str, qq: str
+    plugin: Any, room: GameRoom, action: str, body: str, qq: str, *, actor_name: str = ""
 ) -> str:
-    """按动作执行一次群聊操作（指令入口与 LLM 工具共用）。
+    """按动作执行一次群聊操作（指令入口、@ 入口与 LLM 工具共用）。
 
-    统一在这里做「活跃刷新 + 异常翻译」：未绑定座位是最高频的失败，
-    转成绑定引导；其余错误转成一句可读的话，不把异常原文丢给用户。
+    统一在这里做「自动入座 + 活跃刷新 + 异常翻译」：
+    * 群里说话的人还没绑座位时自动替他占一个（`turtle_soup.qq_auto_bind`），
+      否则第一次玩要先跑去网页拿令牌，多数人到这一步就放弃了；
+    * 未绑定座位是原来的最高频失败，现在只剩「座位满了」这类真没法办的情况，
+      也要说人话；
+    * 其余错误转成一句可读的话，不把异常原文丢给用户。
     """
+    prefix = ""
+    if action not in _NO_SEAT_ACTIONS:
+        ok, note = await ensure_qq_seat(plugin, room, qq, actor_name)
+        if not ok:
+            return note
+        prefix = note
     _mark_active(room, qq)
     try:
-        return await _dispatch(plugin, room, action, body, qq)
+        text = await _dispatch(plugin, room, action, body, qq)
     except PermissionError as exc:
         return (
             f"{exc}\n"
@@ -260,6 +272,7 @@ async def run_soup_action(
         )
     except (ValueError, RuntimeError, OSError) as exc:
         return f"操作失败：{exc}"
+    return f"{prefix}\n{text}" if prefix else text
 
 
 async def handle_soup_command(plugin: Any, event: Any) -> str:
@@ -282,7 +295,14 @@ async def handle_soup_command(plugin: Any, event: Any) -> str:
             )
         return ""
 
-    return await run_soup_action(plugin, room, action, body, qq)
+    return await run_soup_action(
+        plugin,
+        room,
+        action,
+        body,
+        qq,
+        actor_name=str(getattr(event, "get_sender_name", lambda: "")() or "").strip(),
+    )
 
 # ---------------- @ 花火 直接说话（不用指令） ----------------
 
@@ -435,6 +455,55 @@ def _qq_has_seat(room: GameRoom, qq: str) -> bool:
     return bool(getattr(room, "player_qq", "")) and str(room.player_qq) == qq
 
 
+async def ensure_qq_seat(
+    plugin: Any, room: GameRoom, qq: str, display_name: str = ""
+) -> tuple[bool, str]:
+    """让群里说话的 QQ 坐进玩家席，返回 (是否可用, 需要前置说明的文案)。
+
+    为什么不要求先去网页拿令牌：群里玩到一半被「你还没绑定」挡回去，多数人
+    到这一步就放弃了。有空座位就直接让他坐下，网页端会看到一条「从群里自动
+    加入玩家席」的系统消息，谁进来了是一目了然的。
+
+    座位满了 / 单人房已经有人在玩时才回退到绑定引导——那两种是真没法自动安排。
+    """
+    if not qq:
+        return False, "拿不到你的 QQ 号，先在网页绑定玩家席再用指令。"
+    if _qq_has_seat(room, qq):
+        return True, ""
+    if not getattr(plugin, "turtle_soup_qq_auto_bind", True):
+        return False, (
+            "你还没绑定玩家席：在网页里取一次性令牌，然后在群里发「绑定玩家 令牌」。"
+        )
+    if room.status not in {"active", "paused", "setup", "waiting"}:
+        return False, "这一局已经结束了，等下一局再进来。"
+
+    if room.multiplayer.enabled:
+        capacity = int(room.multiplayer.capacity or 0)
+        if capacity and len(room.multiplayer.seats) >= capacity:
+            return False, f"玩家席已经坐满（{capacity} 人），先在网页当观众吧。"
+    elif room.player_qq and str(room.player_qq) != qq:
+        return False, "这是单人房间，已经有玩家在玩了。"
+
+    status_before = room.status
+    try:
+        visitor = await plugin.manager.join(room)
+        if display_name:
+            visitor.display_name = display_name
+        await plugin.manager.assign_player(
+            room, visitor.number, qq, allow_non_numeric=True
+        )
+    except (ValueError, PermissionError, RuntimeError) as exc:
+        return False, f"自动加入玩家席失败：{exc}"
+    # 极端情况下 assign_player 会把进行中的房间打回 setup，这里兜回来
+    if status_before == "active" and room.status != "active":
+        room.status = status_before
+    room.add_message(
+        "system",
+        f"{display_name or qq} 从群里自动加入玩家席（{visitor.number} 号）。",
+    )
+    return True, f"（已把你加入玩家席：{visitor.number} 号）"
+
+
 async def handle_soup_at_message(plugin: Any, event: Any) -> str:
     """@ 花火说的一句话 → 这一局的一次提问/推理；不该接管时返回空串。
 
@@ -446,8 +515,6 @@ async def handle_soup_at_message(plugin: Any, event: Any) -> str:
     if room is None:
         return ""
     qq = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
-    if not _qq_has_seat(room, qq):
-        return ""
     text = _strip_at_prefix(str(getattr(event, "message_str", "") or ""))
     # 已经写成指令的交给指令入口，避免两个入口各回一条
     if parse_soup_command(text) is not None:
@@ -455,4 +522,8 @@ async def handle_soup_at_message(plugin: Any, event: Any) -> str:
     action = classify_at_message(text)
     if action is None:
         return ""
-    return await run_soup_action(plugin, room, action, text, qq)
+    # 没绑座位的人在这里自动入座（座位满了才回退成绑定引导）
+    actor_name = str(getattr(event, "get_sender_name", lambda: "")() or "").strip()
+    return await run_soup_action(
+        plugin, room, action, text, qq, actor_name=actor_name
+    )

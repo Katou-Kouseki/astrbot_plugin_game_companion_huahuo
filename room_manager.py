@@ -204,7 +204,7 @@ class RoomManager:
         idle_timeout: int = 300,
         turtle_soup_max_hints: int = 3,
         turtle_soup_content_level: SoupContentLevel = "normal",
-        turtle_soup_max_players: int = 6,
+        turtle_soup_max_players: int = 0,
         turtle_soup_free_questioning: bool = False,
         turtle_soup_free_question_cooldown: int = 1,
         turtle_soup_auto_reveal_seconds: int = 1800,
@@ -1106,10 +1106,12 @@ class RoomManager:
                             or room.game_type == "undercover"
                             # 海龟汤是多人合力解谜：第一个人入座就开局的话，
                             # 后面的人根本来不及坐进来。多人房改为等房主点开始，
-                            # 只有单人房（capacity <= 1）才自动开局。
+                            # 只有单人房（capacity == 1）才自动开局。
+                            # 注意用 == 1 而不是 > 1：capacity=0 表示不限人数，
+                            # 那显然不是单人房，不能被判成「入座即开局」。
                             or (
                                 room.game_type == "turtle_soup"
-                                and int(room.multiplayer.capacity or 0) > 1
+                                and int(room.multiplayer.capacity or 0) != 1
                             )
                         )
                         if room.game_type == "undercover":

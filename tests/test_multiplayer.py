@@ -350,3 +350,25 @@ async def test_departed_player_leaves_seat_while_game_is_active() -> None:
     assert first.token not in [
         seat.visitor_token for seat in room.multiplayer.seats
     ]
+
+
+@pytest.mark.asyncio
+async def test_turtle_soup_seats_are_unlimited_by_default() -> None:
+    """默认不限人数：群里谁都能坐进来，且第一个人入座不会自动开局。
+
+    `capacity=0` 表示不限。区间判断如果写成 `capacity > 1`，0 会被误判成单人房，
+    又回到「第一个人入座就开局，后面的人来不及进」的老问题。
+    """
+    manager = RoomManager(turtle_soup_max_players=0)
+    room = await make_room(manager)
+
+    first = await manager.join(room)
+    await manager.claim_and_start(room, first.token, "")
+    assert room.game is None, "不限人数的房间不能被当成单人房自动开局"
+
+    for _ in range(5):
+        visitor = await manager.join(room)
+        await manager.claim_and_start(room, visitor.token, "")
+
+    assert len(room.multiplayer.seats) == 6
+    assert room.multiplayer.capacity == 0

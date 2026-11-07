@@ -35,7 +35,8 @@ def test_config_defaults_match_product_contract() -> None:
     assert schema["xiangqi"]["items"]["auto_download_engine"]["default"] is False
     assert schema["turtle_soup"]["items"]["max_hints"]["default"] == 3
     assert schema["turtle_soup"]["items"]["content_level"]["default"] == "normal"
-    assert schema["turtle_soup"]["items"]["max_players"]["default"] == 6
+    # 海龟汤不限人数（0）：群里参与的人越多越好，不该被座位数挡在门外
+    assert schema["turtle_soup"]["items"]["max_players"]["default"] == 0
     assert schema["multiplayer"]["items"]["turn_timeout_seconds"]["default"] == 60
     assert schema["multiplayer"]["items"]["duel_turn_timeout_seconds"]["default"] == 180
     assert (
@@ -79,7 +80,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.78"
+    assert metadata["version"] == "0.5.79"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1381,7 +1382,7 @@ def test_qq_bridge_contracts() -> None:
     assert "handle_soup_at_message(self, event)" in main_src
     assert "classify_at_message" in bridge
     # LLM 工具也要能真的答题，而不是只回「请去网页」
-    assert "run_soup_action(self, room, target, text, qq)" in main_src
+    assert "run_soup_action(" in main_src
     assert "soup_room_for_session(self, session_id)" in main_src
 
     for word in ("提问", "推理", "提示", "揭晓", "附议", "反对", "状态", "查看"):
@@ -1408,4 +1409,5 @@ def test_soup_library_is_shipped() -> None:
     soup = schema["turtle_soup"]["items"]
     assert soup["library_enabled"]["default"] is True
     assert soup["qq_at_question"]["default"] is True
+    assert soup["qq_auto_bind"]["default"] is True
 

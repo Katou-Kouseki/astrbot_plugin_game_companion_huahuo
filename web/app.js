@@ -1471,7 +1471,7 @@
     if (note) note.hidden = room.status === "setup"; // 大字倒计时显示时隐去小字
     if (room.status !== "setup") return;
     const deadline = Number(room.turn_deadline || 0);
-    const capacity = Number(room.player_capacity || 0);
+    const capacity = playerCapacity(room, 0);
     const current = (room.player_seats || []).length;
     const serverBase = Number(room.server_time || 0);
     const takenAt = Number(room._snapshot_local_ms || Date.now()) / 1000;
@@ -2137,7 +2137,7 @@
       && room.is_player
       && room.status === "setup"
       && !hasAiOpponent(room)
-      && roomSeats().length < Number(room.player_capacity || 2);
+      && roomSeats().length < playerCapacity(room, 2);
     sideChoice.hidden = ["turtle_soup", "pig_dice", "draw_guess", "blackjack", "undercover"].includes(room.game_type) || (isDuelGame(room) && !duelSoloSetup) || !(["waiting", "setup", "finished"].includes(room.status));
     action.hidden = false;
     action.disabled = busy;
@@ -2184,7 +2184,7 @@
       // 局中一律不给「加入对局」入口：哪怕席位看着没满（对局里坐着花火时
       // 快照的座位数也可能对不上），也不能让人点进来把棋局打断。
       const inPlay = room.status === "active" || room.status === "paused";
-      const capacity = Number(room.player_capacity || 1);
+      const capacity = playerCapacity(room, 1);
       const seated = Math.max(
         Number((room.player_numbers || []).length),
         Number((room.player_seats || []).length),
@@ -2220,7 +2220,7 @@
       if (room.game_type === "undercover") {
         // 谁是卧底：倒计时自动开，不需要任何按钮
         action.hidden = true;
-        const capacity = Number(room.player_capacity || 0);
+        const capacity = playerCapacity(room, 0);
         const current = (room.player_seats || []).length;
         const deadline = Number(room.turn_deadline || 0);
         const serverNow = Number(room.server_time || Date.now() / 1000);
@@ -2232,7 +2232,7 @@
         note.textContent = `已入座${capacityText}${remainText}。`;
       } else if (isDuelGame(room)) {
         // 两人对弈：一个人坐着时，位置可以留给朋友，也可以直接约花火
-        const capacity = Number(room.player_capacity || 2);
+        const capacity = playerCapacity(room, 2);
         const seated = roomSeats().length;
         // 兜底：setup 状态下如果对局其实已经落过子，就别再给「开局」入口
         const running = Boolean(room.game) && Number(room.game?.move_count || 0) > 0;
@@ -2262,7 +2262,7 @@
         if (room.game_type === "turtle_soup") {
           // 多人海龟汤已改为手动开局：说清楚可以等人齐，别以为点了才开始一个人玩
           const seatedNow = roomSeats().length;
-          const cap = Number(room.player_capacity || 0);
+          const cap = playerCapacity(room, 0);
           note.textContent = `已入座 ${seatedNow}${cap > 0 ? ` / ${cap}` : ""} 人，`
             + "可以等其他玩家进来，也可以现在开始。";
         } else {
@@ -2337,6 +2337,15 @@
 
   function roomSeats(target = room) {
     return Array.isArray(target?.player_seats) ? target.player_seats : [];
+  }
+
+  // 玩家席上限：0 表示不限（海龟汤已经不限制人数）。
+  // 这里不能用 `|| 默认值` —— 0 会被当成「没配置」而回退成 1，观众就进不来了。
+  function playerCapacity(target = room, fallback = 0) {
+    const raw = target?.player_capacity;
+    if (raw === undefined || raw === null || raw === "") return fallback;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : fallback;
   }
 
   // 按快照时间戳推算当前服务器时间，用于回合倒计时每秒刷新
@@ -3492,7 +3501,7 @@
           wb.value = String(defaultScales[2] || 0);
         }
         if (hostHint) hostHint.textContent = `当前比例：${civ.value} 民 ${uc.value} 卧 ${wb.value} 白（按实际人数按比例折算）`;
-        const capacity = Number(room.player_capacity || 0);
+        const capacity = playerCapacity(room, 0);
         const current = seats.length;
         if (seatCount) seatCount.textContent = capacity > 0
           ? `当前 ${current}/${capacity} 人 · 至少 ${Number(room.undercover_min_players || 2)} 人开局`
@@ -4239,7 +4248,7 @@
           title = "玩家正在投票";
           text = "票数结果将在全员投出后揭晓，稍安勿躁。";
         } else if (room.status === "setup") {
-          const capacity = Number(room.player_capacity || 0);
+          const capacity = playerCapacity(room, 0);
           badge = "⏳";
           title = "集结中 · 等待开局";
           text = `已入座 ${liveSeats}/${capacity || "不限"} 人 · 点击「准备」参与本局，全员就绪或倒计时结束自动开局。`;
@@ -6529,7 +6538,7 @@
         isDuelGame(room)
         && room.status === "setup"
         && !hasAiOpponent(room)
-        && roomSeats().length < Number(room.player_capacity || 2)
+        && roomSeats().length < playerCapacity(room, 2)
       ) {
         // 「和花火对局」：花火坐到空位上，凑齐两人立即开局
         await request("POST", "seat/ai", {

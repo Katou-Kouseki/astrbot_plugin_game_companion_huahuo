@@ -62,6 +62,7 @@ def make_event(message: str, *, qq: str = "10001") -> SimpleNamespace:
         message_str=message,
         unified_msg_origin="aiocqhttp:group:1",
         get_sender_id=lambda: qq,
+        get_sender_name=lambda: "测试用户",
     )
 
 
@@ -69,19 +70,29 @@ def make_room(*, status: str = "active") -> SimpleNamespace:
     return SimpleNamespace(
         game_type="turtle_soup",
         status=status,
+        player_qq="",
         multiplayer=SimpleNamespace(enabled=False),
         visitors={},
+        add_message=lambda *_args, **_kwargs: None,
     )
 
 
-def make_at_room(*, seated: bool = True) -> SimpleNamespace:
+def make_at_room(
+    *,
+    seated: bool = True,
+    capacity: int = 6,
+    seats: int = 1,
+    status: str = "active",
+) -> SimpleNamespace:
     """多人房：10001 已绑座位（seated=False 时未绑）。"""
     return SimpleNamespace(
         game_type="turtle_soup",
-        status="active",
+        status=status,
         player_qq="",
         multiplayer=SimpleNamespace(
             enabled=True,
+            capacity=capacity,
+            seats=[SimpleNamespace(visitor_token=f"t{i}") for i in range(seats)],
             seat_for_qq=lambda qq: (
                 SimpleNamespace(visitor_token="tk")
                 if seated and qq == "10001"
@@ -89,6 +100,7 @@ def make_at_room(*, seated: bool = True) -> SimpleNamespace:
             ),
         ),
         visitors={"tk": SimpleNamespace(last_seen_at=0.0, connected=False)},
+        add_message=lambda *_args, **_kwargs: None,
     )
 
 
@@ -105,6 +117,11 @@ def make_plugin(room: SimpleNamespace | None = None) -> SimpleNamespace:
             vote_soup_reveal=AsyncMock(
                 return_value={"votes": 2, "required": 2, "revealed": True}
             ),
+            # 自动入座用：真实现里这两个会建访客、占座位
+            join=AsyncMock(
+                return_value=SimpleNamespace(number=7, display_name="", qq="")
+            ),
+            assign_player=AsyncMock(return_value=None),
         ),
         submit_turtle_soup_question=AsyncMock(
             return_value={"verdict": "yes", "reply": "是", "question_count": 3}
@@ -274,16 +291,54 @@ class TestAtMessage:
         assert text == "和灯塔有关吗？"
 
     @pytest.mark.asyncio
-    async def test_at_message_without_seat_is_ignored(self) -> None:
+    async def test_unbound_player_auto_joins_seat(self) -> None:
+        """没绑座位的人 @ 花火提问：自动安排一个空位，然后把问题问出去。"""
         from astrbot_plugin_game_companion_huahuo.qq_bridge import (
             handle_soup_at_message,
         )
 
         plugin = make_plugin(make_at_room(seated=False))
-        assert (
-            await handle_soup_at_message(plugin, make_event("@花火 和灯塔有关吗？"))
-            == ""
+        reply = await handle_soup_at_message(
+            plugin, make_event("@花火 和灯塔有关吗？")
         )
+
+        plugin.manager.join.assert_awaited_once()
+        plugin.manager.assign_player.assert_awaited_once()
+        _room, number, qq = plugin.manager.assign_player.await_args.args
+        assert number == 7
+        assert qq == "10001"
+        assert "已把你加入玩家席" in reply
+        plugin.submit_turtle_soup_question.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_full_seat_falls_back_to_binding_guide(self) -> None:
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room(seated=False, capacity=2, seats=2))
+        reply = await handle_soup_at_message(
+            plugin, make_event("@花火 和灯塔有关吗？")
+        )
+
+        assert "坐满" in reply
+        plugin.manager.join.assert_not_awaited()
+        plugin.submit_turtle_soup_question.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_auto_bind_can_be_disabled(self) -> None:
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room(seated=False))
+        plugin.turtle_soup_qq_auto_bind = False
+        reply = await handle_soup_at_message(
+            plugin, make_event("@花火 和灯塔有关吗？")
+        )
+
+        assert "绑定玩家" in reply
+        plugin.manager.join.assert_not_awaited()
         plugin.submit_turtle_soup_question.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -352,3 +407,41 @@ class TestAtMessage:
         await handle_soup_at_message(plugin, make_event("@花火 是不是和灯塔有关"))
         plugin.submit_turtle_soup_question.assert_awaited_once()
         plugin.submit_turtle_soup_answer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status", ["waiting", "setup", "finished", "rematch_pending", "closed"]
+    )
+    async def test_at_message_only_works_while_game_is_running(
+        self, status: str
+    ) -> None:
+        """@ 提问/作答只在游戏进行中（active/paused）生效。
+
+        房间还没开局、已经结束、或者停在再来一局确认里时，群里 @ 花火
+        应该照常聊天，不能凭空冒出一条「已记录你的提问」。
+        """
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room(status=status))
+        reply = await handle_soup_at_message(
+            plugin, make_event("@花火 和灯塔有关吗？")
+        )
+        assert reply == ""
+        plugin.submit_turtle_soup_question.assert_not_awaited()
+        plugin.submit_turtle_soup_answer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", ["active", "paused"])
+    async def test_at_message_works_when_running_or_paused(self, status: str) -> None:
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        plugin = make_plugin(make_at_room(status=status))
+        reply = await handle_soup_at_message(
+            plugin, make_event("@花火 和灯塔有关吗？")
+        )
+        assert reply != ""
+        plugin.submit_turtle_soup_question.assert_awaited_once()
