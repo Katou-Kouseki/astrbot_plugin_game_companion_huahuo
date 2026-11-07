@@ -2941,6 +2941,7 @@
         entry.pending ? 1 : 0,
         entry.player_number ?? "",
         entry.bot_action ?? "",
+        entry.source ?? "",
         entry.prompt ?? "",
         entry.response ?? "",
       ]),
@@ -2961,11 +2962,19 @@
           item.className = `soup-entry ${entry.kind || "question"} ${entry.pending ? "pending" : ""}`;
           const prompt = document.createElement("p");
           prompt.className = "prompt";
-          prompt.textContent = entry.kind === "reverse"
+          const promptText = entry.kind === "reverse"
             ? `${entry.player_number || "?"} 号线索/回答：${entry.prompt || ""}`
             : entry.kind === "hint"
             ? "玩家申请了提示"
             : `${entry.player_number ? `${entry.player_number} 号` : "玩家"}${entry.kind === "answer" ? "猜测" : "问题"}：${entry.prompt || ""}`;
+          prompt.textContent = promptText;
+          // 群里问的和网页问的混在一起时，得能分清来源，否则会以为是自己问过
+          if (entry.source === "qq") {
+            const badge = document.createElement("span");
+            badge.className = "soup-qq-badge";
+            badge.textContent = "QQ";
+            prompt.append(" ", badge);
+          }
           const response = document.createElement("p");
           response.className = "response";
           response.textContent = entry.kind === "reverse" && entry.pending

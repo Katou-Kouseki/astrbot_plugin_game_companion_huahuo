@@ -288,6 +288,18 @@ class SoupDeck:
 
     # ---------------- 查询 ----------------
 
+    def known_surfaces(self) -> set[str]:
+        """账本里出现过的汤面（归一化）。
+
+        给内置题库用：它有两百多条，逐条做相似度判重太慢，先用「汤面完全相同」
+        快速筛掉，再把剩下的交给 :meth:`has` 做语义级确认。
+        """
+        return {
+            normalize_text(record.get("surface"))
+            for record in self._records
+            if record.get("surface")
+        }
+
     def recent_signatures(self, limit: int = 8) -> list[str]:
         result: list[str] = []
         for record in reversed(self._records):

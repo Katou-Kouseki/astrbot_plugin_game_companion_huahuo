@@ -41,6 +41,7 @@ from .othello import WHITE as OTHELLO_WHITE
 from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
+from .qq_bridge import handle_soup_command, run_soup_action, soup_room_for_session
 from .room_manager import (
     BOARD_GAME_CLASSES,
     DUEL_GAMES,
@@ -49,10 +50,11 @@ from .room_manager import (
     _parse_camp_scales,
 )
 from .server import GameRoomServer
+from .soup_library import SoupLibrary
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
 from .tictactoe import X as TICTACTOE_X
-from .turtle_soup_deck import SoupDeck, fetch_online_puzzles
+from .turtle_soup_deck import SoupDeck, fetch_online_puzzles, normalize_text
 from .trusted_identity import TrustedIdentityStore
 from .tunnel import QuickTunnel
 from .turtle_soup import (
@@ -1623,6 +1625,11 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_online_pool_url = self._cfg_str(
             "turtle_soup.online_pool_url", ""
         ).strip()
+        # 内置题库（soup_library.json，随插件分发）：出题优先级在网络题库之后、
+        # LLM 之前；关掉就只剩「网络题库 → LLM → 内置兜底 12 条」。
+        self.turtle_soup_library_enabled = self._cfg_bool(
+            "turtle_soup.library_enabled", True
+        )
         self.turtle_soup_group_announce_enabled = self._cfg_bool(
             "turtle_soup.group_announce_enabled", False
         )
@@ -2273,15 +2280,40 @@ class GameCompanionPlugin(Star):
 
     @filter.llm_tool(name="game_companion_turtle_soup")
     async def turtle_soup_tool(self, event: AstrMessageEvent, **kwargs: Any) -> str:
-        """引导用户到 WebUI 继续海龟汤问答。
+        """在群聊里参与当前正在进行的一局海龟汤。
+
+        只有当前会话已经有一局进行中的海龟汤时才能用；没有房间时不要调用本工具，
+        更不要为了玩而创建房间或发链接。用户只是普通聊天、没有明确要问一句或提交
+        推理时，不要调用。
 
         Args:
-            action(string): Bot 出题模式使用 ask、answer、hint；玩家出题模式使用 respond 或 correct。
-            text(string): 问题、完整推理，或玩家给 Bot 的公开回答/线索。
+            action(string): ask=问一个是/否问题；answer=提交对汤底的完整推理；hint=要一条提示；status=看进度。
+            text(string): 问题或推理正文，尽量保留用户原话；hint 与 status 可留空。
             room_id(string): 可选房间编号；当前会话只有一个房间时可以留空。
         """
-        _ = event, kwargs
-        return self._json_error("海龟汤问答已移至 WebUI，请在房间的 Bot 对话栏中继续")
+        action = str(kwargs.get("action") or "").strip().lower()
+        text = str(kwargs.get("text") or "").strip()
+        target = {
+            "ask": "question",
+            "question": "question",
+            "answer": "answer",
+            "hint": "hint",
+            "status": "status",
+        }.get(action)
+        if target is None:
+            return self._json_error("action 只能是 ask、answer、hint 或 status")
+        session_id = str(getattr(event, "unified_msg_origin", "") or "")
+        qq = str(event.get_sender_id() or "").strip()
+        room = soup_room_for_session(self, session_id)
+        if room is None:
+            return self._json_error(
+                "当前会话没有进行中的海龟汤。不要创建房间，也不要发链接；"
+                "如果你想陪用户玩，先问一句要不要开一局。"
+            )
+        if target in {"question", "answer"} and not text:
+            return self._json_error("text 不能为空：把用户的问题或推理原话放进来")
+        reply = await run_soup_action(self, room, target, text, qq)
+        return json.dumps({"ok": True, "reply": reply}, ensure_ascii=False)
 
     @filter.command("花火陪你玩")
     async def game_companion_status(self, event: AstrMessageEvent):
@@ -2828,6 +2860,27 @@ class GameCompanionPlugin(Star):
         yield event.plain_result(
             await self._bind_game_player_text(event, event.message_str.strip())
         )
+
+    @filter.regex(
+        r"^\s*[/!！]?\s*(?:海龟汤|汤(?=\s|$|提问|问一下|推理|答题|答案|看答案|揭晓"
+        r"|附议|同意|反对|提示|状态|查看|帮助|菜单))"
+    )
+    async def soup_qq_command(self, event: AstrMessageEvent):
+        """群聊里的海龟汤指令：提问 / 推理 / 提示 / 揭晓 / 状态。
+
+        只在当前会话有进行中的海龟汤房间时才真的处理；其余情况静默放行，
+        让这条消息继续走正常聊天（「汤圆好吃」之类不能被当成指令）。
+        """
+        reply = await handle_soup_command(self, event)
+        if not reply:
+            return
+        stop = getattr(event, "stop_event", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        yield event.plain_result(reply)
 
     @filter.on_llm_request(priority=-10)
     async def inject_game_context(
@@ -4758,6 +4811,32 @@ class GameCompanionPlugin(Star):
             self.soup_deck = deck
         return deck
 
+    def _soup_library(self) -> SoupLibrary:
+        """内置题库（懒初始化，方便单测里用 __new__ 造的最小实例）。"""
+        library = getattr(self, "soup_library_store", None)
+        if library is None:
+            root = Path(__file__).resolve().parent
+            library = SoupLibrary(
+                root / "soup_library.json",
+                Path(getattr(self, "data_dir", Path("."))) / "soup_library_cache.json",
+            )
+            self.soup_library_store = library
+        return library
+
+    def _soup_library_enricher(self, room: GameRoom):
+        """给题库的懒补全注入「用哪个模型」：跟出题用同一个 Provider。"""
+
+        async def enrich(system_prompt: str, prompt: str) -> str:
+            return await self._call_room_model(
+                room,
+                system_prompt=system_prompt,
+                prompt=prompt,
+                timeout=30,
+                provider=self._soup_generation_provider(room),
+            )
+
+        return enrich
+
     def _pick_fallback_puzzle(
         self,
         content_level: str,
@@ -4786,10 +4865,13 @@ class GameCompanionPlugin(Star):
         return ranked[0][1]
 
     async def _prepare_turtle_soup(self, room: GameRoom, game: TurtleSoupGame) -> None:
-        """出题闭环：网络题库 → LLM 生成 → 本地兜底题库。
+        """出题闭环：网络题库 → 内置题库 → LLM 生成 → 兜底题。
 
-        三段的共同约束是「不能和账本里的题目实质重复」，且任一环节成功就记账，
+        各段的共同约束是「不能和账本里的题目实质重复」，且任一环节成功就记账，
         让下一次出题（不论哪个房间、是否重启）都能看到它。
+
+        内置题库放在 LLM 之前：两百多道现成的题，出题更快也更省调用；
+        只有内置题库也挑不出新题时，才让模型现编。
         """
         if game.mode != "bot_host":
             return
@@ -4825,7 +4907,40 @@ class GameCompanionPlugin(Star):
                 last_error = f"网络题库不可用：{exc}"
                 logger.info("[GameCompanion] 网络题库拉取失败，改走 LLM：%s", exc)
 
-        # ② LLM 生成（最多 3 次）+ 独立校验
+        # ② 内置题库（soup_library.json）：先用「汤面完全相同」快速筛掉出过的，
+        # 再对候选做一次语义判重。命中缓存直接用，没缓存就先让模型补全字段，
+        # 补全失败自动退回规则版——不能让「模型不可用」变成「出不了题」。
+        if getattr(self, "turtle_soup_library_enabled", True):
+            library = self._soup_library()
+            candidates = library.entries_for(game.content_level)
+            if candidates:
+                recent_surfaces = deck.known_surfaces()
+                fresh = [
+                    entry
+                    for entry in candidates
+                    if normalize_text(entry.surface) not in recent_surfaces
+                ]
+                pool = list(fresh or candidates)
+                random.shuffle(pool)
+                enricher = self._soup_library_enricher(room)
+                for entry in pool[:3]:
+                    rule_puzzle = library.rule_puzzle(entry)
+                    if rule_puzzle is None:
+                        continue
+                    if rule_puzzle.signature in excluded or deck.has(rule_puzzle):
+                        continue
+                    puzzle = await library.puzzle_for(entry, enricher) or rule_puzzle
+                    if await self.manager.complete_turtle_soup_generation(
+                        room, game, puzzle
+                    ):
+                        deck.remember(puzzle, source="library")
+                        logger.info(
+                            "[GameCompanion] 海龟汤采用内置题库题目：《%s》",
+                            puzzle.title,
+                        )
+                        return
+
+        # ③ LLM 生成（最多 3 次）+ 独立校验
         persona = await self._persona_prompt(room)
         for attempt in range(1, 4):
             try:
@@ -4881,7 +4996,7 @@ class GameCompanionPlugin(Star):
                     exc,
                 )
 
-        # ③ 本地兜底题（按账本挑最久没出过的）
+        # ④ 本地兜底题（按账本挑最久没出过的）
         try:
             puzzle = self._pick_fallback_puzzle(game.content_level, deck, excluded)
         except ValueError as exc:

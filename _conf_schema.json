@@ -477,6 +477,12 @@
         "default": "",
         "hint": "留空表示只用 LLM 生成 + 内置题库。填 http(s) 地址时优先从这里取题；需返回 JSON 数组或 {\"puzzles\": [...]}，字段与 LLM 出题一致（title/surface/solution/key_facts/hints/theme/trick）。拉取失败会自动回退 LLM。"
       },
+      "library_enabled": {
+        "description": "启用内置题库",
+        "type": "bool",
+        "default": true,
+        "hint": "内置题库含 226 道现成海龟汤（随插件分发），出题时排在网络题库之后、LLM 生成之前。首次抽到的题会把标题/关键事实/提示等字段交给模型补全并缓存；关闭后回到「网络题库 → LLM → 内置兜底 12 条」。"
+      },
       "group_announce_enabled": {
         "description": "开启海龟汤群通报",
         "type": "bool",

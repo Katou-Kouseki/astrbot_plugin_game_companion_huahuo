@@ -79,7 +79,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.76"
+    assert metadata["version"] == "0.5.77"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1361,3 +1361,46 @@ def test_turtle_soup_upgrade_contracts() -> None:
     assert "function soupSharePosterUrl(" in script
     assert "function renderSoupResult(" in script
     assert "renderSoupResult(game);" in script
+
+
+def test_qq_bridge_contracts() -> None:
+    """群聊入口与前端来源角标不能被顺手删掉。
+
+    这三处是分开的：main 里注册 handler、qq_bridge 里解析与执行、前端加角标。
+    少任何一处，「网页 ↔ QQ 互通」都会静默失效（消息不报错，但没人回）。
+    """
+    main_src = (ROOT / "main.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    style = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    assert "def soup_qq_command" in main_src
+    assert "handle_soup_command(self, event)" in main_src
+    # LLM 工具也要能真的答题，而不是只回「请去网页」
+    assert "run_soup_action(self, room, target, text, qq)" in main_src
+    assert "soup_room_for_session(self, session_id)" in main_src
+
+    for word in ("提问", "推理", "提示", "揭晓", "附议", "反对", "状态", "查看"):
+        assert word in bridge
+    # 群消息必须带 source="qq"：轮次与身份校验靠它分流
+    assert 'source="qq"' in bridge
+    # 群内回显历史要防剧透
+    assert "redact_spoiler" in bridge
+
+    assert "soup-qq-badge" in script
+    assert ".soup-qq-badge" in style
+
+
+def test_soup_library_is_shipped() -> None:
+    """内置题库必须与代码一起在：只有代码没有数据，等于没做这个功能。"""
+    data = json.loads((ROOT / "soup_library.json").read_text(encoding="utf-8"))
+    assert len(data["items"]) >= 200
+    assert data["source"]
+    for item in data["items"][:20]:
+        assert item["surface"] and item["solution"]
+        assert item["content_level"] in {"all_ages", "normal", "unrestricted"}
+
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    soup = schema["turtle_soup"]["items"]
+    assert soup["library_enabled"]["default"] is True
+

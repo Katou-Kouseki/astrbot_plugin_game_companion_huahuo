@@ -279,6 +279,19 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .soup-entry.answer .response { border-color: #9b4b37; background: #f8eee9; color: #65352a; }
 .soup-entry.hint .response { border-color: #b48924; background: #faf4df; color: #66531e; }
 .soup-entry.pending .response { border-color: var(--border); background: var(--surface-alt); color: var(--muted); }
+/* 群里发的问答：给个小角标，和网页里自己问的区分开 */
+.soup-qq-badge {
+  display: inline-block;
+  margin-left: 2px;
+  padding: 0 4px;
+  border-radius: 4px;
+  background: #dce9f5;
+  color: #2b5378;
+  font-size: 11px;
+  line-height: 15px;
+  vertical-align: 1px;
+}
+body.dark .soup-qq-badge { background: #24405a; color: #b9d4ee; }
 .soup-empty { margin: auto; color: var(--muted); font-size: 13px; }
 .soup-hint-row { gap: 8px; }
 .soup-hint-row #soupRevealButton {
