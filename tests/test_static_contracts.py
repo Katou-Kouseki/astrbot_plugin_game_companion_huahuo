@@ -79,7 +79,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.73"
+    assert metadata["version"] == "0.5.74"
 
 
 def test_plugin_version_reads_metadata_instead_of_hardcoding() -> None:

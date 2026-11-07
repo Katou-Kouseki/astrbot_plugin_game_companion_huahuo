@@ -212,3 +212,153 @@ async def test_rematch_refused_while_someone_is_applying_to_host() -> None:
         await manager.restart_finished_game(room, difficulty="normal")
 
     assert "申请出题" in str(excinfo.value)
+
+
+# ---------------- 6. 申请出题不能清掉上一局的对局对象 ----------------
+
+
+async def two_seat_finished_room(manager: RoomManager):
+    """两位玩家一起打完一局海龟汤，房间停在 finished。"""
+    room, first = await make_soup_room(manager)
+    second = await manager.join(room)
+    second.connected = True
+    second.last_seen_at = time.time()
+    await manager.claim_and_start(room, first.token, "")
+    await manager.claim_and_start(room, second.token, "")
+    await manager.start_game(room, first.token, "")
+    puzzle = SoupPuzzle(
+        title="门",
+        surface="一个人每天打开同一扇门，却从来不从这扇门进入房间。",
+        solution="这是温室的通风门，真正的入口在另一侧。",
+        key_facts=("门用于通风", "房间是温室"),
+        acceptable_variants=(),
+        hints=("门不只用于通行", "和环境有关"),
+        content_level="all_ages",
+        theme="温室",
+        trick="通风门",
+    )
+    await manager.complete_turtle_soup_generation(room, room.game, puzzle)
+    room.game.record_answer(
+        "这是温室的通风门，入口在另一侧。",
+        solved=True,
+        source="web",
+        matched_facts={"门用于通风", "房间是温室"},
+        player_number=1,
+        reply="猜中了。",
+        coverage=1.0,
+    )
+    await manager._finish_game(room)
+    return room, first, second
+
+
+@pytest.mark.asyncio
+async def test_applying_to_host_keeps_previous_game_intact() -> None:
+    """0.5.73 的坑：申请出题把 room.game 清空，导致表单不出现、再来一局必失败。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    room, first, _second = await two_seat_finished_room(manager)
+
+    await manager.apply_soup_host(room, first.token)
+
+    assert room.soup_host_number == 1
+    assert room.game is not None, "申请出题只决定下一局谁出题，不能清掉上一局"
+    assert room.status == "finished"
+    snapshot = room.public_snapshot(first.token)
+    assert snapshot["soup_host_number"] == 1
+    assert snapshot["player_number"] == 1
+
+
+@pytest.mark.asyncio
+async def test_apply_then_submit_starts_player_hosted_game() -> None:
+    manager = RoomManager(turtle_soup_max_players=4)
+    room, first, _second = await two_seat_finished_room(manager)
+
+    await manager.apply_soup_host(room, first.token)
+    game = await manager.start_soup_host_game(
+        room,
+        first.token,
+        title="雨夜的伞",
+        surface="她每天带两把伞出门，明明一个人住，这是为什么？",
+        solution="丈夫三年前在雨夜出车祸去世，两把伞是替他拿的。",
+        hints=["和一起去上班有关"],
+    )
+
+    assert room.status == "active"
+    assert game.host_number == 1
+    assert game.puzzle is not None and game.puzzle.solution.startswith("丈夫三年前")
+
+
+@pytest.mark.asyncio
+async def test_rematch_request_is_refused_after_applying_to_host() -> None:
+    """两套流程不能并存：有人要自己出题时，别再让花火开一局。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    room, first, second = await two_seat_finished_room(manager)
+
+    await manager.apply_soup_host(room, first.token)
+    with pytest.raises(ValueError) as excinfo:
+        await manager.request_rematch(room, second.token)
+
+    assert "申请出题" in str(excinfo.value)
+    assert room.status == "finished"
+
+
+# ---------------- 7. 多人揭晓表决：不算回合、谁都能附议 ----------------
+
+
+@pytest.mark.asyncio
+async def test_reveal_vote_does_not_consume_turn_and_others_can_vote() -> None:
+    """「我发起揭晓，别人没点」时：我仍是当前玩家、能继续提问；别人也能投票。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    room, first, second = await two_seat_finished_room(manager)
+    await manager.apply_soup_host(room, first.token)
+    game = await manager.start_soup_host_game(
+        room,
+        first.token,
+        title="雨夜的伞",
+        surface="她每天带两把伞出门，明明一个人住，这是为什么？",
+        solution="丈夫三年前在雨夜出车祸去世，两把伞是替他拿的。",
+    )
+    # 让 2 号成为当前回合玩家
+    index = next(
+        i for i, seat in enumerate(room.multiplayer.seats) if seat.number == 2
+    )
+    room.multiplayer.current_turn_index = index
+
+    payload = await manager.request_soup_reveal(
+        room, source="web", visitor_token=second.token
+    )
+
+    assert payload["revealed"] is False
+    assert payload["votes"] == 1 and payload["required"] == 2
+    snapshot = room.public_snapshot(second.token)
+    assert snapshot["current_player_number"] == 2
+    assert snapshot["is_current_player"] is True, "发起表决不能吃掉回合"
+    assert "表决期间照常提问" in room.messages[-1]["content"]
+
+    # 表决期间继续提问（不被 reveal 状态卡住）
+    game_obj, _text = await manager.begin_turtle_soup_interaction(
+        room, "她是不是在等人一起上班？", source="web", visitor_token=second.token, limit=200
+    )
+    await manager.cancel_turtle_soup_interaction(room, game_obj, "测试结束")
+
+    # 1 号不是当前回合玩家，但依然能附议
+    voted = await manager.vote_soup_reveal(
+        room, agree=True, source="web", visitor_token=first.token
+    )
+    assert voted["revealed"] is True
+    assert game.finished is True
+
+
+@pytest.mark.asyncio
+async def test_rematch_refusal_keeps_room_alive() -> None:
+    """花火拒绝再来一局时房间要留在结算页，不能把房间整个销毁。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    room, first, _second = await two_seat_finished_room(manager)
+
+    await manager.request_rematch(room, first.token)
+    applied = await manager.resolve_rematch(
+        room, accepted=False, message="这局就先到这儿吧。"
+    )
+
+    assert applied is True
+    assert room.room_id in manager.rooms, "拒绝再来一局不该把房间销毁"
+    assert room.status == "finished"

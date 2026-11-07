@@ -2247,6 +2247,11 @@ class RoomManager:
                 raise PermissionError("只有玩家才能申请再来一局")
             if room.status != "finished":
                 raise ValueError("当前还不能申请再来一局")
+            if int(getattr(room, "soup_host_number", 0) or 0):
+                # 有人已经在准备自己出题：这时候再让花火开一局，两套流程会打架
+                raise ValueError(
+                    "有人正在申请出题，等 TA 提交题目或撤回申请吧"
+                )
             room.status = "rematch_pending"
             room.touch()
             if record_message:
@@ -2282,9 +2287,12 @@ class RoomManager:
                     room.difficulty = difficulty
                 room.touch()
                 return True
-        if not accepted:
-            await self.destroy(room.room_id, "Bot 没有接受再来一局")
-        return True
+            # 花火不想再来一局：房间留在原地回到「已结束」，玩家还能改主意
+            # 或换玩法。以前这里直接 destroy 房间，人还在页面上房间就没了。
+            room.status = "finished"
+            room.touch()
+            room.add_message("system", "花火这次不想再来一局，房间留在结算页。")
+            return True
 
     async def restart_finished_game(
         self, room: GameRoom, *, difficulty: Difficulty
@@ -2301,8 +2309,19 @@ class RoomManager:
                 has_players = bool(room.player_token and room.player is not None)
             if not has_players:
                 raise ValueError("当前房间没有可以继续对局的玩家")
-            if room.status not in {"finished", "rematch_pending"} or room.game is None:
+            if room.status not in {"finished", "rematch_pending"}:
                 raise ValueError("当前对局尚未结束，不能直接再来一局")
+            if room.game is None:
+                if room.game_type != "turtle_soup":
+                    raise ValueError("当前对局尚未结束，不能直接再来一局")
+                # 旧版本「申请出题」会清掉 room.game，这类房间会一直报无法开始。
+                # 补一个占位对局，让下面的海龟汤分支正常重建（自愈）。
+                room.game = TurtleSoupGame(
+                    difficulty=room.difficulty,
+                    max_hints=self.turtle_soup_max_hints,
+                    content_level=self.turtle_soup_content_level,
+                    mode=room.turtle_soup_mode,
+                )
             if int(getattr(room, "soup_host_number", 0) or 0):
                 raise ValueError(
                     "有人正在申请出题，请先提交题目或撤回申请，再开新的一局"
@@ -3155,7 +3174,13 @@ class RoomManager:
             if int(getattr(room, "soup_host_number", 0) or 0) == number:
                 return {"host_number": number, "host_name": label, "already": True}
             room.soup_host_number = number
-            room.game = None
+            # 这里绝不能动 room.game：上一局的 TurtleSoupGame 还在，清掉之后
+            # 前端整块对局区会变成空态（出题表单也拿不到 game），「再来一局」
+            # 还会因为 game is None 直接失败。申请出题只改「下一局谁出题」。
+            if room.status == "rematch_pending":
+                # 有人正在等花火决定是否再来一局；现在有人明确要自己出题，
+                # 把这个申请作废，免得两套流程打架（结果又开了花火的题）。
+                room.status = "finished"
             room.touch()
             room.add_message("system", f"{label} 自荐当出题人，正在想题目。")
         await self._emit(
@@ -3619,6 +3644,36 @@ class RoomManager:
         )
         return True
 
+    def _require_turtle_soup_seat(
+        self,
+        room: GameRoom,
+        *,
+        source: str,
+        visitor_token: str = "",
+        actor_qq: str = "",
+    ) -> int:
+        """只校验「是玩家席成员」，不看轮次。
+
+        「揭晓汤底」是整局的决定：谁想发起、谁来附议都不该被轮次卡住
+        （以前投票也走轮次校验，导致发起之后别人根本投不了票）。
+        """
+        if source == "web":
+            visitor = self._visitor(room, visitor_token)
+            if room.multiplayer.enabled:
+                seat = room.multiplayer.seat_for_token(visitor.token)
+                if seat is None:
+                    raise PermissionError("只有玩家席的玩家可以决定是否揭晓")
+                return int(seat.number)
+            if not (room.player_token and visitor.token == room.player_token):
+                raise PermissionError("只有玩家席的玩家可以决定是否揭晓")
+            return int(visitor.number)
+        if room.multiplayer.enabled:
+            seat = room.multiplayer.seat_for_qq(actor_qq)
+            if seat is None:
+                raise PermissionError("你的 QQ 尚未绑定到玩家席，请在 WebUI 操作")
+            return int(seat.number)
+        raise PermissionError("只有玩家席的玩家可以决定是否揭晓")
+
     def _soup_player_uid(
         self,
         room: GameRoom,
@@ -3669,7 +3724,8 @@ class RoomManager:
                 and int(early_host_seat.number) == game.host_number
             )
             if not requester_is_host:
-                self._require_turtle_soup_player(
+                # 揭晓是整局决定，任何在席玩家都能发起，不必等轮到自己
+                self._require_turtle_soup_seat(
                     room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
                 )
             if room.status != "active":
@@ -3701,6 +3757,15 @@ class RoomManager:
                 revealed = votes >= required
                 if revealed:
                     game.reveal(reason="revealed", source=source)
+                else:
+                    # 发起表决不消耗回合：这个人还是当前玩家，可以接着提问。
+                    # 不说清楚的话，界面上只多了个 (1/2)，很容易以为轮次被吃掉了。
+                    room.add_message(
+                        "system",
+                        f"{self._soup_actor_label(room, source=source, visitor_token=visitor_token, actor_qq=actor_qq)}"
+                        f" 发起揭晓汤底（{votes}/{required}），还需要 {required - votes} 人同意；"
+                        "表决期间照常提问，轮到谁就是谁。",
+                    )
             room.touch()
         payload = {
             "votes": votes,
@@ -3731,7 +3796,8 @@ class RoomManager:
         revealed = False
         async with room.lock:
             game = self._turtle_soup_game(room)
-            self._require_turtle_soup_player(
+            # 附议同样不受轮次限制，否则发起人之外的人永远投不了票
+            self._require_turtle_soup_seat(
                 room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
             )
             if room.status != "active":
@@ -3743,8 +3809,16 @@ class RoomManager:
             required = soup_reveal_required(room)
             votes = int(result.get("votes") or 0)
             revealed = bool(agree) and votes >= required
+            actor = self._soup_actor_label(
+                room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
+            )
             if revealed:
                 game.reveal(reason="revealed", source=source)
+            else:
+                room.add_message(
+                    "system",
+                    f"{actor}{'同意' if agree else '不同意'}揭晓（{votes}/{required}）。",
+                )
             room.touch()
         payload = {
             "votes": votes,
@@ -3762,6 +3836,24 @@ class RoomManager:
         else:
             await self._emit("soup_reveal_voted", room, payload)
         return payload
+
+    def _soup_actor_label(
+        self,
+        room: GameRoom,
+        *,
+        source: str,
+        visitor_token: str = "",
+        actor_qq: str = "",
+    ) -> str:
+        """按 web / QQ 两种来源取出「谁在操作」，用于系统消息。"""
+        seat = None
+        if source == "web" and visitor_token:
+            seat = room.multiplayer.seat_for_token(visitor_token)
+        elif actor_qq:
+            seat = room.multiplayer.seat_for_qq(actor_qq)
+        if seat is None:
+            return "有玩家"
+        return self._seat_label(seat, int(seat.number))
 
     async def force_reveal_soup(self, room: GameRoom, *, reason: str = "timeout") -> bool:
         """超时兜底：没人解出也没人发起表决时，自动收题并揭晓汤底。

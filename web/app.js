@@ -2966,6 +2966,11 @@
           ? `同意揭晓（${revealVotes}/${revealRequired || 1}）`
           : "揭晓汤底";
       }
+      if (revealButton) {
+        revealButton.title = reveal?.requested
+          ? "已经发起表决：再点一下表示你同意。表决期间照常提问，不消耗回合。"
+          : "多人局需要过半玩家同意才揭晓；发起后你仍然可以继续提问。";
+      }
     }
 
     const solution = document.getElementById("soupSolution");
@@ -4556,7 +4561,9 @@
     const applied = Number(room?.soup_host_number || 0);
     const finished = Boolean(game?.finished);
     const inPlay = hostNumber > 0 && !finished;
-    const soupIdle = ["waiting", "setup", "finished"].includes(String(room?.status || ""));
+    // rematch_pending 也算空闲：玩家此时更想自己出题，后端会把待定的
+    // 「再来一局」作废（否则会出现「我在出题，结果又开了花火的题」）
+    const soupIdle = ["waiting", "setup", "finished", "rematch_pending"].includes(String(room?.status || ""));
     const canApply = room?.game_type === "turtle_soup"
       && Boolean(room?.is_player)
       && !hostNumber
