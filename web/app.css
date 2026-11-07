@@ -4019,3 +4019,28 @@ body.dark .eval-bar-white {
 .soup-judge-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .soup-judge-actions:empty { margin-top: 0; }
 .soup-judge-actions button { min-height: 34px; font-size: 13px; }
+
+/* 每条消息的精确时间：跟在昵称右侧（system 消息放气泡下方），小字不抢视线 */
+.message-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  min-width: 0;
+}
+.message.user .message-head { justify-content: flex-end; }
+.message-head .message-meta { min-width: 0; }
+.message-time {
+  flex: none;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.3;
+  opacity: .72;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.message.system .message-time.system-time {
+  display: block;
+  text-align: center;
+  font-size: 10px;
+}

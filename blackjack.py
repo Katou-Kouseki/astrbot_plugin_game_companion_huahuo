@@ -100,6 +100,15 @@ class BlackjackHand:
             "bust": self.busted,
         }
 
+    def public_dict(self) -> dict[str, Any]:
+        """别人看得到的部分：座位、状态、结果；牌面与点数属于暗牌，不给。"""
+        return {
+            "uid": self.uid,
+            "number": self.number,
+            "status": self.status,
+            "result": self.result,
+        }
+
 
 def fresh_shoe(decks: int = 6) -> list[BlackjackCard]:
     """Build one freshly shuffled multi-deck shoe."""
@@ -339,7 +348,13 @@ class BlackjackGame:
         )
         return self.results
 
-    def snapshot(self) -> dict[str, Any]:
+    def snapshot(self, viewer_uid: str | None = None) -> dict[str, Any]:
+        """对局快照。
+
+        ``viewer_uid`` 为查看者自己的手牌 uid：只有自己那一手给完整牌面，
+        其他人在摊牌前只给状态/结果。以前这里返回全部 hands，任何人打开
+        Network 面板都能看到对家的牌。
+        """
         hidden = self.phase == "player_turns" and not self.finished
         dealer_cards = [card.as_dict() for card in self.dealer_cards]
         if hidden:
@@ -352,6 +367,8 @@ class BlackjackGame:
         else:
             visible = dealer_cards
             dealer_total, dealer_soft = self.dealer_total, self.dealer_soft
+        # 玩家都已停牌（dealer_turn）或已结算：摊牌，手牌对全房间公开
+        reveal_all = self.finished or self.phase == "dealer_turn"
         return {
             "kind": "blackjack",
             "phase": self.phase,
@@ -362,7 +379,12 @@ class BlackjackGame:
             "dealer_total": dealer_total,
             "dealer_soft": dealer_soft,
             "hands": {
-                uid: hand.as_dict() for uid, hand in self.hands.items()
+                uid: (
+                    hand.as_dict()
+                    if reveal_all or (viewer_uid and uid == str(viewer_uid))
+                    else hand.public_dict()
+                )
+                for uid, hand in self.hands.items()
             },
             "results": {str(key): value for key, value in self.results.items()},
             "results_by_number": {

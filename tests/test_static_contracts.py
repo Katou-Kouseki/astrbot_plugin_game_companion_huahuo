@@ -79,7 +79,20 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.74"
+    assert metadata["version"] == "0.5.75"
+
+
+def test_chat_messages_render_local_timestamp() -> None:
+    """每条聊天消息都要带小字精确时间，且不能再把 meta 单独塞进 article。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    assert "function formatMessageTime(at)" in script
+    assert "function messageTimeNode(at)" in script
+    assert 'head.className = "message-head"' in script
+    assert "time.classList.add(\"system-time\")" in script
+    assert "at: Date.now() / 1000," in script, "本地乐观消息也要有时刻"
+    assert ".message-time" in css and ".message-head" in css
 
 
 def test_plugin_version_reads_metadata_instead_of_hardcoding() -> None:

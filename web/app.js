@@ -2699,6 +2699,8 @@
       const item = document.createElement("article");
       item.className = `message ${role} ${message.message_type || "chat"}`;
       if (role !== "system") {
+        const head = document.createElement("div");
+        head.className = "message-head";
         const meta = document.createElement("span");
         meta.className = "message-meta";
         if (role === "bot") {
@@ -2709,7 +2711,10 @@
             ? `${sender}（${message.sender_number}号）`
             : sender;
         }
-        item.appendChild(meta);
+        head.appendChild(meta);
+        const time = messageTimeNode(message.at);
+        if (time) head.appendChild(time);
+        item.appendChild(head);
       }
       const content = document.createElement("p");
       content.className = "message-content";
@@ -2768,6 +2773,13 @@
         content.textContent = rawText;
       }
       item.appendChild(content);
+      if (role === "system") {
+        const time = messageTimeNode(message.at);
+        if (time) {
+          time.classList.add("system-time");
+          item.appendChild(time);
+        }
+      }
       list.appendChild(item);
     });
 
@@ -2824,6 +2836,33 @@
     }
     if (activeRoomView === "chat") lastSeenMessageId = latestMessageId(room);
     updateChatScrollButton();
+  }
+
+  // 每条消息的精确时间（本地时区，精确到秒）。跨天的消息补上日期，
+  // 免得半夜跨局后分不清「23:58 发的」还是「今天 00:02 发的」。
+  function formatMessageTime(at) {
+    const value = Number(at) || 0;
+    if (value <= 0) return "";
+    const date = new Date(value * 1000);
+    const now = new Date();
+    const pad = (num) => String(num).padStart(2, "0");
+    const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+    const sameDay = date.getFullYear() === now.getFullYear()
+      && date.getMonth() === now.getMonth()
+      && date.getDate() === now.getDate();
+    return sameDay
+      ? clock
+      : `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${clock}`;
+  }
+
+  function messageTimeNode(at) {
+    const text = formatMessageTime(at);
+    if (!text) return null;
+    const time = document.createElement("time");
+    time.className = "message-time";
+    time.dateTime = new Date(Number(at) * 1000).toISOString();
+    time.textContent = text;
+    return time;
   }
 
   function updateChatScrollButton() {
@@ -3220,7 +3259,8 @@
         bjPrevHandCounts.set(handKey, handCards.length);
         const footer = document.createElement("footer");
         const total = document.createElement("strong");
-        total.textContent = `${hand.value} 点`;
+        // 摊牌前别人的手牌只给状态，没有牌面与点数（服务端也不下发）
+        total.textContent = typeof hand.value === "number" ? `${hand.value} 点` : "暗牌";
         const result = document.createElement("span");
         result.className = `hand-result ${hand.result || "none"}`;
         result.textContent = resultLabels[hand.result] || "";
@@ -4906,6 +4946,7 @@
       id: optimisticId,
       role: "user",
       message_type: "chat",
+      at: Date.now() / 1000,
       content: text,
       sender_name: room.player_confirmed ? (room.visitor_display_name || "已绑定观众") : "匿名观众",
       sender_number: room.visitor_number,

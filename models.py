@@ -855,11 +855,11 @@ class GameRoom:
                 )
             ],
             "game": (
+                # 答案只在结束后下发：以前「玩家席成员」就能拿到 answer，
+                # 打开 Network 面板直接看谜底，等于把整个玩法变成送分题。
                 self.game.snapshot(
-                    reveal_answer=bool(
-                        visitor and visitor.token in player_tokens
-                    )
-                    or self.status in {"finished", "rematch_pending"}
+                    reveal_answer=self.status in {"finished", "rematch_pending"}
+                    or self.game.finished
                 )
                 if isinstance(self.game, DrawGuessGame)
                 else self.game.snapshot(
@@ -875,6 +875,10 @@ class GameRoom:
                     reveal_required=soup_reveal_required(self),
                 )
                 if isinstance(self.game, TurtleSoupGame)
+                else self.game.snapshot(
+                    viewer_uid=_visitor_uid(visitor.token) if visitor else None
+                )
+                if isinstance(self.game, BlackjackGame)
                 else self.game.snapshot()
                 if self.game
                 else None

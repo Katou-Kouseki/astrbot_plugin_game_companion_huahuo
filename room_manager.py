@@ -1916,10 +1916,13 @@ class RoomManager:
         size: int,
         komi: float | None = None,
     ) -> None:
-        """调整围棋盘路（贴目可选）。
+        """调整围棋盘路。
 
         只有「最早落座的那位真人」能在开局前改：盘路一换，整盘重新铺，
         所以已经落过子就不允许再改——半盘 13 路直接变 19 路会让棋谱失去意义。
+
+        贴目（komi）只允许管理员改：它对胜负的影响是线性的，普通玩家在控制台
+        传一个 30 就等于自带 30 目优势。普通房间固定用插件配置的贴目。
         """
         if room.game_type != "weiqi":
             raise ValueError("只有围棋房间可以调整盘路")
@@ -1933,12 +1936,18 @@ class RoomManager:
             visitor = self._visitor(room, visitor_token)
             if not self._is_first_seated_human(room, visitor.token):
                 raise PermissionError("只有最先入座的玩家可以调整盘路")
+            # 对局进行中一律不许动规则参数：以前只拦「已经落过子」，
+            # 开局后还没落子的那几十秒仍能把贴目改成 30。
+            if room.status in {"active", "paused"}:
+                raise ValueError("对局已经开始，盘路只能在开局前调整")
             game = room.game
             if isinstance(game, WeiqiGame) and game.history and room.status != "finished":
                 raise ValueError("对局已经开始，盘路只能在开局前调整")
             if room.weiqi_size == normalized and komi is None:
                 return
             if komi is not None:
+                if not room.admin_room:
+                    raise PermissionError("贴目由房间设置决定，玩家不能修改")
                 room.weiqi_komi = round(max(0.0, min(float(komi), 30.0)) * 2) / 2
             room.weiqi_size = normalized
             # 已经建好但还没落子的对局：就地换一块新棋盘，保留执色与棋力。
