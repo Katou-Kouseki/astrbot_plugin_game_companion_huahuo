@@ -1749,6 +1749,11 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_qq_sync = self._cfg_bool(
             "turtle_soup.qq_sync_questions", True
         )
+        # 严格轮次（关掉 free_questioning）时，轮次换人到群里播报并 @ 下一位。
+        # 默认开：群里看不到网页上的「轮到 X 号」，不说话就没人知道该谁问。
+        self.turtle_soup_qq_turn_announce = self._cfg_bool(
+            "turtle_soup.qq_turn_announce", True
+        )
         self.turtle_soup_group_announce_enabled = self._cfg_bool(
             "turtle_soup.group_announce_enabled", False
         )
@@ -3789,6 +3794,10 @@ class GameCompanionPlugin(Star):
         self, event_name: str, room: GameRoom, payload: dict[str, Any]
     ) -> None:
         game_label = self._game_label(room.game_type)
+        if event_name == "soup_turn_changed":
+            # 严格轮次换了人：往群里播报「轮到谁」，能 @ 就 @ 那一位
+            await self._announce_soup_turn(room, payload)
+            return
         if event_name == "soup_host_judged":
             game = room.game
             if isinstance(game, TurtleSoupGame):
@@ -6750,6 +6759,44 @@ class GameCompanionPlugin(Star):
         if not url:
             raise RuntimeError("t2i 渲染返回空结果")
         return await self._download_image_base64(url)
+
+    async def _announce_soup_turn(self, room: GameRoom, payload: dict[str, Any]) -> None:
+        """严格轮次的「轮到谁提问」播报到群里，能 @ 就 @。
+
+        只在群房里发：私聊房的「轮到 3 号」没有任何意义，还会在私聊里冒出一条
+        莫名其妙的消息。网页上的玩家多半没绑 QQ，这时退化成带座位号的纯文本，
+        不带 @（@ 一个空 QQ 会把整条消息吞掉）。
+        """
+        if room.source != "group":
+            return
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return
+        if not getattr(self, "turtle_soup_qq_turn_announce", True):
+            return
+        number = int(payload.get("seat_number") or 0)
+        if not number:
+            return
+        qq = str(payload.get("qq") or "").strip()
+        name = str(payload.get("display_name") or "").strip()
+        seconds = int(payload.get("seconds") or 0)
+        tail = f" · {seconds} 秒内没动静就自动换下一位" if seconds else ""
+        parts: list[Any] = [Plain("🥣 轮到 ")]
+        if qq.isdigit() and len(qq) >= 5:
+            try:
+                from astrbot.api.message_components import At
+
+                parts.append(At(qq=qq))
+            except Exception:
+                # 适配器没有 At 组件时退回名字，别让整条播报丢掉
+                parts.append(Plain(name or f"{number} 号玩家"))
+        else:
+            label = f"{number} 号玩家" + (f"（{name}）" if name else "")
+            parts.append(Plain(label))
+        parts.append(Plain(f" 提问了{tail}"))
+        try:
+            await self.context.send_message(room.session_id, MessageChain(parts))
+        except Exception as exc:
+            logger.info("[GameCompanion] 轮次播报发送失败：%s", exc)
 
     async def _flush_soup_group_sync(self, room_id: str) -> None:
         """窗口到期后把攒下的问答合并成一条（优先合并聊天记录）发到群里。"""

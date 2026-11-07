@@ -80,7 +80,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.81"
+    assert metadata["version"] == "0.5.82"
 
 
 def test_chat_messages_render_local_timestamp() -> None:

@@ -6266,6 +6266,47 @@ class RoomManager:
                 break
         state.current_turn_index = chosen
         self._reset_turn_deadline(room, now=current)
+        self._maybe_announce_soup_turn(room)
+
+    def _maybe_announce_soup_turn(self, room: GameRoom) -> None:
+        """严格轮次的海龟汤换人时，把「轮到谁」丢成事件让外层播报到群里。
+
+        `room_manager` 没有发消息的能力（它只通过 `event_callback` 往外抛），
+        所以这里只负责判断「该不该播报、轮到谁」，文案与 @ 由插件那侧决定。
+
+        几个必须跳过的情形：
+        * 自由提问（默认）：没有轮次概念，播报只会变成噪音；
+        * 一人的房间：永远是他自己，每问一句都播报一遍没有意义；
+        * 正在等出题人裁决：这时候还没轮到任何人提问，说「轮到 X」是误导。
+        """
+        game = room.game
+        if not isinstance(game, TurtleSoupGame):
+            return
+        state = room.multiplayer
+        if not state.enabled or len(state.seats or ()) < 2:
+            return
+        if room.status != "active" or game.finished or game.phase != "ready":
+            return
+        if game.processing or self._turtle_soup_free_mode(room):
+            return
+        seat = state.seat_for_token(state.current_token)
+        if seat is None or seat.is_ai:
+            return
+        key = f"{seat.visitor_token}:{int(seat.number)}"
+        if key == room.soup_turn_announced:
+            return
+        room.soup_turn_announced = key
+        payload = {
+            "seat_number": int(seat.number),
+            "qq": str(getattr(seat, "qq", "") or ""),
+            "display_name": str(getattr(seat, "display_name", "") or ""),
+            "seconds": int(state.turn_timeout_seconds or 0),
+        }
+        try:
+            asyncio.create_task(self._emit("soup_turn_changed", room, payload))
+        except RuntimeError:
+            # 没有事件循环（同步单元测试）时只留标记，不影响游戏推进
+            pass
 
     def _reset_turn_deadline(self, room: GameRoom, *, now: float | None = None) -> None:
         state = room.multiplayer

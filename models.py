@@ -405,6 +405,10 @@ class GameRoom:
     # 单局群通报与复盘缓存：按 game_uid 记录，保证「一局只通报一次」「复盘缓存不重复请求 LLM」
     last_announced_uid: str = ""
     last_announced_text: str = ""
+    # 严格轮次海龟汤上一次播报过的「该谁提问」（`<座位 token>:<座位号>`）。
+    # 轮次在提示/提问/超时等多条路径上都会推进，同一轮可能被连续触发两次，
+    # 这里记下已播报的节点，避免群里刷出两条「轮到 3 号」。
+    soup_turn_announced: str = ""
     recap_cache: dict[str, str] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     last_activity_at: float = field(default_factory=time.time)

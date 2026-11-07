@@ -248,3 +248,68 @@ def test_entry_records_its_owner(tmp_path: Path) -> None:
     assert reloaded.entries[0].owner == OWNER
     assert [index for index, _ in reloaded.owned(OWNER)] == [1]
     assert reloaded.owned(OTHER) == []
+
+
+# ---------------- 投稿时的内容等级 ----------------
+
+
+def test_level_defaults_to_normal_when_omitted(tmp_path: Path) -> None:
+    """不写等级就按普通入库，和加等级之前的行为一致。"""
+    plugin = make_plugin(tmp_path)
+    handle_custom_command(plugin, f"添加海龟汤 {SURFACE}|{SOLUTION}", OWNER)
+    assert plugin._soup_custom().entries[0].content_level == "normal"
+
+
+@pytest.mark.parametrize(
+    "prefix,expected",
+    [
+        ("全年龄", "all_ages"),
+        ("普通", "normal"),
+        ("不限制", "unrestricted"),
+        ("成人", "unrestricted"),
+        ("重口", "unrestricted"),
+        ("all_ages", "all_ages"),
+        ("unrestricted", "unrestricted"),
+    ],
+)
+def test_level_prefix_is_recognized(tmp_path: Path, prefix: str, expected: str) -> None:
+    plugin = make_plugin(tmp_path)
+    reply = handle_custom_command(
+        plugin, f"添加海龟汤 {prefix} {SURFACE}|{SOLUTION}", OWNER
+    )
+    assert "已收录" in reply
+    assert plugin._soup_custom().entries[0].content_level == expected
+
+
+def test_bracketed_level_is_recognized(tmp_path: Path) -> None:
+    plugin = make_plugin(tmp_path)
+    handle_custom_command(plugin, f"添加海龟汤 【全年龄】{SURFACE}|{SOLUTION}", OWNER)
+    entry = plugin._soup_custom().entries[0]
+    assert entry.content_level == "all_ages"
+    assert entry.surface == SURFACE
+
+
+def test_surface_starting_with_level_word_is_not_eaten(tmp_path: Path) -> None:
+    """汤面本身以「普通」开头时不能被当成等级前缀吃掉。"""
+    surface = "普通的一天早上，他照常出门，却再也没回来，为什么？"
+    plugin = make_plugin(tmp_path)
+    handle_custom_command(plugin, f"添加海龟汤 {surface}|{SOLUTION}", OWNER)
+    entry = plugin._soup_custom().entries[0]
+    assert entry.content_level == "normal"
+    assert entry.surface == surface
+
+
+def test_all_ages_room_cannot_draw_unrestricted_entry(tmp_path: Path) -> None:
+    """等级的意义就在这里：全年龄房抽不到投稿标成「不限制」的题。"""
+    plugin = make_plugin(tmp_path)
+    store = plugin._soup_custom()
+    store.add(SURFACE, SOLUTION, content_level="unrestricted", owner=OWNER)
+    assert store.puzzles(max_content_level="all_ages") == []
+    assert len(store.puzzles(max_content_level="unrestricted")) == 1
+
+
+def test_list_shows_the_level_of_each_entry(tmp_path: Path) -> None:
+    plugin = make_plugin(tmp_path)
+    handle_custom_command(plugin, f"添加海龟汤 全年龄 {SURFACE}|{SOLUTION}", OWNER)
+    reply = handle_custom_command(plugin, "我的海龟汤", OWNER)
+    assert "[全年龄]" in reply

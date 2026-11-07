@@ -34,6 +34,23 @@ _ADD_PREFIXES = ("添加海龟汤", "添加汤", "投稿海龟汤", "投稿汤")
 _LIST_PREFIXES = ("我的海龟汤", "我的题库", "海龟汤题库")
 _DELETE_PREFIXES = ("删除海龟汤", "删除汤")
 
+# 投稿时可选的等级：写不写都行，不写按「普通」入库（与 0.5.80 之前的行为一致）。
+# 「成人 / 重口」不是正式等级名，只是让人不用记 unrestricted 这种英文词。
+_LEVEL_WORDS: tuple[tuple[str, str], ...] = (
+    ("全年龄", "all_ages"),
+    ("all_ages", "all_ages"),
+    ("all-ages", "all_ages"),
+    ("普通", "normal"),
+    ("normal", "normal"),
+    ("不限制", "unrestricted"),
+    ("成人", "unrestricted"),
+    ("重口", "unrestricted"),
+    ("unrestricted", "unrestricted"),
+)
+# 括号包起来的等级也认：`[全年龄]` / `【普通】`
+_LEVEL_BRACKETS = {"[": "]", "【": "】", "(": ")", "（": "）"}
+LEVEL_LABELS = {"all_ages": "全年龄", "normal": "普通", "unrestricted": "不限制"}
+
 _PREFIX_RE = re.compile(r"^\s*[/!！]\s*")
 
 
@@ -209,14 +226,48 @@ def _split_surface_solution(body: str) -> tuple[str, str] | None:
     return None
 
 
+def _split_level(body: str) -> tuple[str | None, str]:
+    """把「全年龄 汤面|汤底」里的等级前缀摘出来；没写就返回 (None, 原文)。
+
+    只在「摘掉之后还剩一份合法的汤面|汤底」时才认，否则原样返回——汤面本身
+    以「普通」开头的句子（「普通的一天，他却……」）不能被当成等级吃掉。
+    """
+    text = str(body or "").lstrip()
+    if text and text[0] in _LEVEL_BRACKETS:
+        close = _LEVEL_BRACKETS[text[0]]
+        end = text.find(close)
+        if end > 0:
+            level = dict(_LEVEL_WORDS).get(text[1:end].strip().lower())
+            rest = text[end + 1 :].strip(" ：:，,")
+            if level and _split_surface_solution(rest) is not None:
+                return level, rest
+    lowered = text.lower()
+    for word, level in _LEVEL_WORDS:
+        if not lowered.startswith(word):
+            continue
+        tail = text[len(word) :]
+        # 等级词后面必须跟分隔（空格 / 冒号 / 逗号），不能直接贴正文：
+        # 「普通的一天早上……」里的「普通」是汤面的一部分，不是等级。
+        if tail and not (tail[0].isspace() or tail[0] in "：:，,"):
+            continue
+        rest = tail.strip(" ：:，,")
+        if rest and _split_surface_solution(rest) is not None:
+            return level, rest
+    return None, text
+
+
 def format_list(store: CustomSoupStore, owner: str = "") -> str:
     items = store.owned(owner)
     if not items:
-        return "你还没有投稿过海龟汤。用法：添加海龟汤 汤面|汤底"
+        return (
+            "你还没有投稿过海龟汤。用法：添加海龟汤 汤面|汤底\n"
+            "想指定内容等级就把等级写在最前面：添加海龟汤 全年龄 汤面|汤底"
+        )
     lines = [f"🥣 你投稿的海龟汤（{len(items)} 道）："]
     for index, entry in items:
         head = re.sub(r"\s+", " ", entry.surface)[:24]
-        lines.append(f"{index}. {head}…")
+        level = LEVEL_LABELS.get(entry.content_level, "普通")
+        lines.append(f"{index}. [{level}] {head}…")
     lines.append("删除用：删除海龟汤 序号（序号按全库算，只列你自己投的）")
     return "\n".join(lines)
 
@@ -242,13 +293,16 @@ def handle_custom_command(plugin: Any, message: str, owner: str = "") -> str:
             return "没有这道题，或者不是你投的。先发「我的海龟汤」看看自己能删哪些。"
         return f"已删除：{removed.surface[:24]}…"
 
-    pair = _split_surface_solution(body)
+    level, rest = _split_level(body)
+    pair = _split_surface_solution(rest)
     if pair is None:
         return (
             "用法：添加海龟汤 汤面|汤底\n"
             "汤面和汤底之间用竖线「|」隔开，例如：\n"
             "添加海龟汤 一个人每天摆两副碗筷，最后自杀了，为什么？|他是灯塔管理员，"
-            "某天忘了点灯导致船只失事，妻女因此遇难，他愧疚自杀。"
+            "某天忘了点灯导致船只失事，妻女因此遇难，他愧疚自杀。\n"
+            "想指定内容等级就在最前面加：全年龄 / 普通 / 不限制，"
+            "例如：添加海龟汤 全年龄 汤面|汤底（不写默认普通）"
         )
     surface, solution = pair
     if len(surface) < MIN_SURFACE:
@@ -260,14 +314,22 @@ def handle_custom_command(plugin: Any, message: str, owner: str = "") -> str:
         return "题库里已经有这道题了（可能是别人投的），换个说法或者换一道吧。"
     if len(store) >= store.limit:
         return f"投稿已经到上限（{store.limit} 道），先删几道再加。"
-    entry = store.add(surface, solution, owner=owner)
+    entry = store.add(
+        surface, solution, content_level=level or "normal", owner=owner
+    )
     puzzle = build_puzzle(entry.surface, entry.solution, content_level=entry.content_level)
     if puzzle is None:
         # 已经存进去了，但补全失败：告诉用户会被跳过，而不是假装成功
         return "题目已保存，但内容不完整、暂时没法出题；可以删掉重投一个有完整因果的汤底。"
+    label = LEVEL_LABELS.get(entry.content_level, "普通")
     return (
-        f"已收录（第 {len(store)} 道）。\n"
+        f"已收录（第 {len(store)} 道 · {label}）。\n"
         f"汤面：{entry.surface}\n"
         f"汤底：{entry.solution}\n"
         "下次开海龟汤会优先抽到自己投稿的题。"
+        + (
+            "内容等级按房间设定筛：全年龄房不会抽到「不限制」的题。"
+            if entry.content_level != "normal"
+            else ""
+        )
     )
