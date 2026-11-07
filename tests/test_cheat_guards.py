@@ -50,16 +50,22 @@ def snapshot_of(room, visitor) -> dict:
 
 @pytest.mark.asyncio
 async def test_draw_guess_hides_answer_until_finished() -> None:
+    """谜底只给画手：画手不知道画什么这局就没法玩，其他人一律不给。"""
     manager = RoomManager()
     room, visitors = await make_room(manager, "draw_guess")
+    drawer = visitors[0]
+    spectator = await manager.join(room)
 
-    game = snapshot_of(room, visitors[0])["game"]
-    assert "answer" not in game, "进行中的快照绝不能带谜底"
-    assert room.game.answer not in str(game)
+    drawer_game = snapshot_of(room, drawer)["game"]
+    assert drawer_game.get("answer") == room.game.answer, "画手必须知道要画什么"
+
+    spectator_game = snapshot_of(room, spectator)["game"]
+    assert "answer" not in spectator_game, "观众绝不能读到谜底"
+    assert room.game.answer not in str(spectator_game)
 
     room.game.finished = True
     room.status = "finished"
-    finished = snapshot_of(room, visitors[0])["game"]
+    finished = snapshot_of(room, spectator)["game"]
     assert finished.get("answer") == room.game.answer
 
 

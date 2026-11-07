@@ -88,6 +88,9 @@ class TurtleSoupGame:
     entries: list[SoupEntry] = field(default_factory=list)
     discovered_facts: set[int] = field(default_factory=set)
     question_count: int = 0
+    # 其中由花火自己问的条数。每局提问上限是给玩家的额度，
+    # 不把这部分减掉的话，花火问得越多、玩家能问的越少。
+    bot_question_count: int = 0
     answer_attempts: int = 0
     hints_used: int = 0
     # 每位玩家领过几条（仅用于展示「谁问过提示」）
@@ -194,6 +197,8 @@ class TurtleSoupGame:
         newly_discovered = set(matched_facts or ()) - self.discovered_facts
         self.discovered_facts.update(matched_facts or ())
         self.question_count += 1
+        if player_number is None:
+            self.bot_question_count += 1
         self.entries.append(
             SoupEntry(
                 kind="question",
@@ -265,8 +270,13 @@ class TurtleSoupGame:
         asker_number: int = 0,
         asker_name: str = "",
         for_bot: bool = False,
+        source: str = "web",
     ) -> dict[str, object]:
-        """把一条提问/推理挂到出题人面前，等他裁决（同一时间只允许一条）。"""
+        """把一条提问/推理挂到出题人面前，等他裁决（同一时间只允许一条）。
+
+        来源要一起记住：裁决落库时要按真实来源记账，否则群里问的会被标成
+        「网页」，速报与 QQ 角标都会认错人。
+        """
         if self.phase != "ready":
             raise ValueError("当前没有正在进行的海龟汤")
         if self.pending_judge is not None:
@@ -277,6 +287,8 @@ class TurtleSoupGame:
             "asker_number": int(asker_number or 0),
             "asker_name": str(asker_name or "")[:40],
             "for_bot": bool(for_bot),
+            # 只有 web / qq 两种真实来源；未知一律按 web
+            "source": "qq" if str(source or "") == "qq" else "web",
             "at": time.time(),
         }
         self.last_progress_at = time.time()
@@ -460,14 +472,30 @@ class TurtleSoupGame:
         self.processing = False
         self.processing_player_number = None
 
+    @property
+    def player_question_count(self) -> int:
+        """玩家实际问了几条（不含花火自己的）。提问上限只算这个。"""
+        return max(0, int(self.question_count) - int(self.bot_question_count))
+
+    @property
+    def hint_limit(self) -> int:
+        """本局最多能给几条提示。
+
+        `max_hints=0` 表示「不限」，此时上限就是题库给的提示条数；
+        写成 `max_hints - used` 会让聊天侧显示「提示剩 0」而网页还有提示。
+        """
+        available = len(self.puzzle.hints) if self.puzzle else 0
+        return min(self.max_hints, available) if self.max_hints else available
+
+    @property
+    def hint_left(self) -> int:
+        return max(0, int(self.hint_limit) - int(self.hints_used))
+
     def snapshot(
         self, viewer_uid: str | None = None, *, reveal_required: int = 0
     ) -> dict[str, object]:
         reveal_solution = self.finished and self.puzzle is not None
-        available_hints = len(self.puzzle.hints) if self.puzzle else 0
-        hint_limit = (
-            min(self.max_hints, available_hints) if self.max_hints else available_hints
-        )
+        hint_limit = self.hint_limit
         viewer_key = str(viewer_uid or "")
         viewer_used = self.hint_usage.get(viewer_key, 0) if viewer_key else 0
         reveal_votes = sum(1 for agree in self.reveal_votes.values() if agree)
@@ -483,11 +511,13 @@ class TurtleSoupGame:
             else None,
             "entries": [entry.snapshot() for entry in self.entries[-60:]],
             "question_count": self.question_count,
+            "bot_question_count": self.bot_question_count,
+            "player_question_count": self.player_question_count,
             "answer_attempts": self.answer_attempts,
             "hints_used": self.hints_used,
             "hint_used_self": viewer_used,
             "hint_limit": hint_limit,
-            "hint_left": max(0, hint_limit - self.hints_used),
+            "hint_left": self.hint_left,
             "discovered_fact_count": len(self.discovered_facts),
             "key_fact_count": len(self.puzzle.key_facts) if self.puzzle else 0,
             "solved": self.solved,

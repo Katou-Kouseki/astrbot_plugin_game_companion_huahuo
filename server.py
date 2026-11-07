@@ -1312,11 +1312,11 @@ class GameRoomServer:
         # 自由模式下压根没有轮次概念，再显示倒计时只会让人以为还要等。
         snapshot["soup_free_questioning"] = bool(
             room.game_type == "turtle_soup"
-            and getattr(self.manager, "turtle_soup_free_questioning", False)
+            and getattr(self.manager, "turtle_soup_free_questioning", True)
         )
         # 每局提问上限（0 = 不限）：前端拼「已问 12/30 · 提示剩 2」
         snapshot["soup_question_limit"] = (
-            int(getattr(self.manager, "turtle_soup_max_questions", 0) or 0)
+            int(getattr(self.manager, "turtle_soup_max_questions", 15) or 0)
             if room.game_type == "turtle_soup"
             else 0
         )

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -20,6 +21,19 @@ from astrbot_plugin_game_companion_huahuo.turtle_soup_ai import (
     parse_answer_judgment,
     parse_question_judgment,
 )
+
+
+def new_plugin() -> GameCompanionPlugin:
+    """造一个最小插件实例，并给它独立的临时数据目录。
+
+    `__new__` 跳过了 __init__，实例没有 data_dir；题库账本与补全缓存按
+    `Path(getattr(self, "data_dir", Path(".")))` 会落到当前工作目录——跑一次测试
+    就往仓库外面写一份《已经出过哪些题》，再跑一次就变成「题目重复」而失败。
+    这里给每次调用一个空目录，测试之间互不影响。
+    """
+    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin.data_dir = Path(tempfile.mkdtemp(prefix="soup-test-"))
+    return plugin
 
 
 def puzzle_data() -> dict[str, object]:
@@ -130,7 +144,7 @@ async def test_only_current_player_can_ask_and_questions_are_shared() -> None:
     await manager.complete_turtle_soup_generation(room, game, make_puzzle())
     spectator = await manager.join(room)
 
-    with pytest.raises(PermissionError, match="当前玩家"):
+    with pytest.raises(PermissionError, match="玩家席"):
         await manager.begin_turtle_soup_interaction(
             room,
             "这是温室吗？",
@@ -176,7 +190,7 @@ async def test_hints_are_progressive_and_honor_configured_limit() -> None:
 
     assert first != second
     assert game.snapshot()["hint_limit"] == 2
-    with pytest.raises(ValueError, match="用完提示次数"):
+    with pytest.raises(ValueError, match="提示次数已经用完"):
         await manager.request_turtle_soup_hint(
             room, source="web", visitor_token=visitor.token
         )
@@ -238,6 +252,11 @@ async def test_rematch_keeps_room_but_returns_to_fresh_generation() -> None:
 
 @pytest.mark.asyncio
 async def test_plugin_uses_model_generation_then_hidden_validation() -> None:
+    """题库都挑不出题时，仍然要「模型生成 + 独立校验」两段都走。
+
+    默认配置下内置题库会先命中（题库里两百多道题），根本不会调用模型；
+    这里显式关掉题库，测的是最后一层的 LLM 兜底路径。
+    """
     generated = puzzle_data()
     provider = SimpleNamespace(
         text_chat=AsyncMock(
@@ -249,12 +268,14 @@ async def test_plugin_uses_model_generation_then_hidden_validation() -> None:
             ]
         )
     )
-    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin = new_plugin()
     plugin.context = SimpleNamespace(
         get_using_provider=lambda _session: provider,
         persona_manager=None,
     )
     plugin.manager = RoomManager()
+    plugin.turtle_soup_library_enabled = False
+    plugin.turtle_soup_online_pool_url = ""
     room, _visitor, game = await make_soup_room(plugin.manager)
 
     await plugin._prepare_turtle_soup(room, game)
@@ -267,7 +288,7 @@ async def test_plugin_uses_model_generation_then_hidden_validation() -> None:
 
 @pytest.mark.asyncio
 async def test_plugin_falls_back_when_room_has_no_model() -> None:
-    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin = new_plugin()
     plugin.context = SimpleNamespace(
         get_using_provider=lambda _session: None,
         persona_manager=None,
@@ -285,7 +306,7 @@ async def test_plugin_falls_back_when_room_has_no_model() -> None:
 @pytest.mark.asyncio
 async def test_failed_judgment_releases_busy_state_without_counting_question() -> None:
     provider = SimpleNamespace(text_chat=AsyncMock(side_effect=RuntimeError("offline")))
-    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin = new_plugin()
     plugin.context = SimpleNamespace(get_using_provider=lambda _session: provider)
     plugin.manager = RoomManager()
     room, visitor, game = await make_soup_room(plugin.manager)
@@ -313,7 +334,7 @@ async def test_web_question_endpoint_uses_same_hidden_judge_flow() -> None:
             )
         )
     )
-    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin = new_plugin()
     plugin.context = SimpleNamespace(get_using_provider=lambda _session: provider)
     plugin.public_base_url = ""
     plugin.quick_tunnel = SimpleNamespace(url="", running=False)

@@ -39,6 +39,7 @@ HELP_TEXT = (
     "• 汤 附议 / 汤 反对 —— 对揭晓表决表态\n"
     "• 汤 状态 —— 看当前进度\n"
     "• 汤 查看 —— 看最近几条问答\n"
+    "• 汤 复盘 —— 结束后看完整回顾（汤面 + 汤底 + 关键问答）\n"
     "（也支持 汤提问 / 海龟汤 提问 等写法；需先把 QQ 绑定到玩家席）"
 )
 
@@ -58,6 +59,9 @@ _ACTIONS: dict[str, str] = {
     "同意": "agree",
     "反对": "disagree",
     "提示": "hint",
+    "复盘": "recap",
+    "回顾": "recap",
+    "战报": "recap",
     "状态": "status",
     "查看": "history",
     "帮助": "help",
@@ -67,10 +71,20 @@ _ACTION_WORDS = sorted(_ACTIONS, key=len, reverse=True)
 
 _PREFIX_RE = re.compile(r"^\s*[/!！]\s*")
 _NO_ROOM_ACTIONS = frozenset(
-    {"question", "answer", "hint", "reveal", "agree", "disagree", "status", "history"}
+    {
+        "question",
+        "answer",
+        "hint",
+        "reveal",
+        "agree",
+        "disagree",
+        "status",
+        "history",
+        "recap",
+    }
 )
-# 看进度、看历史、看帮助不需要座位，观众也能用
-_NO_SEAT_ACTIONS = frozenset({"status", "history", "help"})
+# 看进度、看历史、看复盘、看帮助不需要座位，观众也能用
+_NO_SEAT_ACTIONS = frozenset({"status", "history", "help", "recap"})
 
 
 def parse_soup_command(message: str) -> tuple[str, str] | None:
@@ -108,6 +122,24 @@ def soup_room_for_session(plugin: Any, session_id: str) -> GameRoom | None:
         if room.status in {"active", "paused"}:
             return room
     return None
+
+
+def soup_latest_room_for_session(plugin: Any, session_id: str) -> GameRoom | None:
+    """当前会话里最近的一局海龟汤，含已结束的房间。
+
+    只有「复盘」用它——刚打完想问一句「刚才汤底是什么」，那时候房间已经结束，
+    `soup_room_for_session` 会返回 None。
+    """
+    rooms = [
+        room
+        for room in plugin.manager.for_session(session_id)
+        if room.game_type == "turtle_soup"
+    ]
+    if not rooms:
+        return None
+    active = [room for room in rooms if room.status in {"active", "paused"}]
+    pool = active or rooms
+    return max(pool, key=lambda room: float(getattr(room, "created_at", 0) or 0))
 
 
 def _mark_active(room: GameRoom, qq: str) -> None:
@@ -148,11 +180,13 @@ def _status_text(plugin: Any, room: GameRoom, game: TurtleSoupGame | None) -> st
     if game is None or game.puzzle is None:
         return "🥣 海龟汤正在准备题目，等小会儿再试。"
     title = game.puzzle.title or "本局题目"
-    hints_left = max(0, int(game.max_hints) - int(game.hints_used))
-    limit = int(getattr(plugin, "turtle_soup_max_questions", 0) or 0)
-    asked = f"{game.question_count} 次"
+    hints_left = int(getattr(game, "hint_left", 0))
+    limit = int(getattr(plugin, "turtle_soup_max_questions", 15) or 0)
+    # 只算玩家问的（花火自己的提问不吃玩家额度）
+    mine = int(getattr(game, "player_question_count", game.question_count))
+    asked = f"{mine} 次"
     if limit:
-        asked = f"{game.question_count}/{limit} 次（剩 {max(0, limit - game.question_count)}）"
+        asked = f"{mine}/{limit} 次（剩 {max(0, limit - mine)}）"
     lines = [
         f"🥣 海龟汤 · {title}",
         f"已提问 {asked} · 提示剩 {hints_left} 次",
@@ -169,6 +203,39 @@ def _status_text(plugin: Any, room: GameRoom, game: TurtleSoupGame | None) -> st
             lines.append(f"现在轮到 {seat.number} 号玩家。")
     else:
         lines.append("这是单人房间，你随时可以提问。")
+    return "\n".join(lines)
+
+
+def _recap_text(room: GameRoom, game: TurtleSoupGame | None) -> str:
+    """群内复盘：结束后给汤面 + 汤底 + 关键问答；进行中只给进度，不剧透。
+
+    以前群里没有这个入口，`汤 复盘` 会被兜底成一次提问，白白消耗一次次数。
+    """
+    if game is None or game.puzzle is None:
+        return "🥣 这一局还没出题，等题目准备好再试。"
+    puzzle = game.puzzle
+    ended = bool(game.finished) or str(room.status) in {"finished", "rematch_pending"}
+    lines = [f"🥣 复盘 · {puzzle.title}", f"汤面：{puzzle.surface}"]
+    if ended:
+        lines.append(f"汤底：{puzzle.solution}")
+    else:
+        lines.append("（本局还没结束，汤底先不给）")
+    lines.append(f"已问 {game.question_count} 次 · 提示剩 {game.hint_left} 次")
+
+    entries = [
+        entry for entry in game.entries if entry.kind in {"question", "answer"}
+    ][-5:]
+    if entries:
+        lines.append("关键问答：")
+        for entry in entries:
+            who = f"{entry.player_number} 号" if entry.player_number else "玩家"
+            mark = "问" if entry.kind == "question" else "推理"
+            prompt = entry.prompt if ended else redact_spoiler(entry.prompt, puzzle)
+            prompt = str(prompt or "")[:40]
+            reply = str(entry.response or "")[:20]
+            lines.append(f"· {who}{mark}：{prompt} → {reply}")
+    if not ended:
+        lines.append("（本局结束后再发一次「汤 复盘」可以看完整汤底）")
     return "\n".join(lines)
 
 
@@ -225,6 +292,8 @@ async def _dispatch(
         return _status_text(plugin, room, game)
     if action == "history":
         return _history_text(room, game)
+    if action == "recap":
+        return _recap_text(room, game)
     if action == "hint":
         hint = await plugin.manager.request_turtle_soup_hint(
             room, source="qq", actor_qq=qq
@@ -377,6 +446,9 @@ async def handle_soup_command(plugin: Any, event: Any) -> str:
         return await start_soup_room(plugin, event, body)
 
     room = soup_room_for_session(plugin, session_id)
+    if room is None and action == "recap":
+        # 复盘要能在「刚打完」用，那时候房间已经不在进行中了
+        room = soup_latest_room_for_session(plugin, session_id)
     if room is None:
         if action == "help":
             return HELP_TEXT

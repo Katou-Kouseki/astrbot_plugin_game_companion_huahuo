@@ -858,8 +858,13 @@ class GameRoom:
                 # 答案只在结束后下发：以前「玩家席成员」就能拿到 answer，
                 # 打开 Network 面板直接看谜底，等于把整个玩法变成送分题。
                 self.game.snapshot(
-                    reveal_answer=self.status in {"finished", "rematch_pending"}
-                    or self.game.finished
+                    reveal_answer=(
+                        self.status in {"finished", "rematch_pending"}
+                        or self.game.finished
+                        # 画手得知道自己在画什么：只有握着 player_token 的那一位
+                        # 看得到，观众与其他访客仍然拿不到。
+                        or (visitor is not None and visitor.token == self.player_token)
+                    )
                 )
                 if isinstance(self.game, DrawGuessGame)
                 else self.game.snapshot(

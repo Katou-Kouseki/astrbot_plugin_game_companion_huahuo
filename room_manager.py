@@ -205,7 +205,7 @@ class RoomManager:
         turtle_soup_max_hints: int = 3,
         turtle_soup_content_level: SoupContentLevel = "normal",
         turtle_soup_max_players: int = 0,
-        turtle_soup_max_questions: int = 0,
+        turtle_soup_max_questions: int = 15,
         turtle_soup_free_questioning: bool = True,
         turtle_soup_free_question_cooldown: int = 1,
         turtle_soup_auto_reveal_seconds: int = 1800,
@@ -973,6 +973,18 @@ class RoomManager:
             return room.multiplayer.seat_for_token(visitor_token) is not None
         return bool(room.player_token and room.player_token == visitor_token)
 
+    @staticmethod
+    def _soup_waits_for_owner(room: GameRoom) -> bool:
+        """海龟汤要不要等房主点「开始」才开局。
+
+        只有「群里可能还有别人要坐进来」时才有等的意义。判定不能只看 capacity：
+        不限人数时 capacity 是 0，照样是多人房；而私聊房的 capacity 也可能配成
+        不限，却永远只有一个人，等下去只会让人以为按钮坏了。
+        """
+        if str(getattr(room, "source", "") or "") == "private":
+            return False
+        return int(room.multiplayer.capacity or 0) != 1
+
     async def claim_and_start(
         self,
         room: GameRoom,
@@ -1106,14 +1118,12 @@ class RoomManager:
                         start_required = not (
                             (room.game_type == "blackjack" and room.multiplayer.capacity > 1)
                             or room.game_type == "undercover"
-                            # 海龟汤是多人合力解谜：第一个人入座就开局的话，
-                            # 后面的人根本来不及坐进来。多人房改为等房主点开始，
-                            # 只有单人房（capacity == 1）才自动开局。
-                            # 注意用 == 1 而不是 > 1：capacity=0 表示不限人数，
-                            # 那显然不是单人房，不能被判成「入座即开局」。
+                            # 海龟汤是多人合力解谜：群里第一个人入座就开局的话，
+                            # 后面的人根本来不及坐进来，所以群聊房等房主点开始。
+                            # 私聊房永远只有这一个人，再等也没人来，入座即开局。
                             or (
                                 room.game_type == "turtle_soup"
-                                and int(room.multiplayer.capacity or 0) != 1
+                                and self._soup_waits_for_owner(room)
                             )
                         )
                         if room.game_type == "undercover":
@@ -3344,7 +3354,12 @@ class RoomManager:
                 )
                 name = self._seat_label(seat, number)
             game.set_pending_judge(
-                kind, cleaned, asker_number=number, asker_name=name, for_bot=for_bot
+                kind,
+                cleaned,
+                asker_number=number,
+                asker_name=name,
+                for_bot=for_bot,
+                source=source,
             )
             room.multiplayer.turn_deadline = 0.0
             room.touch()
@@ -3382,6 +3397,7 @@ class RoomManager:
             text = str(pending.get("text") or "")
             asker = int(pending.get("asker_number") or 0)
             for_bot = bool(pending.get("for_bot"))
+            origin = "qq" if str(pending.get("source") or "") == "qq" else "web"
             if kind == "question":
                 normalized = verdict if verdict in {
                     "yes", "no", "irrelevant", "partial", "compound",
@@ -3389,7 +3405,7 @@ class RoomManager:
                 game.record_question(
                     text,
                     normalized,  # type: ignore[arg-type]
-                    source="web",
+                    source=origin,  # type: ignore[arg-type]
                     matched_facts=set(),
                     player_number=None if for_bot else asker,
                 )
@@ -3399,7 +3415,7 @@ class RoomManager:
                     game.record_answer(
                         text,
                         solved=False,
-                        source="web",
+                        source=origin,  # type: ignore[arg-type]
                         matched_facts=set(),
                         player_number=None,
                         reply="花火猜中了，汤底已经揭晓。",
@@ -3413,7 +3429,7 @@ class RoomManager:
                     game.record_answer(
                         text,
                         solved=correct,
-                        source="web",
+                        source=origin,  # type: ignore[arg-type]
                         matched_facts=set(),
                         player_number=asker,
                         reply=(
@@ -6578,15 +6594,17 @@ class RoomManager:
         return room.game
 
     def _turtle_soup_free_mode(self, room: GameRoom) -> bool:
-        """自由提问：海龟汤常规玩法（Bot 出题）且开启免轮次开关。
+        """自由提问：开了免轮次开关的海龟汤房间，两种出题模式都算。
 
         开启后不再强制按玩家席轮次发言，任意玩家席成员都能提问/答题；
         同时关闭回合超时轮换，避免「还没轮到你」卡住多人进度。
+
+        玩家出题模式以前被排除在外，结果只有轮到的那个玩家能提问，其余人
+        干看着——而那一局的节奏本来就由出题人裁决控制，不需要再按顺位限流。
         """
         return bool(
             self.turtle_soup_free_questioning
             and isinstance(room.game, TurtleSoupGame)
-            and room.game.mode == "bot_host"
         )
 
     def _require_turtle_soup_player(

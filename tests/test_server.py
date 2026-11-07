@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import asyncio
 import socket
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from astrbot_plugin_game_companion_huahuo.blackjack import BlackjackCard, BlackjackGame
+from astrbot_plugin_game_companion_huahuo.models import _visitor_uid
 from astrbot_plugin_game_companion_huahuo.pig_dice import PigDiceGame
 from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 from astrbot_plugin_game_companion_huahuo.server import GameRoomServer
@@ -95,9 +97,11 @@ async def test_blackjack_action_endpoint_advances_the_round() -> None:
     )
     visitor = await server.manager.join(room)
     await server.manager.claim_and_start(room, visitor.token, "")
+    # 手牌按稳定 uid 记账（0.5.75 起），只给座位号会让接口找不到这手牌
     room.game = BlackjackGame.deal(
         difficulty="normal",
         player_numbers=[visitor.number],
+        player_uids=[_visitor_uid(visitor.token)],
         shoe=fixed_blackjack_shoe(["10", "10", "10", "10"]),
     )
     room.status = "active"
@@ -108,12 +112,18 @@ async def test_blackjack_action_endpoint_advances_the_round() -> None:
             json={"visitor_token": visitor.token, "action": "stand"},
             headers={"Origin": str(client.make_url("/")).rstrip("/")},
         )
-        payload = await response.json()
+        assert response.status == 200
 
-    assert response.status == 200
-    assert payload["data"]["room"]["status"] == "finished"
-    assert payload["data"]["room"]["game"]["finished"] is True
-    assert payload["data"]["room"]["game"]["results"][str(visitor.number)] == "push"
+    # 全部停牌后庄家回合丢到后台跑（逐张补牌有间隔），等它结算完再看房间状态
+    pending = [task for task in server.manager._bot_tasks if not task.done()]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    snapshot = room.public_snapshot(visitor.token)
+    assert snapshot["status"] == "finished"
+    assert snapshot["game"]["finished"] is True
+    # 结算结果按访客 uid 记账（不是座位号）
+    assert snapshot["game"]["results"][_visitor_uid(visitor.token)] == "push"
 
 
 def test_origin_requires_exact_local_or_public_origin() -> None:
@@ -292,7 +302,9 @@ async def test_xiangqi_move_endpoint_accepts_start_and_end_coordinates() -> None
         difficulty="normal",
     )
     visitor = await server.manager.join(room)
-    await server.manager.claim_and_start(room, visitor.token, "human_red")
+    # 两人对弈房是「先入座、再决定对手」，和网页上点「和花火对局」一致
+    await server.manager.claim_and_start(room, visitor.token, "")
+    await server.manager.start_game(room, visitor.token, "human_red")
 
     app = server._build_app()
     async with TestClient(TestServer(app)) as client:
@@ -346,8 +358,13 @@ async def test_tictactoe_move_endpoint_accepts_cell_coordinates() -> None:
 
 
 @pytest.mark.asyncio
-async def test_othello_move_endpoint_returns_flips_and_next_legal_moves() -> None:
+async def test_othello_move_endpoint_returns_flips_and_next_legal_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     server = make_server(0)
+    # 只验证人类这一手：花火回手是后台任务，会随机翻掉刚吃下的子，
+    # 让断言跟着 AI 心情漂移。这里把回手关掉，棋盘就稳定停在落子之后。
+    monkeypatch.setattr(server.manager, "_spawn_bot_turn", lambda _room: None)
     room = await server.manager.create_room(
         source="private",
         session_id="aiocqhttp:private:10001",
@@ -360,7 +377,8 @@ async def test_othello_move_endpoint_returns_flips_and_next_legal_moves() -> Non
         difficulty="easy",
     )
     visitor = await server.manager.join(room)
-    await server.manager.claim_and_start(room, visitor.token, "human_black")
+    await server.manager.claim_and_start(room, visitor.token, "")
+    await server.manager.start_game(room, visitor.token, "human_black")
 
     async with TestClient(TestServer(server._build_app())) as client:
         response = await client.post(
@@ -368,16 +386,18 @@ async def test_othello_move_endpoint_returns_flips_and_next_legal_moves() -> Non
             json={"visitor_token": visitor.token, "row": 2, "column": 3},
             headers={"Origin": str(client.make_url("/")).rstrip("/")},
         )
-        payload = await response.json()
+        assert response.status == 200
 
-    assert response.status == 200
-    game = payload["data"]["room"]["game"]
+    game = room.public_snapshot(visitor.token)["game"]
     assert game["board"][2][3] == 1
+    # (3,3) 被这一手翻成黑
     assert game["board"][3][3] == 1
-    assert game["turn"] == 1
-    assert game["black_count"] + game["white_count"] == 6
+    # 黑落完轮到白（2）
+    assert game["turn"] == 2
+    # 开局 4 子 + 这一手落 1 子（翻面不改变总数）
+    assert game["black_count"] + game["white_count"] == 5
     assert game["legal_moves"]
-    assert game["move_count"] == 2
+    assert game["move_count"] == 1
 
 
 @pytest.mark.asyncio

@@ -36,6 +36,10 @@ from astrbot_plugin_game_companion_huahuo.turtle_soup import TurtleSoupGame
         ("汤 反对", ("disagree", "")),
         ("汤 状态", ("status", "")),
         ("汤 查看", ("history", "")),
+        ("汤 复盘", ("recap", "")),
+        ("汤复盘", ("recap", "")),
+        ("汤 回顾", ("recap", "")),
+        ("汤 战报", ("recap", "")),
         ("汤", ("help", "")),
         ("海龟汤", ("help", "")),
         # 没说动作词的整句按提问处理——群里最常用的就是直接问
@@ -540,3 +544,82 @@ async def test_start_command_reports_permission_error() -> None:
     reply = await handle_soup_command(plugin, make_group_event("汤 开局"))
     assert "开不了房" in reply
     assert "游戏管理员" in reply
+
+
+# ---------------- 汤 复盘 ----------------
+
+
+def make_recap_room(*, status: str = "active", finished: bool = False) -> SimpleNamespace:
+    """一局已经出好题的海龟汤；问答各留一条。"""
+    from astrbot_plugin_game_companion_huahuo.turtle_soup import (
+        TurtleSoupGame,
+        fallback_puzzle,
+    )
+
+    game = TurtleSoupGame(difficulty="normal", max_hints=3, content_level="normal")
+    game.puzzle = fallback_puzzle(content_level="normal")
+    game.phase = "ready"
+    game.record_question("是不是在下雨？", "yes", source="web", matched_facts={0}, player_number=1)
+    game.record_question("和伞有关吗？", "no", source="qq", matched_facts=set(), player_number=1)
+    if finished:
+        game.phase = "finished"
+        game.end_reason = "revealed"
+    return SimpleNamespace(
+        room_id="room-recap",
+        game_type="turtle_soup",
+        status=status,
+        created_at=1.0,
+        game=game,
+        multiplayer=SimpleNamespace(enabled=False),
+        visitors={},
+        add_message=lambda *args, **kwargs: None,
+        touch=lambda: None,
+    )
+
+
+def plugin_with_recap_room(room: SimpleNamespace) -> SimpleNamespace:
+    """把桩插件的 `_turtle_soup_game` 指到这条房间的题上（默认桩是自己的空题）。"""
+    plugin = make_plugin(room)
+    plugin.manager._turtle_soup_game = lambda _room: room.game
+    return plugin
+
+
+@pytest.mark.asyncio
+async def test_recap_does_not_consume_a_question() -> None:
+    """「汤 复盘」以前会被兜底成一次提问，白白消耗一次额度。"""
+    room = make_recap_room()
+    plugin = plugin_with_recap_room(room)
+    before = room.game.question_count
+    reply = await handle_soup_command(plugin, make_event("汤 复盘", qq="10001"))
+    assert "复盘" in reply
+    assert room.game.question_count == before
+    plugin.submit_turtle_soup_question.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_recap_hides_solution_until_finished() -> None:
+    plugin = plugin_with_recap_room(make_recap_room())
+    running = await handle_soup_command(plugin, make_event("汤 复盘", qq="10001"))
+    assert "汤底先不给" in running
+    assert plugin.manager  # 只读不写
+
+    finished_room = make_recap_room(status="finished", finished=True)
+    plugin = plugin_with_recap_room(finished_room)
+    done = await handle_soup_command(plugin, make_event("汤 复盘", qq="10001"))
+    assert "汤底：" in done
+    assert finished_room.game.puzzle.solution[:10] in done
+
+
+@pytest.mark.asyncio
+async def test_recap_finds_finished_room() -> None:
+    """刚打完（房间已结束）也要能复盘——这是复盘最常用的时机。"""
+    plugin = plugin_with_recap_room(make_recap_room(status="finished", finished=True))
+    reply = await handle_soup_command(plugin, make_event("汤 复盘", qq="10001"))
+    assert "汤底：" in reply
+
+
+@pytest.mark.asyncio
+async def test_recap_without_any_room_says_so() -> None:
+    plugin = make_plugin(None)
+    reply = await handle_soup_command(plugin, make_event("汤 复盘", qq="10001"))
+    assert "还没有" in reply

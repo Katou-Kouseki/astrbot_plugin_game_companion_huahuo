@@ -376,11 +376,11 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "config_key": "turtle_soup.max_questions",
                 "label": "每局提问上限",
                 "type": "int",
-                "default": 0,
+                "default": 15,
                 "minimum": 0,
                 "maximum": 999,
                 "unit": "次",
-                "hint": "0 表示不限制。只限是/否提问，推理随时可以提交。",
+                "hint": "默认 15 次，0 表示不限制。只限是/否提问，推理随时可以提交。",
             },
             {
                 "key": "turn_timeout_seconds",
@@ -1709,10 +1709,10 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_max_players = self._cfg_non_negative(
             "turtle_soup.max_players", 0
         )
-        # 每局提问上限：0 = 不限。只限「提问」，推理永远可以继续提交，
+        # 每局提问上限：默认 15，0 = 不限。只限「提问」，推理永远可以继续提交，
         # 不然次数用完后这局就没法解开了。
         self.turtle_soup_max_questions = self._cfg_non_negative(
-            "turtle_soup.max_questions", 0
+            "turtle_soup.max_questions", 15
         )
         self.turtle_soup_free_questioning = self._cfg_bool(
             "turtle_soup.free_questioning", True
@@ -3111,7 +3111,11 @@ class GameCompanionPlugin(Star):
         """
         if self._event_group_id(event):
             return
-        reply = handle_custom_command(self, event.message_str or "")
+        sender_getter = getattr(event, "get_sender_id", None)
+        owner = (
+            str(sender_getter() or "").strip() if callable(sender_getter) else ""
+        )
+        reply = handle_custom_command(self, event.message_str or "", owner)
         if not reply:
             return
         stop = getattr(event, "stop_event", None)
@@ -3787,11 +3791,11 @@ class GameCompanionPlugin(Star):
         game_label = self._game_label(room.game_type)
         if event_name == "soup_host_judged":
             game = room.game
-            if (
-                isinstance(game, TurtleSoupGame)
-                and game.host_number
-                and not game.finished
-            ):
+            if isinstance(game, TurtleSoupGame):
+                # 玩家出题模式不走模型判定，之前的群同步挂在问答事件上，
+                # 这类房间的问答一条都到不了群里。裁决落库就是「有结果了」的时刻。
+                self._queue_soup_group_sync(room)
+            if game.host_number and not game.finished:
                 self._spawn(self._soup_bot_turn(room, game))
             return
         if event_name == "soup_generation_requested":
@@ -4061,6 +4065,10 @@ class GameCompanionPlugin(Star):
             await self._record_room_memory(room)
             # 按 room_id 建的锁与后台任务句柄要一起清掉，否则长期运行会越攒越多
             self._uc_ai_lock.pop(room.room_id, None)
+            # 未到期的问答速报队列跟着房间一起丢，否则会在房间没了之后再往群里发
+            soup_sync = self.__dict__.get("_soup_sync_state")
+            if isinstance(soup_sync, dict):
+                soup_sync.pop(room.room_id, None)
             tasks = getattr(self, "_board_flush_tasks", None)
             if isinstance(tasks, dict):
                 pending_task = tasks.pop(room.room_id, None)
@@ -5401,7 +5409,8 @@ class GameCompanionPlugin(Star):
         if (
             limit
             and host_game is not None
-            and int(host_game.question_count) >= limit
+            and int(getattr(host_game, "player_question_count", host_game.question_count))
+            >= limit
         ):
             progress = self._soup_progress(host_game)
             return {
@@ -5501,7 +5510,7 @@ class GameCompanionPlugin(Star):
 
     def _soup_question_limit(self) -> int:
         """每局提问上限；0 表示不限。"""
-        return max(0, int(getattr(self, "turtle_soup_max_questions", 0) or 0))
+        return max(0, int(getattr(self, "turtle_soup_max_questions", 15) or 0))
 
     def _soup_progress(self, game: TurtleSoupGame | None) -> dict[str, Any]:
         """网页与群聊共用的进度字段：还剩几次提问、几次提示。
@@ -5518,12 +5527,16 @@ class GameCompanionPlugin(Star):
                 "hint_left": 0,
             }
         limit = self._soup_question_limit()
-        asked = int(game.question_count)
+        # 只算玩家问的：花火的提问不该吃掉玩家的额度，否则「已问 15/15」里
+        # 有一半是花火问的，玩家会以为自己被限得莫名其妙。
+        asked = int(getattr(game, "player_question_count", game.question_count))
         return {
             "question_count": asked,
             "question_limit": limit,
             "question_left": max(0, limit - asked) if limit else None,
-            "hint_left": max(0, int(game.max_hints) - int(game.hints_used)),
+            # 直接用游戏本身的额度：`max_hints=0` 表示不限，那时上限是提示条数，
+            # 不能拿 0 去减，否则群里永远显示「提示剩 0」而网页还有提示。
+            "hint_left": int(getattr(game, "hint_left", 0)),
         }
 
     @staticmethod
@@ -6613,7 +6626,9 @@ class GameCompanionPlugin(Star):
         prompt = re.sub(r"\s+", " ", str(prompt or "")).strip()
         if len(prompt) > 60:
             prompt = f"{prompt[:60]}…"
-        who = f"{entry.player_number}号" if entry.player_number else "玩家"
+        # 没有座位号的就是花火自己——玩家出题模式下它也是参与者，
+        # 以前这里一律写「玩家」，群里会以为是自己人问的。
+        who = f"{entry.player_number}号" if entry.player_number else "花火"
         head = "提问" if entry.kind == "question" else "推理"
         from_qq = entry.source == "qq"
         label = f"{who}{head}·{'群' if from_qq else '网页'}"
@@ -6622,7 +6637,19 @@ class GameCompanionPlugin(Star):
         state = self.__dict__.setdefault("_soup_sync_state", {})
         bucket = state.get(room.room_id)
         if bucket is None:
-            bucket = {"room": room, "items": [], "seen": set(), "has_web": False}
+            bucket = {
+                "room": room,
+                "items": [],
+                "seen": set(),
+                "has_web": False,
+                # 题目标题在入队时定下来：这 12 秒里玩家可能已经点了「再来一道」，
+                # 等到 flush 再读 room.game 就把旧问答配到新题上了。
+                "puzzle": (
+                    game.puzzle.title
+                    if getattr(game, "puzzle", None) is not None
+                    else ""
+                ),
+            }
             state[room.room_id] = bucket
             self._spawn(self._flush_soup_group_sync(room.room_id))
         # 同一条记录只进队一次：两个事件（问答/推理）都可能触发到这里
@@ -6642,7 +6669,9 @@ class GameCompanionPlugin(Star):
                 "label": label,
                 "text": line,
                 "kind": entry.kind,
-                "number": f"{entry.player_number}号" if entry.player_number else "?",
+                "number": (
+                    f"{entry.player_number}号" if entry.player_number else "花火"
+                ),
                 "source": "群里" if from_qq else "网页",
                 "kind_cn": head,
                 "prompt": prompt or "（内容为空）",
@@ -6733,6 +6762,10 @@ class GameCompanionPlugin(Star):
             # 全是群里自己问的，群里本来就看到了，不再折叠发一遍
             return
         room = bucket["room"]
+        # 房间已经关掉/销毁就别再往那个群发了：队列是延迟 12 秒的，
+        # 这期间玩家完全可能已经关房走人。
+        if str(getattr(room, "status", "")) == "closed":
+            return
         items: list[dict[str, str]] = list(bucket["items"])
         kinds = {item["kind"] for item in items}
         if kinds == {"question"}:
@@ -6747,10 +6780,7 @@ class GameCompanionPlugin(Star):
         if extra > 0:
             text += f"\n…还有 {extra} 条"
 
-        puzzle_title = ""
-        game = getattr(room, "game", None)
-        if isinstance(game, TurtleSoupGame) and game.puzzle is not None:
-            puzzle_title = game.puzzle.title
+        puzzle_title = str(bucket.get("puzzle") or "")
 
         async def send_image() -> bool:
             """t2i 图片：好看、群里显眼，适合条数不多的时候。"""
@@ -10009,6 +10039,24 @@ class GameCompanionPlugin(Star):
             ["POST"],
             "Ask LLM to generate undercover word pairs in batch",
         )
+        register_api(
+            f"{PAGE_API_PREFIX}/soup_library",
+            self.page_soup_library,
+            ["GET"],
+            "Read turtle soup library stats",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/soup_library_reset",
+            self.page_soup_library_reset,
+            ["POST"],
+            "Reset turtle soup usage records",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/soup_custom_delete",
+            self.page_soup_custom_delete,
+            ["POST"],
+            "Delete a custom turtle soup puzzle",
+        )
 
     async def page_undercover_words(self) -> dict[str, Any]:
         store = self.undercover_word_store
@@ -10717,7 +10765,7 @@ class GameCompanionPlugin(Star):
             "turtle_soup.max_players", 0, minimum=0, maximum=100
         )
         self.turtle_soup_max_questions = self._cfg_int(
-            "turtle_soup.max_questions", 0, minimum=0, maximum=999
+            "turtle_soup.max_questions", 15, minimum=0, maximum=999
         )
         self.turtle_soup_free_questioning = self._cfg_bool(
             "turtle_soup.free_questioning", True

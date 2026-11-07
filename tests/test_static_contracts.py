@@ -80,7 +80,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.80"
+    assert metadata["version"] == "0.5.81"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1410,7 +1410,7 @@ def test_qq_bridge_switches_and_start_command() -> None:
     assert "async def start_soup_room" in bridge
     assert '"开局": "start"' in bridge
     # 提问上限：只限制提问，推理不受影响
-    assert soup["max_questions"]["default"] == 0
+    assert soup["max_questions"]["default"] == 15
     assert "def _soup_question_limit" in main_src
     assert '"limited": True' in main_src
     # 剩余信息：网页与群里共用同一组数字

@@ -43,6 +43,8 @@ class CustomEntry:
     solution: str
     content_level: str
     created_at: float
+    # 投稿人 QQ。空表示「老数据 / 无主」，任何人不许删，只有管理台能清。
+    owner: str = ""
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -50,6 +52,7 @@ class CustomEntry:
             "solution": self.solution,
             "content_level": self.content_level,
             "created_at": self.created_at,
+            "owner": self.owner,
         }
 
 
@@ -85,6 +88,7 @@ class CustomSoupStore:
                     solution=solution,
                     content_level=normalize_content_level(item.get("content_level")),
                     created_at=float(item.get("created_at") or 0.0),
+                    owner=str(item.get("owner") or "").strip(),
                 )
             )
         self.entries = entries[: self.limit]
@@ -108,12 +112,20 @@ class CustomSoupStore:
 
     # ---------------- 增删查 ----------------
 
-    def add(self, surface: str, solution: str, *, content_level: str = "normal") -> CustomEntry:
+    def add(
+        self,
+        surface: str,
+        solution: str,
+        *,
+        content_level: str = "normal",
+        owner: str = "",
+    ) -> CustomEntry:
         entry = CustomEntry(
             surface=surface.strip(),
             solution=solution.strip(),
             content_level=normalize_content_level(content_level),
             created_at=time.time(),
+            owner=str(owner or "").strip(),
         )
         self.entries.append(entry)
         # 超上限时丢最旧的：新投的题更值得留下
@@ -121,13 +133,34 @@ class CustomSoupStore:
         self.save()
         return entry
 
-    def remove(self, index: int) -> CustomEntry | None:
-        """按 1 起的序号删除；越界返回 None。"""
+    def remove(self, index: int, *, owner: str | None = None) -> CustomEntry | None:
+        """按 1 起的序号删除；越界返回 None。
+
+        给了 `owner` 就只能删自己投的：题库是大家共用的，不校验归属时任何人在
+        私聊里发「删除海龟汤 1」都能把别人投的题删掉。无主的老数据也不许删，
+        交给管理台清理。
+        """
         if not 1 <= index <= len(self.entries):
             return None
-        entry = self.entries.pop(index - 1)
+        entry = self.entries[index - 1]
+        if owner is not None:
+            mine = str(owner or "").strip()
+            if not mine or str(entry.owner or "") != mine:
+                return None
+        self.entries.pop(index - 1)
         self.save()
         return entry
+
+    def owned(self, owner: str) -> list[tuple[int, CustomEntry]]:
+        """某个人自己投的题（全局序号 + 条目），用于「我的海龟汤」。"""
+        target = str(owner or "").strip()
+        if not target:
+            return []
+        return [
+            (index, entry)
+            for index, entry in enumerate(self.entries, start=1)
+            if str(entry.owner or "") == target
+        ]
 
     def find_duplicate(self, surface: str) -> CustomEntry | None:
         target = normalize_text(surface)
@@ -176,32 +209,37 @@ def _split_surface_solution(body: str) -> tuple[str, str] | None:
     return None
 
 
-def format_list(store: CustomSoupStore) -> str:
-    if not len(store):
+def format_list(store: CustomSoupStore, owner: str = "") -> str:
+    items = store.owned(owner)
+    if not items:
         return "你还没有投稿过海龟汤。用法：添加海龟汤 汤面|汤底"
-    lines = [f"🥣 你投稿的海龟汤（{len(store)} 道）："]
-    for index, entry in enumerate(store.entries, start=1):
+    lines = [f"🥣 你投稿的海龟汤（{len(items)} 道）："]
+    for index, entry in items:
         head = re.sub(r"\s+", " ", entry.surface)[:24]
         lines.append(f"{index}. {head}…")
-    lines.append("删除用：删除海龟汤 序号")
+    lines.append("删除用：删除海龟汤 序号（序号按全库算，只列你自己投的）")
     return "\n".join(lines)
 
 
-def handle_custom_command(plugin: Any, message: str) -> str:
-    """处理私聊里的投稿指令，返回要回给用户的话。"""
+def handle_custom_command(plugin: Any, message: str, owner: str = "") -> str:
+    """处理私聊里的投稿指令，返回要回给用户的话。
+
+    `owner` 是投稿人的 QQ：列表只列自己的，删除只许删自己的——
+    题库大家共用，不校验归属时谁都能把别人的题删掉。
+    """
     body = _strip_prefix(message)
     raw = _PREFIX_RE.sub("", str(message or "")).strip()
 
     if raw.startswith(_LIST_PREFIXES):
-        return format_list(plugin._soup_custom())
+        return format_list(plugin._soup_custom(), owner)
 
     if raw.startswith(_DELETE_PREFIXES):
         index_text = body.strip()
         if not index_text.isdigit():
             return "要给个序号，例如：删除海龟汤 2（先发「我的海龟汤」看序号）"
-        removed = plugin._soup_custom().remove(int(index_text))
+        removed = plugin._soup_custom().remove(int(index_text), owner=owner)
         if removed is None:
-            return "没有这个序号。先发「我的海龟汤」看看现在有哪些。"
+            return "没有这道题，或者不是你投的。先发「我的海龟汤」看看自己能删哪些。"
         return f"已删除：{removed.surface[:24]}…"
 
     pair = _split_surface_solution(body)
@@ -219,10 +257,10 @@ def handle_custom_command(plugin: Any, message: str) -> str:
         return f"汤底太短了（至少要 {MIN_SOLUTION} 个字），把「为什么会这样」讲完整。"
     store = plugin._soup_custom()
     if store.find_duplicate(surface) is not None:
-        return "这道题你已经投稿过了，换个说法或者换一道吧。"
+        return "题库里已经有这道题了（可能是别人投的），换个说法或者换一道吧。"
     if len(store) >= store.limit:
         return f"投稿已经到上限（{store.limit} 道），先删几道再加。"
-    entry = store.add(surface, solution)
+    entry = store.add(surface, solution, owner=owner)
     puzzle = build_puzzle(entry.surface, entry.solution, content_level=entry.content_level)
     if puzzle is None:
         # 已经存进去了，但补全失败：告诉用户会被跳过，而不是假装成功
