@@ -346,11 +346,10 @@ class TurtleSoupGame:
         self.entries.append(
             SoupEntry(
                 kind="answer",
-                prompt=(
-                    "超时揭晓汤底"
-                    if self.end_reason == "timeout"
-                    else "投票揭晓汤底"
-                ),
+                prompt={
+                    "timeout": "超时揭晓汤底",
+                    "answer_limit": "推理次数用完，揭晓汤底",
+                }.get(self.end_reason, "投票揭晓汤底"),
                 response="本题已揭晓，汤底见下方。",
                 source=source,
             )

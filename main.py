@@ -1594,6 +1594,33 @@ def _uc_speech_is_repeat(
 class GameCompanionPlugin(Star):
     """Game rooms that preserve AstrBot's normal conversation pipeline."""
 
+    # ---------------------------------------------------------------
+    # 模型调用闸门
+    #
+    # 群里十几个人同时提问时，请求会一窝蜂打到模型上：先撞限流，然后每条都
+    # 要等 30 秒超时才失败，玩家看到的是「Bot 暂时无法判断」——其实只是排队
+    # 没排上。这里限住同时在跑的调用数，多出来的排队等；真撞上 429 就退避
+    # 重试，因为限流是临时状态，等一两秒通常就过去了。
+    # ---------------------------------------------------------------
+    LLM_MAX_CONCURRENCY = 3
+    # 排队上限：等这么久还没轮到就别让玩家干等，直说「人有点多」
+    LLM_QUEUE_TIMEOUT = 25.0
+    # 限流退避：重试比重开一次请求便宜，也避免把上游越打越限
+    LLM_RETRY_DELAYS = (0.8, 2.0)
+    # 判定为「临时性限流」的线索（各家 SDK 的报错措辞不一样）
+    LLM_RATE_LIMIT_HINTS = (
+        "429",
+        "rate limit",
+        "ratelimit",
+        "rate_limit",
+        "too many requests",
+        "quota",
+        "overloaded",
+        "503",
+        "限流",
+        "频率",
+    )
+
     def __init__(
         self,
         context: Context,
@@ -1713,6 +1740,11 @@ class GameCompanionPlugin(Star):
         # 不然次数用完后这局就没法解开了。
         self.turtle_soup_max_questions = self._cfg_non_negative(
             "turtle_soup.max_questions", 15
+        )
+        # 每局推理上限：整局共享，用完还没人答对就直接揭晓汤底（0 = 不限）。
+        # 人多时按人头发额度等于没有上限，控的是这一局总共能调几次判定模型。
+        self.turtle_soup_max_answers = self._cfg_non_negative(
+            "turtle_soup.max_answers", 8
         )
         self.turtle_soup_free_questioning = self._cfg_bool(
             "turtle_soup.free_questioning", True
@@ -2008,6 +2040,7 @@ class GameCompanionPlugin(Star):
             turtle_soup_content_level=self.turtle_soup_content_level,
             turtle_soup_max_players=self.turtle_soup_max_players,
             turtle_soup_max_questions=self.turtle_soup_max_questions,
+            turtle_soup_max_answers=self.turtle_soup_max_answers,
             turtle_soup_free_questioning=self.turtle_soup_free_questioning,
             turtle_soup_free_question_cooldown=self.turtle_soup_free_question_cooldown,
             turtle_soup_auto_reveal_seconds=self.turtle_soup_auto_reveal_seconds,
@@ -3937,6 +3970,11 @@ class GameCompanionPlugin(Star):
                     )
                 )
             return
+        if event_name == "soup_revealed":
+            # 额度用完自动揭晓时不再发 soup_answer_attempted，最后一次推理和
+            # 「为什么突然结束了」都挂在这条 reveal 记录上，得单独入队才不会漏。
+            self._queue_soup_group_sync(room)
+            return
         if event_name == "soup_answer_attempted":
             self._queue_soup_group_sync(room)
             if int(payload.get("new_facts") or 0) > 0:
@@ -5522,31 +5560,47 @@ class GameCompanionPlugin(Star):
         return max(0, int(getattr(self, "turtle_soup_max_questions", 15) or 0))
 
     def _soup_progress(self, game: TurtleSoupGame | None) -> dict[str, Any]:
-        """网页与群聊共用的进度字段：还剩几次提问、几次提示。
+        """网页与群聊共用的进度字段：还剩几次提问、几次提示、几次推理。
 
         以前群里只回一句判定，玩家看不见「问了几次、还剩几次」，人一多就会
-        不停地问。这四个字段同时进网页快照和群回复，两边数字永远一致。
-        `question_left` 为 None 表示本局不限制。
+        不停地问。这些字段同时进网页快照和群回复，两边数字永远一致。
+        `question_left` / `answer_left` 为 None 表示本局不限制。
         """
         if game is None:
             return {
                 "question_count": 0,
                 "question_limit": 0,
                 "question_left": None,
+                "answer_count": 0,
+                "answer_limit": 0,
+                "answer_left": None,
                 "hint_left": 0,
             }
         limit = self._soup_question_limit()
         # 只算玩家问的：花火的提问不该吃掉玩家的额度，否则「已问 15/15」里
         # 有一半是花火问的，玩家会以为自己被限得莫名其妙。
         asked = int(getattr(game, "player_question_count", game.question_count))
+        # 推理额度与提问额度是两套：整局共享，用完自动揭晓
+        answer_limit = self._soup_answer_limit()
+        answered = int(getattr(game, "answer_attempts", 0) or 0)
         return {
             "question_count": asked,
             "question_limit": limit,
             "question_left": max(0, limit - asked) if limit else None,
+            "answer_count": answered,
+            "answer_limit": answer_limit,
+            "answer_left": max(0, answer_limit - answered) if answer_limit else None,
             # 直接用游戏本身的额度：`max_hints=0` 表示不限，那时上限是提示条数，
             # 不能拿 0 去减，否则群里永远显示「提示剩 0」而网页还有提示。
             "hint_left": int(getattr(game, "hint_left", 0)),
         }
+
+    def _soup_answer_limit(self) -> int:
+        """每局推理上限；0 表示不限。与 manager 用同一个值，别各算一遍。"""
+        value = getattr(self, "turtle_soup_max_answers", None)
+        if value is None:
+            value = getattr(getattr(self, "manager", None), "turtle_soup_max_answers", 0)
+        return max(0, int(value or 0))
 
     @staticmethod
     def _soup_bonus_hint(game: TurtleSoupGame, judgment: Any) -> str:
@@ -5661,6 +5715,11 @@ class GameCompanionPlugin(Star):
                 result["bonus_hint"] = bonus_hint
             if judgment.solved:
                 result["solution"] = game.puzzle.solution
+            elif game.finished and str(getattr(game, "end_reason", "")) == "answer_limit":
+                # 这次没答对，而且推理额度已经用完：manager 那边直接揭晓了，
+                # 这里把汤底一并给出来，网页和群里都不用再点一次「查看汤底」。
+                result["answer_limit_reached"] = True
+                result["solution"] = game.puzzle.solution
             return result
         except Exception as exc:
             await self.manager.cancel_turtle_soup_interaction(room, game, str(exc))
@@ -5718,6 +5777,30 @@ class GameCompanionPlugin(Star):
                 raise
             raise RuntimeError("Bot 暂时无法继续推理，请稍后重试") from exc
 
+    def _llm_gate(self) -> asyncio.Semaphore:
+        """模型调用的并发闸门，按事件循环缓存。
+
+        不能做成实例上的单个 Semaphore：测试里每个用例一个事件循环，
+        Semaphore 复用会报「绑定到不同 loop」；长跑进程里也可能重建 loop。
+        """
+        loop = asyncio.get_running_loop()
+        gates: dict[int, asyncio.Semaphore] = self.__dict__.setdefault(
+            "_llm_gates", {}
+        )
+        key = id(loop)
+        gate = gates.get(key)
+        if gate is None:
+            if len(gates) >= 8:
+                gates.clear()  # 换过很多次 loop 后别无限增长
+            gate = asyncio.Semaphore(max(1, int(self.LLM_MAX_CONCURRENCY)))
+            gates[key] = gate
+        return gate
+
+    @classmethod
+    def _is_rate_limited(cls, exc: BaseException) -> bool:
+        text = f"{exc}".lower()
+        return any(hint in text for hint in cls.LLM_RATE_LIMIT_HINTS)
+
     async def _call_room_model(
         self,
         room: GameRoom,
@@ -5730,19 +5813,48 @@ class GameCompanionPlugin(Star):
         provider = provider or self._configured_provider(room, "", label="")
         if provider is None or not callable(getattr(provider, "text_chat", None)):
             raise RuntimeError("当前会话没有可用的大语言模型")
-        try:
-            response = await asyncio.wait_for(
-                provider.text_chat(prompt=prompt, system_prompt=system_prompt),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError("模型响应超时") from exc
-        except Exception as exc:
-            raise RuntimeError("模型调用失败") from exc
-        text = str(getattr(response, "completion_text", "") or "").strip()
-        if not text:
-            raise RuntimeError("模型没有返回有效内容")
-        return text
+        gate = self._llm_gate()
+        delays = (0.0, *self.LLM_RETRY_DELAYS)
+        last_error: BaseException | None = None
+        for attempt, delay in enumerate(delays):
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                await asyncio.wait_for(gate.acquire(), timeout=self.LLM_QUEUE_TIMEOUT)
+            except asyncio.TimeoutError as exc:
+                # 排队等太久：这时玩家已经等了 25 秒，再等下去只会更烦
+                raise RuntimeError(
+                    "问的人有点多，花火忙不过来，等十几秒再问一次吧"
+                ) from exc
+            try:
+                response = await asyncio.wait_for(
+                    provider.text_chat(prompt=prompt, system_prompt=system_prompt),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                # 超时不重试：上游已经卡住了，再等一轮只是让玩家多等一个超时
+                raise RuntimeError("模型响应超时") from exc
+            except Exception as exc:
+                last_error = exc
+                if self._is_rate_limited(exc):
+                    if attempt + 1 < len(delays):
+                        logger.info(
+                            "[GameCompanion] 模型限流，%.1fs 后重试（第 %d 次）：%s",
+                            delays[attempt + 1],
+                            attempt + 1,
+                            exc,
+                        )
+                        continue
+                    raise RuntimeError("模型正在限流，等十几秒再试") from exc
+                raise RuntimeError("模型调用失败") from exc
+            finally:
+                gate.release()
+            text = str(getattr(response, "completion_text", "") or "").strip()
+            if text:
+                return text
+            # 空回复多半是上游抖动：留一次重试机会，别直接把「没有返回」甩给玩家
+            last_error = RuntimeError("模型没有返回有效内容")
+        raise last_error or RuntimeError("模型没有返回有效内容")
 
     async def _announce_turtle_soup_hint(
         self, room: GameRoom, hint: str, *, visitor: Visitor | None = None
@@ -10814,6 +10926,9 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_max_questions = self._cfg_int(
             "turtle_soup.max_questions", 15, minimum=0, maximum=999
         )
+        self.turtle_soup_max_answers = self._cfg_int(
+            "turtle_soup.max_answers", 8, minimum=0, maximum=999
+        )
         self.turtle_soup_free_questioning = self._cfg_bool(
             "turtle_soup.free_questioning", True
         )
@@ -10878,6 +10993,7 @@ class GameCompanionPlugin(Star):
         self.manager.turtle_soup_content_level = self.turtle_soup_content_level
         self.manager.turtle_soup_max_players = self.turtle_soup_max_players
         self.manager.turtle_soup_max_questions = self.turtle_soup_max_questions
+        self.manager.turtle_soup_max_answers = self.turtle_soup_max_answers
         self.manager.turtle_soup_free_questioning = self.turtle_soup_free_questioning
         self.manager.turtle_soup_free_question_cooldown = self.turtle_soup_free_question_cooldown
         self.manager.turtle_soup_auto_reveal_seconds = (

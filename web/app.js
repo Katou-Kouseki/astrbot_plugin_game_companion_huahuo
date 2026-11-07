@@ -2919,7 +2919,12 @@
         ? `获取提示（本局剩 ${hintLeft} 次）`
         : "提示已用完";
     }
-    document.getElementById("soupAnswerCount").textContent = game?.answer_attempts ?? 0;
+    // 推理额度两种出题模式都生效：花火出题走模型判定，玩家出题由出题人裁决，
+    // 都是「猜够次数就收题」。
+    const soupAnswerLimit = Number(room.soup_answer_limit || 0);
+    document.getElementById("soupAnswerCount").textContent = soupAnswerLimit > 0
+      ? `${game?.answer_attempts ?? 0} / ${soupAnswerLimit}`
+      : (game?.answer_attempts ?? 0);
     document.getElementById("soupFactCount").textContent = playerHosted
       ? game?.turn_count ?? 0
       : `${game?.discovered_fact_count ?? 0} / ${game?.key_fact_count ?? 0}`;

@@ -206,6 +206,7 @@ class RoomManager:
         turtle_soup_content_level: SoupContentLevel = "normal",
         turtle_soup_max_players: int = 0,
         turtle_soup_max_questions: int = 15,
+        turtle_soup_max_answers: int = 8,
         turtle_soup_free_questioning: bool = True,
         turtle_soup_free_question_cooldown: int = 1,
         turtle_soup_auto_reveal_seconds: int = 1800,
@@ -256,6 +257,9 @@ class RoomManager:
         self.turtle_soup_content_level = turtle_soup_content_level
         self.turtle_soup_max_players = max(0, int(turtle_soup_max_players))
         self.turtle_soup_max_questions = max(0, int(turtle_soup_max_questions or 0))
+        # 每局推理提交上限：整局共享（不是每人一份）。人多时按人头发额度等于
+        # 没有上限——二十个人就是二十次模型判定，这里要的是「猜够次数就收题」。
+        self.turtle_soup_max_answers = max(0, int(turtle_soup_max_answers or 0))
         self.turtle_soup_free_questioning = bool(turtle_soup_free_questioning)
         self.turtle_soup_free_question_cooldown = max(0, int(turtle_soup_free_question_cooldown))
         # 海龟汤超时兜底揭晓：0 表示不自动揭晓（只能由玩家投票结束）
@@ -3440,6 +3444,16 @@ class RoomManager:
                     )
                     if correct:
                         game.solver_number = asker
+            # 推理额度在玩家出题模式下同样生效：出题人判「不对」也算一次尝试，
+            # 用完还没人猜中就收题——不然这局会一直挂到出题人自己不耐烦。
+            limit = self._soup_answer_limit()
+            if (
+                kind != "question"
+                and not game.finished
+                and limit
+                and int(game.answer_attempts) >= limit
+            ):
+                game.reveal(reason="answer_limit", source=origin)  # type: ignore[arg-type]
             finished = game.finished
             if not finished and not self._turtle_soup_free_mode(room):
                 self._advance_multiplayer_turn(room)
@@ -3561,6 +3575,7 @@ class RoomManager:
         coverage: float = 0.0,
         missing: str = "",
     ) -> bool:
+        auto_reveal = False
         async with room.lock:
             if room.game is not game or room.status != "active":
                 return False
@@ -3575,17 +3590,36 @@ class RoomManager:
                 missing=missing,
             )
             room.touch()
-            if not self._turtle_soup_free_mode(room):
+            # 推理次数用完了还是没人答对：这局已经没有翻盘的手段，直接揭晓。
+            # 不这么做的话，额度用完后的玩家只能干坐着等超时自动揭晓（默认 30 分钟）。
+            limit = self._soup_answer_limit()
+            if (
+                not solved
+                and limit
+                and int(game.answer_attempts) >= limit
+                and not game.finished
+            ):
+                game.reveal(reason="answer_limit", source=source)
+                auto_reveal = True
+            elif not self._turtle_soup_free_mode(room):
                 self._advance_multiplayer_turn(room)
-        if solved:
+        if solved or auto_reveal:
             await self._finish_game(room)
-        else:
+        if auto_reveal:
+            await self._emit(
+                "soup_revealed", room, {"reason": "answer_limit", "source": source}
+            )
+        if not solved and not auto_reveal:
             await self._emit(
                 "soup_answer_attempted",
                 room,
                 {"source": source, "new_facts": len(newly_discovered)},
             )
         return True
+
+    def _soup_answer_limit(self) -> int:
+        """每局推理上限；0 表示不限。"""
+        return max(0, int(getattr(self, "turtle_soup_max_answers", 0) or 0))
 
     async def request_turtle_soup_hint(
         self,

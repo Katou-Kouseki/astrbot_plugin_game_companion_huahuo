@@ -157,14 +157,16 @@ def _mark_active(room: GameRoom, qq: str) -> None:
 
 
 def _progress_tail(result: dict[str, Any]) -> str:
-    """把「已问 N 次 / 上限 M / 提示剩 K」拼成一句尾巴。
+    """把「已问 N/M · 提示剩 K · 推理剩 J」拼成一句尾巴。
 
     群里以前只回一句判定，玩家不知道自己问到第几条、还剩几次，人一多就会
     一直问下去。数字由插件统一算好（`_soup_progress`），网页和群里永远一致。
+    推理额度只在快用完时才显得重要，所以一直显示（条数很少，不占地方）。
     """
     asked = result.get("question_count")
     limit = result.get("question_limit")
     hints = result.get("hint_left")
+    answer_left = result.get("answer_left")
     parts: list[str] = []
     if isinstance(asked, int):
         if isinstance(limit, int) and limit > 0:
@@ -173,6 +175,8 @@ def _progress_tail(result: dict[str, Any]) -> str:
             parts.append(f"已问 {asked} 次")
     if isinstance(hints, int):
         parts.append(f"提示剩 {hints}")
+    if isinstance(answer_left, int):
+        parts.append(f"推理剩 {answer_left}")
     return f"（{' · '.join(parts)}）" if parts else ""
 
 
@@ -187,9 +191,17 @@ def _status_text(plugin: Any, room: GameRoom, game: TurtleSoupGame | None) -> st
     asked = f"{mine} 次"
     if limit:
         asked = f"{mine}/{limit} 次（剩 {max(0, limit - mine)}）"
+    answer_limit = int(getattr(plugin, "turtle_soup_max_answers", 0) or 0)
+    used_answers = int(getattr(game, "answer_attempts", 0) or 0)
+    answer_text = f"推理已交 {used_answers} 次"
+    if answer_limit:
+        answer_text = (
+            f"推理已交 {used_answers}/{answer_limit} 次（剩 {max(0, answer_limit - used_answers)}）"
+        )
     lines = [
         f"🥣 海龟汤 · {title}",
         f"已提问 {asked} · 提示剩 {hints_left} 次",
+        answer_text,
     ]
     if room.status == "paused":
         lines.append("当前已暂停，继续后才能在群里提问。")
@@ -273,6 +285,11 @@ def _answer_reply(result: dict[str, Any]) -> str:
     if result.get("solved"):
         solution = str(result.get("solution") or "").strip()
         return f"🎉 推理正确，汤底揭晓：\n{solution}" if solution else "🎉 推理正确，汤底已揭晓。"
+    if result.get("answer_limit_reached"):
+        # 这局推理机会用完、也没人答对：manager 那边已经揭晓，这里直接把汤底给出来
+        solution = str(result.get("solution") or "").strip()
+        head = "⏳ 本局推理机会已经用完，没人答对。"
+        return f"{head}\n汤底揭晓：\n{solution}" if solution else head + "汤底已揭晓。"
     if result.get("action") == "awaiting_host":
         return f"推理已提交，等出题人判断。{_progress_tail(result)}"
     coverage = result.get("coverage")

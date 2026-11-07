@@ -1320,6 +1320,12 @@ class GameRoomServer:
             if room.game_type == "turtle_soup"
             else 0
         )
+        # 每局推理上限（0 = 不限）：用完还没人答对就直接揭晓，前端要能提前提醒
+        snapshot["soup_answer_limit"] = (
+            int(getattr(self.manager, "turtle_soup_max_answers", 8) or 0)
+            if room.game_type == "turtle_soup"
+            else 0
+        )
         # 快照指纹：前端下一次轮询带上它，内容没变就只回一个几十字节的小包。
         # 必须放在最后——指纹覆盖这里之前的所有字段。
         snapshot["rev"] = self._snapshot_rev(snapshot)
