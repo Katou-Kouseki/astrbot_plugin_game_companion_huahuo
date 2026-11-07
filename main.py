@@ -2174,6 +2174,36 @@ class GameCompanionPlugin(Star):
             game_type = self._game_type(kwargs.get("game_type"))
         except ValueError as exc:
             return self._json_error(str(exc))
+        message = str(getattr(event, "message_str", "") or "")
+        session_id = str(getattr(event, "unified_msg_origin", "") or "")
+        # 只在群聊里把关：群里发一条链接会打扰所有人，是这次要治的场景；
+        # 私聊就一个人，误开一局影响很小，不值得再收紧。
+        if self._event_group_id(event):
+            allowed, intent_reason = self._room_request_intent(message, game_type)
+            if not allowed and self._room_followup_confirmed(session_id, message):
+                allowed, intent_reason = True, "刚追问过，用户回了肯定答复"
+            if not allowed:
+                self._remember_room_intent_block(session_id)
+                logger.info(
+                    "[GameCompanion] 已拦截群里没提出开局请求的建房调用: 依据=%s 游戏=%s 会话=%s 消息=%r",
+                    intent_reason,
+                    game_type,
+                    session_id,
+                    message[:120],
+                )
+                return self._json_error(
+                    f"这条消息并没有要求开一局游戏（{intent_reason}）。"
+                    "不要创建房间，也不要发任何链接；按普通聊天正常回复即可。"
+                    "如果你确实想陪用户玩，可以先用一句话问问要不要来一局，"
+                    "等用户明确答应后再调用本工具。"
+                )
+            logger.info(
+                "[GameCompanion] 群聊建房请求通过意图校验: 依据=%s 游戏=%s 会话=%s 消息=%r",
+                intent_reason,
+                game_type,
+                session_id,
+                message[:120],
+            )
         difficulty = self._difficulty(kwargs.get("difficulty"))
         turtle_soup_mode = self._turtle_soup_mode(kwargs.get("turtle_soup_mode"))
         try:
@@ -11088,6 +11118,223 @@ class GameCompanionPlugin(Star):
         if isinstance(value, str):
             return value.strip().lower() in {"true", "1", "yes", "on", "是", "确认"}
         return value is True
+
+    # 「要开一局」的明确说法。必须是请求动作，不能是单个「玩」「棋」这种泛词，
+    # 否则群里一句「我刚玩完」就会被判成开局请求。
+    _ROOM_REQUEST_PHRASES: tuple[str, ...] = (
+        "来一局",
+        "来一把",
+        "来一盘",
+        "来局",
+        "玩一局",
+        "玩一把",
+        "玩一盘",
+        "开一局",
+        "开一把",
+        "开一盘",
+        "开个局",
+        "开个房",
+        "开房间",
+        "建个房",
+        "建房间",
+        "开个房间",
+        "新建房间",
+        "陪我玩",
+        "陪你玩",
+        "一起玩",
+        "和我玩",
+        "跟我玩",
+        "带我玩",
+        "玩游戏",
+        "玩个游戏",
+        "下棋",
+        "下盘棋",
+        "来盘棋",
+        "打牌",
+        "来把牌",
+        "打一局",
+        "房间链接",
+        "打开房间",
+        "进房间",
+        "发我链接",
+        "发个链接",
+    )
+
+    # 口语化的泛请求：单看这两个词不足以判断意图（「来个笑话」「开个玩笑」），
+    # 所以只在没有离题词时才认，见 _OFF_TOPIC_PHRASES。
+    _ROOM_REQUEST_LOOSE: tuple[str, ...] = (
+        "来个",
+        "开个",
+        "整一局",
+        "搞一局",
+        "整一把",
+        "搞一把",
+    )
+
+    # 命中这些词说明「来个 / 开个」后面接的不是游戏，不能算开局请求。
+    _OFF_TOPIC_PHRASES: tuple[str, ...] = (
+        "笑话",
+        "段子",
+        "玩笑",
+        "梗",
+        "表情包",
+        "开会",
+        "开个头",
+        "开个价",
+        "开个口",
+        "开个店",
+        "开个号",
+        "开个会",
+        "来个图",
+        "来张图",
+        "来首歌",
+        "来首",
+        "来段",
+        "来个头像",
+        "来个名字",
+        "来个昵称",
+        "来个外号",
+        "开个新坑",
+        "开个场",
+        "开个白",
+        "推荐",
+        "介绍一下",
+        "举个例子",
+        "总结",
+    )
+
+    # 各玩法在自然语言里的叫法，用于判断这条消息是不是点了具体游戏。
+    _GAME_NAME_HINTS: dict[str, tuple[str, ...]] = {
+        "gomoku": ("五子棋", "连五"),
+        "xiangqi": ("象棋",),
+        "weiqi": ("围棋",),
+        "tictactoe": ("井字棋", "井字", "圈圈叉叉"),
+        "othello": ("黑白棋", "翻转棋", "奥赛罗", "othello"),
+        "turtle_soup": ("海龟汤", "汤面", "汤底", "猜汤"),
+        "pig_dice": ("贪心骰", "骰子"),
+        "draw_guess": ("你画我猜", "画猜", "画画猜"),
+        "blackjack": ("二十一点", "21点", "黑杰克", "blackjack"),
+        "undercover": ("卧底",),
+    }
+
+    # 本插件没做的游戏：消息里出现这些词时，即使带了「来一局」也不开房，
+    # 免得用户说「来把王者」结果蹦出一个五子棋房间。
+    _UNSUPPORTED_GAME_HINTS: tuple[str, ...] = (
+        "王者",
+        "原神",
+        "和平精英",
+        "吃鸡",
+        "英雄联盟",
+        "lol",
+        "金铲铲",
+        "蛋仔",
+        "迷你世界",
+        "我的世界",
+        "斗地主",
+        "麻将",
+        "狼人杀",
+        "扫雷",
+        "飞行棋",
+    )
+
+    @staticmethod
+    def _event_group_id(event: Any) -> str:
+        """取消息所属群号；私聊返回空串。兼容测试里的简易 event 对象。"""
+        getter = getattr(event, "get_group_id", None)
+        if callable(getter):
+            try:
+                return str(getter() or "").strip()
+            except Exception:
+                return ""
+        return str(getattr(event, "group_id", "") or "").strip()
+
+    @staticmethod
+    def _normalize_intent_text(message: str) -> str:
+        """把消息洗成可比对的正文：去掉 CQ 码、@、空白与标点。
+
+        @ 分两种：「@昵称 正文」整段去掉；紧贴正文的「@花火？来局五子棋」
+        只去掉 @ 本身，否则整句会被吃掉，正常请求反而被拦。
+        """
+        text = re.sub(r"\[CQ:[^\]]*\]", "", str(message or ""))
+        text = re.sub(r"@\S+\s", "", text).replace("@", "")
+        return re.sub(
+            r"[\s，。！？!?、,.~～…·:：;；\"'“”‘’()（）\[\]【】<>《》]",
+            "",
+            text,
+        ).lower()
+
+    @classmethod
+    def _room_request_intent(cls, message: str, game_type: str) -> tuple[bool, str]:
+        """判断这条消息是不是真的在要求开一局，返回 (是否放行, 判定依据)。
+
+        建房并往群里发链接是副作用很大的动作（会打扰整个群，还会占住房间名额），
+        以前完全交给模型自由裁量：群里只是被 @ 唤醒、随口提了句游戏名，模型也可能
+        直接调建房工具，于是「没人说要玩，花火却发了房间链接」。这里把闸门放在代码里，
+        模型再怎么想调也必须先过这一关。
+
+        判定依据会写进日志，下次再出现类似情况可以直接查是哪句话触发的。
+        """
+        text = cls._normalize_intent_text(message)
+        if not text:
+            return False, "空消息"
+        names = cls._GAME_NAME_HINTS.get(str(game_type or ""), ())
+        if any(name in text for name in names):
+            return True, "点了具体游戏名"
+        if any(bad in text for bad in cls._UNSUPPORTED_GAME_HINTS):
+            return False, "提到了插件不支持的其它游戏"
+        if any(phrase in text for phrase in cls._ROOM_REQUEST_PHRASES):
+            return True, "带有开局请求"
+        if any(word in text for word in cls._ROOM_REQUEST_LOOSE) and not any(
+            off_topic in text for off_topic in cls._OFF_TOPIC_PHRASES
+        ):
+            return True, "口语化的开局请求"
+        return False, "只是闲聊，没有开局请求"
+
+    # 被闸门拦下之后，花火通常会追问一句「要不要来一局」；用户在几分钟内
+    # 回一句「好 / 来吧」也应该能开局，否则追问就成了死路（用户答应了却开不出来）。
+    _ROOM_CONFIRM_REPLIES: frozenset[str] = frozenset(
+        {
+            "好",
+            "好呀",
+            "好的",
+            "好啊",
+            "行",
+            "可以",
+            "来吧",
+            "来",
+            "要",
+            "嗯",
+            "嗯嗯",
+            "愿意",
+            "那就来",
+            "走",
+            "冲",
+            "开吧",
+            "ok",
+            "okay",
+        }
+    )
+    _ROOM_INTENT_BLOCK_TTL = 300.0
+
+    def _remember_room_intent_block(self, session_id: str) -> None:
+        if not session_id:
+            return
+        store = self.__dict__.setdefault("_room_intent_blocked_at", {})
+        store[session_id] = time.monotonic()
+
+    def _room_followup_confirmed(self, session_id: str, message: str) -> bool:
+        """这条消息是不是「刚被拦下后，用户对追问说的那句肯定回应」。"""
+        if not session_id:
+            return False
+        store = self.__dict__.get("_room_intent_blocked_at") or {}
+        blocked_at = store.get(session_id)
+        if not blocked_at:
+            return False
+        if time.monotonic() - blocked_at > self._ROOM_INTENT_BLOCK_TTL:
+            store.pop(session_id, None)
+            return False
+        text = self._normalize_intent_text(message)
+        return bool(text) and text in self._ROOM_CONFIRM_REPLIES
 
     @staticmethod
     def _admin_room_requested(message: str, tool_value: bool = False) -> bool:

@@ -70,6 +70,10 @@ async def test_draw_guess_hides_answer_until_finished() -> None:
 async def test_blackjack_only_exposes_own_hand_before_showdown() -> None:
     manager = RoomManager(blackjack_max_players=2)
     room, visitors = await make_room(manager, "blackjack", seats=2)
+    # 发牌是随机的：起手 21 点会直接摊牌结算，那种局面本来就该公开。
+    # 这里固定回玩家回合，测的才是「进行中不泄露别人手牌」。
+    room.game.phase = "player_turns"
+    room.game.finished = False
 
     hands = snapshot_of(room, visitors[0])["game"]["hands"]
     assert len(hands) == 2, "条目数要保留，前端才知道有几位玩家"
