@@ -327,6 +327,21 @@ class SoupDeck:
     def oldest_records(self, limit: int = 20) -> list[dict[str, Any]]:
         return self._records[: max(1, limit)]
 
+    def stats(self) -> dict[str, Any]:
+        """账本概况：一共出过多少题、各来源各多少（管理台题库页用）。"""
+        by_source: dict[str, int] = {}
+        for record in self._records:
+            key = str(record.get("source") or "llm")[:16]
+            by_source[key] = by_source.get(key, 0) + 1
+        return {"total": len(self._records), "by_source": by_source}
+
+    def clear(self) -> int:
+        """清空出题账本（重置「哪些题已经出过」），返回清掉的条数。"""
+        removed = len(self._records)
+        self._records = []
+        self.save()
+        return removed
+
 
 async def fetch_online_puzzles(
     url: str,

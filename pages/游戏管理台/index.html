@@ -38,6 +38,9 @@
       <button class="manager-tab" data-panel="stats" type="button" role="tab" aria-selected="false">
         <i data-lucide="bar-chart-3"></i><span>战绩管理</span>
       </button>
+      <button class="manager-tab" data-panel="library" type="button" role="tab" aria-selected="false">
+        <i data-lucide="book-open"></i><span>题库管理</span>
+      </button>
     </nav>
 
     <div id="roomsPanel">
@@ -225,6 +228,60 @@
             <div id="logEmpty" class="empty-state" hidden>
               <i data-lucide="notebook-text"></i>
               <strong>暂无操作日志</strong>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <section id="libraryPanel" class="settings-panel" hidden>
+      <header class="settings-header">
+        <div>
+          <span class="eyebrow">海龟汤题库与出题记录</span>
+          <h2>题库管理</h2>
+          <p id="libraryNotice">内置题库随插件分发；「已出过」的记录用来避免同一道题反复出现，重置不会删题。</p>
+        </div>
+        <div class="settings-actions">
+          <button id="resetLibraryAction" class="secondary-button danger-button" type="button" title="清空出题记录，让所有题重新参与抽题">
+            <i data-lucide="rotate-ccw"></i><span>重置出题记录</span>
+          </button>
+          <button id="refreshLibraryAction" class="secondary-button" type="button">
+            <i data-lucide="refresh-cw"></i><span>刷新</span>
+          </button>
+        </div>
+      </header>
+
+      <section class="metrics" aria-label="题库概况">
+        <div><span>内置题目</span><strong id="libTotal">0</strong><small id="libLevels">—</small></div>
+        <div><span>已出过</span><strong id="libUsed">0</strong><small id="libUsedSources">—</small></div>
+        <div><span>补全缓存</span><strong id="libEnriched">0</strong><small>抽中后由模型补全</small></div>
+        <div><span>玩家投稿</span><strong id="libCustom">0</strong><small id="libCustomLimit">—</small></div>
+      </section>
+
+      <div class="stats-grid">
+        <section class="stats-card">
+          <header class="section-header">
+            <div>
+              <h2>玩家投稿</h2>
+              <span id="customSummary">私聊发「添加海龟汤 汤面|汤底」即可投稿</span>
+            </div>
+          </header>
+          <div class="table-wrap">
+            <table class="stats-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>汤面</th>
+                  <th>等级</th>
+                  <th>投稿时间</th>
+                  <th class="actions-column">操作</th>
+                </tr>
+              </thead>
+              <tbody id="customBody"></tbody>
+            </table>
+            <div id="customEmpty" class="empty-state" hidden>
+              <i data-lucide="inbox"></i>
+              <strong>还没有人投稿</strong>
             </div>
           </div>
         </section>

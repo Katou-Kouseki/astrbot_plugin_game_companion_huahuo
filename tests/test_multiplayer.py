@@ -132,7 +132,11 @@ async def test_same_qq_cannot_bind_two_browser_visitors_in_one_room() -> None:
 
 @pytest.mark.asyncio
 async def test_valid_action_rotates_turn_and_timeout_skips_offline_player() -> None:
-    manager = RoomManager(turtle_soup_max_players=3, multiplayer_turn_timeout=60)
+    manager = RoomManager(
+        turtle_soup_max_players=3,
+        multiplayer_turn_timeout=60,
+        turtle_soup_free_questioning=False,
+    )
     room = await make_room(manager)
     players = [await manager.join(room) for _index in range(3)]
     await manager.claim_and_start(room, players[0].token, "")
@@ -162,7 +166,11 @@ async def test_valid_action_rotates_turn_and_timeout_skips_offline_player() -> N
 
 @pytest.mark.asyncio
 async def test_model_processing_pauses_turn_deadline_and_failure_restores_it() -> None:
-    manager = RoomManager(multiplayer_turn_timeout=60, idle_timeout=0)
+    manager = RoomManager(
+        multiplayer_turn_timeout=60,
+        idle_timeout=0,
+        turtle_soup_free_questioning=False,
+    )
     room = await make_room(manager)
     player = await manager.join(room)
     await manager.claim_and_start(room, player.token, "")
@@ -191,7 +199,11 @@ async def test_model_processing_pauses_turn_deadline_and_failure_restores_it() -
 
 @pytest.mark.asyncio
 async def test_swap_is_rate_limited_and_never_transfers_bound_qq() -> None:
-    manager = RoomManager(swap_request_cooldown=30, swap_request_expiry=20)
+    manager = RoomManager(
+        swap_request_cooldown=30,
+        swap_request_expiry=20,
+        turtle_soup_free_questioning=False,
+    )
     room = await make_room(manager, admin_room=True)
     player = await manager.join(room)
     spectator = await manager.join(room)

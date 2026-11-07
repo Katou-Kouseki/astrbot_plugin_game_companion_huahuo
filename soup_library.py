@@ -144,9 +144,36 @@ def _rule_fields(surface: str, solution: str) -> dict[str, Any]:
     }
 
 
+def build_puzzle(
+    surface: str, solution: str, *, content_level: str = "normal"
+) -> SoupPuzzle | None:
+    """用规则补全把「汤面 + 汤底」做成可玩的题目（不调模型）。
+
+    自定义投稿走这条路：玩家自己给了完整汤底，不需要模型再补什么；规则补全
+    负责生成标题、关键事实与三条方向性提示。补出来的东西不如模型精修精致，
+    但投稿是玩家自己写的题，能立刻开局比「等模型补全」重要。
+    """
+    fields = _rule_fields(surface, solution)
+    payload: dict[str, Any] = {
+        "surface": str(surface or "").strip(),
+        "solution": str(solution or "").strip(),
+        "title": fields.get("title") or "",
+        "key_facts": fields.get("key_facts") or [],
+        "hints": fields.get("hints") or [],
+        "theme": fields.get("theme") or "",
+        "trick": fields.get("trick") or "",
+        "acceptable_variants": [],
+    }
+    try:
+        return puzzle_from_mapping(
+            payload, content_level=normalize_content_level(content_level)
+        )
+    except (ValueError, TypeError):
+        return None
+
+
 class SoupLibrary:
     """内置题库：加载、按内容等级过滤、补全并缓存。"""
-
     def __init__(
         self,
         path: Path,

@@ -1804,8 +1804,9 @@
       return Boolean(game && !game.finished && game.phase !== "dealer_turn" && room.is_current_player);
     }
     // 海龟汤：提问 / 给线索轮到我（后端 current_player）
+    // 自由提问模式下没有轮次，「轮到你」的标题提醒反而是噪音
     if (gt === "turtle_soup") {
-      return Boolean(room.is_current_player);
+      return Boolean(room.is_current_player) && !room.soup_free_questioning;
     }
     // 你画我猜：轮到我作画（花火看图中 / 已猜中不算）
     if (gt === "draw_guess") {
@@ -2937,8 +2938,16 @@
     const currentPlayerLabel = room.current_player_name
       ? `${room.current_player_name}（${room.current_player_number}号）`
       : (room.current_player_number ? `${room.current_player_number}号` : "未知玩家");
-    turn.textContent = room.current_player_number
-      ? `当前轮到 ${currentPlayerLabel}${remaining ? ` · 剩余 ${remaining} 秒` : ""}${room.is_current_player ? " · 轮到你" : ""}`
+    // 进度尾巴：网页这边和群里看到的是同一组数字（后端 _soup_progress 算的）
+    const soupLimit = Number(room.soup_question_limit || 0);
+    const soupAsked = Number(game?.question_count || 0);
+    const soupAskedLabel = soupLimit > 0
+      ? `已问 ${soupAsked}/${soupLimit}`
+      : (soupAsked ? `已问 ${soupAsked} 次` : "");
+    turn.textContent = room.soup_free_questioning
+      ? ["自由提问 · 玩家席谁都可以问，不用等轮次", soupAskedLabel].filter(Boolean).join(" · ")
+      : room.current_player_number
+      ? `当前轮到 ${currentPlayerLabel}${remaining ? ` · 剩余 ${remaining} 秒` : ""}${room.is_current_player ? " · 轮到你" : ""}${soupAskedLabel ? ` · ${soupAskedLabel}` : ""}`
       : "等待玩家加入";
 
     const history = document.getElementById("soupHistory");

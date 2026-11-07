@@ -31,6 +31,7 @@ from .turtle_soup_deck import redact_spoiler
 
 HELP_TEXT = (
     "🥣 海龟汤群内指令\n"
+    "• 汤 开局 —— 直接在群里开一局并发出房间链接\n"
     "• 汤 提问 你的问题 —— 问一个是/否问题\n"
     "• 汤 推理 你的推理 —— 提交对汤底的完整推断\n"
     "• 汤 提示 —— 要一条提示（消耗一次机会）\n"
@@ -43,6 +44,9 @@ HELP_TEXT = (
 
 # 动作词按长度倒序匹配，避免「看答案」被「答案」抢先切开。
 _ACTIONS: dict[str, str] = {
+    "开局": "start",
+    "开房": "start",
+    "开始": "start",
     "提问": "question",
     "问一下": "question",
     "推理": "answer",
@@ -120,21 +124,48 @@ def _mark_active(room: GameRoom, qq: str) -> None:
     visitor.connected = True
 
 
+def _progress_tail(result: dict[str, Any]) -> str:
+    """把「已问 N 次 / 上限 M / 提示剩 K」拼成一句尾巴。
+
+    群里以前只回一句判定，玩家不知道自己问到第几条、还剩几次，人一多就会
+    一直问下去。数字由插件统一算好（`_soup_progress`），网页和群里永远一致。
+    """
+    asked = result.get("question_count")
+    limit = result.get("question_limit")
+    hints = result.get("hint_left")
+    parts: list[str] = []
+    if isinstance(asked, int):
+        if isinstance(limit, int) and limit > 0:
+            parts.append(f"已问 {asked}/{limit}")
+        else:
+            parts.append(f"已问 {asked} 次")
+    if isinstance(hints, int):
+        parts.append(f"提示剩 {hints}")
+    return f"（{' · '.join(parts)}）" if parts else ""
+
+
 def _status_text(plugin: Any, room: GameRoom, game: TurtleSoupGame | None) -> str:
     if game is None or game.puzzle is None:
-        return "🥣 海龟汤正在准备题目，等一小会儿再试。"
+        return "🥣 海龟汤正在准备题目，等小会儿再试。"
     title = game.puzzle.title or "本局题目"
     hints_left = max(0, int(game.max_hints) - int(game.hints_used))
+    limit = int(getattr(plugin, "turtle_soup_max_questions", 0) or 0)
+    asked = f"{game.question_count} 次"
+    if limit:
+        asked = f"{game.question_count}/{limit} 次（剩 {max(0, limit - game.question_count)}）"
     lines = [
         f"🥣 海龟汤 · {title}",
-        f"已提问 {game.question_count} 次 · 提示剩 {hints_left} 次",
+        f"已提问 {asked} · 提示剩 {hints_left} 次",
     ]
     if room.status == "paused":
         lines.append("当前已暂停，继续后才能在群里提问。")
     if room.multiplayer.enabled:
+        free = bool(getattr(plugin.manager, "turtle_soup_free_questioning", False))
         current = room.multiplayer.current_token
         seat = room.multiplayer.seat_for_token(current) if current else None
-        if seat is not None:
+        if free:
+            lines.append("自由提问：玩家席谁都可以问，不用等轮次。")
+        elif seat is not None:
             lines.append(f"现在轮到 {seat.number} 号玩家。")
     else:
         lines.append("这是单人房间，你随时可以提问。")
@@ -163,13 +194,12 @@ def _question_reply(game: TurtleSoupGame | None, body: str, result: dict[str, An
     if result.get("solved"):
         solution = str(result.get("solution") or "").strip()
         return f"🎉 推理正确，汤底揭晓：\n{solution}" if solution else "🎉 推理正确，汤底已揭晓。"
+    if result.get("limited"):
+        return f"⏳ {result.get('reply') or '本局提问次数已经用完'}{_progress_tail(result)}"
     if result.get("action") == "awaiting_host":
-        return "问题已提交，等出题人回答。"
+        return f"问题已提交，等出题人回答。{_progress_tail(result)}"
     verdict = str(result.get("verdict") or "")
-    label = VERDICT_LABELS.get(verdict, result.get("reply") or "已记录")
-    count = result.get("question_count")
-    tail = f"（第 {count} 问）" if count else ""
-    return f"🙋 {body}\n💡 {label}{tail}"
+    return f"🙋 {body}\n💡 {VERDICT_LABELS.get(verdict, result.get('reply') or '已记录')}{_progress_tail(result)}"
 
 
 def _answer_reply(result: dict[str, Any]) -> str:
@@ -177,12 +207,12 @@ def _answer_reply(result: dict[str, Any]) -> str:
         solution = str(result.get("solution") or "").strip()
         return f"🎉 推理正确，汤底揭晓：\n{solution}" if solution else "🎉 推理正确，汤底已揭晓。"
     if result.get("action") == "awaiting_host":
-        return "推理已提交，等出题人判断。"
+        return f"推理已提交，等出题人判断。{_progress_tail(result)}"
     coverage = result.get("coverage")
     reply = str(result.get("reply") or "还没有完全对上")
     if isinstance(coverage, (int, float)):
-        return f"{reply}（覆盖度 {round(float(coverage) * 100)}%）"
-    return reply
+        return f"{reply}（覆盖度 {round(float(coverage) * 100)}%）{_progress_tail(result)}"
+    return f"{reply}{_progress_tail(result)}"
 
 
 async def _dispatch(
@@ -275,6 +305,65 @@ async def run_soup_action(
     return f"{prefix}\n{text}" if prefix else text
 
 
+_DIFFICULTY_ALIASES: dict[str, str] = {
+    "简单": "easy",
+    "容易": "easy",
+    "easy": "easy",
+    "普通": "normal",
+    "一般": "normal",
+    "normal": "normal",
+    "困难": "hard",
+    "难": "hard",
+    "hard": "hard",
+}
+
+
+async def _seat_and_start(plugin: Any, room: GameRoom, event: Any) -> str:
+    """把开局的人安排进玩家席并立刻发题，返回一句说明。"""
+    qq = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
+    name = str(getattr(event, "get_sender_name", lambda: "")() or "").strip()
+    ok, note = await ensure_qq_seat(plugin, room, qq, name)
+    if not ok:
+        return f"房间已经建好，但没能把你安排进玩家席：{note}"
+    token = ""
+    if room.multiplayer.enabled:
+        seat = room.multiplayer.seat_for_qq(qq)
+        token = seat.visitor_token if seat is not None else ""
+    token = token or room.player_token
+    if room.status != "active" and token:
+        try:
+            await plugin.manager.start_game(room, token, "")
+        except (ValueError, RuntimeError, OSError) as exc:
+            return f"你已经在玩家席了，但自动开局失败：{exc}。可以在网页里点「开始」。"
+    return "已经把你排进玩家席并开局，直接发「汤 提问 你的问题」就能问。"
+
+
+async def start_soup_room(plugin: Any, event: Any, body: str) -> str:
+    """「汤 开局」：走确定性建房路径，建好就把人安排进座位并开局。
+
+    为什么不交给模型：群里说「来局海龟汤」和「汤 开局」应该得到同一个结果，
+    但模型那条路要过意图校验，还可能被上下文带偏。这里直接调建房逻辑，
+    群聊建房权限（只有游戏管理员 / 已放开非管理员建房）完全复用同一套判断。
+    """
+    session_id = str(getattr(event, "unified_msg_origin", "") or "")
+    if soup_room_for_session(plugin, session_id) is not None:
+        return "当前会话已经有一局在玩了。发「汤 状态」看进度；想重开就先让这局结束。"
+    difficulty = _DIFFICULTY_ALIASES.get(str(body or "").strip().lower(), "")
+    if not difficulty:
+        difficulty = plugin._difficulty(body)
+    try:
+        room, _reused, _same = await plugin._create_or_reuse_room_from_event(
+            event, difficulty, "turtle_soup", confirm_abandon=False
+        )
+    except PermissionError as exc:
+        return f"开不了房：{exc}"
+    except (ValueError, RuntimeError, OSError) as exc:
+        return f"开不了房：{exc}"
+
+    note = await _seat_and_start(plugin, room, event)
+    return f"🥣 海龟汤开好了：{plugin._room_url(room)}\n{note}"
+
+
 async def handle_soup_command(plugin: Any, event: Any) -> str:
     """处理一条群消息；不需要响应时返回空串（让消息继续走正常聊天）。"""
     parsed = parse_soup_command(getattr(event, "message_str", "") or "")
@@ -284,6 +373,9 @@ async def handle_soup_command(plugin: Any, event: Any) -> str:
     session_id = str(getattr(event, "unified_msg_origin", "") or "")
     qq = str(event.get_sender_id() or "").strip()
 
+    if action == "start":
+        return await start_soup_room(plugin, event, body)
+
     room = soup_room_for_session(plugin, session_id)
     if room is None:
         if action == "help":
@@ -291,7 +383,7 @@ async def handle_soup_command(plugin: Any, event: Any) -> str:
         if action in _NO_ROOM_ACTIONS:
             return (
                 "当前会话还没有进行中的海龟汤。"
-                "先在网页开一局，再回来用「汤 提问 你的问题」提问。"
+                "发「汤 开局」直接开一局，或者先在网页开好再回来提问。"
             )
         return ""
 

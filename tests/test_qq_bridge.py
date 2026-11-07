@@ -169,7 +169,7 @@ async def test_question_goes_through_qq_source() -> None:
     assert kwargs["source"] == "qq"
     assert kwargs["actor_qq"] == "10001"
     assert "是" in reply
-    assert "第 3 问" in reply
+    assert "已问 3 次" in reply
 
 
 @pytest.mark.asyncio
@@ -282,7 +282,7 @@ class TestAtMessage:
             plugin, make_event("@花火 和灯塔有关吗？")
         )
 
-        assert "第 3 问" in reply
+        assert "已问 3 次" in reply
         kwargs = plugin.submit_turtle_soup_question.await_args.kwargs
         assert kwargs["source"] == "qq"
         assert kwargs["actor_qq"] == "10001"
@@ -445,3 +445,98 @@ class TestAtMessage:
         )
         assert reply != ""
         plugin.submit_turtle_soup_question.assert_awaited_once()
+
+
+# ---------------- 汤 开局 ----------------
+
+def make_start_plugin() -> SimpleNamespace:
+    room = SimpleNamespace(
+        room_id="room-new",
+        game_type="turtle_soup",
+        source="group",
+        session_id="aiocqhttp:group:1",
+        status="waiting",
+        player_qq="",
+        player_token="",
+        visitors={},
+        multiplayer=SimpleNamespace(enabled=False),
+        add_message=lambda *args, **kwargs: None,
+        touch=lambda: None,
+    )
+
+    async def join(_room):
+        return SimpleNamespace(number=1, token="tk", qq="", display_name="")
+
+    async def assign(_room, _number, qq, allow_non_numeric=True):
+        _room.player_qq = qq
+        _room.player_token = "tk"
+        return {"seated": True}
+
+    plugin = SimpleNamespace(
+        turtle_soup_qq_auto_bind=True,
+        _room_url=lambda _room: "https://example.test/room/token",
+        _difficulty=lambda value: "normal",
+        manager=SimpleNamespace(
+            for_session=lambda _sid: [],
+            join=AsyncMock(side_effect=join),
+            assign_player=AsyncMock(side_effect=assign),
+            start_game=AsyncMock(return_value=None),
+        ),
+    )
+    plugin._create_or_reuse_room_from_event = AsyncMock(
+        return_value=(room, False, False)
+    )
+    return plugin
+
+
+def make_group_event(message: str, *, qq: str = "10001") -> SimpleNamespace:
+    return SimpleNamespace(
+        message_str=message,
+        unified_msg_origin="aiocqhttp:group:1",
+        get_sender_id=lambda: qq,
+        get_sender_name=lambda: "小明",
+        get_group_id=lambda: "1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_command_creates_room_seats_and_starts() -> None:
+    plugin = make_start_plugin()
+    reply = await handle_soup_command(plugin, make_group_event("汤 开局"))
+
+    plugin._create_or_reuse_room_from_event.assert_awaited_once()
+    plugin.manager.join.assert_awaited_once()
+    plugin.manager.start_game.assert_awaited_once()
+    assert "海龟汤开好了" in reply
+    assert "https://example.test/room/token" in reply
+
+
+@pytest.mark.asyncio
+async def test_start_command_parses_difficulty() -> None:
+    plugin = make_start_plugin()
+    await handle_soup_command(plugin, make_group_event("汤开局 困难"))
+    args = plugin._create_or_reuse_room_from_event.await_args
+    assert args.args[1] == "hard"
+
+
+@pytest.mark.asyncio
+async def test_start_command_refuses_when_room_already_running() -> None:
+    plugin = make_start_plugin()
+    room = SimpleNamespace(game_type="turtle_soup", status="active")
+    plugin.manager.for_session = lambda _sid: [room]
+
+    reply = await handle_soup_command(plugin, make_group_event("汤 开局"))
+
+    plugin._create_or_reuse_room_from_event.assert_not_awaited()
+    assert "已经有一局" in reply
+
+
+@pytest.mark.asyncio
+async def test_start_command_reports_permission_error() -> None:
+    plugin = make_start_plugin()
+    plugin._create_or_reuse_room_from_event = AsyncMock(
+        side_effect=PermissionError("当前只允许插件配置中的游戏管理员创建群聊房间")
+    )
+    reply = await handle_soup_command(plugin, make_group_event("汤 开局"))
+    assert "开不了房" in reply
+    assert "游戏管理员" in reply

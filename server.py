@@ -1308,6 +1308,18 @@ class GameRoomServer:
                 "explicit": False,
             }
         snapshot["activity_toast"] = self._activity_toast_snapshot()
+        # 海龟汤自由提问：前端据此把「当前轮到 X 号」换成「谁都可以问」。
+        # 自由模式下压根没有轮次概念，再显示倒计时只会让人以为还要等。
+        snapshot["soup_free_questioning"] = bool(
+            room.game_type == "turtle_soup"
+            and getattr(self.manager, "turtle_soup_free_questioning", False)
+        )
+        # 每局提问上限（0 = 不限）：前端拼「已问 12/30 · 提示剩 2」
+        snapshot["soup_question_limit"] = (
+            int(getattr(self.manager, "turtle_soup_max_questions", 0) or 0)
+            if room.game_type == "turtle_soup"
+            else 0
+        )
         # 快照指纹：前端下一次轮询带上它，内容没变就只回一个几十字节的小包。
         # 必须放在最后——指纹覆盖这里之前的所有字段。
         snapshot["rev"] = self._snapshot_rev(snapshot)

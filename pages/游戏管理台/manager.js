@@ -1181,15 +1181,18 @@
   function showPanel(panel) {
     const settings = panel === "settings";
     const stats = panel === "stats";
-    document.getElementById("roomsPanel").hidden = settings || stats;
+    const library = panel === "library";
+    document.getElementById("roomsPanel").hidden = settings || stats || library;
     document.getElementById("settingsPanel").hidden = !settings;
     document.getElementById("statsPanel").hidden = !stats;
+    document.getElementById("libraryPanel").hidden = !library;
     document.querySelectorAll(".manager-tab").forEach((tab) => {
       tab.classList.toggle("active", tab.dataset.panel === panel);
       tab.setAttribute("aria-selected", String(tab.dataset.panel === panel));
     });
     if (settings) loadSettings();
     if (stats) loadStats();
+    if (library) loadLibrary();
   }
 
   // ===== 战绩管理 =====
@@ -1439,7 +1442,116 @@
     while (t.length && ctx.measureText(t + "…").width > max) t = t.slice(0, -1);
     return t + "…";
   }
-  // ===== 战绩管理 END =====
+  // ===== 题库管理 =====
+  const CONTENT_LEVEL_LABELS = { all_ages: "全年龄", normal: "普通", unrestricted: "不限制" };
+  const SOUP_SOURCE_LABELS = {
+    library: "内置题库", online: "网络题库", llm: "模型生成",
+    custom: "玩家投稿", fallback: "兜底",
+  };
+
+  function formatStamp(seconds) {
+    const value = Number(seconds || 0);
+    if (!value) return "—";
+    return new Date(value * 1000).toLocaleString("zh-CN", { hour12: false });
+  }
+
+  async function loadLibrary() {
+    try {
+      renderLibrary(await endpoint("GET", "soup_library"));
+    } catch (error) {
+      showToast(error?.message || "无法读取题库信息");
+    }
+  }
+
+  function renderLibrary(data) {
+    const builtin = data?.builtin || {};
+    const used = data?.used || {};
+    const custom = data?.custom || {};
+    const levels = builtin.by_level || {};
+    document.getElementById("libTotal").textContent = String(builtin.total ?? 0);
+    document.getElementById("libLevels").textContent =
+      `全年龄 ${levels.all_ages ?? 0} · 普通 ${levels.normal ?? 0} · 不限制 ${levels.unrestricted ?? 0}`;
+    document.getElementById("libUsed").textContent = String(used.total ?? 0);
+    const bySource = used.by_source || {};
+    document.getElementById("libUsedSources").textContent = Object.keys(bySource).length
+      ? Object.entries(bySource)
+          .map(([key, value]) => `${SOUP_SOURCE_LABELS[key] || key} ${value}`)
+          .join(" · ")
+      : "还没出过题";
+    document.getElementById("libEnriched").textContent = String(builtin.enriched ?? 0);
+    document.getElementById("libCustom").textContent = String(custom.total ?? 0);
+    document.getElementById("libCustomLimit").textContent = custom.limit
+      ? `上限 ${custom.limit} 道`
+      : "";
+
+    const body = document.getElementById("customBody");
+    body.replaceChildren();
+    const items = Array.isArray(custom.items) ? custom.items : [];
+    document.getElementById("customEmpty").hidden = items.length > 0;
+    items.forEach((item) => {
+      const row = document.createElement("tr");
+      row.appendChild(createText("td", String(item.index)));
+      const surface = String(item.surface || "");
+      row.appendChild(
+        createText("td", surface.length > 40 ? `${surface.slice(0, 40)}…` : surface)
+      );
+      row.appendChild(
+        createText(
+          "td",
+          CONTENT_LEVEL_LABELS[item.content_level] || item.content_level || "普通"
+        )
+      );
+      row.appendChild(createText("td", formatStamp(item.created_at)));
+      const actions = document.createElement("td");
+      actions.className = "actions-column";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "row-button danger";
+      remove.title = "删除这条投稿";
+      remove.setAttribute("aria-label", "删除这条投稿");
+      remove.innerHTML = '<i data-lucide="trash-2"></i>';
+      remove.addEventListener("click", () => deleteCustomSoup(item.index, surface));
+      actions.appendChild(remove);
+      row.appendChild(actions);
+      body.appendChild(row);
+    });
+    icons();
+  }
+
+  async function deleteCustomSoup(index, surface) {
+    const proceed = await confirmAction({
+      title: "删除投稿",
+      message: `确定删除第 ${index} 道投稿？\n${surface}`,
+      label: "删除",
+      danger: true,
+    });
+    if (!proceed) return;
+    try {
+      await endpoint("POST", "soup_custom_delete", { index });
+      showToast("已删除该投稿");
+      loadLibrary();
+    } catch (error) {
+      showToast(error?.message || "删除失败");
+    }
+  }
+
+  async function resetSoupLibrary() {
+    const proceed = await confirmAction({
+      title: "重置出题记录",
+      message: "清空「哪些题已经出过」的记录，让所有题重新参与抽题。题库本身不会改动。",
+      label: "重置",
+      danger: true,
+    });
+    if (!proceed) return;
+    try {
+      await endpoint("POST", "soup_library_reset", {});
+      showToast("出题记录已重置");
+      loadLibrary();
+    } catch (error) {
+      showToast(error?.message || "重置失败");
+    }
+  }
+  // ===== 题库管理 END =====
 
   document.getElementById("refreshAction").addEventListener("click", loadRooms);
   document.getElementById("createRoomAction").addEventListener("click", createRoomFromConsole);
@@ -1452,6 +1564,8 @@
   document.getElementById("posterAction").addEventListener("click", exportPoster);
   document.getElementById("statsClearAction").addEventListener("click", clearStatsLeaderboard);
   document.getElementById("refreshStatsAction").addEventListener("click", loadStats);
+  document.getElementById("refreshLibraryAction").addEventListener("click", loadLibrary);
+  document.getElementById("resetLibraryAction").addEventListener("click", resetSoupLibrary);
   document.getElementById("statsGameSelect").addEventListener("change", (e) => {
     statsFilter = e.target.value;
     loadStats();

@@ -205,7 +205,8 @@ class RoomManager:
         turtle_soup_max_hints: int = 3,
         turtle_soup_content_level: SoupContentLevel = "normal",
         turtle_soup_max_players: int = 0,
-        turtle_soup_free_questioning: bool = False,
+        turtle_soup_max_questions: int = 0,
+        turtle_soup_free_questioning: bool = True,
         turtle_soup_free_question_cooldown: int = 1,
         turtle_soup_auto_reveal_seconds: int = 1800,
         turtle_soup_bot_join: bool = True,
@@ -254,6 +255,7 @@ class RoomManager:
         self.turtle_soup_max_hints = max(0, int(turtle_soup_max_hints))
         self.turtle_soup_content_level = turtle_soup_content_level
         self.turtle_soup_max_players = max(0, int(turtle_soup_max_players))
+        self.turtle_soup_max_questions = max(0, int(turtle_soup_max_questions or 0))
         self.turtle_soup_free_questioning = bool(turtle_soup_free_questioning)
         self.turtle_soup_free_question_cooldown = max(0, int(turtle_soup_free_question_cooldown))
         # 海龟汤超时兜底揭晓：0 表示不自动揭晓（只能由玩家投票结束）

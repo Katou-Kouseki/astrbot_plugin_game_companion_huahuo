@@ -55,11 +55,17 @@ from .room_manager import (
     _parse_camp_scales,
 )
 from .server import GameRoomServer
+from .soup_custom import CustomSoupStore, handle_custom_command
 from .soup_library import SoupLibrary
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
 from .tictactoe import X as TICTACTOE_X
-from .turtle_soup_deck import SoupDeck, fetch_online_puzzles, normalize_text
+from .turtle_soup_deck import (
+    SoupDeck,
+    fetch_online_puzzles,
+    normalize_text,
+    redact_spoiler,
+)
 from .trusted_identity import TrustedIdentityStore
 from .tunnel import QuickTunnel
 from .turtle_soup import (
@@ -364,6 +370,17 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
                 "maximum": 100,
                 "unit": "人",
                 "hint": "0 表示不限制人数（默认），群里谁想加入都能坐下。",
+            },
+            {
+                "key": "max_questions",
+                "config_key": "turtle_soup.max_questions",
+                "label": "每局提问上限",
+                "type": "int",
+                "default": 0,
+                "minimum": 0,
+                "maximum": 999,
+                "unit": "次",
+                "hint": "0 表示不限制。只限是/否提问，推理随时可以提交。",
             },
             {
                 "key": "turn_timeout_seconds",
@@ -1011,6 +1028,82 @@ _BOARD_POSTER_TMPL = """<!DOCTYPE html>
 </body>
 </html>"""
 
+# 服务端「海龟汤问答速报」卡片模板（t2i 渲染）：网页里的提问攒成一张图发群。
+# 比纯文字多一个好处——群里看到的人会想点进房间，所以这里刻意做得像一张「小报」。
+_SOUP_SYNC_TMPL = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=720">
+<style>
+  html, body { margin: 0; padding: 0; }
+  .card {
+    width: 660px; box-sizing: border-box; padding: 30px 34px 24px;
+    background: linear-gradient(150deg, #3a2418 0%, #1b100b 100%);
+    font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+    color: #f6e7d3; position: relative; overflow: hidden;
+  }
+  .glow { position: absolute; top: -70px; right: -50px; width: 240px; height: 240px;
+    background: radial-gradient(circle, rgba(232,163,61,.38), transparent 70%); }
+  .head { display: flex; align-items: center; gap: 12px; position: relative; }
+  .head .icon { font-size: 30px; }
+  .head .title { font-size: 26px; font-weight: 800; letter-spacing: .5px; color: #ffd79a; }
+  .head .count { margin-left: auto; font-size: 15px; color: rgba(246,231,211,.6); }
+  .puzzle { margin-top: 10px; font-size: 15px; color: rgba(246,231,211,.66);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
+  .rows { margin-top: 18px; display: flex; flex-direction: column; gap: 10px; position: relative; }
+  .row { display: flex; align-items: flex-start; gap: 12px;
+    background: rgba(255,255,255,.055); border: 1px solid rgba(255,215,154,.14);
+    border-radius: 14px; padding: 12px 14px; }
+  .who { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .num { width: 34px; height: 34px; border-radius: 50%; background: rgba(232,163,61,.22);
+    color: #ffd79a; font-size: 15px; font-weight: 800; line-height: 34px; text-align: center; }
+  .from { font-size: 11px; color: rgba(246,231,211,.5); }
+  .body { flex: 1 1 auto; min-width: 0; }
+  .kind { font-size: 12px; color: rgba(246,231,211,.5); margin-bottom: 2px; }
+  .text { font-size: 17px; line-height: 1.5; color: #fdf3e6; word-break: break-word; }
+  .chip { flex: 0 0 auto; align-self: center; padding: 5px 12px; border-radius: 999px;
+    font-size: 14px; font-weight: 700; white-space: nowrap; }
+  .chip.yes { background: rgba(125,220,154,.18); color: #a8f0c0; }
+  .chip.no { background: rgba(255,255,255,.09); color: rgba(246,231,211,.75); }
+  .chip.near { background: rgba(232,163,61,.2); color: #ffd79a; }
+  .chip.info { background: rgba(150,190,255,.16); color: #bcd6ff; }
+  .more { margin-top: 12px; font-size: 14px; color: rgba(246,231,211,.55); position: relative; }
+  .foot { margin-top: 20px; padding-top: 14px; border-top: 1px dashed rgba(246,231,211,.16);
+    display: flex; justify-content: space-between; font-size: 13px;
+    color: rgba(246,231,211,.45); position: relative; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="glow"></div>
+  <div class="head">
+    <span class="icon">🥣</span>
+    <span class="title">海龟汤 · 问答速报</span>
+    <span class="count">{{ count }} 条</span>
+  </div>
+  {% if puzzle %}<div class="puzzle">题目：{{ puzzle }}</div>{% endif %}
+  <div class="rows">
+    {% for item in items %}
+    <div class="row">
+      <div class="who">
+        <div class="num">{{ item.number }}</div>
+        <div class="from">{{ item.source }}</div>
+      </div>
+      <div class="body">
+        <div class="kind">{{ item.kind }}</div>
+        <div class="text">{{ item.text }}</div>
+      </div>
+      <div class="chip {{ item.tone }}">{{ item.result }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% if overflow %}<div class="more">…还有 {{ overflow }} 条没列出来</div>{% endif %}
+  <div class="foot"><span>花火整理 · 网页房间里的问答</span><span>发「汤 提问 你的问题」一起玩</span></div>
+</div>
+</body>
+</html>"""
+
 # 服务端「海龟汤战报」海报的 HTML/Jinja2 模板（深夜汤屋的暖棕渐变，与前端 canvas 海报
 # 同一套视觉：汤面 → 统计 → 「他们问过」卡片 → 结果条）。刻意不含汤底。
 _SOUP_POSTER_TMPL = """<!DOCTYPE html>
@@ -1616,8 +1709,13 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_max_players = self._cfg_non_negative(
             "turtle_soup.max_players", 0
         )
+        # 每局提问上限：0 = 不限。只限「提问」，推理永远可以继续提交，
+        # 不然次数用完后这局就没法解开了。
+        self.turtle_soup_max_questions = self._cfg_non_negative(
+            "turtle_soup.max_questions", 0
+        )
         self.turtle_soup_free_questioning = self._cfg_bool(
-            "turtle_soup.free_questioning", False
+            "turtle_soup.free_questioning", True
         )
         self.turtle_soup_free_question_cooldown = self._cfg_int(
             "turtle_soup.free_question_cooldown", 1, minimum=0, maximum=30
@@ -1635,6 +1733,10 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_library_enabled = self._cfg_bool(
             "turtle_soup.library_enabled", True
         )
+        # 群聊互通总开关：关掉后群里不参与海龟汤（指令、@ 入口、模型工具全部停用）
+        self.turtle_soup_qq_bridge = self._cfg_bool(
+            "turtle_soup.qq_bridge_enabled", True
+        )
         # 群里 @ 花火直接说话是否当作这一局的提问（不用写「汤 提问」）
         self.turtle_soup_qq_at_question = self._cfg_bool(
             "turtle_soup.qq_at_question", True
@@ -1642,6 +1744,10 @@ class GameCompanionPlugin(Star):
         # 群里说话的人还没坐进玩家席时，自动安排一个空位（座位满了才回退到绑定引导）
         self.turtle_soup_qq_auto_bind = self._cfg_bool(
             "turtle_soup.qq_auto_bind", True
+        )
+        # 网页里问的题要不要同步到群里（合并成一条，不刷屏）
+        self.turtle_soup_qq_sync = self._cfg_bool(
+            "turtle_soup.qq_sync_questions", True
         )
         self.turtle_soup_group_announce_enabled = self._cfg_bool(
             "turtle_soup.group_announce_enabled", False
@@ -1896,6 +2002,7 @@ class GameCompanionPlugin(Star):
             turtle_soup_max_hints=self.turtle_soup_max_hints,
             turtle_soup_content_level=self.turtle_soup_content_level,
             turtle_soup_max_players=self.turtle_soup_max_players,
+            turtle_soup_max_questions=self.turtle_soup_max_questions,
             turtle_soup_free_questioning=self.turtle_soup_free_questioning,
             turtle_soup_free_question_cooldown=self.turtle_soup_free_question_cooldown,
             turtle_soup_auto_reveal_seconds=self.turtle_soup_auto_reveal_seconds,
@@ -2306,6 +2413,10 @@ class GameCompanionPlugin(Star):
         """
         action = str(kwargs.get("action") or "").strip().lower()
         text = str(kwargs.get("text") or "").strip()
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return self._json_error(
+                "群内互通已关闭，海龟汤只能在网页房间里进行；不要创建房间，也不要发链接。"
+            )
         target = {
             "ask": "question",
             "question": "question",
@@ -2713,6 +2824,64 @@ class GameCompanionPlugin(Star):
         except Exception as exc:
             yield event.plain_result(f"海报已生成但发送失败：{exc}")
 
+    @filter.command("海龟汤速报", alias={"汤速报", "海龟汤速报样式测试"})
+    async def soup_sync_test(self, event: AstrMessageEvent):
+        """用示例数据渲染一张「问答速报」卡片（纯图，方便看版式）。
+
+        顶层指令：「海龟汤速报 / 汤速报」。这张图就是网页提问同步到群时
+        发的那张，改样式后可以直接看效果。
+        """
+        items = [
+            {
+                "number": "3号",
+                "source": "网页",
+                "kind_cn": "提问",
+                "prompt": "是不是和灯塔有关？",
+                "result": "是",
+                "tone": "yes",
+            },
+            {
+                "number": "5号",
+                "source": "网页",
+                "kind_cn": "提问",
+                "prompt": "他是不是一个人住？",
+                "result": "是",
+                "tone": "yes",
+            },
+            {
+                "number": "4号",
+                "source": "群里",
+                "kind_cn": "提问",
+                "prompt": "碗筷是给客人的吗？",
+                "result": "否",
+                "tone": "no",
+            },
+            {
+                "number": "6号",
+                "source": "网页",
+                "kind_cn": "推理",
+                "prompt": "他妻子已经去世了，摆碗筷是不肯承认",
+                "result": "部分正确",
+                "tone": "near",
+            },
+        ]
+        data = self._soup_sync_image_data(items, "每天两副碗筷")
+        try:
+            b64 = await self._soup_sync_t2i(data)
+        except Exception as exc:
+            yield event.plain_result(
+                f"生成速报卡片失败：{exc}（需要 AstrBot t2i 渲染服务）"
+            )
+            return
+        try:
+            from astrbot.api.message_components import Image
+
+            yield event.chain_result(
+                MessageChain([Image(file=f"base64://{b64}")])
+            )
+        except Exception as exc:
+            yield event.plain_result(f"速报卡片已生成但发送失败：{exc}")
+
     @staticmethod
     def _soup_state_unsolved(state: str) -> bool:
         """战报测试指令的参数解析：判断要不要出「没人解开」的版式。"""
@@ -2883,7 +3052,7 @@ class GameCompanionPlugin(Star):
 
     @filter.regex(
         r"^\s*(?:\[CQ:at[^\]]*\]\s*|@[^\s]{1,24}\s+)?[/!！]?\s*"
-        r"(?:海龟汤|汤(?=\s|$|提问|问一下|推理|答题|答案|看答案|揭晓"
+        r"(?:海龟汤|汤(?=\s|$|开局|开房|开始|提问|问一下|推理|答题|答案|看答案|揭晓"
         r"|附议|同意|反对|提示|状态|查看|帮助|菜单))"
     )
     async def soup_qq_command(self, event: AstrMessageEvent):
@@ -2892,6 +3061,8 @@ class GameCompanionPlugin(Star):
         只在当前会话有进行中的海龟汤房间时才真的处理；其余情况静默放行，
         让这条消息继续走正常聊天（「汤圆好吃」之类不能被当成指令）。
         """
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return
         reply = await handle_soup_command(self, event)
         if not reply:
             return
@@ -2913,9 +3084,34 @@ class GameCompanionPlugin(Star):
         """
         if not getattr(self, "turtle_soup_qq_at_question", True):
             return
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return
         if not getattr(event, "is_at_or_wake_command", False):
             return
         reply = await handle_soup_at_message(self, event)
+        if not reply:
+            return
+        stop = getattr(event, "stop_event", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        yield event.plain_result(reply)
+
+    @filter.regex(
+        r"^\s*[/!！]?\s*(?:添加海龟汤|添加汤|投稿海龟汤|投稿汤"
+        r"|我的海龟汤|我的题库|海龟汤题库|删除海龟汤|删除汤)"
+    )
+    async def soup_custom_command(self, event: AstrMessageEvent):
+        """自定义海龟汤：私聊投稿 / 查看 / 删除。
+
+        只在私聊生效。群里发「汤面|汤底」等于当众剧透，而且刷得很快，
+        所以群聊里直接不响应，让消息照常走聊天。
+        """
+        if self._event_group_id(event):
+            return
+        reply = handle_custom_command(self, event.message_str or "")
         if not reply:
             return
         stop = getattr(event, "stop_event", None)
@@ -3716,6 +3912,9 @@ class GameCompanionPlugin(Star):
                 )
             return
         if event_name == "soup_question_answered":
+            # 网页和群里的问答一起攒批：网页那半段进群是新增信息，
+            # 群里那半段放进去是为了让「合并聊天记录」里能看到完整流水
+            self._queue_soup_group_sync(room)
             if int(payload.get("new_facts") or 0) > 0:
                 self._spawn(
                     self._comment(
@@ -3726,6 +3925,7 @@ class GameCompanionPlugin(Star):
                 )
             return
         if event_name == "soup_answer_attempted":
+            self._queue_soup_group_sync(room)
             if int(payload.get("new_facts") or 0) > 0:
                 self._spawn(
                     self._comment(
@@ -4867,6 +5067,17 @@ class GameCompanionPlugin(Star):
             self.soup_library_store = library
         return library
 
+    def _soup_custom(self) -> CustomSoupStore:
+        """玩家私聊投稿的题库（懒初始化，方便单测里用 __new__ 造的最小实例）。"""
+        store = getattr(self, "soup_custom_store", None)
+        if store is None:
+            store = CustomSoupStore(
+                Path(getattr(self, "data_dir", Path(".")))
+                / "turtle_soup_custom.json"
+            )
+            self.soup_custom_store = store
+        return store
+
     def _soup_library_enricher(self, room: GameRoom):
         """给题库的懒补全注入「用哪个模型」：跟出题用同一个 Provider。"""
 
@@ -4909,13 +5120,13 @@ class GameCompanionPlugin(Star):
         return ranked[0][1]
 
     async def _prepare_turtle_soup(self, room: GameRoom, game: TurtleSoupGame) -> None:
-        """出题闭环：网络题库 → 内置题库 → LLM 生成 → 兜底题。
+        """出题闭环：自定义投稿 → 网络题库 → 内置题库 → LLM 生成 → 兜底题。
 
         各段的共同约束是「不能和账本里的题目实质重复」，且任一环节成功就记账，
         让下一次出题（不论哪个房间、是否重启）都能看到它。
 
-        内置题库放在 LLM 之前：两百多道现成的题，出题更快也更省调用；
-        只有内置题库也挑不出新题时，才让模型现编。
+        自定义投稿排最前：玩家私聊投的题如果总被两百多道内置题挤掉，投了也白投。
+        内置题库放在 LLM 之前：现成的题出得快也更省调用，挑不出新题时才让模型现编。
         """
         if game.mode != "bot_host":
             return
@@ -4924,6 +5135,24 @@ class GameCompanionPlugin(Star):
             deck.recent_signatures(12)
         )
         last_error = ""
+
+        # ⓪ 自定义题目（玩家私聊投稿）：优先级最高
+        try:
+            custom_puzzles = [
+                puzzle
+                for puzzle in self._soup_custom().puzzles(game.content_level)
+                if puzzle.signature not in excluded and not deck.has(puzzle)
+            ]
+        except (OSError, ValueError):
+            custom_puzzles = []
+        if custom_puzzles:
+            puzzle = random.choice(custom_puzzles)
+            if await self.manager.complete_turtle_soup_generation(room, game, puzzle):
+                deck.remember(puzzle, source="custom")
+                logger.info(
+                    "[GameCompanion] 海龟汤采用自定义题目：《%s》", puzzle.title
+                )
+                return
 
         # ① 网络题库（可选）：命中即用，省一次 LLM 生成 + 一次校验
         if getattr(self, "turtle_soup_online_pool_url", ""):
@@ -5166,6 +5395,25 @@ class GameCompanionPlugin(Star):
             if room.game_type == "turtle_soup"
             else None
         )
+        # 提问次数上限：只挡提问，不挡推理——次数用完后推理仍然可以提交，
+        # 否则这局永远解不开。上限为 0 表示不限。
+        limit = self._soup_question_limit()
+        if (
+            limit
+            and host_game is not None
+            and int(host_game.question_count) >= limit
+        ):
+            progress = self._soup_progress(host_game)
+            return {
+                "limited": True,
+                "verdict": None,
+                "action": "",
+                "reply": (
+                    f"本局 {limit} 次提问已经用完。"
+                    "还想继续就直接提交完整推理，或者发起「揭晓汤底」。"
+                ),
+                **progress,
+            }
         if host_game is not None and host_game.host_number:
             await self.manager.begin_soup_host_judgement(
                 room,
@@ -5180,6 +5428,7 @@ class GameCompanionPlugin(Star):
                 "verdict": None,
                 "reply": "问题已提交，等出题人回答。",
                 "question_count": host_game.question_count,
+                **self._soup_progress(host_game),
             }
         game, question = await self.manager.begin_turtle_soup_interaction(
             room,
@@ -5226,6 +5475,7 @@ class GameCompanionPlugin(Star):
                     "coverage": 1.0,
                     "reply": "推理正确，汤底已经揭晓。",
                     "solution": game.puzzle.solution,
+                    **self._soup_progress(game),
                 }
             applied = await self.manager.resolve_turtle_soup_question(
                 room,
@@ -5241,12 +5491,40 @@ class GameCompanionPlugin(Star):
                 "verdict": verdict,
                 "reply": VERDICT_LABELS[verdict],
                 "question_count": game.question_count,
+                **self._soup_progress(game),
             }
         except Exception as exc:
             await self.manager.cancel_turtle_soup_interaction(room, game, str(exc))
             if isinstance(exc, (ValueError, RuntimeError, PermissionError, OSError)):
                 raise
             raise RuntimeError("Bot 暂时无法判断这个问题，请稍后重试") from exc
+
+    def _soup_question_limit(self) -> int:
+        """每局提问上限；0 表示不限。"""
+        return max(0, int(getattr(self, "turtle_soup_max_questions", 0) or 0))
+
+    def _soup_progress(self, game: TurtleSoupGame | None) -> dict[str, Any]:
+        """网页与群聊共用的进度字段：还剩几次提问、几次提示。
+
+        以前群里只回一句判定，玩家看不见「问了几次、还剩几次」，人一多就会
+        不停地问。这四个字段同时进网页快照和群回复，两边数字永远一致。
+        `question_left` 为 None 表示本局不限制。
+        """
+        if game is None:
+            return {
+                "question_count": 0,
+                "question_limit": 0,
+                "question_left": None,
+                "hint_left": 0,
+            }
+        limit = self._soup_question_limit()
+        asked = int(game.question_count)
+        return {
+            "question_count": asked,
+            "question_limit": limit,
+            "question_left": max(0, limit - asked) if limit else None,
+            "hint_left": max(0, int(game.max_hints) - int(game.hints_used)),
+        }
 
     @staticmethod
     def _soup_bonus_hint(game: TurtleSoupGame, judgment: Any) -> str:
@@ -5299,6 +5577,7 @@ class GameCompanionPlugin(Star):
                 "solved": False,
                 "reply": "推理已提交，等出题人判断。",
                 "answer_attempts": host_game.answer_attempts,
+                **self._soup_progress(host_game),
             }
         game, answer = await self.manager.begin_turtle_soup_interaction(
             room,
@@ -5354,6 +5633,7 @@ class GameCompanionPlugin(Star):
                 "reply": reply,
                 # 差在哪一环：前端可以直接展示，也可以只用来渲染进度条
                 "missing": judgment.missing,
+                **self._soup_progress(game),
             }
             if bonus_hint:
                 result["bonus_hint"] = bonus_hint
@@ -6298,6 +6578,218 @@ class GameCompanionPlugin(Star):
             "summary": "想邀请用户一起玩游戏",
             "status": "已形成游戏邀请动机",
         }
+
+    # 网页问答同步到群：单条发会刷屏，攒一小段再合并成一条
+    SOUP_SYNC_WINDOW = 12.0
+    SOUP_SYNC_MAX_LINES = 4
+    SOUP_SYNC_MAX_NODES = 12
+
+    def _queue_soup_group_sync(self, room: GameRoom) -> None:
+        """把刚发生的一条问答攒进队列，过几秒合并成一条群消息。
+
+        为什么不在每次提问后立刻发：一个房间里五个人轮流问，一分钟就是十几条，
+        群里会被刷屏（这也是之前干脆不发的原因）。这里攒 12 秒，然后用 QQ 的
+        **合并聊天记录**发出去——一条折叠消息里是完整的问答流水，不占屏也不会漏。
+
+        网页和群里的条目一起收：只发网页那半段，群里的人看不到自己刚问的内容，
+        对照起来会断片；但一整批里如果全是群里问的，就不发了（他们本来就看到了）。
+        """
+        if not getattr(self, "turtle_soup_qq_sync", True):
+            return
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return
+        if getattr(room, "source", "") != "group" or not room.session_id:
+            return
+        game = room.game
+        if not isinstance(game, TurtleSoupGame) or not game.entries:
+            return
+        entry = game.entries[-1]
+        if entry.kind not in {"question", "answer"}:
+            return
+        # 群里展示要防剧透：贴着汤底的片段先遮掉
+        prompt = entry.prompt
+        if game.puzzle is not None:
+            prompt = redact_spoiler(prompt, game.puzzle)
+        prompt = re.sub(r"\s+", " ", str(prompt or "")).strip()
+        if len(prompt) > 60:
+            prompt = f"{prompt[:60]}…"
+        who = f"{entry.player_number}号" if entry.player_number else "玩家"
+        head = "提问" if entry.kind == "question" else "推理"
+        from_qq = entry.source == "qq"
+        label = f"{who}{head}·{'群' if from_qq else '网页'}"
+        line = f"· {who}{'问' if entry.kind == 'question' else '推理'}：{prompt or '（内容为空）'} → {entry.response or '已记录'}"
+
+        state = self.__dict__.setdefault("_soup_sync_state", {})
+        bucket = state.get(room.room_id)
+        if bucket is None:
+            bucket = {"room": room, "items": [], "seen": set(), "has_web": False}
+            state[room.room_id] = bucket
+            self._spawn(self._flush_soup_group_sync(room.room_id))
+        # 同一条记录只进队一次：两个事件（问答/推理）都可能触发到这里
+        token = (round(float(entry.at or 0), 3), entry.kind, entry.prompt[:80])
+        if token in bucket["seen"]:
+            return
+        bucket["seen"].add(token)
+        tone = {
+            "yes": "yes",
+            "no": "no",
+            "irrelevant": "no",
+            "partial": "near",
+            "compound": "near",
+        }.get(str(entry.verdict or ""), "info")
+        bucket["items"].append(
+            {
+                "label": label,
+                "text": line,
+                "kind": entry.kind,
+                "number": f"{entry.player_number}号" if entry.player_number else "?",
+                "source": "群里" if from_qq else "网页",
+                "kind_cn": head,
+                "prompt": prompt or "（内容为空）",
+                "result": entry.response or "已记录",
+                "tone": tone,
+            }
+        )
+        if not from_qq:
+            bucket["has_web"] = True
+
+    def _soup_sync_chain(self, items: list[dict[str, str]], title: str):
+        """把一批问答做成 QQ 合并聊天记录；环境不支持时返回 None。
+
+        `Node` / `Nodes` 只在较新的 AstrBot 里才有，且不是所有平台适配器都支持
+        合并转发，所以这里一律「拿不到就退回纯文本」，不能让同步功能因为环境
+        差异直接哑掉。
+        """
+        try:
+            from astrbot.api.message_components import Node, Nodes
+        except ImportError:
+            return None
+        nodes = [Node(content=[Plain(title)], name="花火·海龟汤", uin="0")]
+        for item in items[: self.SOUP_SYNC_MAX_NODES]:
+            nodes.append(
+                Node(content=[Plain(item["text"])], name=item["label"], uin="0")
+            )
+        extra = len(items) - self.SOUP_SYNC_MAX_NODES
+        if extra > 0:
+            nodes.append(
+                Node(content=[Plain(f"还有 {extra} 条没列出来")], name="……", uin="0")
+            )
+        try:
+            return MessageChain([Nodes(nodes)])
+        except (TypeError, ValueError):
+            return None
+
+    SOUP_SYNC_IMAGE_ROWS = 6
+
+    def _soup_sync_image_data(
+        self, items: list[dict[str, Any]], puzzle: str
+    ) -> dict[str, Any]:
+        """把一批问答整理成速报卡片的数据（只保留能上图的字段）。"""
+        shown = items[: self.SOUP_SYNC_IMAGE_ROWS]
+        return {
+            "count": len(items),
+            "puzzle": str(puzzle or "")[:32],
+            "items": [
+                {
+                    "number": item.get("number") or "?",
+                    "source": item.get("source") or "",
+                    "kind": item.get("kind_cn") or "",
+                    "text": item.get("prompt") or "",
+                    "result": item.get("result") or "",
+                    "tone": item.get("tone") or "info",
+                }
+                for item in shown
+            ],
+            "overflow": max(0, len(items) - len(shown)),
+        }
+
+    async def _soup_sync_t2i(self, data: dict[str, Any]) -> str:
+        """用 AstrBot 的 t2i 把问答速报渲染成图片，返回 base64。"""
+        render = getattr(self, "html_render", None)
+        if not callable(render):
+            raise RuntimeError("当前 AstrBot 未提供 html_render（t2i）能力")
+        options = {
+            "type": "png",
+            "full_page": True,
+            "viewport_width": 720,
+            "device_scale_factor_level": "ultra",
+            "timeout": 20000,
+        }
+        url = await asyncio.wait_for(
+            render(_SOUP_SYNC_TMPL, data, options=options), timeout=10
+        )
+        if not url:
+            raise RuntimeError("t2i 渲染返回空结果")
+        return await self._download_image_base64(url)
+
+    async def _flush_soup_group_sync(self, room_id: str) -> None:
+        """窗口到期后把攒下的问答合并成一条（优先合并聊天记录）发到群里。"""
+        await asyncio.sleep(self.SOUP_SYNC_WINDOW)
+        state = self.__dict__.get("_soup_sync_state") or {}
+        bucket = state.pop(room_id, None)
+        if not bucket or not bucket["items"]:
+            return
+        if not bucket["has_web"]:
+            # 全是群里自己问的，群里本来就看到了，不再折叠发一遍
+            return
+        room = bucket["room"]
+        items: list[dict[str, str]] = list(bucket["items"])
+        kinds = {item["kind"] for item in items}
+        if kinds == {"question"}:
+            title = f"🥣 网页那边刚问了 {len(items)} 条："
+        elif kinds == {"answer"}:
+            title = f"🥣 网页那边刚交了 {len(items)} 份推理："
+        else:
+            title = f"🥣 网页那边刚有 {len(items)} 条动态："
+        shown = items[: self.SOUP_SYNC_MAX_LINES]
+        text = "\n".join([title, *[item["text"] for item in shown]])
+        extra = len(items) - len(shown)
+        if extra > 0:
+            text += f"\n…还有 {extra} 条"
+
+        puzzle_title = ""
+        game = getattr(room, "game", None)
+        if isinstance(game, TurtleSoupGame) and game.puzzle is not None:
+            puzzle_title = game.puzzle.title
+
+        async def send_image() -> bool:
+            """t2i 图片：好看、群里显眼，适合条数不多的时候。"""
+            try:
+                b64 = await self._soup_sync_t2i(
+                    self._soup_sync_image_data(items, puzzle_title)
+                )
+            except Exception as exc:
+                logger.info("[GameCompanion] 问答速报 t2i 渲染失败：%s", exc)
+                return False
+            try:
+                return await self._send_to_origin_image(room, "", b64)
+            except Exception as exc:
+                logger.info("[GameCompanion] 问答速报图片发送失败：%s", exc)
+                return False
+
+        async def send_chain() -> bool:
+            """合并聊天记录：完整、可展开，适合条数多的时候。"""
+            chain = self._soup_sync_chain(items, title)
+            if chain is None:
+                return False
+            try:
+                await self.context.send_message(room.session_id, chain)
+                return True
+            except Exception as exc:  # 平台不支持合并转发时会在这里抛
+                logger.info("[GameCompanion] 合并聊天记录发送失败：%s", exc)
+                return False
+
+        # 条数少 → 图片更能吸引人；条数多 → 合并记录更完整。两种互相兜底，
+        # 都失败才退回纯文本（至少让群里知道网页那边在问什么）。
+        order = (
+            (send_image, send_chain)
+            if len(items) <= self.SOUP_SYNC_IMAGE_ROWS
+            else (send_chain, send_image)
+        )
+        for send in order:
+            if await send():
+                return
+        await self._send_to_origin(room, text)
 
     async def _send_to_origin(self, room: GameRoom, text: str) -> bool:
         """把纯文字发到开房群，返回是否真的发出去了。
@@ -9963,7 +10455,6 @@ class GameCompanionPlugin(Star):
 
     async def page_game_settings(self) -> dict[str, Any]:
         return {"status": "ok", "data": self._game_settings_snapshot()}
-
     async def page_game_settings_update(self) -> dict[str, Any]:
         payload = await request.json(default={}) or {}
         try:
@@ -9978,6 +10469,57 @@ class GameCompanionPlugin(Star):
             "status": "ok",
             "message": "游戏配置已保存；新房间和新一局将使用最新设置",
             "data": self._game_settings_snapshot(),
+        }
+
+    async def page_soup_library(self) -> dict[str, Any]:
+        """题库概况：内置题量、出题账本、玩家投稿（管理台「题库管理」用）。"""
+        library = self._soup_library()
+        deck = self._soup_deck()
+        custom = self._soup_custom()
+        return {
+            "status": "ok",
+            "data": {
+                "builtin": library.stats(),
+                "used": deck.stats(),
+                "custom": {
+                    "total": len(custom),
+                    "limit": custom.limit,
+                    "items": [
+                        {
+                            "index": index,
+                            "surface": entry.surface,
+                            "content_level": entry.content_level,
+                            "created_at": entry.created_at,
+                        }
+                        for index, entry in enumerate(custom.entries, start=1)
+                    ],
+                },
+            },
+        }
+
+    async def page_soup_library_reset(self) -> dict[str, Any]:
+        """清空出题账本（只重置「出过的题」记录，不动题库文件与补全缓存）。"""
+        removed = self._soup_deck().clear()
+        return {
+            "status": "ok",
+            "message": f"已重置出题记录（清掉 {removed} 条），题库本身没有改动",
+            "data": {"cleared": removed},
+        }
+
+    async def page_soup_custom_delete(self) -> dict[str, Any]:
+        """删除一条玩家投稿：payload {"index": 1}。"""
+        payload = await request.json(default={}) or {}
+        try:
+            index = int(payload.get("index") or 0)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "序号不合法", "data": {}}
+        removed = self._soup_custom().remove(index)
+        if removed is None:
+            return {"status": "error", "message": "没有这个序号", "data": {}}
+        return {
+            "status": "ok",
+            "message": "已删除该投稿",
+            "data": {"surface": removed.surface},
         }
 
     def _game_settings_snapshot(self) -> dict[str, Any]:
@@ -10174,8 +10716,11 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_max_players = self._cfg_int(
             "turtle_soup.max_players", 0, minimum=0, maximum=100
         )
+        self.turtle_soup_max_questions = self._cfg_int(
+            "turtle_soup.max_questions", 0, minimum=0, maximum=999
+        )
         self.turtle_soup_free_questioning = self._cfg_bool(
-            "turtle_soup.free_questioning", False
+            "turtle_soup.free_questioning", True
         )
         self.turtle_soup_free_question_cooldown = self._cfg_int(
             "turtle_soup.free_question_cooldown", 1, minimum=0, maximum=30
@@ -10237,6 +10782,7 @@ class GameCompanionPlugin(Star):
         self.manager.turtle_soup_max_hints = self.turtle_soup_max_hints
         self.manager.turtle_soup_content_level = self.turtle_soup_content_level
         self.manager.turtle_soup_max_players = self.turtle_soup_max_players
+        self.manager.turtle_soup_max_questions = self.turtle_soup_max_questions
         self.manager.turtle_soup_free_questioning = self.turtle_soup_free_questioning
         self.manager.turtle_soup_free_question_cooldown = self.turtle_soup_free_question_cooldown
         self.manager.turtle_soup_auto_reveal_seconds = (

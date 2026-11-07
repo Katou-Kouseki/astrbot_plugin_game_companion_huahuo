@@ -80,7 +80,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.79"
+    assert metadata["version"] == "0.5.80"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1396,6 +1396,65 @@ def test_qq_bridge_contracts() -> None:
     assert ".soup-qq-badge" in style
 
 
+def test_qq_bridge_switches_and_start_command() -> None:
+    """互通总开关 / 开局指令 / 提问上限 / 剩余信息不能被顺手删掉。"""
+    main_src = (ROOT / "main.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+    soup = schema["turtle_soup"]["items"]
+
+    # 总开关：关掉后群里完全不参与（指令、@、模型工具三处都要查）
+    assert soup["qq_bridge_enabled"]["default"] is True
+    assert main_src.count("turtle_soup_qq_bridge") >= 3
+    # 开局指令
+    assert "async def start_soup_room" in bridge
+    assert '"开局": "start"' in bridge
+    # 提问上限：只限制提问，推理不受影响
+    assert soup["max_questions"]["default"] == 0
+    assert "def _soup_question_limit" in main_src
+    assert '"limited": True' in main_src
+    # 剩余信息：网页与群里共用同一组数字
+    assert "def _soup_progress" in main_src
+    assert "def _progress_tail" in bridge
+
+
+def test_soup_sync_uses_image_and_forward_as_fallbacks() -> None:
+    """网页提问同步到群：图片与合并聊天记录互为兜底，最后才发纯文本。"""
+    main_src = (ROOT / "main.py").read_text(encoding="utf-8")
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+    assert schema["turtle_soup"]["items"]["qq_sync_questions"]["default"] is True
+    assert "_SOUP_SYNC_TMPL" in main_src
+    assert "def _queue_soup_group_sync" in main_src
+    assert "def _flush_soup_group_sync" in main_src
+    assert "def _soup_sync_t2i" in main_src
+    assert "def _soup_sync_chain" in main_src
+    # 图片与合并记录都失败时必须还有纯文本兜底
+    assert "await self._send_to_origin(room, text)" in main_src
+
+
+def test_custom_soup_commands_are_private_only() -> None:
+    """自定义题库：私聊投稿指令 + 出题优先级 + 管理台入口。"""
+    main_src = (ROOT / "main.py").read_text(encoding="utf-8")
+    custom = (ROOT / "soup_custom.py").read_text(encoding="utf-8")
+    manager = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+    page = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(encoding="utf-8")
+
+    assert "def soup_custom_command" in main_src
+    assert "if self._event_group_id(event):" in main_src
+    assert "handle_custom_command(self, event.message_str" in main_src
+    # 自定义题必须排在内置题库之前，否则投稿永远抽不到
+    assert main_src.index("自定义题目（玩家私聊投稿）") < main_src.index("内置题库（soup_library.json）")
+    assert "class CustomSoupStore" in custom
+    # 管理台题库页
+    assert "def page_soup_library" in main_src
+    assert "def page_soup_library_reset" in main_src
+    assert "def page_soup_custom_delete" in main_src
+    assert 'data-panel="library"' in page
+    assert "libraryPanel" in page
+    assert '"soup_library"' in manager
+
+
 def test_soup_library_is_shipped() -> None:
     """内置题库必须与代码一起在：只有代码没有数据，等于没做这个功能。"""
     data = json.loads((ROOT / "soup_library.json").read_text(encoding="utf-8"))
@@ -1410,4 +1469,6 @@ def test_soup_library_is_shipped() -> None:
     assert soup["library_enabled"]["default"] is True
     assert soup["qq_at_question"]["default"] is True
     assert soup["qq_auto_bind"]["default"] is True
+    # 轮次默认关掉：群里人多时按顺位轮转，一轮要等二十次
+    assert soup["free_questioning"]["default"] is True
 
