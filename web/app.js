@@ -2259,7 +2259,15 @@
           : room.game_type === "blackjack"
           ? '<i data-lucide="spade"></i><span>开始发牌</span>'
           : '<i data-lucide="play"></i><span>开始新一局</span>';
-        note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不允许进入玩家席。";
+        if (room.game_type === "turtle_soup") {
+          // 多人海龟汤已改为手动开局：说清楚可以等人齐，别以为点了才开始一个人玩
+          const seatedNow = roomSeats().length;
+          const cap = Number(room.player_capacity || 0);
+          note.textContent = `已入座 ${seatedNow}${cap > 0 ? ` / ${cap}` : ""} 人，`
+            + "可以等其他玩家进来，也可以现在开始。";
+        } else {
+          note.textContent = room.player_confirmed ? "身份已确认。" : "身份尚未通过 QQ 确认，暂不允许进入玩家席。";
+        }
       }
     } else if (room.status === "finished") {
       if (isDuelGame(room)) {
@@ -2846,18 +2854,21 @@
     document.getElementById("soupQuestionCount").textContent = game?.question_count ?? 0;
     document.getElementById("soupHintCount").textContent = playerHosted
       ? `${room.player_numbers?.length || 0} 人`
-      : `${game?.hint_used_self ?? 0} / ${game?.hint_limit ?? 0}`;
+      : `${game?.hints_used ?? 0} / ${game?.hint_limit ?? 0}`;
     const hintButton = document.getElementById("soupHintButton");
     const hintLabel = document.getElementById("soupHintLabel");
     if (playerHosted) {
       hintButton.hidden = true;
     } else {
       hintButton.hidden = false;
-      const hintLeft = Math.max(0, (game?.hint_limit ?? 0) - (game?.hint_used_self ?? 0));
+      // 提示次数是本局总量（不是每人一份）：不同玩家申请到的一定不是同一条
+      const hintLeft = Math.max(0, game?.hint_left ?? 0);
       const canHint = room.is_player && room.status === "active"
         && game?.phase === "ready" && !game?.processing && hintLeft > 0;
       hintButton.disabled = !canHint;
-      hintLabel.textContent = hintLeft > 0 ? `获取提示（剩 ${hintLeft} 次）` : "提示已用完";
+      hintLabel.textContent = hintLeft > 0
+        ? `获取提示（本局剩 ${hintLeft} 次）`
+        : "提示已用完";
     }
     document.getElementById("soupAnswerCount").textContent = game?.answer_attempts ?? 0;
     document.getElementById("soupFactCount").textContent = playerHosted
@@ -4545,24 +4556,35 @@
     const applied = Number(room?.soup_host_number || 0);
     const finished = Boolean(game?.finished);
     const inPlay = hostNumber > 0 && !finished;
+    const soupIdle = ["waiting", "setup", "finished"].includes(String(room?.status || ""));
     const canApply = room?.game_type === "turtle_soup"
       && Boolean(room?.is_player)
       && !hostNumber
       && !applied
-      && ["waiting", "setup", "finished"].includes(String(room?.status || ""));
+      && soupIdle;
+    // 还在观众席也想出题：按钮留着但禁用，并直接说清要先入座，
+    // 否则点了没反应，用户会以为是坏了（0.5.72 的实际反馈）
+    const needSeat = room?.game_type === "turtle_soup"
+      && !room?.is_player
+      && !hostNumber
+      && !applied
+      && soupIdle;
     const isHost = inPlay && myNumber > 0 && myNumber === hostNumber;
     const isApplicant = applied > 0 && applied === myNumber;
     // 花火是否作为普通参与者一起猜：由插件配置决定，房间快照里带下来
     const botJoins = room?.soup_bot_join !== false;
 
-    panel.hidden = !(canApply || applied > 0 || inPlay || isHost);
+    panel.hidden = !(canApply || needSeat || applied > 0 || inPlay || isHost);
     const hint = document.getElementById("soupHostHint");
     const applyRow = document.getElementById("soupHostApplyRow");
     const applyBtn = document.getElementById("soupHostApply");
     const withdraw = document.getElementById("soupHostWithdraw");
     const form = document.getElementById("soupHostForm");
-    if (applyBtn) applyBtn.hidden = !canApply;
-    if (applyRow) applyRow.hidden = !(canApply || isApplicant);
+    if (applyBtn) {
+      applyBtn.hidden = !(canApply || needSeat);
+      applyBtn.disabled = needSeat;
+    }
+    if (applyRow) applyRow.hidden = !(canApply || needSeat || isApplicant);
     if (withdraw) withdraw.hidden = !isApplicant;
     if (form) form.hidden = !isApplicant;
     if (hint) {
@@ -4576,6 +4598,8 @@
         hint.textContent = isHost
           ? "你是本局出题人：回答其他人的问题、判断推理对不对。"
           : `本局由 ${hostNumber} 号出题，${botJoins ? "花火也会一起猜。" : "由其他玩家来猜。"}`;
+      } else if (needSeat) {
+        hint.textContent = "想自己出题请先加入玩家席（右侧「加入玩家席」），再回来点这里。";
       } else {
         hint.textContent = "默认花火出题；想自己出题就点下面。";
       }

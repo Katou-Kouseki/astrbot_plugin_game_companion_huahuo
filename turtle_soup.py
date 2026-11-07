@@ -90,7 +90,10 @@ class TurtleSoupGame:
     question_count: int = 0
     answer_attempts: int = 0
     hints_used: int = 0
+    # 每位玩家领过几条（仅用于展示「谁问过提示」）
     hint_usage: dict[str, int] = field(default_factory=dict)
+    # 本局已经发出去的提示索引：不同玩家拿到的提示保证不重复
+    issued_hints: set[int] = field(default_factory=set)
     solved: bool = False
     gave_up: bool = False
     bot_solved: bool = False
@@ -354,13 +357,25 @@ class TurtleSoupGame:
         allowed = len(self.puzzle.hints)
         if self.max_hints:
             allowed = min(allowed, self.max_hints)
-        # 每玩家独立限次：用稳定 uid 作键（座位号会重编号），每人从第 1 条渐进提示开始。
+        # 总量限制：整局一共只给 allowed 条。以前是「每人各算一份」，
+        # 结果 3 个玩家各领一次，同一句提示被念了三遍。
+        if self.hints_used >= allowed:
+            raise ValueError("本局的提示次数已经用完")
+        # 按题目顺序取还没发过的那条：不同玩家拿到的提示一定不一样
+        index = next(
+            (
+                i
+                for i in range(len(self.puzzle.hints))
+                if i not in self.issued_hints
+            ),
+            None,
+        )
+        if index is None:
+            raise ValueError("本局的提示已经全部给出")
+        hint = self.puzzle.hints[index]
+        self.issued_hints.add(index)
         key = str(player_uid or "") or str(player_number or 0)
-        used = self.hint_usage.get(key, 0)
-        if used >= allowed:
-            raise ValueError("你本局已经用完提示次数")
-        hint = self.puzzle.hints[used]
-        self.hint_usage[key] = used + 1
+        self.hint_usage[key] = self.hint_usage.get(key, 0) + 1
         self.hints_used += 1
         self.entries.append(
             SoupEntry(
@@ -472,6 +487,7 @@ class TurtleSoupGame:
             "hints_used": self.hints_used,
             "hint_used_self": viewer_used,
             "hint_limit": hint_limit,
+            "hint_left": max(0, hint_limit - self.hints_used),
             "discovered_fact_count": len(self.discovered_facts),
             "key_fact_count": len(self.puzzle.key_facts) if self.puzzle else 0,
             "solved": self.solved,

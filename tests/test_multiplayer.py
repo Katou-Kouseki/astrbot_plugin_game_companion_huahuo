@@ -60,6 +60,8 @@ async def test_turtle_soup_uses_reusable_multiplayer_seats_and_capacity() -> Non
     third = await manager.join(room)
 
     await manager.claim_and_start(room, first.token, "")
+    # 多人海龟汤改成「入座后手动开局」，测试里显式开始
+    await manager.start_game(room, first.token, "")
     assert isinstance(room.game, TurtleSoupGame)
     await manager.complete_turtle_soup_generation(room, room.game, make_puzzle())
     await manager.claim_and_start(room, second.token, "")
@@ -134,6 +136,7 @@ async def test_valid_action_rotates_turn_and_timeout_skips_offline_player() -> N
     room = await make_room(manager)
     players = [await manager.join(room) for _index in range(3)]
     await manager.claim_and_start(room, players[0].token, "")
+    await manager.start_game(room, players[0].token, "")
     assert isinstance(room.game, TurtleSoupGame)
     await manager.complete_turtle_soup_generation(room, room.game, make_puzzle())
     await manager.claim_and_start(room, players[1].token, "")
@@ -163,6 +166,7 @@ async def test_model_processing_pauses_turn_deadline_and_failure_restores_it() -
     room = await make_room(manager)
     player = await manager.join(room)
     await manager.claim_and_start(room, player.token, "")
+    await manager.start_game(room, player.token, "")
     assert isinstance(room.game, TurtleSoupGame)
     await manager.complete_turtle_soup_generation(room, room.game, make_puzzle())
 
@@ -255,6 +259,7 @@ async def test_player_host_mode_uses_public_clues_and_bot_guess_can_finish() -> 
     room = await make_room(plugin.manager, mode="player_host")
     player = await plugin.manager.join(room)
     await plugin.manager.claim_and_start(room, player.token, "")
+    await plugin.manager.start_game(room, player.token, "")
 
     assert isinstance(room.game, TurtleSoupGame)
     assert room.game.phase == "ready"
@@ -303,6 +308,7 @@ async def test_finished_multiplayer_room_waits_until_all_players_leave() -> None
     first = await manager.join(room)
     second = await manager.join(room)
     await manager.claim_and_start(room, first.token, "")
+    await manager.start_game(room, first.token, "")
     assert isinstance(room.game, TurtleSoupGame)
     await manager.complete_turtle_soup_generation(room, room.game, make_puzzle())
     await manager.claim_and_start(room, second.token, "")
@@ -325,6 +331,7 @@ async def test_departed_player_leaves_seat_while_game_is_active() -> None:
     first = await manager.join(room)
     second = await manager.join(room)
     await manager.claim_and_start(room, first.token, "")
+    await manager.start_game(room, first.token, "")
     await manager.claim_and_start(room, second.token, "")
     assert room.status == "active"  # 关键：对局进行中
 

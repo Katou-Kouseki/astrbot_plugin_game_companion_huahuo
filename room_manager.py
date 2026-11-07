@@ -1104,6 +1104,13 @@ class RoomManager:
                         start_required = not (
                             (room.game_type == "blackjack" and room.multiplayer.capacity > 1)
                             or room.game_type == "undercover"
+                            # 海龟汤是多人合力解谜：第一个人入座就开局的话，
+                            # 后面的人根本来不及坐进来。多人房改为等房主点开始，
+                            # 只有单人房（capacity <= 1）才自动开局。
+                            or (
+                                room.game_type == "turtle_soup"
+                                and int(room.multiplayer.capacity or 0) > 1
+                            )
                         )
                         if room.game_type == "undercover":
                             # 进入等待匹配阶段：设置倒计时 match_seconds 后自动开局
@@ -2296,6 +2303,10 @@ class RoomManager:
                 raise ValueError("当前房间没有可以继续对局的玩家")
             if room.status not in {"finished", "rematch_pending"} or room.game is None:
                 raise ValueError("当前对局尚未结束，不能直接再来一局")
+            if int(getattr(room, "soup_host_number", 0) or 0):
+                raise ValueError(
+                    "有人正在申请出题，请先提交题目或撤回申请，再开新的一局"
+                )
             room.difficulty = difficulty
             generation_requested = (
                 isinstance(room.game, TurtleSoupGame)
@@ -3136,7 +3147,7 @@ class RoomManager:
                 else None
             )
             if seat is None:
-                raise ValueError("请先入座再申请当出题人")
+                raise ValueError("请先加入玩家席，再申请出题（观众不能出题）")
             if room.status in {"active", "paused"}:
                 raise ValueError("本局还在进行，等这一局结束后再申请出题")
             number = int(seat.number)
@@ -3555,6 +3566,16 @@ class RoomManager:
             )
             room.touch()
             self._advance_multiplayer_turn(room)
+            # 提示同样消耗一轮：不说清楚的话，玩家会以为自己还能接着提问
+            next_seat = room.multiplayer.seat_for_token(
+                room.multiplayer.current_token
+            )
+            if next_seat is not None and not self._turtle_soup_free_mode(room):
+                room.add_message(
+                    "system",
+                    "提示已给出，这一轮结束，接下来轮到 "
+                    f"{self._seat_label(next_seat, int(next_seat.number))}。",
+                )
         await self._emit(
             "soup_hint_revealed",
             room,

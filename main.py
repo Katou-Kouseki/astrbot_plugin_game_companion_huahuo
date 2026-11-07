@@ -143,7 +143,13 @@ def _commentary_seat_map(room: GameRoom) -> dict[str, str]:
 
 
 def _commentary_duel_room(room: GameRoom) -> bool:
-    """两位真人同房：花火只旁观解说，不执任何一方。"""
+    """两位真人同房的对弈：花火只旁观解说，不执任何一方。
+
+    必须限定棋类：海龟汤/卧底这类多人玩法也有两个以上座位，以前会被误判成
+    「你在旁观两位真人下棋」，解说里冒出「执黑的一方」。
+    """
+    if room.game_type not in DUEL_GAMES:
+        return False
     mapping = _commentary_seat_map(room)
     return len(mapping) >= 2 and "花火" not in mapping.values()
 
@@ -1633,6 +1639,13 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_bot_join = self._cfg_bool(
             "turtle_soup.bot_join_player_host", True
         )
+        # 出题与判断可以各用各的模型：出题偏思考型，判断偏快（留空跟随会话模型）
+        self.turtle_soup_generation_provider_id = self._cfg_str(
+            "turtle_soup.generation_provider_id", ""
+        ).strip()
+        self.turtle_soup_judge_provider_id = self._cfg_str(
+            "turtle_soup.judge_provider_id", ""
+        ).strip()
         self.draw_guess_vision_provider_id = self._cfg_str(
             "draw_guess.vision_provider_id", "agnes-ai/agnes-image-2.5-flash"
         )
@@ -4482,7 +4495,11 @@ class GameCompanionPlugin(Star):
         )
         try:
             raw = await self._call_room_model(
-                room, system_prompt=system_prompt, prompt=prompt, timeout=15
+                room,
+                system_prompt=system_prompt,
+                prompt=prompt,
+                timeout=15,
+                provider=self._soup_judge_provider(room),
             )
         except RuntimeError:
             return proposed_action
@@ -4698,7 +4715,10 @@ class GameCompanionPlugin(Star):
                 async with room.lock:
                     if room.status == "rematch_pending":
                         room.status = "finished"
-                        room.add_message("system", "再来一局暂时无法开始，房间已回到结束状态。")
+                        room.add_message(
+                            "system",
+                            f"再来一局暂时无法开始（{exc}），房间已回到结束状态。",
+                        )
 
     def _soup_deck(self) -> SoupDeck:
         """题库账本（懒初始化：方便单测里用 __new__ 造的最小实例）。"""
@@ -4792,7 +4812,11 @@ class GameCompanionPlugin(Star):
                         "人格只影响叙事气质，不得把真实用户、私人记忆或生活场景写进题目。"
                     )
                 raw = await self._call_room_model(
-                    room, system_prompt=system_prompt, prompt=prompt, timeout=35
+                    room,
+                    system_prompt=system_prompt,
+                    prompt=prompt,
+                    timeout=35,
+                    provider=self._soup_generation_provider(room),
                 )
                 data = extract_json_object(raw)
                 if data is None:
@@ -4803,11 +4827,13 @@ class GameCompanionPlugin(Star):
                     title = (duplicate or {}).get("title") or puzzle.title
                     raise ValueError(f"题目与已出过的《{title}》重复")
                 check_system, check_prompt = validation_prompt(puzzle)
+                # 自检与出题用同一个模型：判断模型可能更轻，未必查得出题目自洽问题
                 check = await self._call_room_model(
                     room,
                     system_prompt=check_system,
                     prompt=check_prompt,
                     timeout=30,
+                    provider=self._soup_generation_provider(room),
                 )
                 if not validation_passed(check):
                     raise ValueError("题目未通过独立自洽性校验")
@@ -4983,7 +5009,11 @@ class GameCompanionPlugin(Star):
                 public_history=public_judge_history(game.entries),
             )
             raw = await self._call_room_model(
-                room, system_prompt=system_prompt, prompt=prompt, timeout=30
+                room,
+                system_prompt=system_prompt,
+                prompt=prompt,
+                timeout=30,
+                provider=self._soup_judge_provider(room),
             )
             verdict, matched_facts, solved = parse_question_judgment(
                 raw, fact_count=len(game.puzzle.key_facts)
@@ -5098,7 +5128,11 @@ class GameCompanionPlugin(Star):
                 discovered_facts=game.discovered_facts,
             )
             raw = await self._call_room_model(
-                room, system_prompt=system_prompt, prompt=prompt, timeout=30
+                room,
+                system_prompt=system_prompt,
+                prompt=prompt,
+                timeout=30,
+                provider=self._soup_judge_provider(room),
             )
             judgment = parse_answer_judgment_detail(
                 raw,
@@ -5200,8 +5234,9 @@ class GameCompanionPlugin(Star):
         system_prompt: str,
         prompt: str,
         timeout: int,
+        provider: Any | None = None,
     ) -> str:
-        provider = self.context.get_using_provider(room.session_id)
+        provider = provider or self._configured_provider(room, "", label="")
         if provider is None or not callable(getattr(provider, "text_chat", None)):
             raise RuntimeError("当前会话没有可用的大语言模型")
         try:
@@ -5289,9 +5324,13 @@ class GameCompanionPlugin(Star):
         text = str(getattr(response, "completion_text", "") or "")
         return _clean_emotion_tokens(_strip_role_prefix(text).strip())[:500]
 
-    def _commentary_provider(self, room: GameRoom):
-        """解说使用的模型：优先全局配置的 Provider，缺失时回退会话模型。"""
-        provider_id = (getattr(self, "commentary_provider_id", "") or "").strip()
+    def _configured_provider(self, room: GameRoom, provider_id: str, *, label: str):
+        """按配置取 Provider：找不到就回退会话模型，再回退默认模型。
+
+        解说、海龟汤出题、海龟汤判断共用这一套回退逻辑，避免三份实现各写一遍
+        而行为不一致（尤其是「管理台房间没有会话」的情况）。
+        """
+        provider_id = (provider_id or "").strip()
         if provider_id:
             getter = getattr(self.context, "get_provider_by_id", None)
             if callable(getter):
@@ -5299,7 +5338,9 @@ class GameCompanionPlugin(Star):
                 if provider is not None:
                     return provider
                 logger.warning(
-                    "[GameCompanion] 解说 Provider %s 不存在，回退当前会话模型", provider_id
+                    "[GameCompanion] %s Provider %s 不存在，回退当前会话模型",
+                    label or "指定",
+                    provider_id,
                 )
         try:
             provider = self.context.get_using_provider(room.session_id)
@@ -5312,6 +5353,28 @@ class GameCompanionPlugin(Star):
             return self.context.get_using_provider()
         except Exception:
             return None
+
+    def _commentary_provider(self, room: GameRoom):
+        """解说使用的模型：优先全局配置的 Provider，缺失时回退会话模型。"""
+        return self._configured_provider(
+            room, getattr(self, "commentary_provider_id", ""), label="解说"
+        )
+
+    def _soup_generation_provider(self, room: GameRoom):
+        """海龟汤出题模型：可指定更擅长推理的模型，留空跟随会话模型。"""
+        return self._configured_provider(
+            room,
+            getattr(self, "turtle_soup_generation_provider_id", ""),
+            label="海龟汤出题",
+        )
+
+    def _soup_judge_provider(self, room: GameRoom):
+        """海龟汤判断模型：判定提问/答案，通常选响应更快的模型。"""
+        return self._configured_provider(
+            room,
+            getattr(self, "turtle_soup_judge_provider_id", ""),
+            label="海龟汤判断",
+        )
 
     async def _llm_gen_neutral(self, prompt: str, *, system_prompt: str = "") -> str:
         """管理台等无会话场景的中性 LLM 生成：不注入游戏人格与记忆。
@@ -9934,6 +9997,12 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_bot_join = self._cfg_bool(
             "turtle_soup.bot_join_player_host", True
         )
+        self.turtle_soup_generation_provider_id = self._cfg_str(
+            "turtle_soup.generation_provider_id", ""
+        ).strip()
+        self.turtle_soup_judge_provider_id = self._cfg_str(
+            "turtle_soup.judge_provider_id", ""
+        ).strip()
         self.multiplayer_turn_timeout = self._cfg_int(
             "multiplayer.turn_timeout_seconds", 60, minimum=0, maximum=3600
         )

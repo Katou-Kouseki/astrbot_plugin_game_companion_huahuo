@@ -408,10 +408,10 @@
         "default": true
       },
       "max_hints": {
-        "description": "每题最多提示次数",
+        "description": "海龟汤每局最多提示次数",
         "type": "int",
         "default": 3,
-        "hint": "范围 0-8；0 表示不额外限制，可依次查看该题全部预生成提示。"
+        "hint": "范围 0-8；这是整局的总次数（不是每人一份），按题目提示顺序发放，不同玩家拿到的提示不会重复。0 表示不额外限制，可依次用完该题的全部提示。"
       },
       "content_level": {
         "description": "题目内容等级",
@@ -452,6 +452,18 @@
         "type": "int",
         "default": 1800,
         "hint": "本题长时间没有任何推进（提问、推理、提示）且还没解开时，自动收题并公布汤底，避免一题永远挂着；0 表示关闭，只保留玩家投票揭晓。"
+      },
+      "generation_provider_id": {
+        "description": "海龟汤出题模型",
+        "type": "string",
+        "default": "",
+        "hint": "留空跟随当前会话模型。可指定更擅长推理与创作的模型专门出题（出题 + 自检都走它）；填写 Provider ID，与「解说模型」写法一致。"
+      },
+      "judge_provider_id": {
+        "description": "海龟汤判断模型",
+        "type": "string",
+        "default": "",
+        "hint": "留空跟随当前会话模型。用于判定玩家提问、判定最终答案、识别玩家消息属于提问还是推理；建议选响应更快的模型。找不到时自动回退当前会话模型。"
       },
       "bot_join_player_host": {
         "description": "玩家出题时花火参与",
