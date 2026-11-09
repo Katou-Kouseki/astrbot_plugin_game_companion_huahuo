@@ -68,11 +68,17 @@ _ENRICH_PROMPT = """汤面：{surface}
 
 @dataclass(slots=True)
 class LibraryEntry:
-    """题库里的一条原始记录（只有汤面与汤底）。"""
+    """题库里的一条原始记录（只有汤面与汤底）。
+
+    `index` 是它在题库文件里的序号（1 起），管理台的停用/删除/编辑都按它记；
+    `disabled` 表示被管理台停用——停用不等于删除，随时可以恢复。
+    """
 
     surface: str
     solution: str
     content_level: SoupContentLevel
+    index: int = 0
+    disabled: bool = False
 
     @property
     def cache_key(self) -> str:
@@ -180,19 +186,58 @@ class SoupLibrary:
         cache_path: Path | None = None,
         *,
         cache_limit: int = _CACHE_LIMIT,
+        overrides_path: Path | None = None,
     ) -> None:
         self.path = Path(path)
         self.cache_path = Path(cache_path) if cache_path else None
+        self.overrides_path = Path(overrides_path) if overrides_path else None
         self.cache_limit = max(1, int(cache_limit))
         self.entries: list[LibraryEntry] = []
         self._cache: dict[str, dict[str, Any]] = {}
+        self._overrides: dict[str, dict[str, Any]] = {}
         self.load()
 
     # ---------------- 加载 ----------------
 
     def load(self) -> None:
+        self._overrides = self._load_overrides()
         self.entries = self._load_entries()
         self._cache = self._load_cache()
+
+    def _load_overrides(self) -> dict[str, dict[str, Any]]:
+        """管理台的本地改动（停用 / 删除 / 编辑）。
+
+        题库文件是随插件分发的只读资源，管理台的改动单独存一份，
+        升级插件时不会丢，也不会把内置文件改脏。
+        """
+        if self.overrides_path is None:
+            return {}
+        try:
+            raw = json.loads(self.overrides_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+        items = raw.get("items") if isinstance(raw, dict) else None
+        if not isinstance(items, dict):
+            return {}
+        return {
+            str(key): value for key, value in items.items() if isinstance(value, dict)
+        }
+
+    def _save_overrides(self) -> None:
+        if self.overrides_path is None:
+            return
+        try:
+            self.overrides_path.parent.mkdir(parents=True, exist_ok=True)
+            self.overrides_path.write_text(
+                json.dumps(
+                    {"version": 1, "items": self._overrides},
+                    ensure_ascii=False,
+                    indent=1,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:  # 磁盘只读：改动留在内存里，这一轮仍然生效
+            pass
 
     def _load_entries(self) -> list[LibraryEntry]:
         try:
@@ -204,11 +249,21 @@ class SoupLibrary:
         if not isinstance(raw, list):
             return []
         entries: list[LibraryEntry] = []
-        for item in raw:
+        for index, item in enumerate(raw, start=1):
             if not isinstance(item, dict):
                 continue
-            surface = str(item.get("surface") or item.get("puzzle") or "").strip()
-            solution = str(item.get("solution") or item.get("answer") or "").strip()
+            record = self._overrides.get(str(index)) or {}
+            if record.get("removed"):
+                continue
+            surface = str(
+                record.get("surface") or item.get("surface") or item.get("puzzle") or ""
+            ).strip()
+            solution = str(
+                record.get("solution") or item.get("solution") or item.get("answer") or ""
+            ).strip()
+            level = normalize_content_level(
+                record.get("content_level") or item.get("content_level")
+            )
             if len(surface) < 20 or len(solution) < 30:
                 # 过不了 puzzle_from_mapping 的下限，提前剔掉，别等到出题时才报错
                 continue
@@ -216,9 +271,9 @@ class SoupLibrary:
                 LibraryEntry(
                     surface=surface,
                     solution=solution,
-                    content_level=normalize_content_level(
-                        item.get("content_level")
-                    ),
+                    content_level=level,
+                    index=index,
+                    disabled=bool(record.get("disabled")),
                 )
             )
         return entries
@@ -265,13 +320,130 @@ class SoupLibrary:
     # ---------------- 查询 ----------------
 
     def entries_for(self, content_level: str) -> list[LibraryEntry]:
-        """按内容等级上限筛出可用题目（允许更轻，不允许更重）。"""
+        """按内容等级上限筛出可用题目（允许更轻，不允许更重）。
+
+        停用的题不参与出题，但仍留在题库里，管理台可以随时恢复。
+        """
         ceiling = _CONTENT_ORDER.get(normalize_content_level(content_level), 1)
         return [
             entry
             for entry in self.entries
-            if _CONTENT_ORDER.get(entry.content_level, 1) <= ceiling
+            if not entry.disabled
+            and _CONTENT_ORDER.get(entry.content_level, 1) <= ceiling
         ]
+
+    # ---------------- 管理台改动 ----------------
+
+    def find(self, index: int) -> LibraryEntry | None:
+        for entry in self.entries:
+            if int(entry.index) == int(index):
+                return entry
+        return None
+
+    def override_of(self, index: int) -> dict[str, Any]:
+        """这道题被管理台改过什么（没有改动返回空 dict）。"""
+        return dict(self._overrides.get(str(int(index))) or {})
+
+    def set_disabled(self, index: int, disabled: bool) -> bool:
+        """停用 / 恢复一道题：停用只是不参与抽题，随时可以恢复。"""
+        if self.find(index) is None:
+            raise ValueError("题库里没有这道题")
+        record = self._overrides.setdefault(str(int(index)), {})
+        if disabled:
+            record["disabled"] = True
+        else:
+            record.pop("disabled", None)
+        self._prune(index)
+        self._save_overrides()
+        self.load()
+        return True
+
+    def edit_entry(
+        self,
+        index: int,
+        *,
+        surface: str | None = None,
+        solution: str | None = None,
+        content_level: str | None = None,
+    ) -> bool:
+        """改内置题：只把改过的字段写进覆盖层，原文件不动。"""
+        entry = self.find(index)
+        if entry is None:
+            raise ValueError("题库里没有这道题")
+        record = self._overrides.setdefault(str(int(index)), {})
+        if surface is not None:
+            text = str(surface).strip()
+            if len(text) < 20:
+                raise ValueError("汤面至少 20 字")
+            record["surface"] = text
+        if solution is not None:
+            text = str(solution).strip()
+            if len(text) < 30:
+                raise ValueError("汤底至少 30 字")
+            record["solution"] = text
+        if content_level is not None:
+            record["content_level"] = normalize_content_level(content_level)
+        self._save_overrides()
+        self.load()
+        return True
+
+    def remove_entry(self, index: int) -> bool:
+        """删除内置题（软删）：写进覆盖层，`restore_all` 能整批恢复。"""
+        if self.find(index) is None:
+            raise ValueError("题库里没有这道题")
+        record = self._overrides.setdefault(str(int(index)), {})
+        record["removed"] = True
+        self._save_overrides()
+        self.load()
+        return True
+
+    def restore_entry(self, index: int) -> bool:
+        self._overrides.pop(str(int(index)), None)
+        self._save_overrides()
+        self.load()
+        return True
+
+    def restore_all(self) -> int:
+        """清空所有改动（停用/删除/编辑），恢复成随插件分发的样子。"""
+        count = len(self._overrides)
+        self._overrides = {}
+        self._save_overrides()
+        self.load()
+        return count
+
+    def _prune(self, index: int) -> None:
+        """覆盖记录里没有实际内容就删掉，别留一堆空对象。"""
+        key = str(int(index))
+        record = self._overrides.get(key)
+        if record is not None and not record:
+            self._overrides.pop(key, None)
+
+    def overrides_stats(self) -> dict[str, int]:
+        removed = sum(1 for item in self._overrides.values() if item.get("removed"))
+        disabled = sum(
+            1
+            for item in self._overrides.values()
+            if item.get("disabled") and not item.get("removed")
+        )
+        edited = sum(
+            1
+            for item in self._overrides.values()
+            if not item.get("removed")
+            and (item.get("surface") or item.get("solution") or item.get("content_level"))
+        )
+        return {"removed": removed, "disabled": disabled, "edited": edited}
+
+    @staticmethod
+    def mask_solution(solution: str, keep: int = 12) -> str:
+        """给管理台列表用的汤底预览：只露开头一小段，避免管理员被剧透。
+
+        想看完整汤底要单独点「查看答案」，一次只看一条——列表里一次性铺开
+        两百多条答案，等于把整个题库摊在屏幕上。
+        """
+        text = str(solution or "").strip()
+        if len(text) <= keep:
+            return text + "……"
+        return f"{text[:keep]}……（共 {len(text)} 字）"
 
     def cached_fields(self, entry: LibraryEntry) -> dict[str, Any] | None:
         return self._cache.get(entry.cache_key)
@@ -368,8 +540,12 @@ class SoupLibrary:
         counts = {"all_ages": 0, "normal": 0, "unrestricted": 0}
         for entry in self.entries:
             counts[entry.content_level] = counts.get(entry.content_level, 0) + 1
+        disabled = sum(1 for entry in self.entries if entry.disabled)
         return {
             "total": len(self.entries),
+            "available": len(self.entries) - disabled,
+            "disabled": disabled,
             "by_level": counts,
             "enriched": len(self._cache),
+            "overrides": self.overrides_stats(),
         }

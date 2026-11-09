@@ -2606,6 +2606,49 @@ class RoomManager:
                 f"管理员把棋力调整为{self._difficulty_label(difficulty)}。",
             )
 
+    async def player_set_soup_difficulty(
+        self, room: GameRoom, visitor_token: str, difficulty: str
+    ) -> None:
+        """玩家在房间里实时切换海龟汤难度。
+
+        与棋类不同，这项可以在对局中改：次数是按难度**当场计算**的，
+        改完立刻生效（提示上限跟着改，已经用掉的提示不回退），
+        适合「问得太快想收紧」或「卡住了想放宽」。
+        """
+        if room.game_type != "turtle_soup":
+            raise ValueError("只有海龟汤可以调难度")
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if room.multiplayer.enabled:
+                if room.multiplayer.seat_for_token(visitor.token) is None:
+                    raise PermissionError("请你先入座，再调整难度")
+            elif visitor.token != room.player_token:
+                raise PermissionError("请你先入座，再调整难度")
+            self._touch_seat_action(room, visitor.token)
+            room.difficulty = str(difficulty or "normal")  # type: ignore[assignment]
+            room.difficulty_chosen_by_player = True
+            game = room.game
+            limits = self.soup_limits(room)
+            if isinstance(game, TurtleSoupGame):
+                # 提问与推理额度是每次现算的，改难度立刻生效；
+                # 提示上限存在对局里，这里同步过去（已用掉的数量保持不变）。
+                game.max_hints = int(limits["hints"])
+            room.touch()
+            room.add_message(
+                "system",
+                f"{self._visitor_label(visitor)}把难度调整为"
+                f"{self._difficulty_label(room.difficulty)}"
+                f"（提问 {limits['questions'] or '不限'} · "
+                f"提示 {limits['hints']} · "
+                f"推理 {limits['answers'] or '不限'}）。",
+            )
+        await self._emit(
+            "soup_difficulty_changed",
+            room,
+            {"difficulty": room.difficulty, "visitor_token": visitor_token},
+        )
+
+
     async def player_set_difficulty(
         self, room: GameRoom, visitor_token: str, difficulty: Difficulty
     ) -> None:

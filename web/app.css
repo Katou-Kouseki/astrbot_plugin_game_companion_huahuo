@@ -4057,3 +4057,24 @@ body.dark .eval-bar-white {
   text-align: center;
   font-size: 10px;
 }
+
+/* 海龟汤难度：房间内实时切换（提问/提示/推理次数跟着变） */
+.soup-difficulty {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 2px;
+}
+.soup-difficulty[hidden] { display: none; }
+.soup-difficulty-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.soup-difficulty .difficulty-picker { margin-left: 0; }
+.soup-difficulty-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}

@@ -5157,6 +5157,10 @@ class GameCompanionPlugin(Star):
             library = SoupLibrary(
                 root / "soup_library.json",
                 Path(getattr(self, "data_dir", Path("."))) / "soup_library_cache.json",
+                overrides_path=(
+                    Path(getattr(self, "data_dir", Path(".")))
+                    / "soup_library_overrides.json"
+                ),
             )
             self.soup_library_store = library
         return library
@@ -10398,6 +10402,24 @@ class GameCompanionPlugin(Star):
             ["POST"],
             "Delete a custom turtle soup puzzle",
         )
+        register_api(
+            f"{PAGE_API_PREFIX}/soup_library_action",
+            self.page_soup_library_action,
+            ["POST"],
+            "Disable / restore / edit a builtin turtle soup puzzle",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/soup_reveal",
+            self.page_soup_reveal,
+            ["POST"],
+            "Reveal one turtle soup puzzle's solution",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/soup_custom_update",
+            self.page_soup_custom_update,
+            ["POST"],
+            "Edit a custom turtle soup puzzle",
+        )
 
     async def page_undercover_words(self) -> dict[str, Any]:
         store = self.undercover_word_store
@@ -10893,30 +10915,162 @@ class GameCompanionPlugin(Star):
             "data": self._game_settings_snapshot(),
         }
 
-    async def page_soup_library(self) -> dict[str, Any]:
-        """题库概况：内置题量、出题账本、玩家投稿（管理台「题库管理」用）。"""
+    def _soup_library_snapshot(self) -> dict[str, Any]:
+        """题库管理的完整数据：内置题（逐条）、玩家投稿、出题账本。
+
+        汤底一律只给 `solution_preview`（打码），想看全文走单条「查看答案」。
+        一次把两百多条答案铺在页面上，管理员自己就先被剧透了。
+        """
         library = self._soup_library()
         deck = self._soup_deck()
         custom = self._soup_custom()
+        recent = deck.known_surfaces()
+        builtin_items: list[dict[str, Any]] = []
+        for entry in library.entries:
+            record = library.override_of(entry.index)
+            builtin_items.append(
+                {
+                    "index": entry.index,
+                    "surface": entry.surface,
+                    "content_level": entry.content_level,
+                    "solution_preview": SoupLibrary.mask_solution(entry.solution),
+                    "disabled": entry.disabled,
+                    "edited": bool(
+                        record.get("surface")
+                        or record.get("solution")
+                        or record.get("content_level")
+                    ),
+                    "used": normalize_text(entry.surface) in recent,
+                }
+            )
+        return {
+            "builtin": {**library.stats(), "items": builtin_items},
+            "used": deck.stats(),
+            "custom": {
+                "total": len(custom),
+                "limit": custom.limit,
+                "items": [
+                    {
+                        "index": index,
+                        "surface": entry.surface,
+                        "content_level": entry.content_level,
+                        "created_at": entry.created_at,
+                        "owner": entry.owner,
+                        "solution_preview": SoupLibrary.mask_solution(entry.solution),
+                    }
+                    for index, entry in enumerate(custom.entries, start=1)
+                ],
+            },
+        }
+
+    async def page_soup_library(self) -> dict[str, Any]:
+        """题库概况：内置题量、出题账本、玩家投稿（管理台「题库管理」用）。"""
+        return {"status": "ok", "data": self._soup_library_snapshot()}
+
+    async def page_soup_library_action(self) -> dict[str, Any]:
+        """内置题的停用 / 恢复 / 删除 / 改回 / 编辑，全部只写覆盖层。"""
+        payload = await request.json(default={}) or {}
+        action = str(payload.get("action") or "").strip().lower()
+        library = self._soup_library()
+        try:
+            if action == "restore_all":
+                count = library.restore_all()
+                message = f"已恢复 {count} 处改动，题库回到内置版本"
+            else:
+                index = int(payload.get("index") or 0)
+                if index <= 0:
+                    raise ValueError("缺少题目序号")
+                if action == "disable":
+                    library.set_disabled(index, True)
+                    message = "已停用这道题（不参与抽题，可随时恢复）"
+                elif action == "enable":
+                    library.set_disabled(index, False)
+                    message = "已恢复这道题"
+                elif action == "delete":
+                    library.remove_entry(index)
+                    message = "已删除这道题（可用「恢复全部」找回）"
+                elif action == "restore":
+                    library.restore_entry(index)
+                    message = "已恢复成内置版本"
+                elif action == "edit":
+                    library.edit_entry(
+                        index,
+                        surface=payload.get("surface"),
+                        solution=payload.get("solution"),
+                        content_level=payload.get("content_level"),
+                    )
+                    message = "已保存修改"
+                else:
+                    raise ValueError("不支持的操作")
+            self.manager.record_operation(
+                "soup_library", f"题库管理：{message}", operator="游戏管理台"
+            )
+        except (ValueError, OSError) as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
+        return {
+            "status": "ok",
+            "message": message,
+            "data": self._soup_library_snapshot(),
+        }
+
+    async def page_soup_reveal(self) -> dict[str, Any]:
+        """看某一道题的完整汤底：一次只看一条，避免整库剧透。"""
+        payload = await request.json(default={}) or {}
+        kind = str(payload.get("kind") or "builtin").strip().lower()
+        try:
+            index = int(payload.get("index") or 0)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "序号不合法", "data": {}}
+        if kind == "custom":
+            store = self._soup_custom()
+            if not 1 <= index <= len(store.entries):
+                return {"status": "error", "message": "没有这个序号", "data": {}}
+            entry = store.entries[index - 1]
+            return {
+                "status": "ok",
+                "data": {
+                    "surface": entry.surface,
+                    "solution": entry.solution,
+                    "content_level": entry.content_level,
+                },
+            }
+        entry = self._soup_library().find(index)
+        if entry is None:
+            return {"status": "error", "message": "没有这个序号", "data": {}}
         return {
             "status": "ok",
             "data": {
-                "builtin": library.stats(),
-                "used": deck.stats(),
-                "custom": {
-                    "total": len(custom),
-                    "limit": custom.limit,
-                    "items": [
-                        {
-                            "index": index,
-                            "surface": entry.surface,
-                            "content_level": entry.content_level,
-                            "created_at": entry.created_at,
-                        }
-                        for index, entry in enumerate(custom.entries, start=1)
-                    ],
-                },
+                "surface": entry.surface,
+                "solution": entry.solution,
+                "content_level": entry.content_level,
             },
+        }
+
+    async def page_soup_custom_update(self) -> dict[str, Any]:
+        """管理台改一条玩家投稿：payload {index, surface?, solution?, content_level?}"""
+        payload = await request.json(default={}) or {}
+        try:
+            index = int(payload.get("index") or 0)
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "序号不合法", "data": {}}
+        try:
+            updated = self._soup_custom().update(
+                index,
+                surface=payload.get("surface"),
+                solution=payload.get("solution"),
+                content_level=payload.get("content_level"),
+            )
+        except (ValueError, OSError) as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
+        if updated is None:
+            return {"status": "error", "message": "没有这个序号", "data": {}}
+        self.manager.record_operation(
+            "soup_custom", f"题库管理：修改投稿 #{index}", operator="游戏管理台"
+        )
+        return {
+            "status": "ok",
+            "message": "投稿已更新",
+            "data": self._soup_library_snapshot(),
         }
 
     async def page_soup_library_reset(self) -> dict[str, Any]:

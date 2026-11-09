@@ -98,6 +98,21 @@
           <div><dt>答案尝试</dt><dd id="soupAnswerCount">0</dd></div>
           <div><dt>关键事实</dt><dd id="soupFactCount">0 / 0</dd></div>
         </dl>
+        <div id="soupDifficultyRow" class="soup-difficulty" hidden>
+          <span class="soup-difficulty-label">难度</span>
+          <div
+            id="soupDifficultyPicker"
+            class="difficulty-picker"
+            role="group"
+            aria-label="海龟汤难度"
+          >
+            <button type="button" data-soup-difficulty="entertainment">娱乐</button>
+            <button type="button" data-soup-difficulty="easy">简单</button>
+            <button type="button" data-soup-difficulty="normal">普通</button>
+            <button type="button" data-soup-difficulty="hard">困难</button>
+          </div>
+          <span id="soupDifficultyHint" class="soup-difficulty-hint"></span>
+        </div>
         <div class="soup-hint-row">
           <button id="soupHintButton" class="secondary-action" type="button" hidden>
             <i data-lucide="lightbulb"></i><span id="soupHintLabel">获取提示</span>

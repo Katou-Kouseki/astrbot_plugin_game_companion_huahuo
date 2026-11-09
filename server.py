@@ -127,6 +127,9 @@ class GameRoomServer:
         app.router.add_post("/api/room/{access_token}/soup/reveal", self._soup_reveal)
         app.router.add_post("/api/room/{access_token}/soup/host", self._soup_host)
         app.router.add_post("/api/room/{access_token}/soup/judge", self._soup_judge)
+        app.router.add_post(
+            "/api/room/{access_token}/soup/difficulty", self._soup_difficulty
+        )
         app.router.add_post("/api/room/{access_token}/soup/announce", self._soup_announce)
         app.router.add_post("/api/room/{access_token}/soup/recap", self._soup_recap)
         app.router.add_post(
@@ -799,6 +802,30 @@ class GameRoomServer:
         )
         return self._response(
             {**result, "room": self._room_payload(room, visitor_token)}
+        )
+
+    async def _soup_difficulty(self, request: web.Request) -> web.Response:
+        """房间内实时切换海龟汤难度：次数与猜中条件当场跟着变。"""
+        self._require_origin(request)
+        room = self._room(request)
+        payload = await self._payload(request)
+        visitor_token = str(payload.get("visitor_token") or "")
+        difficulty = self.plugin._soup_difficulty(payload.get("difficulty"))
+        await self.manager.player_set_soup_difficulty(
+            room, visitor_token, difficulty
+        )
+        self._log_room_op(
+            room,
+            "soup_difficulty",
+            f"海龟汤难度改为{self.manager._difficulty_label(difficulty)}",
+            visitor_token,
+        )
+        return self._response(
+            {
+                "difficulty": difficulty,
+                "limits": self.manager.soup_limits(room),
+                "room": self._room_payload(room, visitor_token),
+            }
         )
 
     async def _soup_recap(self, request: web.Request) -> web.Response:

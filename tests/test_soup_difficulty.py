@@ -166,3 +166,84 @@ async def test_library_priority_decides_which_source_is_tried_first() -> None:
     plugin.turtle_soup_library_priority = "online_first"
     await plugin._prepare_turtle_soup(room, game)
     assert calls == ["online", "builtin"]
+
+
+# ---------------- 房间内实时改难度 ----------------
+
+
+async def make_active_room(manager: RoomManager, difficulty: str = "normal"):
+    """造一个正在进行中的海龟汤房间（含题目），供改难度用。"""
+    import time
+
+    from astrbot_plugin_game_companion_huahuo.turtle_soup import puzzle_from_mapping
+
+    room = await manager.create_room(
+        source="group",
+        session_id="aiocqhttp:group:46001",
+        platform="aiocqhttp",
+        group_id="46001",
+        creator_qq="31001",
+        creator_name="房主",
+        admin_room=False,
+        game_type="turtle_soup",
+        difficulty=difficulty,
+    )
+    visitor = await manager.join(room)
+    visitor.connected = True
+    visitor.last_seen_at = time.time()
+    await manager.claim_and_start(room, visitor.token, "")
+    await manager.start_game(room, visitor.token, "")
+    await manager.complete_turtle_soup_generation(
+        room,
+        room.game,
+        puzzle_from_mapping(
+            {
+                "title": "测试题",
+                "surface": "一个人每天都在同一时间打开一扇没有上锁的门，但从不走进去。为什么？",
+                "solution": "那是一间温室的通风门，他按时打开是为了给植物换气，入口在另一侧。",
+                "key_facts": ["门用于温室通风", "他在照料植物", "入口在另一侧"],
+                "hints": ["和通行无关", "和室内环境有关", "里面是植物"],
+                "theme": "植物",
+                "trick": "把通风门当入口",
+            },
+            content_level="normal",
+        ),
+    )
+    return room, visitor
+
+
+@pytest.mark.asyncio
+async def test_player_can_change_difficulty_mid_game() -> None:
+    manager = RoomManager(turtle_soup_max_players=0)
+    room, visitor = await make_active_room(manager)
+    assert room.game.max_hints == 5  # 普通档
+
+    await manager.player_set_soup_difficulty(room, visitor.token, "hard")
+
+    assert room.difficulty == "hard"
+    assert room.game.max_hints == 1  # 困难档只剩 1 条提示
+    assert manager.soup_limits(room)["questions"] == 15
+    assert room.difficulty_chosen_by_player is True
+
+
+@pytest.mark.asyncio
+async def test_spectator_cannot_change_difficulty() -> None:
+    manager = RoomManager(turtle_soup_max_players=0)
+    room, _visitor = await make_active_room(manager)
+    guest = await manager.join(room)
+
+    with pytest.raises(PermissionError):
+        await manager.player_set_soup_difficulty(room, guest.token, "entertainment")
+
+
+@pytest.mark.asyncio
+async def test_switching_to_entertainment_lifts_the_limits() -> None:
+    manager = RoomManager(turtle_soup_max_players=0)
+    room, visitor = await make_active_room(manager, difficulty="hard")
+
+    await manager.player_set_soup_difficulty(room, visitor.token, "entertainment")
+
+    limits = manager.soup_limits(room)
+    assert limits["questions"] == 0  # 不限
+    assert limits["answers"] == 0
+    assert room.game.max_hints == 15

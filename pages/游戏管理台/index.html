@@ -271,6 +271,63 @@
         <section class="stats-card">
           <header class="section-header">
             <div>
+              <h2>内置题库</h2>
+              <span id="builtinSummary">答案默认打码；停用/删除只记在本地，随时能恢复</span>
+            </div>
+          </header>
+          <div class="library-toolbar">
+            <input
+              id="builtinSearch"
+              class="library-search"
+              type="search"
+              placeholder="搜索汤面或序号"
+              aria-label="搜索内置题库"
+            />
+            <select id="builtinLevel" class="game-select" aria-label="按等级筛选">
+              <option value="all">全部等级</option>
+              <option value="all_ages">全年龄</option>
+              <option value="normal">普通</option>
+              <option value="unrestricted">不限制</option>
+            </select>
+            <select id="builtinState" class="game-select" aria-label="按状态筛选">
+              <option value="all">全部状态</option>
+              <option value="available">可用</option>
+              <option value="disabled">已停用</option>
+              <option value="used">出过题</option>
+            </select>
+            <button id="builtinRestoreAll" class="secondary-button" type="button" title="清空所有停用/删除/编辑，恢复内置版本">
+              <i data-lucide="history"></i><span>恢复全部改动</span>
+            </button>
+            <span id="builtinCount" class="library-count"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="stats-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>汤面</th>
+                  <th>等级</th>
+                  <th>状态</th>
+                  <th class="actions-column">操作</th>
+                </tr>
+              </thead>
+              <tbody id="builtinBody"></tbody>
+            </table>
+            <div id="builtinEmpty" class="empty-state" hidden>
+              <i data-lucide="search-x"></i>
+              <strong>没有符合条件的题目</strong>
+            </div>
+          </div>
+          <div class="library-pager">
+            <button id="builtinPrev" class="secondary-button" type="button">上一页</button>
+            <span id="builtinPage">1 / 1</span>
+            <button id="builtinNext" class="secondary-button" type="button">下一页</button>
+          </div>
+        </section>
+
+        <section class="stats-card">
+          <header class="section-header">
+            <div>
               <h2>玩家投稿</h2>
               <span id="customSummary">私聊发「添加海龟汤 [全年龄] 汤面|汤底」即可投稿</span>
             </div>
@@ -371,6 +428,51 @@
         <button class="secondary-button" value="cancel" type="submit">取消</button>
         <button id="promptProceed" class="primary-button" value="default" type="button">
           <i data-lucide="check"></i><span>确定</span>
+        </button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="soupEditorDialog">
+    <form method="dialog" id="soupEditorForm">
+      <header>
+        <div>
+          <span class="eyebrow" id="soupEditorEyebrow">题目详情</span>
+          <h2 id="soupEditorTitle">题目</h2>
+        </div>
+        <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <input id="soupEditorKind" type="hidden" />
+      <input id="soupEditorIndex" type="hidden" />
+      <label>
+        <span>汤面</span>
+        <textarea id="soupEditorSurface" rows="4"></textarea>
+      </label>
+      <label>
+        <span>汤底</span>
+        <textarea id="soupEditorSolution" rows="6"></textarea>
+      </label>
+      <label>
+        <span>内容等级</span>
+        <select id="soupEditorLevel">
+          <option value="all_ages">全年龄</option>
+          <option value="normal">普通</option>
+          <option value="unrestricted">不限制</option>
+        </select>
+      </label>
+      <p class="dialog-hint">
+        汤底默认打码，点「查看答案」才会展开完整内容——避免自己先被剧透。
+        改动只写进插件数据目录，不会修改随插件分发的题库文件。
+      </p>
+      <footer>
+        <button class="secondary-button" value="cancel" type="submit">关闭</button>
+        <button id="soupEditorReveal" class="secondary-button" value="default" type="button">
+          <i data-lucide="eye"></i><span>查看答案</span>
+        </button>
+        <button id="soupEditorSave" class="primary-button" value="default" type="button" hidden>
+          <i data-lucide="check"></i><span>保存修改</span>
         </button>
       </footer>
     </form>

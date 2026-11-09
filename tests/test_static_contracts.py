@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.86"
+    assert metadata["version"] == "0.5.87"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1512,3 +1512,26 @@ def test_soup_announce_requires_a_target_group() -> None:
 
     assert server.count("announce_target") >= 3
     assert "def announce_target" in main
+
+
+def test_soup_difficulty_and_library_admin_are_wired() -> None:
+    """房间内改难度、管理台题库管理都要真的接上路由与按钮。"""
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    page = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+
+    assert "/soup/difficulty" in server
+    for name in (
+        "page_soup_library_action",
+        "page_soup_reveal",
+        "page_soup_custom_update",
+    ):
+        assert name in main
+    assert 'id="soupDifficultyPicker"' in (
+        ROOT / "web" / "index.html"
+    ).read_text(encoding="utf-8")
+    assert 'id="builtinBody"' in page
+    assert 'id="soupEditorDialog"' in page
+    assert "mask_solution" in main
+    assert "soup_library_action" in script

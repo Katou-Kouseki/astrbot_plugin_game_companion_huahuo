@@ -130,6 +130,10 @@ def make_console_plugin(tmp_path: Path) -> SimpleNamespace:
         _soup_deck=lambda: SoupDeck(tmp_path / "deck.json"),
         _soup_custom=lambda: CustomSoupStore(tmp_path / "custom.json"),
     )
+    # 题库快照是 page_soup_library 的实现细节，桩对象也要能算出来
+    plugin._soup_library_snapshot = lambda: (
+        GameCompanionPlugin._soup_library_snapshot(plugin)
+    )
     return plugin
 
 

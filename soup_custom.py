@@ -168,6 +168,36 @@ class CustomSoupStore:
         self.save()
         return entry
 
+    def update(
+        self,
+        index: int,
+        *,
+        surface: str | None = None,
+        solution: str | None = None,
+        content_level: str | None = None,
+    ) -> CustomEntry | None:
+        """管理台改投稿：只改传进来的字段，序号按全库算。
+
+        管理台不属于玩家，不做归属校验——归属只管「私聊删别人的题」。
+        """
+        if not 1 <= index <= len(self.entries):
+            return None
+        entry = self.entries[index - 1]
+        if surface is not None:
+            text = str(surface).strip()
+            if len(text) < MIN_SURFACE:
+                raise ValueError(f"汤面至少 {MIN_SURFACE} 字")
+            entry.surface = text
+        if solution is not None:
+            text = str(solution).strip()
+            if len(text) < MIN_SOLUTION:
+                raise ValueError(f"汤底至少 {MIN_SOLUTION} 字")
+            entry.solution = text
+        if content_level is not None:
+            entry.content_level = normalize_content_level(content_level)
+        self.save()
+        return entry
+
     def owned(self, owner: str) -> list[tuple[int, CustomEntry]]:
         """某个人自己投的题（全局序号 + 条目），用于「我的海龟汤」。"""
         target = str(owner or "").strip()

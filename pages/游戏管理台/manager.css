@@ -207,3 +207,30 @@ dialog footer { justify-content: flex-end; gap: 8px; margin-top: 20px; }
   .game-settings-grid { grid-template-columns: 1fr; }
   .setting-fields { grid-template-columns: 1fr; }
 }
+
+/* 题库管理：筛选条、状态徽标与分页 */
+.library-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px;
+}
+.library-search {
+  flex: 1 1 190px; min-height: 32px; padding: 0 9px;
+  border: 1px solid var(--line); border-radius: 5px;
+  background: var(--surface); color: var(--text); font-size: 13px;
+}
+.library-count { margin-left: auto; color: var(--muted); font-size: 12px; }
+.library-pager {
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  margin-top: 10px; color: var(--muted); font-size: 12px;
+}
+.library-row-surface { display: block; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-tag {
+  display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px;
+  background: var(--green-soft); color: var(--green); font-size: 11px;
+}
+.library-tag.muted { background: #eceeec; color: #6b746e; }
+dialog textarea {
+  width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 5px;
+  background: var(--surface); color: var(--text); font-size: 13px; line-height: 1.6;
+  resize: vertical;
+}
+dialog textarea[readonly] { background: var(--surface-alt, #f4f6f4); }

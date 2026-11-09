@@ -1561,6 +1561,14 @@
 
   // fetch 默认没有超时：网络半死时请求会一直挂着，界面停在上一帧、busy 永远不释放
   const REQUEST_TIMEOUT_MS = 12000;
+  // 海龟汤难度对应的「猜中条件」文案；具体次数由服务端快照给出，
+  // 前端不再各写一套数字，避免两边对不上。
+  const SOUP_DIFFICULTY_TEXT = {
+    entertainment: { solve: "部分正确也算过" },
+    easy: { solve: "核心推理正确即可" },
+    normal: { solve: "核心推理正确即可" },
+    hard: { solve: "必须完全还原" },
+  };
 
   async function timedFetch(url, init = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
     if (typeof AbortController !== "function") return window.fetch(url, init);
@@ -2938,6 +2946,32 @@
       progressLabels[1].textContent = playerHosted ? "参与玩家" : "提示";
       progressLabels[2].textContent = playerHosted ? "花火 猜测" : "答案尝试";
       progressLabels[3].textContent = playerHosted ? "公开回合" : "关键事实";
+    }
+
+    // 难度：四个档位都会改变提问/提示/推理次数与猜中条件，坐下的人可随时切
+    const soupDifficultyRow = document.getElementById("soupDifficultyRow");
+    const soupDifficultyPicker = document.getElementById("soupDifficultyPicker");
+    const soupDifficultyHint = document.getElementById("soupDifficultyHint");
+    if (soupDifficultyRow && soupDifficultyPicker) {
+      soupDifficultyRow.hidden = !room.is_player;
+      soupDifficultyPicker
+        .querySelectorAll("[data-soup-difficulty]")
+        .forEach((btn) => {
+          const value = btn.getAttribute("data-soup-difficulty");
+          const active = value === room.difficulty;
+          btn.classList.toggle("is-active", active);
+          btn.setAttribute("aria-pressed", active ? "true" : "false");
+          btn.disabled = busy;
+        });
+      if (soupDifficultyHint) {
+        const solve = (SOUP_DIFFICULTY_TEXT[room.difficulty] || SOUP_DIFFICULTY_TEXT.normal).solve;
+        soupDifficultyHint.textContent = [
+          `提问 ${room.soup_question_limit || "不限"}`,
+          `提示 ${room.soup_hint_limit ?? 0}`,
+          `推理 ${room.soup_answer_limit || "不限"}`,
+          solve,
+        ].join(" · ");
+      }
     }
 
     const turn = document.getElementById("soupTurn");
@@ -7117,6 +7151,36 @@
     if (!button || button.disabled) return;
     setDifficulty(button.getAttribute("data-difficulty"));
   });
+
+  // 海龟汤难度：切完立刻生效，次数与猜中条件都跟着变
+  const soupDifficultyGroup = document.getElementById("soupDifficultyPicker");
+  if (soupDifficultyGroup) {
+    soupDifficultyGroup.addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-soup-difficulty]");
+      if (!button || button.disabled || busy) return;
+      const difficulty = button.getAttribute("data-soup-difficulty");
+      if (!difficulty || difficulty === room?.difficulty) return;
+      busy = true;
+      render();
+      try {
+        const data = await request("POST", "soup/difficulty", {
+          visitor_token: visitorToken,
+          difficulty,
+        });
+        if (data?.room) setRoom(data.room);
+        const limits = data?.limits || {};
+        const name = { entertainment: "娱乐", easy: "简单", normal: "普通", hard: "困难" }[difficulty] || difficulty;
+        showToast(
+          `难度已切到${name}：提问 ${limits.questions || "不限"} · 提示 ${limits.hints ?? 0} · 推理 ${limits.answers || "不限"}`
+        );
+      } catch (error) {
+        showToast(error?.message || "切换难度失败");
+      } finally {
+        busy = false;
+        render();
+      }
+    });
+  }
   document.getElementById("gameVotePropose").addEventListener("click", proposeGameVote);
   document.getElementById("gameVoteFor").addEventListener("click", () => castGameVote(true));
   document.getElementById("gameVoteAgainst").addEventListener("click", () => castGameVote(false));
