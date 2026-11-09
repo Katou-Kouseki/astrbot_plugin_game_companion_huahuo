@@ -262,19 +262,31 @@
 
       <section class="metrics" aria-label="题库概况">
         <div><span>内置题目</span><strong id="libTotal">0</strong><small id="libLevels">—</small></div>
-        <div><span>已出过</span><strong id="libUsed">0</strong><small id="libUsedSources">—</small></div>
-        <div><span>补全缓存</span><strong id="libEnriched">0</strong><small>抽中后由模型补全</small></div>
+        <div><span>模型出题</span><strong id="libGenerated">0</strong><small id="libGeneratedHint">—</small></div>
         <div><span>玩家投稿</span><strong id="libCustom">0</strong><small id="libCustomLimit">—</small></div>
+        <div><span>已出过</span><strong id="libUsed">0</strong><small id="libUsedSources">—</small></div>
       </section>
 
-      <div class="stats-grid">
-        <section class="stats-card">
-          <header class="section-header">
-            <div>
-              <h2>内置题库</h2>
-              <span id="builtinSummary">答案默认打码；停用/删除只记在本地，随时能恢复</span>
-            </div>
-          </header>
+      <section class="stats-card library-card">
+        <div class="library-tabs" role="tablist" aria-label="题库分类">
+          <button type="button" class="library-tab is-active" data-lib-tab="builtin" role="tab" aria-selected="true">
+            内置题库<span id="tabBuiltinCount" class="library-tab-count">0</span>
+          </button>
+          <button type="button" class="library-tab" data-lib-tab="custom" role="tab" aria-selected="false">
+            玩家投稿<span id="tabCustomCount" class="library-tab-count">0</span>
+          </button>
+          <button type="button" class="library-tab" data-lib-tab="generated" role="tab" aria-selected="false">
+            模型出题<span id="tabGeneratedCount" class="library-tab-count">0</span>
+          </button>
+        </div>
+
+        <div class="library-pane" data-lib-pane="builtin">
+          <div class="library-pane-head">
+            <span id="builtinSummary">汤底默认打码；停用、删除、编辑都只记在本地，随时能恢复</span>
+            <button id="builtinRestoreAll" class="secondary-button" type="button" title="清空所有停用/删除/编辑，恢复内置版本">
+              <i data-lucide="history"></i><span>恢复全部改动</span>
+            </button>
+          </div>
           <div class="library-toolbar">
             <input
               id="builtinSearch"
@@ -295,9 +307,6 @@
               <option value="disabled">已停用</option>
               <option value="used">出过题</option>
             </select>
-            <button id="builtinRestoreAll" class="secondary-button" type="button" title="清空所有停用/删除/编辑，恢复内置版本">
-              <i data-lucide="history"></i><span>恢复全部改动</span>
-            </button>
             <span id="builtinCount" class="library-count"></span>
           </div>
           <div class="table-wrap">
@@ -323,15 +332,22 @@
             <span id="builtinPage">1 / 1</span>
             <button id="builtinNext" class="secondary-button" type="button">下一页</button>
           </div>
-        </section>
+        </div>
 
-        <section class="stats-card">
-          <header class="section-header">
-            <div>
-              <h2>玩家投稿</h2>
-              <span id="customSummary">私聊发「添加海龟汤 [全年龄] 汤面|汤底」即可投稿</span>
-            </div>
-          </header>
+        <div class="library-pane" data-lib-pane="custom" hidden>
+          <div class="library-pane-head">
+            <span id="customSummary">私聊发「添加海龟汤 [全年龄] 汤面|汤底」即可投稿</span>
+          </div>
+          <div class="library-toolbar">
+            <input
+              id="customSearch"
+              class="library-search"
+              type="search"
+              placeholder="搜索汤面或投稿人"
+              aria-label="搜索玩家投稿"
+            />
+            <span id="customCountLabel" class="library-count"></span>
+          </div>
           <div class="table-wrap">
             <table class="stats-table">
               <thead>
@@ -339,6 +355,7 @@
                   <th>#</th>
                   <th>汤面</th>
                   <th>等级</th>
+                  <th>投稿人</th>
                   <th>投稿时间</th>
                   <th class="actions-column">操作</th>
                 </tr>
@@ -350,8 +367,55 @@
               <strong>还没有人投稿</strong>
             </div>
           </div>
-        </section>
-      </div>
+        </div>
+
+        <div class="library-pane" data-lib-pane="generated" hidden>
+          <div class="library-pane-head">
+            <span id="generatedSummary">模型出过并通过校验的题会自动存进这里，下一局优先复用，不必每次重编</span>
+          </div>
+          <div class="library-toolbar">
+            <input
+              id="generatedSearch"
+              class="library-search"
+              type="search"
+              placeholder="搜索标题或汤面"
+              aria-label="搜索模型出题"
+            />
+            <select id="generatedLevel" class="game-select" aria-label="按等级筛选">
+              <option value="all">全部等级</option>
+              <option value="all_ages">全年龄</option>
+              <option value="normal">普通</option>
+              <option value="unrestricted">不限制</option>
+            </select>
+            <span id="generatedCount" class="library-count"></span>
+          </div>
+          <div class="table-wrap">
+            <table class="stats-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>题目</th>
+                  <th>等级</th>
+                  <th>入库时间</th>
+                  <th>状态</th>
+                  <th class="actions-column">操作</th>
+                </tr>
+              </thead>
+              <tbody id="generatedBody"></tbody>
+            </table>
+            <div id="generatedEmpty" class="empty-state" hidden>
+              <i data-lucide="sparkles"></i>
+              <strong>还没有模型出的题</strong>
+            </div>
+          </div>
+          <div class="library-pager">
+            <button id="generatedPrev" class="secondary-button" type="button">上一页</button>
+            <span id="generatedPage">1 / 1</span>
+            <button id="generatedNext" class="secondary-button" type="button">下一页</button>
+          </div>
+        </div>
+      </section>
+
     </section>
   </main>
 

@@ -2609,11 +2609,11 @@ class RoomManager:
     async def player_set_soup_difficulty(
         self, room: GameRoom, visitor_token: str, difficulty: str
     ) -> None:
-        """玩家在房间里实时切换海龟汤难度。
+        """玩家在房间里切换海龟汤难度（只能在开局前改）。
 
-        与棋类不同，这项可以在对局中改：次数是按难度**当场计算**的，
-        改完立刻生效（提示上限跟着改，已经用掉的提示不回退），
-        适合「问得太快想收紧」或「卡住了想放宽」。
+        对局中改难度等于中途换规则：提问额度、提示上限、猜中门槛会同时变，
+        先问后改的人等于被临时加严或放宽，所以进行中（active / paused）一律拒绝。
+        开局前与结算后都能改，改动对下一局生效。
         """
         if room.game_type != "turtle_soup":
             raise ValueError("只有海龟汤可以调难度")
@@ -2624,20 +2624,23 @@ class RoomManager:
                     raise PermissionError("请你先入座，再调整难度")
             elif visitor.token != room.player_token:
                 raise PermissionError("请你先入座，再调整难度")
+            if room.status in {"active", "paused"}:
+                raise ValueError("本局已经开始，难度不能再改；等这一局结束再调")
             self._touch_seat_action(room, visitor.token)
             room.difficulty = str(difficulty or "normal")  # type: ignore[assignment]
             room.difficulty_chosen_by_player = True
             game = room.game
             limits = self.soup_limits(room)
             if isinstance(game, TurtleSoupGame):
-                # 提问与推理额度是每次现算的，改难度立刻生效；
-                # 提示上限存在对局里，这里同步过去（已用掉的数量保持不变）。
+                # 上一局的 game 还在结算页上，顺手把提示上限同步过去，
+                # 免得「再来一局」前看到旧数字。已有对局不涉及（上面已拦）。
                 game.max_hints = int(limits["hints"])
             room.touch()
+            tail = "，下一局生效" if room.status == "finished" else ""
             room.add_message(
                 "system",
                 f"{self._visitor_label(visitor)}把难度调整为"
-                f"{self._difficulty_label(room.difficulty)}"
+                f"{self._difficulty_label(room.difficulty)}{tail}"
                 f"（提问 {limits['questions'] or '不限'} · "
                 f"提示 {limits['hints']} · "
                 f"推理 {limits['answers'] or '不限'}）。",
@@ -3223,16 +3226,30 @@ class RoomManager:
         room: GameRoom,
         game: TurtleSoupGame,
         puzzle: SoupPuzzle,
+        *,
+        source: str = "",
+        note: str = "",
     ) -> bool:
-        """Publish one immutable puzzle if the room still expects it."""
+        """Publish one immutable puzzle if the room still expects it.
+
+        `source` / `note` 记下这道题从哪来（内置题库、玩家投稿、模型现编…），
+        网页房间会把它显示成「题目来源」，免得玩家以为每道题都是现编的。
+        """
         async with room.lock:
             if room.game is not game or room.status not in {"active", "paused"}:
                 return False
             game.set_puzzle(puzzle)
+            game.puzzle_source = str(source or "")
+            game.puzzle_source_note = str(note or "")
             room.turtle_soup_recent_signatures.append(puzzle.signature)
             del room.turtle_soup_recent_signatures[:-8]
             room.touch()
-            room.add_message("system", f"海龟汤《{puzzle.title}》已经准备好。")
+            origin = game.puzzle_source_label
+            room.add_message(
+                "system",
+                f"海龟汤《{puzzle.title}》已经准备好。"
+                + (f"（题目来源：{origin}）" if origin else ""),
+            )
             self._reset_turn_deadline(room)
         await self._emit("game_started", room, {"turtle_soup": True})
         return True
@@ -3396,6 +3413,8 @@ class RoomManager:
             )
             game.host_number = int(seat.number)
             game.set_puzzle(puzzle)
+            game.puzzle_source = "player"
+            game.puzzle_source_note = self._seat_label(seat, int(seat.number))
             room.game = game
             room.status = "active"
             room.soup_host_number = 0

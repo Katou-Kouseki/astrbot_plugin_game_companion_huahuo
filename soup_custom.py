@@ -233,6 +233,16 @@ class CustomSoupStore:
                 result.append(puzzle)
         return result
 
+    def owner_for_surface(self, surface: str) -> str:
+        """按汤面反查投稿人，出题时用来显示「题目来源：玩家 123 的投稿」。"""
+        target = normalize_text(surface)
+        if not target:
+            return ""
+        for entry in self.entries:
+            if normalize_text(entry.surface) == target:
+                return str(entry.owner or "").strip()
+        return ""
+
     def __len__(self) -> int:
         return len(self.entries)
 

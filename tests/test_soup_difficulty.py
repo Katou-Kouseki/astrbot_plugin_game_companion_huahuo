@@ -212,24 +212,59 @@ async def make_active_room(manager: RoomManager, difficulty: str = "normal"):
     return room, visitor
 
 
+async def make_setup_room(manager: RoomManager, difficulty: str = "normal"):
+    """造一个入座但还没开局的房间：难度只允许在这个阶段调。"""
+    import time
+
+    room = await manager.create_room(
+        source="group",
+        session_id="aiocqhttp:group:46002",
+        platform="aiocqhttp",
+        group_id="46002",
+        creator_qq="31002",
+        creator_name="房主",
+        admin_room=False,
+        game_type="turtle_soup",
+        difficulty=difficulty,
+    )
+    visitor = await manager.join(room)
+    visitor.connected = True
+    visitor.last_seen_at = time.time()
+    await manager.claim_and_start(room, visitor.token, "")
+    return room, visitor
+
+
 @pytest.mark.asyncio
-async def test_player_can_change_difficulty_mid_game() -> None:
+async def test_player_can_change_difficulty_before_start() -> None:
     manager = RoomManager(turtle_soup_max_players=0)
-    room, visitor = await make_active_room(manager)
-    assert room.game.max_hints == 5  # 普通档
+    room, visitor = await make_setup_room(manager)
+    assert room.status == "setup"
 
     await manager.player_set_soup_difficulty(room, visitor.token, "hard")
 
     assert room.difficulty == "hard"
-    assert room.game.max_hints == 1  # 困难档只剩 1 条提示
     assert manager.soup_limits(room)["questions"] == 15
     assert room.difficulty_chosen_by_player is True
 
 
 @pytest.mark.asyncio
+async def test_difficulty_cannot_change_mid_game() -> None:
+    """对局中改难度等于中途换规则：先问的人会被临时加严或放宽，必须拦住。"""
+    manager = RoomManager(turtle_soup_max_players=0)
+    room, visitor = await make_active_room(manager)
+    assert room.status == "active"
+
+    with pytest.raises(ValueError, match="本局已经开始"):
+        await manager.player_set_soup_difficulty(room, visitor.token, "hard")
+
+    assert room.difficulty == "normal"
+    assert room.game.max_hints == 5  # 普通档，没有被改掉
+
+
+@pytest.mark.asyncio
 async def test_spectator_cannot_change_difficulty() -> None:
     manager = RoomManager(turtle_soup_max_players=0)
-    room, _visitor = await make_active_room(manager)
+    room, _visitor = await make_setup_room(manager)
     guest = await manager.join(room)
 
     with pytest.raises(PermissionError):
@@ -239,11 +274,11 @@ async def test_spectator_cannot_change_difficulty() -> None:
 @pytest.mark.asyncio
 async def test_switching_to_entertainment_lifts_the_limits() -> None:
     manager = RoomManager(turtle_soup_max_players=0)
-    room, visitor = await make_active_room(manager, difficulty="hard")
+    room, visitor = await make_setup_room(manager, difficulty="hard")
 
     await manager.player_set_soup_difficulty(room, visitor.token, "entertainment")
 
     limits = manager.soup_limits(room)
     assert limits["questions"] == 0  # 不限
     assert limits["answers"] == 0
-    assert room.game.max_hints == 15
+    assert limits["hints"] == 15

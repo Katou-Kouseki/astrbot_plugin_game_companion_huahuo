@@ -1502,20 +1502,38 @@
   }
 
   const libraryState = {
-    data: null, search: "", level: "all", state: "all", page: 1, pageSize: 40,
+    data: null,
+    tab: "builtin",
+    builtin: { search: "", level: "all", state: "all", page: 1, pageSize: 40 },
+    custom: { search: "" },
+    generated: { search: "", level: "all", page: 1, pageSize: 40 },
   };
+
+  function textMatch(haystack, needle) {
+    return String(haystack || "").toLowerCase().includes(needle);
+  }
 
   function renderLibrary(data) {
     libraryState.data = data;
     const builtin = data?.builtin || {};
     const used = data?.used || {};
     const custom = data?.custom || {};
+    const generated = data?.generated || {};
     const levels = builtin.by_level || {};
     const overrides = builtin.overrides || {};
+
     document.getElementById("libTotal").textContent = String(builtin.available ?? builtin.total ?? 0);
     document.getElementById("libLevels").textContent =
       `全年龄 ${levels.all_ages ?? 0} · 普通 ${levels.normal ?? 0} · 不限制 ${levels.unrestricted ?? 0}`
       + (builtin.disabled ? ` · 停用 ${builtin.disabled}` : "");
+    document.getElementById("libGenerated").textContent = String(generated.total ?? 0);
+    document.getElementById("libGeneratedHint").textContent = generated.total
+      ? `可复用 ${generated.available ?? 0} 道${generated.disabled ? ` · 停用 ${generated.disabled}` : ""}`
+      : "模型出题后自动入库";
+    document.getElementById("libCustom").textContent = String(custom.total ?? 0);
+    document.getElementById("libCustomLimit").textContent = custom.limit
+      ? `上限 ${custom.limit} 道`
+      : "";
     document.getElementById("libUsed").textContent = String(used.total ?? 0);
     const bySource = used.by_source || {};
     document.getElementById("libUsedSources").textContent = Object.keys(bySource).length
@@ -1523,28 +1541,38 @@
           .map(([key, value]) => `${SOUP_SOURCE_LABELS[key] || key} ${value}`)
           .join(" · ")
       : "还没出过题";
-    document.getElementById("libEnriched").textContent = String(builtin.enriched ?? 0);
-    document.getElementById("libCustom").textContent = String(custom.total ?? 0);
-    document.getElementById("libCustomLimit").textContent = custom.limit
-      ? `上限 ${custom.limit} 道`
-      : "";
-    const customSummary = document.getElementById("customSummary");
-    if (customSummary) {
-      customSummary.textContent = custom.total
-        ? `共 ${custom.total} 道 · 汤底默认打码，点眼睛查看`
-        : "私聊发「添加海龟汤 [全年龄] 汤面|汤底」即可投稿";
-    }
+
+    document.getElementById("tabBuiltinCount").textContent = String(builtin.total ?? 0);
+    document.getElementById("tabCustomCount").textContent = String(custom.total ?? 0);
+    document.getElementById("tabGeneratedCount").textContent = String(generated.total ?? 0);
+
     const builtinSummary = document.getElementById("builtinSummary");
     if (builtinSummary) {
       const bits = [`可抽 ${builtin.available ?? 0} / 共 ${builtin.total ?? 0} 道`];
       if (overrides.disabled) bits.push(`停用 ${overrides.disabled}`);
       if (overrides.edited) bits.push(`改过 ${overrides.edited}`);
       if (overrides.removed) bits.push(`删除 ${overrides.removed}`);
-      builtinSummary.textContent = `${bits.join(" · ")} · 答案默认打码`;
+      builtinSummary.textContent = `${bits.join(" · ")} · 汤底默认打码`;
     }
+    const customSummary = document.getElementById("customSummary");
+    if (customSummary) {
+      customSummary.textContent = custom.total
+        ? `共 ${custom.total} 道 · 汤底默认打码，点眼睛查看`
+        : "私聊发「添加海龟汤 [全年龄] 汤面|汤底」即可投稿";
+    }
+    const generatedSummary = document.getElementById("generatedSummary");
+    if (generatedSummary) {
+      generatedSummary.textContent = generated.total
+        ? `共 ${generated.total} 道 · 下一局优先复用 · 汤底默认打码`
+        : "模型出过并通过校验的题会自动存进这里，下一局优先复用，不必每次重编";
+    }
+
     renderBuiltinTable();
     renderCustomTable(custom);
+    renderGeneratedTable(generated);
   }
+
+  // ---------------- 内置题库 ----------------
 
   function builtinRow(item) {
     const row = document.createElement("tr");
@@ -1569,7 +1597,7 @@
     actions.appendChild(rowIcon(
       item.disabled ? "power" : "power-off",
       item.disabled ? "恢复参与抽题" : "停用（不删除）",
-      () => soupLibraryAction(item.disabled ? "enable" : "disable", item.index),
+      () => soupLibraryAction("builtin", item.disabled ? "enable" : "disable", item.index),
     ));
     actions.appendChild(rowIcon(
       "trash-2", "删除这道题", () => deleteBuiltinSoup(item.index, item.surface), true,
@@ -1580,20 +1608,20 @@
 
   function renderBuiltinTable() {
     const items = libraryState.data?.builtin?.items || [];
-    const search = libraryState.search.trim().toLowerCase();
+    const state = libraryState.builtin;
+    const search = state.search.trim().toLowerCase();
     const filtered = items.filter((item) => {
-      if (libraryState.level !== "all" && item.content_level !== libraryState.level) return false;
-      if (libraryState.state === "disabled" && !item.disabled) return false;
-      if (libraryState.state === "available" && item.disabled) return false;
-      if (libraryState.state === "used" && !item.used) return false;
+      if (state.level !== "all" && item.content_level !== state.level) return false;
+      if (state.state === "disabled" && !item.disabled) return false;
+      if (state.state === "available" && item.disabled) return false;
+      if (state.state === "used" && !item.used) return false;
       if (!search) return true;
-      return String(item.index) === search
-        || String(item.surface || "").toLowerCase().includes(search);
+      return String(item.index) === search || textMatch(item.surface, search);
     });
-    const pages = Math.max(1, Math.ceil(filtered.length / libraryState.pageSize));
-    libraryState.page = Math.min(Math.max(1, libraryState.page), pages);
-    const start = (libraryState.page - 1) * libraryState.pageSize;
-    const pageItems = filtered.slice(start, start + libraryState.pageSize);
+    const pages = Math.max(1, Math.ceil(filtered.length / state.pageSize));
+    state.page = Math.min(Math.max(1, state.page), pages);
+    const start = (state.page - 1) * state.pageSize;
+    const pageItems = filtered.slice(start, start + state.pageSize);
 
     const body = document.getElementById("builtinBody");
     body.replaceChildren();
@@ -1601,17 +1629,25 @@
     document.getElementById("builtinEmpty").hidden = pageItems.length > 0;
     document.getElementById("builtinCount").textContent =
       `匹配 ${filtered.length} 道 · 第 ${start + (pageItems.length ? 1 : 0)}-${start + pageItems.length} 道`;
-    document.getElementById("builtinPage").textContent = `${libraryState.page} / ${pages}`;
-    document.getElementById("builtinPrev").disabled = libraryState.page <= 1;
-    document.getElementById("builtinNext").disabled = libraryState.page >= pages;
+    document.getElementById("builtinPage").textContent = `${state.page} / ${pages}`;
+    document.getElementById("builtinPrev").disabled = state.page <= 1;
+    document.getElementById("builtinNext").disabled = state.page >= pages;
     icons();
   }
+
+  // ---------------- 玩家投稿 ----------------
 
   function renderCustomTable(custom) {
     const body = document.getElementById("customBody");
     body.replaceChildren();
-    const items = Array.isArray(custom.items) ? custom.items : [];
+    const all = Array.isArray(custom.items) ? custom.items : [];
+    const search = libraryState.custom.search.trim().toLowerCase();
+    const items = search
+      ? all.filter((item) => textMatch(item.surface, search) || textMatch(item.owner, search))
+      : all;
     document.getElementById("customEmpty").hidden = items.length > 0;
+    document.getElementById("customCountLabel").textContent =
+      search ? `匹配 ${items.length} / 共 ${all.length} 道` : `共 ${all.length} 道`;
     items.forEach((item) => {
       const row = document.createElement("tr");
       row.appendChild(createText("td", String(item.index)));
@@ -1626,6 +1662,7 @@
       row.appendChild(createText(
         "td", CONTENT_LEVEL_LABELS[item.content_level] || item.content_level || "普通",
       ));
+      row.appendChild(createText("td", playerLabel(item.owner)));
       row.appendChild(createText("td", formatStamp(item.created_at)));
       const actions = document.createElement("td");
       actions.className = "actions-column";
@@ -1638,6 +1675,75 @@
     icons();
   }
 
+  function playerLabel(owner) {
+    const value = String(owner || "").trim();
+    if (!value) return "匿名";
+    return /^\d+$/.test(value) ? `QQ ${value}` : value;
+  }
+
+  // ---------------- 模型出题 ----------------
+
+  function renderGeneratedTable(generated) {
+    const items = Array.isArray(generated.items) ? generated.items : [];
+    const state = libraryState.generated;
+    const search = state.search.trim().toLowerCase();
+    const filtered = items.filter((item) => {
+      if (state.level !== "all" && item.content_level !== state.level) return false;
+      if (!search) return true;
+      return String(item.index) === search
+        || textMatch(item.title, search)
+        || textMatch(item.surface, search);
+    });
+    const pages = Math.max(1, Math.ceil(filtered.length / state.pageSize));
+    state.page = Math.min(Math.max(1, state.page), pages);
+    const start = (state.page - 1) * state.pageSize;
+    const pageItems = filtered.slice(start, start + state.pageSize);
+
+    const body = document.getElementById("generatedBody");
+    body.replaceChildren();
+    pageItems.forEach((item) => {
+      const row = document.createElement("tr");
+      row.appendChild(createText("td", String(item.index)));
+      const cell = document.createElement("td");
+      const title = document.createElement("span");
+      title.className = "library-row-surface";
+      title.textContent = String(item.title || item.surface || "");
+      title.title = String(item.surface || "");
+      cell.appendChild(title);
+      if (item.disabled) cell.appendChild(createText("span", "已停用", "library-tag muted"));
+      row.appendChild(cell);
+      row.appendChild(createText("td", CONTENT_LEVEL_LABELS[item.content_level] || "普通"));
+      row.appendChild(createText("td", formatStamp(item.created_at)));
+      row.appendChild(createText(
+        "td",
+        item.disabled ? "不参与复用" : (item.last_used_at ? "已用过" : "待用"),
+      ));
+      const actions = document.createElement("td");
+      actions.className = "actions-column";
+      actions.appendChild(rowIcon("eye", "查看答案", () => openSoupEditor("generated", item.index, "view")));
+      actions.appendChild(rowIcon("pencil", "编辑这道题", () => openSoupEditor("generated", item.index, "edit")));
+      actions.appendChild(rowIcon(
+        item.disabled ? "power" : "power-off",
+        item.disabled ? "恢复复用" : "停用（保留存档）",
+        () => soupLibraryAction("generated", item.disabled ? "enable" : "disable", item.index),
+      ));
+      actions.appendChild(rowIcon(
+        "trash-2", "删除这道题", () => deleteGeneratedSoup(item.index, item.title || item.surface), true,
+      ));
+      row.appendChild(actions);
+      body.appendChild(row);
+    });
+    document.getElementById("generatedEmpty").hidden = pageItems.length > 0;
+    document.getElementById("generatedCount").textContent =
+      `匹配 ${filtered.length} 道 · 第 ${start + (pageItems.length ? 1 : 0)}-${start + pageItems.length} 道`;
+    document.getElementById("generatedPage").textContent = `${state.page} / ${pages}`;
+    document.getElementById("generatedPrev").disabled = state.page <= 1;
+    document.getElementById("generatedNext").disabled = state.page >= pages;
+    icons();
+  }
+
+  // ---------------- 通用 ----------------
+
   function rowIcon(name, title, handler, danger = false) {
     const button = document.createElement("button");
     button.type = "button";
@@ -1649,10 +1755,10 @@
     return button;
   }
 
-  async function soupLibraryAction(action, index) {
+  async function soupLibraryAction(kind, action, index, extra = {}) {
     try {
       const api = await bridge();
-      const result = await api.apiPost("page/soup_library_action", { action, index });
+      const result = await api.apiPost("page/soup_library_action", { kind, action, index, ...extra });
       if (result?.status === "error") throw new Error(result.message || "操作失败");
       if (result?.message) showToast(result.message);
       if (result?.data?.builtin) renderLibrary(result.data);
@@ -1665,23 +1771,34 @@
   async function recoverAllBuiltinSoup() {
     const proceed = await confirmAction({
       title: "恢复全部改动",
-      message: "把所有停用、删除、编辑过的内置题恢复成随插件分发的样子。玩家投稿不受影响。",
+      message: "把所有停用、删除、编辑过的内置题恢复成随插件分发的样子。玩家投稿与模型出的题不受影响。",
       label: "恢复",
       danger: true,
     });
     if (!proceed) return;
-    await soupLibraryAction("restore_all", 0);
+    await soupLibraryAction("builtin", "restore_all", 0);
   }
 
   async function deleteBuiltinSoup(index, surface) {
     const proceed = await confirmAction({
       title: "删除内置题",
-      message: `确定把「${surface.slice(0, 40)}…」从抽题里去掉？\n可用「恢复全部改动」整批找回。`,
+      message: `确定把「${String(surface).slice(0, 40)}…」从抽题里去掉？\n可用「恢复全部改动」整批找回。`,
       label: "删除",
       danger: true,
     });
     if (!proceed) return;
-    await soupLibraryAction("delete", index);
+    await soupLibraryAction("builtin", "delete", index);
+  }
+
+  async function deleteGeneratedSoup(index, label) {
+    const proceed = await confirmAction({
+      title: "删除模型出的题",
+      message: `确定删除「${String(label || "").slice(0, 40)}」？\n删除后不能再找回，也不参与复用。`,
+      label: "删除",
+      danger: true,
+    });
+    if (!proceed) return;
+    await soupLibraryAction("generated", "delete", index);
   }
 
   // 题目详情/编辑：汤底默认打码，点「查看答案」才请求全文
@@ -1691,14 +1808,18 @@
     const dialog = document.getElementById("soupEditorDialog");
     if (!dialog) return;
     soupEditorTarget = { kind, index, mode };
-    const item = kind === "custom"
-      ? (libraryState.data?.custom?.items || []).find((row) => row.index === index)
-      : (libraryState.data?.builtin?.items || []).find((row) => row.index === index);
+    const pool = kind === "custom"
+      ? (libraryState.data?.custom?.items || [])
+      : kind === "generated"
+        ? (libraryState.data?.generated?.items || [])
+        : (libraryState.data?.builtin?.items || []);
+    const item = pool.find((row) => row.index === index);
     document.getElementById("soupEditorKind").value = kind;
     document.getElementById("soupEditorIndex").value = String(index);
     document.getElementById("soupEditorEyebrow").textContent =
-      kind === "custom" ? "玩家投稿" : "内置题库";
-    document.getElementById("soupEditorTitle").textContent = `#${index}`;
+      kind === "custom" ? "玩家投稿" : kind === "generated" ? "模型出题" : "内置题库";
+    document.getElementById("soupEditorTitle").textContent =
+      kind === "generated" && item?.title ? `#${index} ${item.title}` : `#${index}`;
     const surfaceBox = document.getElementById("soupEditorSurface");
     const solutionBox = document.getElementById("soupEditorSolution");
     const levelBox = document.getElementById("soupEditorLevel");
@@ -1736,6 +1857,7 @@
     if (!soupEditorTarget) return;
     const { kind, index } = soupEditorTarget;
     const payload = {
+      kind,
       index,
       surface: document.getElementById("soupEditorSurface").value,
       solution: document.getElementById("soupEditorSolution").value,
@@ -1804,30 +1926,70 @@
   document.getElementById("refreshStatsAction").addEventListener("click", loadStats);
   document.getElementById("refreshLibraryAction").addEventListener("click", loadLibrary);
   document.getElementById("resetLibraryAction").addEventListener("click", resetSoupLibrary);
+  // 题库页签：一次只看一类，避免三类题目在长页面上互相挤压
+  document.querySelectorAll("[data-lib-tab]").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      const name = tab.getAttribute("data-lib-tab");
+      libraryState.tab = name;
+      document.querySelectorAll("[data-lib-tab]").forEach((item) => {
+        const active = item === tab;
+        item.classList.toggle("is-active", active);
+        item.setAttribute("aria-selected", active ? "true" : "false");
+      });
+      document.querySelectorAll("[data-lib-pane]").forEach((pane) => {
+        pane.hidden = pane.getAttribute("data-lib-pane") !== name;
+      });
+    });
+  });
+
   document.getElementById("builtinSearch").addEventListener("input", (event) => {
-    libraryState.search = event.target.value;
-    libraryState.page = 1;
+    libraryState.builtin.search = event.target.value;
+    libraryState.builtin.page = 1;
     renderBuiltinTable();
   });
   document.getElementById("builtinLevel").addEventListener("change", (event) => {
-    libraryState.level = event.target.value;
-    libraryState.page = 1;
+    libraryState.builtin.level = event.target.value;
+    libraryState.builtin.page = 1;
     renderBuiltinTable();
   });
   document.getElementById("builtinState").addEventListener("change", (event) => {
-    libraryState.state = event.target.value;
-    libraryState.page = 1;
+    libraryState.builtin.state = event.target.value;
+    libraryState.builtin.page = 1;
     renderBuiltinTable();
   });
   document.getElementById("builtinPrev").addEventListener("click", () => {
-    libraryState.page = Math.max(1, libraryState.page - 1);
+    libraryState.builtin.page = Math.max(1, libraryState.builtin.page - 1);
     renderBuiltinTable();
   });
   document.getElementById("builtinNext").addEventListener("click", () => {
-    libraryState.page += 1;
+    libraryState.builtin.page += 1;
     renderBuiltinTable();
   });
   document.getElementById("builtinRestoreAll").addEventListener("click", recoverAllBuiltinSoup);
+
+  document.getElementById("customSearch").addEventListener("input", (event) => {
+    libraryState.custom.search = event.target.value;
+    renderCustomTable(libraryState.data?.custom || {});
+  });
+
+  document.getElementById("generatedSearch").addEventListener("input", (event) => {
+    libraryState.generated.search = event.target.value;
+    libraryState.generated.page = 1;
+    renderGeneratedTable(libraryState.data?.generated || {});
+  });
+  document.getElementById("generatedLevel").addEventListener("change", (event) => {
+    libraryState.generated.level = event.target.value;
+    libraryState.generated.page = 1;
+    renderGeneratedTable(libraryState.data?.generated || {});
+  });
+  document.getElementById("generatedPrev").addEventListener("click", () => {
+    libraryState.generated.page = Math.max(1, libraryState.generated.page - 1);
+    renderGeneratedTable(libraryState.data?.generated || {});
+  });
+  document.getElementById("generatedNext").addEventListener("click", () => {
+    libraryState.generated.page += 1;
+    renderGeneratedTable(libraryState.data?.generated || {});
+  });
   document.getElementById("soupEditorReveal").addEventListener("click", revealSoupAnswer);
   document.getElementById("soupEditorSave").addEventListener("click", saveSoupEditor);
   document.getElementById("statsGameSelect").addEventListener("change", (e) => {

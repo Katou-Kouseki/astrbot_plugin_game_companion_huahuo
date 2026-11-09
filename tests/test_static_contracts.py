@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.88"
+    assert metadata["version"] == "0.5.89"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1539,3 +1539,39 @@ def test_soup_difficulty_and_library_admin_are_wired() -> None:
     # 「提示 15」和计数「0 / 3」两套数字。
     app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "game?.hint_limit" in app
+
+
+def test_soup_source_and_generated_library_are_wired() -> None:
+    """题目出处、生成题库与管理台页签都要真的接上。"""
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    manager_page = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    manager_script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(
+        encoding="utf-8"
+    )
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    # 网页展示「题目来源：…」
+    assert 'id="soupSource"' in page
+    assert "题目来源：" in app
+    assert "puzzle_source_label" in app
+
+    # 对局中锁难度，不许中途换档
+    assert "difficultyLocked" in app
+    assert '{"active", "paused"}' in (
+        ROOT / "room_manager.py"
+    ).read_text(encoding="utf-8")
+
+    # 管理台：三类题库用页签分开，模型出的题单独一页
+    assert 'data-lib-tab="generated"' in manager_page
+    assert 'id="generatedBody"' in manager_page
+    assert "renderGeneratedTable" in manager_script
+    assert "function soupLibraryAction(kind" in manager_script
+    assert '"page/soup_library_action"' in manager_script
+
+    # 后端：生成题库落盘、出题时复用
+    assert (ROOT / "soup_generated.py").exists()
+    assert "def _soup_generated" in main
+    assert 'source="generated"' in main

@@ -118,6 +118,7 @@ def test_other_list_aliases(tmp_path: Path, message: str) -> None:
 # ---------------- 管理台题库页 ----------------
 
 from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.soup_generated import GeneratedSoupStore
 from astrbot_plugin_game_companion_huahuo.soup_library import SoupLibrary
 from astrbot_plugin_game_companion_huahuo.turtle_soup_deck import SoupDeck
 
@@ -129,6 +130,7 @@ def make_console_plugin(tmp_path: Path) -> SimpleNamespace:
         _soup_library=lambda: SoupLibrary(BUILTIN, tmp_path / "cache.json"),
         _soup_deck=lambda: SoupDeck(tmp_path / "deck.json"),
         _soup_custom=lambda: CustomSoupStore(tmp_path / "custom.json"),
+        _soup_generated=lambda: GeneratedSoupStore(tmp_path / "generated.json"),
     )
     # 题库快照是 page_soup_library 的实现细节，桩对象也要能算出来
     plugin._soup_library_snapshot = lambda: (

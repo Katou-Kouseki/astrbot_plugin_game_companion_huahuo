@@ -2909,6 +2909,14 @@
     document.getElementById("soupSurface").textContent = playerHosted
       ? "玩家轮流提供公开线索或回答 花火 的问题；花火 不会提前看到隐藏汤底。"
       : sanitizeDisplayText(puzzle?.surface || (game?.failure_reason ? "花火 正在重新整理题目。" : "花火 正在构思一道新的海龟汤。"));
+    // 题目出处：让玩家知道这道题是内置的、谁投的，还是现场编的
+    const soupSource = document.getElementById("soupSource");
+    if (soupSource) {
+      const origin = String(game?.puzzle_source_label || "").trim();
+      soupSource.textContent = origin
+        ? `题目来源：${origin}`
+        : (game?.phase === "preparing" ? "题目正在生成…" : "题目来源：—");
+    }
     document.getElementById("soupContentLevel").textContent = {
       all_ages: "全年龄", normal: "普通", unrestricted: "不限制",
     }[puzzle?.content_level || game?.content_level] || "普通";
@@ -2954,6 +2962,8 @@
     const soupDifficultyHint = document.getElementById("soupDifficultyHint");
     if (soupDifficultyRow && soupDifficultyPicker) {
       soupDifficultyRow.hidden = !room.is_player;
+      // 对局中不许改难度：中途换档等于给先问的人换了一套规则
+      const difficultyLocked = ["active", "paused"].includes(String(room.status || ""));
       soupDifficultyPicker
         .querySelectorAll("[data-soup-difficulty]")
         .forEach((btn) => {
@@ -2961,7 +2971,7 @@
           const active = value === room.difficulty;
           btn.classList.toggle("is-active", active);
           btn.setAttribute("aria-pressed", active ? "true" : "false");
-          btn.disabled = busy;
+          btn.disabled = busy || difficultyLocked;
         });
       if (soupDifficultyHint) {
         const solve = (SOUP_DIFFICULTY_TEXT[room.difficulty] || SOUP_DIFFICULTY_TEXT.normal).solve;
@@ -2975,7 +2985,8 @@
           `提示 ${hintText || "不限"}`,
           `推理 ${room.soup_answer_limit || "不限"}`,
           solve,
-        ].join(" · ");
+          difficultyLocked ? "本局进行中，结束后可调" : "",
+        ].filter(Boolean).join(" · ");
       }
     }
 

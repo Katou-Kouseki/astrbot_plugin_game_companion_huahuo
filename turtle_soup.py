@@ -22,6 +22,35 @@ VERDICT_LABELS: dict[SoupVerdict, str] = {
     "compound": "请一次只问一个问题",
 }
 
+# 这道题从哪来。网页与群聊共用这一套说法，避免两处各写一遍文案。
+SOUP_SOURCE_LABELS: dict[str, str] = {
+    "custom": "玩家投稿",
+    "library": "内置题库",
+    "online": "网络题库",
+    "generated": "往期生成",
+    "llm": "花火现编",
+    "fallback": "内置兜底题",
+    "player": "玩家出题",
+}
+
+
+def soup_source_label(source: str, note: str = "") -> str:
+    """把出处翻译成一句人话；`note` 是投稿人或出题人的名字。"""
+    key = str(source or "").strip()
+    base = SOUP_SOURCE_LABELS.get(key)
+    if base is None:
+        return ""
+    note = str(note or "").strip()
+    if not note:
+        return base
+    if key == "custom":
+        # 投稿人存的是 QQ 号，直接念数字太生硬
+        return f"{'玩家 ' if note.isdigit() else ''}{note} 的投稿"
+    if key == "player":
+        return f"{note} 出题"
+    return base
+
+
 # 海龟汤难度档位：难度直接决定参与次数与「算猜中」的门槛。
 # questions / answers 为 0 表示不限；hints 是整局总提示次数（不是每人一份）。
 # solve 是判定口径：
@@ -169,6 +198,14 @@ class TurtleSoupGame:
     pending_judge: dict[str, object] | None = None
     # 猜中人：座位号；0 表示花火猜中（配合 bot_solved）
     solver_number: int = 0
+    # 本题出处：custom / library / online / generated / llm / fallback / player。
+    # `note` 存投稿人或出题人的名字，网页上显示「题目来源：玩家 123 的投稿」。
+    puzzle_source: str = ""
+    puzzle_source_note: str = ""
+
+    @property
+    def puzzle_source_label(self) -> str:
+        return soup_source_label(self.puzzle_source, self.puzzle_source_note)
 
     def __post_init__(self) -> None:
         if self.mode == "player_host" and self.phase == "preparing":
@@ -581,6 +618,9 @@ class TurtleSoupGame:
             "host_number": self.host_number,
             "pending_judge": dict(self.pending_judge) if self.pending_judge else None,
             "solver_number": self.solver_number,
+            # 题目出处：前端显示「题目来源：内置题库 / 玩家 123 的投稿 / …」
+            "puzzle_source": self.puzzle_source,
+            "puzzle_source_label": self.puzzle_source_label,
         }
 
 

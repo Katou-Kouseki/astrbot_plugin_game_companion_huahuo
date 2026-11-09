@@ -28,7 +28,7 @@ def make_plugin(tmp_path: Path, *, enabled: bool = True) -> GameCompanionPlugin:
     plugin.turtle_soup_library_enabled = enabled
     plugin.data_dir = tmp_path
 
-    async def apply(_room, game, puzzle):
+    async def apply(_room, game, puzzle, **_kwargs):
         """模拟 RoomManager：真正把题装进对局并返回成功。"""
         game.puzzle = puzzle
         return True

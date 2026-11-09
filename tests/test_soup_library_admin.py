@@ -10,6 +10,7 @@ import pytest
 
 from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
 from astrbot_plugin_game_companion_huahuo.soup_custom import CustomSoupStore
+from astrbot_plugin_game_companion_huahuo.soup_generated import GeneratedSoupStore
 from astrbot_plugin_game_companion_huahuo.soup_library import SoupLibrary
 from astrbot_plugin_game_companion_huahuo.soup_library import build_puzzle
 from astrbot_plugin_game_companion_huahuo.turtle_soup_deck import SoupDeck
@@ -141,6 +142,7 @@ def test_console_snapshot_masks_solutions(tmp_path: Path) -> None:
         _soup_library=lambda: library,
         _soup_deck=lambda: SoupDeck(tmp_path / "deck.json"),
         _soup_custom=lambda: custom,
+        _soup_generated=lambda: GeneratedSoupStore(tmp_path / "generated.json"),
     )
 
     data = GameCompanionPlugin._soup_library_snapshot(plugin)
@@ -161,6 +163,7 @@ def test_used_flag_marks_puzzles_already_drawn(tmp_path: Path) -> None:
         _soup_library=lambda: library,
         _soup_deck=lambda: deck,
         _soup_custom=lambda: CustomSoupStore(tmp_path / "custom.json"),
+        _soup_generated=lambda: GeneratedSoupStore(tmp_path / "generated.json"),
     )
 
     data = GameCompanionPlugin._soup_library_snapshot(plugin)

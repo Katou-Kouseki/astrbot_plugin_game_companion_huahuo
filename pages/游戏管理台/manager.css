@@ -234,3 +234,51 @@ dialog textarea {
   resize: vertical;
 }
 dialog textarea[readonly] { background: var(--surface-alt, #f4f6f4); }
+
+/* 题库管理：页签、面板与工具条 */
+.library-card { padding: 0; overflow: hidden; }
+.library-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-alt, #f4f6f4);
+}
+.library-tab {
+  position: relative;
+  padding: 11px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.library-tab:hover { color: var(--text); }
+.library-tab.is-active { color: var(--green); border-bottom-color: var(--green); }
+.library-tab-count {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: #e3e7e4;
+  color: #57615b;
+  font-size: 11px;
+  line-height: 17px;
+  font-weight: 600;
+}
+.library-tab.is-active .library-tab-count { background: var(--green-soft); color: var(--green); }
+.library-pane { padding: 14px 16px 6px; }
+.library-pane[hidden] { display: none; }
+.library-pane-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.library-pane-head > span:first-child { flex: 1 1 220px; min-width: 0; }

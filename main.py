@@ -56,6 +56,7 @@ from .room_manager import (
 )
 from .server import GameRoomServer
 from .soup_custom import CustomSoupStore, handle_custom_command
+from .soup_generated import GeneratedSoupStore
 from .soup_library import SoupLibrary
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
@@ -5176,6 +5177,17 @@ class GameCompanionPlugin(Star):
             self.soup_custom_store = store
         return store
 
+    def _soup_generated(self) -> GeneratedSoupStore:
+        """模型出过的题（懒初始化）：管理台可看可改，出题时优先复用。"""
+        store = getattr(self, "soup_generated_store", None)
+        if store is None:
+            store = GeneratedSoupStore(
+                Path(getattr(self, "data_dir", Path(".")))
+                / "turtle_soup_generated.json"
+            )
+            self.soup_generated_store = store
+        return store
+
     def _soup_library_enricher(self, room: GameRoom):
         """给题库的懒补全注入「用哪个模型」：跟出题用同一个 Provider。"""
 
@@ -5218,7 +5230,7 @@ class GameCompanionPlugin(Star):
         return ranked[0][1]
 
     async def _prepare_turtle_soup(self, room: GameRoom, game: TurtleSoupGame) -> None:
-        """出题闭环：自定义投稿 → 网络题库 → 内置题库 → LLM 生成 → 兜底题。
+        """出题闭环：自定义投稿 → 网络题库 / 内置题库 → 往期生成 → LLM 生成 → 兜底题。
 
         各段的共同约束是「不能和账本里的题目实质重复」，且任一环节成功就记账，
         让下一次出题（不论哪个房间、是否重启）都能看到它。
@@ -5245,7 +5257,14 @@ class GameCompanionPlugin(Star):
             custom_puzzles = []
         if custom_puzzles:
             puzzle = random.choice(custom_puzzles)
-            if await self.manager.complete_turtle_soup_generation(room, game, puzzle):
+            owner = ""
+            try:
+                owner = self._soup_custom().owner_for_surface(puzzle.surface)
+            except (OSError, ValueError):
+                owner = ""
+            if await self.manager.complete_turtle_soup_generation(
+                room, game, puzzle, source="custom", note=owner
+            ):
                 deck.remember(puzzle, source="custom")
                 logger.info(
                     "[GameCompanion] 海龟汤采用自定义题目：《%s》", puzzle.title
@@ -5272,7 +5291,28 @@ class GameCompanionPlugin(Star):
                 last_error = f"{label}不可用：{exc}"
                 logger.info("[GameCompanion] %s不可用，换下一种来源：%s", label, exc)
 
-        # ③ LLM 生成（最多 3 次）+ 独立校验
+        # ③ 往期生成：模型以前出过、被存下来的题。能用就先用，省一次生成 + 一次校验；
+        # 管理台改过的题也走这里，改完下一局就能生效。
+        try:
+            store = self._soup_generated()
+            reused = [
+                puzzle
+                for puzzle in store.puzzles(game.content_level)
+                if puzzle.signature not in excluded and not deck.has(puzzle)
+            ]
+        except (OSError, ValueError):
+            reused = []
+        if reused:
+            puzzle = random.choice(reused)
+            if await self.manager.complete_turtle_soup_generation(
+                room, game, puzzle, source="generated"
+            ):
+                deck.remember(puzzle, source="generated")
+                store.mark_used(puzzle.signature)
+                logger.info("[GameCompanion] 海龟汤复用往期生成题：《%s》", puzzle.title)
+                return
+
+        # ④ LLM 生成（最多 3 次）+ 独立校验
         persona = await self._persona_prompt(room)
         for attempt in range(1, 4):
             try:
@@ -5315,9 +5355,14 @@ class GameCompanionPlugin(Star):
                 if not validation_passed(check):
                     raise ValueError("题目未通过独立自洽性校验")
                 if await self.manager.complete_turtle_soup_generation(
-                    room, game, puzzle
+                    room, game, puzzle, source="llm"
                 ):
                     deck.remember(puzzle, source="llm")
+                    # 存下来：管理台能看能改，以后也能直接复用，不必每局都现编
+                    try:
+                        self._soup_generated().add(puzzle)
+                    except (OSError, ValueError):
+                        pass
                     return
                 return
             except (RuntimeError, ValueError, OSError) as exc:
@@ -5328,13 +5373,15 @@ class GameCompanionPlugin(Star):
                     exc,
                 )
 
-        # ④ 本地兜底题（按账本挑最久没出过的）
+        # ⑤ 本地兜底题（按账本挑最久没出过的）
         try:
             puzzle = self._pick_fallback_puzzle(game.content_level, deck, excluded)
         except ValueError as exc:
             logger.warning("[GameCompanion] 海龟汤无可用兜底题：%s", exc)
             return
-        applied = await self.manager.complete_turtle_soup_generation(room, game, puzzle)
+        applied = await self.manager.complete_turtle_soup_generation(
+            room, game, puzzle, source="fallback"
+        )
         if applied:
             deck.remember(puzzle, source="fallback")
             logger.warning(
@@ -5363,7 +5410,9 @@ class GameCompanionPlugin(Star):
         if not usable:
             return False
         puzzle = random.choice(usable)
-        if not await self.manager.complete_turtle_soup_generation(room, game, puzzle):
+        if not await self.manager.complete_turtle_soup_generation(
+            room, game, puzzle, source="online"
+        ):
             return False
         deck.remember(puzzle, source="online")
         logger.info("[GameCompanion] 海龟汤采用网络题库题目：%s", puzzle.title)
@@ -5398,7 +5447,9 @@ class GameCompanionPlugin(Star):
             if rule_puzzle.signature in excluded or deck.has(rule_puzzle):
                 continue
             puzzle = await library.puzzle_for(entry, enricher) or rule_puzzle
-            if await self.manager.complete_turtle_soup_generation(room, game, puzzle):
+            if await self.manager.complete_turtle_soup_generation(
+                room, game, puzzle, source="library"
+            ):
                 deck.remember(puzzle, source="library")
                 logger.info(
                     "[GameCompanion] 海龟汤采用内置题库题目：《%s》", puzzle.title
@@ -10961,6 +11012,22 @@ class GameCompanionPlugin(Star):
                     for index, entry in enumerate(custom.entries, start=1)
                 ],
             },
+            "generated": {
+                **self._soup_generated().stats(),
+                "items": [
+                    {
+                        "index": row["index"],
+                        "title": row["title"],
+                        "surface": row["surface"],
+                        "content_level": row["content_level"],
+                        "created_at": row["created_at"],
+                        "last_used_at": row["last_used_at"],
+                        "disabled": row["disabled"],
+                        "solution_preview": SoupLibrary.mask_solution(row["solution"]),
+                    }
+                    for row in self._soup_generated().listing()
+                ],
+            },
         }
 
     async def page_soup_library(self) -> dict[str, Any]:
@@ -10971,9 +11038,37 @@ class GameCompanionPlugin(Star):
         """内置题的停用 / 恢复 / 删除 / 改回 / 编辑，全部只写覆盖层。"""
         payload = await request.json(default={}) or {}
         action = str(payload.get("action") or "").strip().lower()
+        kind = str(payload.get("kind") or "builtin").strip().lower()
         library = self._soup_library()
         try:
-            if action == "restore_all":
+            if kind == "generated":
+                store = self._soup_generated()
+                if action == "restore_all":
+                    raise ValueError("生成题没有「恢复」，删掉的无法找回")
+                index = int(payload.get("index") or 0)
+                if index <= 0:
+                    raise ValueError("缺少题目序号")
+                if action == "disable":
+                    store.set_disabled(index, True)
+                    message = "已停用这道题（保留存档，不再被抽到）"
+                elif action == "enable":
+                    store.set_disabled(index, False)
+                    message = "已恢复这道题"
+                elif action == "delete":
+                    store.remove(index)
+                    message = "已删除这道题"
+                elif action == "edit":
+                    store.update(
+                        index,
+                        title=payload.get("title"),
+                        surface=payload.get("surface"),
+                        solution=payload.get("solution"),
+                        content_level=payload.get("content_level"),
+                    )
+                    message = "已保存修改"
+                else:
+                    raise ValueError("不支持的操作")
+            elif action == "restore_all":
                 count = library.restore_all()
                 message = f"已恢复 {count} 处改动，题库回到内置版本"
             else:
@@ -11021,6 +11116,22 @@ class GameCompanionPlugin(Star):
             index = int(payload.get("index") or 0)
         except (TypeError, ValueError):
             return {"status": "error", "message": "序号不合法", "data": {}}
+        if kind == "generated":
+            row = self._soup_generated().get(index)
+            if row is None:
+                return {"status": "error", "message": "没有这个序号", "data": {}}
+            mapping = row.get("puzzle") or {}
+            return {
+                "status": "ok",
+                "data": {
+                    "title": str(mapping.get("title") or ""),
+                    "surface": str(mapping.get("surface") or ""),
+                    "solution": str(mapping.get("solution") or ""),
+                    "content_level": normalize_content_level(
+                        mapping.get("content_level")
+                    ),
+                },
+            }
         if kind == "custom":
             store = self._soup_custom()
             if not 1 <= index <= len(store.entries):
