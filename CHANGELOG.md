@@ -1,5 +1,15 @@
 # 更新日志
 
+## 0.5.90 - 2026-11-09
+
+### 修复：管理台绑定群号后战报发不出去
+
+绑群号后拼出的会话是 `aiocqhttp:group:123456`，而 AstrBot 的会话格式是「平台:MessageType:会话ID」，第二段必须是 `GroupMessage`，否则在解析阶段就报 `'group' is not a valid MessageType`，消息连发送环节都到不了。现已改为 `aiocqhttp:GroupMessage:群号`，历史 `:group:` / `:private:` 写法也会自动纠正。群号输入框提示同时改成「只填数字」。
+
+### 测试
+
+`test_soup_queue_and_rematch.py` 补 3 例（平台缺省、MessageType 写法、老会话纠正）。全量 833 passed / 1 skipped。
+
 ## 0.5.89 - 2026-11-09
 
 ### 新增：模型出的题可存档复用

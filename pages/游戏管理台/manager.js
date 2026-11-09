@@ -468,7 +468,7 @@
         bindGroup.innerHTML = '<i data-lucide="megaphone"></i>';
         bindGroup.addEventListener("click", async () => {
           const value = window.prompt(
-            "战报要发到哪个 QQ 群？填群号，留空表示解除绑定",
+            "战报要发到哪个 QQ 群？只填数字群号（如 123456789），留空表示解除绑定",
             room.group_id || "",
           );
           if (value === null) return;

@@ -2337,7 +2337,8 @@ class RoomManager:
         """给房间指定播报群。
 
         管理台开出来的链接房没有 QQ 会话（session_id 是 `admin:console`），
-        战报发不出去。绑一个群号后，播报按 `<platform>:group:<群号>` 发送。
+        战报发不出去。绑一个群号后，播报按 `<platform>:GroupMessage:<群号>`
+        发送（第二段必须是 MessageType，写成 `group` 会被 AstrBot 判为非法）。
         群房本身已经有会话，这里的绑定不会覆盖它。
         """
         room.group_id = str(group_id or "").strip()

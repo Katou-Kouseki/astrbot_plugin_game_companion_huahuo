@@ -168,21 +168,43 @@ async def test_next_round_is_rejected_while_the_game_is_running() -> None:
 
 
 def test_console_room_announces_to_the_bound_group() -> None:
-    """管理台链接房没有 QQ 会话，绑了群号才发得出去。"""
+    """管理台链接房没有 QQ 会话，绑了群号才发得出去。
+
+    第二段必须是 MessageType（GroupMessage），写成小写 `group` 会被
+    AstrBot 在解析会话时直接判为「不合法的 session 字符串」。
+    """
     console = SimpleNamespace(
         session_id="admin:console", platform="admin", group_id="123456"
     )
-    assert GameCompanionPlugin.announce_target(console) == "aiocqhttp:group:123456"
+    assert GameCompanionPlugin.announce_target(console) == "aiocqhttp:GroupMessage:123456"
 
     console.group_id = ""
     assert GameCompanionPlugin.announce_target(console) == ""
 
 
+def test_console_room_without_platform_defaults_to_aiocqhttp() -> None:
+    console = SimpleNamespace(session_id="admin:console", platform="", group_id="998877")
+    assert GameCompanionPlugin.announce_target(console) == "aiocqhttp:GroupMessage:998877"
+
+
 def test_group_room_keeps_its_own_session() -> None:
+    group = SimpleNamespace(
+        session_id="aiocqhttp:GroupMessage:777", platform="aiocqhttp", group_id="777"
+    )
+    assert GameCompanionPlugin.announce_target(group) == "aiocqhttp:GroupMessage:777"
+
+
+def test_legacy_lowercase_session_is_normalized() -> None:
+    """老数据里的 `平台:group:群号` 也要能发出去，别让它静默失败。"""
     group = SimpleNamespace(
         session_id="aiocqhttp:group:777", platform="aiocqhttp", group_id="777"
     )
-    assert GameCompanionPlugin.announce_target(group) == "aiocqhttp:group:777"
+    assert GameCompanionPlugin.announce_target(group) == "aiocqhttp:GroupMessage:777"
+
+    private = SimpleNamespace(
+        session_id="aiocqhttp:private:10001", platform="aiocqhttp", group_id=""
+    )
+    assert GameCompanionPlugin.announce_target(private) == "aiocqhttp:FriendMessage:10001"
 
 
 def test_group_id_input_is_validated() -> None:

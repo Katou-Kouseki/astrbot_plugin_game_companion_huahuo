@@ -7196,6 +7196,22 @@ class GameCompanionPlugin(Star):
         await self._send_to_origin(room, text)
 
     @staticmethod
+    def _normalize_session(session: str) -> str:
+        """把 `平台:group:123` 这类非标准写法换成 AstrBot 认的 MessageType。
+
+        AstrBot 的会话字符串是「平台:MessageType:会话ID」，MessageType 只有
+        GroupMessage / FriendMessage / OtherMessage 三个取值。写成小写 `group`
+        会在发送前就被判成「不合法的 session 字符串」，消息根本发不出去
+        （管理台开房绑群号时踩过：日志里的 `'group' is not a valid MessageType`）。
+        """
+        text = str(session or "").strip()
+        parts = text.split(":")
+        if len(parts) == 3 and parts[1] in {"group", "private"}:
+            parts[1] = "GroupMessage" if parts[1] == "group" else "FriendMessage"
+            return ":".join(parts)
+        return text
+
+    @staticmethod
     def announce_target(room: GameRoom) -> str:
         """播报要发到哪个会话；发不出去时返回空串。
 
@@ -7203,17 +7219,20 @@ class GameCompanionPlugin(Star):
         根本没有对应的平台会话，往里发必然失败——这类房间靠管理台绑定的群号
         （room.group_id）拼出真实群会话。`platform` 为 admin/web 时按 aiocqhttp
         处理，因为管理台里能拿到群号的只有 QQ 适配器。
+
+        拼出来的第二段必须是 `GroupMessage`（不是 `group`），否则 AstrBot 解析
+        会话时就抛错，消息连发送环节都到不了。
         """
         session = str(getattr(room, "session_id", "") or "")
         group = str(getattr(room, "group_id", "") or "").strip()
         if session and not session.startswith(("admin:", "web:")):
-            return session
+            return GameCompanionPlugin._normalize_session(session)
         if not group:
             return ""
         platform = str(getattr(room, "platform", "") or "").strip()
         if not platform or platform in {"admin", "web"}:
             platform = "aiocqhttp"
-        return f"{platform}:group:{group}"
+        return f"{platform}:GroupMessage:{group}"
 
     async def _send_to_origin(self, room: GameRoom, text: str) -> bool:
         """把纯文字发到开房群，返回是否真的发出去了。
