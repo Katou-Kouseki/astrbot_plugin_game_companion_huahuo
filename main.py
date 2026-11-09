@@ -76,7 +76,9 @@ from .turtle_soup import (
     puzzle_from_mapping,
 )
 from .turtle_soup_ai import (
+    JUDGE_RETRY_SUFFIX,
     answer_judge_prompt,
+    answer_judgment_usable,
     coverage_reply,
     extract_json_object,
     generation_prompt,
@@ -85,6 +87,7 @@ from .turtle_soup_ai import (
     parse_reverse_turn,
     public_judge_history,
     question_judge_prompt,
+    question_judgment_usable,
     reverse_public_history,
     reverse_turn_prompt,
     validation_passed,
@@ -5502,12 +5505,14 @@ class GameCompanionPlugin(Star):
                 question=question,
                 public_history=public_judge_history(game.entries),
             )
-            raw = await self._call_room_model(
+            raw = await self._call_judge_model(
                 room,
                 system_prompt=system_prompt,
                 prompt=prompt,
+                usable=question_judgment_usable,
                 timeout=30,
                 provider=self._soup_judge_provider(room),
+                what="判断",
             )
             verdict, matched_facts, solved = parse_question_judgment(
                 raw, fact_count=len(game.puzzle.key_facts)
@@ -5671,12 +5676,14 @@ class GameCompanionPlugin(Star):
                 answer=answer,
                 discovered_facts=game.discovered_facts,
             )
-            raw = await self._call_room_model(
+            raw = await self._call_judge_model(
                 room,
                 system_prompt=system_prompt,
                 prompt=prompt,
+                usable=answer_judgment_usable,
                 timeout=30,
                 provider=self._soup_judge_provider(room),
+                what="判定",
             )
             judgment = parse_answer_judgment_detail(
                 raw,
@@ -5855,6 +5862,60 @@ class GameCompanionPlugin(Star):
             # 空回复多半是上游抖动：留一次重试机会，别直接把「没有返回」甩给玩家
             last_error = RuntimeError("模型没有返回有效内容")
         raise last_error or RuntimeError("模型没有返回有效内容")
+
+    async def _call_judge_model(
+        self,
+        room: GameRoom,
+        *,
+        system_prompt: str,
+        prompt: str,
+        usable: Any,
+        timeout: int = 30,
+        provider: Any | None = None,
+        what: str = "判断",
+    ) -> str:
+        """调用海龟汤判定模型，输出明显跑偏时重试一次。
+
+        推理型模型偶尔不按约定输出 JSON，而是把思考过程整段吐出来：
+        「让我想想……汤底里提到灯塔，所以这个问题……」。旧逻辑解析不到 JSON 就
+        静默当成 `irrelevant` / `wrong`——玩家明明问在点上，却被告知「无关」，
+        还白扣一次提问额度。
+
+        这里宁可多花一次调用，也不把跑偏的输出当成真判定：
+        重试一次仍不像 JSON 就抛错，由上层取消本次交互（不计数），并告诉玩家
+        「这次没判出来，不算次数」。比悄悄判错划算。
+        """
+        raw = await self._call_room_model(
+            room,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            timeout=timeout,
+            provider=provider,
+        )
+        if usable(raw):
+            return raw
+        logger.info(
+            "[GameCompanion] 海龟汤%s输出不是约定格式，重试一次：%s",
+            what,
+            raw[:200],
+        )
+        raw = await self._call_room_model(
+            room,
+            system_prompt=system_prompt,
+            prompt=prompt + JUDGE_RETRY_SUFFIX,
+            timeout=timeout,
+            provider=provider,
+        )
+        if usable(raw):
+            return raw
+        logger.warning(
+            "[GameCompanion] 海龟汤%s重试后仍不符合格式，按「没判出来」处理：%s",
+            what,
+            raw[:200],
+        )
+        raise RuntimeError(
+            f"花火这次没{what}出来（模型把话说跑偏了），这句话不算次数，再说一次试试"
+        )
 
     async def _announce_turtle_soup_hint(
         self, room: GameRoom, hint: str, *, visitor: Visitor | None = None

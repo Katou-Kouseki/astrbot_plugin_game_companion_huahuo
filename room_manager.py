@@ -979,15 +979,22 @@ class RoomManager:
 
     @staticmethod
     def _soup_waits_for_owner(room: GameRoom) -> bool:
-        """海龟汤要不要等房主点「开始」才开局。
+        """海龟汤要不要等房内玩家点「开始出题」，而不是入座即开局。
 
-        只有「群里可能还有别人要坐进来」时才有等的意义。判定不能只看 capacity：
-        不限人数时 capacity 是 0，照样是多人房；而私聊房的 capacity 也可能配成
-        不限，却永远只有一个人，等下去只会让人以为按钮坏了。
+        **一律要等。** 之前按 `source` 区分：私聊房入座即开局，理由是人不会来。
+        但实际用下来这条把人堵在了门外：
+
+        * 私聊里开好房再把链接发到群里，是群里玩海龟汤最自然的入口。第一个
+          点进来的人一入座就开局，后面的人永远来不及坐进来。
+        * 入座即开局会把「我来出题」这条路堵死——申请出题只允许在开局前，
+          等玩家看到题目时已经晚了。
+        * 房间进行中虽然允许加入（海龟汤不是对局类），但开局那一下的连击
+          会让人以为「这局就我一个人了」。
+
+        多一次点击换「可以先自己出题、也可以等人」，比自动开局划算。前端在
+        setup 状态本来就有「开始出题」按钮和「已入座 N 人，可以等别人」的说明。
         """
-        if str(getattr(room, "source", "") or "") == "private":
-            return False
-        return int(room.multiplayer.capacity or 0) != 1
+        return str(getattr(room, "game_type", "")) == "turtle_soup"
 
     async def claim_and_start(
         self,

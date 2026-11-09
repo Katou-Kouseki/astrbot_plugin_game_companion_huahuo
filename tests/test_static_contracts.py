@@ -35,6 +35,14 @@ def test_config_defaults_match_product_contract() -> None:
     assert schema["xiangqi"]["items"]["auto_download_engine"]["default"] is False
     assert schema["turtle_soup"]["items"]["max_hints"]["default"] == 3
     assert schema["turtle_soup"]["items"]["content_level"]["default"] == "normal"
+    # 提问与推理各有一份额度，都是整局共享；0 表示不限
+    assert schema["turtle_soup"]["items"]["max_questions"]["default"] == 15
+    assert schema["turtle_soup"]["items"]["max_answers"]["default"] == 8
+    # 模型配置要能在面板里下拉选，别退回手填 Provider ID
+    for key in ("generation_provider_id", "judge_provider_id"):
+        assert (
+            schema["turtle_soup"]["items"][key]["_special"] == "select_provider"
+        ), f"{key} 应该是下拉选择（select_provider）"
     # 海龟汤不限人数（0）：群里参与的人越多越好，不该被座位数挡在门外
     assert schema["turtle_soup"]["items"]["max_players"]["default"] == 0
     assert schema["multiplayer"]["items"]["turn_timeout_seconds"]["default"] == 60
@@ -80,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.83"
+    assert metadata["version"] == "0.5.84"
 
 
 def test_chat_messages_render_local_timestamp() -> None:

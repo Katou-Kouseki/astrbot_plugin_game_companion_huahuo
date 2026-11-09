@@ -469,13 +469,15 @@
         "description": "海龟汤出题模型",
         "type": "string",
         "default": "",
-        "hint": "留空跟随当前会话模型。可指定更擅长推理与创作的模型专门出题（出题 + 自检都走它）；填写 Provider ID，与「解说模型」写法一致。"
+        "_special": "select_provider",
+        "hint": "下拉选择 AstrBot 里已配置的聊天模型 Provider；留空跟随当前会话模型。建议选擅长推理与创作的模型，出题与自检都走它。"
       },
       "judge_provider_id": {
         "description": "海龟汤判断模型",
         "type": "string",
         "default": "",
-        "hint": "留空跟随当前会话模型。用于判定玩家提问、判定最终答案、识别玩家消息属于提问还是推理；建议选响应更快的模型。找不到时自动回退当前会话模型。"
+        "_special": "select_provider",
+        "hint": "下拉选择 AstrBot 里已配置的聊天模型 Provider；留空跟随当前会话模型。判定要快，建议选响应快的模型。"
       },
       "bot_join_player_host": {
         "description": "玩家出题时花火参与",

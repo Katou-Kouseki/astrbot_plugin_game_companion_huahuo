@@ -71,6 +71,10 @@ async def make_soup_room(manager: RoomManager):
     )
     visitor = await manager.join(room)
     await manager.claim_and_start(room, visitor.token, "")
+    if room.game is None:
+        # 0.5.84 起海龟汤不再「入座即开局」：要房内玩家点「开始出题」才生成题目。
+        # 这里模拟那一次点击，测试关注的是点击之后的行为。
+        await manager.start_game(room, visitor.token, "")
     assert isinstance(room.game, TurtleSoupGame)
     return room, visitor, room.game
 
@@ -133,7 +137,8 @@ async def test_soup_start_is_async_and_generation_is_not_idle_expired() -> None:
     room.last_activity_at = 1.0
 
     assert game.phase == "preparing"
-    assert events == ["soup_generation_requested"]
+    # 入座不再自动开局，会先来一条 seats_changed；这里只关心生成请求只发一次
+    assert events.count("soup_generation_requested") == 1
     assert await manager.sweep_expired(now=100.0) == []
 
 
@@ -373,3 +378,86 @@ def test_fallback_avoids_recent_signature_when_another_choice_exists() -> None:
     }
 
     assert first.signature not in choices
+
+
+# ---------------- 判定输出跑偏：重试，而不是当成「无关」 ----------------
+
+
+THINKING_OUTPUT = (
+    "让我想想。汤底里提到温室通风，所以「这是温室吗」应该回答是。"
+    "但要注意不能把关键事实说出去……"
+)
+
+
+def test_question_judgment_usable_rejects_plain_prose() -> None:
+    from astrbot_plugin_game_companion_huahuo.turtle_soup_ai import (
+        question_judgment_usable,
+    )
+
+    assert question_judgment_usable('{"verdict":"yes"}') is True
+    assert question_judgment_usable('```json\n{"verdict":"no","solved":false}\n```') is True
+    assert question_judgment_usable(THINKING_OUTPUT) is False
+    assert question_judgment_usable('{"verdict":"大概是吧"}') is False
+    assert question_judgment_usable("") is False
+
+
+def test_answer_judgment_usable_rejects_plain_prose() -> None:
+    from astrbot_plugin_game_companion_huahuo.turtle_soup_ai import (
+        answer_judgment_usable,
+    )
+
+    assert answer_judgment_usable('{"coverage":0.6,"verdict":"close"}') is True
+    assert answer_judgment_usable('{"solved":false,"matched_facts":[0]}') is True
+    assert answer_judgment_usable(THINKING_OUTPUT) is False
+    assert answer_judgment_usable("这个推理差不多对了一半吧") is False
+
+
+@pytest.mark.asyncio
+async def test_thinking_output_is_retried_and_counted_when_retry_succeeds() -> None:
+    """第一次吐出思考过程，重试拿到合法 JSON：这次提问应当正常计入。"""
+    provider = SimpleNamespace(
+        text_chat=AsyncMock(
+            side_effect=[
+                SimpleNamespace(completion_text=THINKING_OUTPUT),
+                SimpleNamespace(completion_text='{"verdict":"yes","matched_facts":[0]}'),
+            ]
+        )
+    )
+    plugin = new_plugin()
+    plugin.context = SimpleNamespace(get_using_provider=lambda _session: provider)
+    plugin.manager = RoomManager()
+    room, visitor, game = await make_soup_room(plugin.manager)
+    await plugin.manager.complete_turtle_soup_generation(room, game, make_puzzle())
+
+    result = await plugin.submit_turtle_soup_question(
+        room, "这是温室吗？", source="web", visitor_token=visitor.token
+    )
+
+    assert result["verdict"] == "yes"
+    assert provider.text_chat.await_count == 2
+    assert game.question_count == 1
+
+
+@pytest.mark.asyncio
+async def test_persistent_garbage_is_rejected_without_counting() -> None:
+    """两次都跑偏：这句不该当成「无关」落库，也不该扣提问次数。"""
+    provider = SimpleNamespace(
+        text_chat=AsyncMock(
+            return_value=SimpleNamespace(completion_text=THINKING_OUTPUT)
+        )
+    )
+    plugin = new_plugin()
+    plugin.context = SimpleNamespace(get_using_provider=lambda _session: provider)
+    plugin.manager = RoomManager()
+    room, visitor, game = await make_soup_room(plugin.manager)
+    await plugin.manager.complete_turtle_soup_generation(room, game, make_puzzle())
+
+    with pytest.raises(RuntimeError, match="不算次数"):
+        await plugin.submit_turtle_soup_question(
+            room, "这是温室吗？", source="web", visitor_token=visitor.token
+        )
+
+    assert provider.text_chat.await_count == 2
+    assert game.question_count == 0
+    assert game.entries == []
+    assert not game.processing

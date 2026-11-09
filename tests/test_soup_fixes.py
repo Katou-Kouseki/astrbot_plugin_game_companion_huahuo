@@ -50,13 +50,22 @@ async def test_first_seat_does_not_start_multiplayer_soup() -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_seat_soup_still_starts_immediately() -> None:
-    """单人房没有「等别人」的意义，保持入座即开局。"""
+async def test_single_seat_soup_also_waits_for_the_start_button() -> None:
+    """单人房也停在准备状态：先给人机会选「我来出题」，也防私聊链接被拉进群里。
+
+    0.5.81 曾经把单人房改回「入座即开局」，理由是「等下去只会让人以为按钮坏了」。
+    实际反馈是反过来的：一入座就开局，「我来出题」永远点不到，从私聊发到群里的
+    链接别人也来不及坐进来。前端本来就有「开始出题」按钮和人数提示。
+    """
     manager = RoomManager(turtle_soup_max_players=1)
     room, visitor = await make_soup_room(manager)
 
     await manager.claim_and_start(room, visitor.token, "")
 
+    assert room.status == "setup"
+    assert room.game is None
+
+    await manager.start_game(room, visitor.token, "")
     assert room.status == "active"
     assert isinstance(room.game, TurtleSoupGame)
 
@@ -362,3 +371,49 @@ async def test_rematch_refusal_keeps_room_alive() -> None:
     assert applied is True
     assert room.room_id in manager.rooms, "拒绝再来一局不该把房间销毁"
     assert room.status == "finished"
+
+
+@pytest.mark.asyncio
+async def test_private_room_can_still_apply_as_host_before_starting() -> None:
+    """私聊房入座后也停在 setup：这时「我来出题」才有意义。
+
+    以前私聊房入座即开局，`soup_host_number` 的申请窗口（只在开局前）直接消失，
+    按钮看起来就是「点了没反应」。
+    """
+    manager = RoomManager(turtle_soup_max_players=0)
+    room = await manager.create_room(
+        source="private",
+        session_id="aiocqhttp:private:10001",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="turtle_soup",
+        difficulty="normal",
+    )
+    visitor = await manager.join(room)
+    await manager.claim_and_start(room, visitor.token, "")
+
+    assert room.status == "setup"
+    await manager.apply_soup_host(room, visitor.token)
+    assert room.soup_host_number == 1
+
+
+@pytest.mark.asyncio
+async def test_second_player_can_join_after_the_soup_has_started() -> None:
+    """开题后仍然允许加入：群里随时有人进来，不该被挡。
+
+    海龟汤不是对局类（不像棋类有固定回合归属），中途入座的人直接进轮转。
+    """
+    manager = RoomManager(turtle_soup_max_players=0)
+    room, visitor = await make_soup_room(manager)
+    await manager.claim_and_start(room, visitor.token, "")
+    await manager.start_game(room, visitor.token, "")
+    assert room.status == "active"
+
+    second = await manager.join(room)
+    await manager.claim_and_start(room, second.token, "")
+
+    assert len(room.multiplayer.seats) == 2
+    assert room.status == "active"
