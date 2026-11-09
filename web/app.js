@@ -3019,6 +3019,7 @@
         entry.player_number ?? "",
         entry.bot_action ?? "",
         entry.source ?? "",
+        entry.verdict ?? "",
         entry.prompt ?? "",
         entry.response ?? "",
       ]),
@@ -3036,7 +3037,19 @@
       } else {
         entries.forEach((entry) => {
           const item = document.createElement("article");
-          item.className = `soup-entry ${entry.kind || "question"} ${entry.pending ? "pending" : ""}`;
+          // 判定结果给个自己的颜色：是=绿、否=红、部分正确=橙、无关=灰、复合提问=蓝。
+          // 提示已经是黄色、推理是红色，判定如果全用同一种绿，一眼看不出问的结果。
+          // 只给「提问」上色：推理条目也带 verdict（答对=yes/未中=partial），
+          // 加了类会把推理原本的红色盖掉。
+          const verdict = entry.kind === "question"
+            ? String(entry.verdict || "").trim()
+            : "";
+          item.className = [
+            "soup-entry",
+            entry.kind || "question",
+            entry.pending ? "pending" : "",
+            verdict ? `v-${verdict}` : "",
+          ].filter(Boolean).join(" ");
           const prompt = document.createElement("p");
           prompt.className = "prompt";
           const promptText = entry.kind === "reverse"
