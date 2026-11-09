@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.87"
+    assert metadata["version"] == "0.5.88"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1535,3 +1535,7 @@ def test_soup_difficulty_and_library_admin_are_wired() -> None:
     assert 'id="soupEditorDialog"' in page
     assert "mask_solution" in main
     assert "soup_library_action" in script
+    # 难度行里的「提示 N」必须跟对局实际可用条数一致，否则同一屏会出现
+    # 「提示 15」和计数「0 / 3」两套数字。
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    assert "game?.hint_limit" in app

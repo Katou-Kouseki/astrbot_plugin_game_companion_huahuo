@@ -2965,9 +2965,14 @@
         });
       if (soupDifficultyHint) {
         const solve = (SOUP_DIFFICULTY_TEXT[room.difficulty] || SOUP_DIFFICULTY_TEXT.normal).solve;
+        // 提示数要对齐「上面那个计数」：档位说 15 条，但题库只写了 3 条时，
+        // 实际可用就是 3 条。这里用对局的 hint_limit，避免同屏出现「提示 15」和「0 / 3」。
+        const hintText = Number.isFinite(Number(game?.hint_limit))
+          ? Number(game.hint_limit)
+          : Number(room.soup_hint_limit ?? 0);
         soupDifficultyHint.textContent = [
           `提问 ${room.soup_question_limit || "不限"}`,
-          `提示 ${room.soup_hint_limit ?? 0}`,
+          `提示 ${hintText || "不限"}`,
           `推理 ${room.soup_answer_limit || "不限"}`,
           solve,
         ].join(" · ");
