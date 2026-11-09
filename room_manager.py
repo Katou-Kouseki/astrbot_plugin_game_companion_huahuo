@@ -3520,7 +3520,9 @@ class RoomManager:
                 - float(getattr(game, "last_judge_at", 0) or 0)
                 < self.turtle_soup_free_question_cooldown
             ):
-                raise ValueError("别急，稍等片刻再问下一句～花火正在消化上一条推理。")
+                # 文案说「上一条还在判定中」而不是「正在消化推理」：玩家可能只是
+                # 连着问了两个问题，提「推理」会让人以为自己刚才提交了推理。
+                raise ValueError("上一条还在判定中，等一两秒再问～")
             game.begin_processing()
             game.processing_player_number = player_number
             room.multiplayer.turn_deadline = 0.0

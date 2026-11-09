@@ -4481,7 +4481,12 @@ class GameCompanionPlugin(Star):
                     # 失败时走普通聊天回应对话
                     pass
             action, options = self._room_chat_action(room, cleaned)
-            if action in {"soup_question", "soup_answer", "soup_respond"}:
+            if (
+                action in {"soup_question", "soup_answer", "soup_respond"}
+                and not options.get("confident")
+            ):
+                # 只有「拿不准」的发言才请模型复核；带问号的问题与明确的推理
+                # 直接进判定，结果才稳定（也少一次模型调用）。
                 action = await self._refine_turtle_chat_action(
                     room, cleaned, proposed_action=action
                 )
@@ -4832,7 +4837,7 @@ class GameCompanionPlugin(Star):
         )
         weak_guess = any(word in normalized for word in weak_guess_words) and not interrogative
         if strong_answer or weak_guess:
-            return "soup_answer", {}
+            return "soup_answer", {"confident": True}
         if (
             room.status == "active"
             and len(raw_text) >= 2
@@ -4840,7 +4845,12 @@ class GameCompanionPlugin(Star):
             # 内容有信息量的发言交给统一判定：既可能是“是/否”问题，也可能已经
             # 把真相说完整（此时 LLM 会在同一次判定里返回 solved=true 判定答对），
             # 无需玩家刻意加“答案/真相”等字样。太短的语气词仍走聊天。
-            return "soup_question", {}
+            #
+            # `confident`：带问号的句子在海龟汤房里就是提问，这是最明确的意图，
+            # 不再交给复核模型改判。复核器以前时不时把「电梯门还能正常打开吗？」
+            # 判成闲聊，于是同一句话一次进判定、一次被当成聊天回复，玩家看到的是
+            # 花火一会儿说「能」一会儿说「否」——两个都不是判定结果。
+            return "soup_question", {"confident": bool(interrogative)}
         return "", {}
 
     async def _refine_turtle_chat_action(
@@ -4956,6 +4966,10 @@ class GameCompanionPlugin(Star):
             "这里的聊天只属于当前房间，不得声称已向 QQ 发消息。保持原有人格、关系和自然语气。"
             "系统会在模型调用前执行有权限的游戏指令；你不能自行声称已经落子、切换游戏、投降、"
             "暂停、悔棋或改变房间状态。海龟汤中绝不能透露未公开的汤底或隐藏事实。"
+            # 现实里出现过：玩家问「电梯上升时门还能打开吗」，消息被误判成闲聊，
+            # 花火就顺着人格直接答「能」——绕过判定给了个可能错的答案，还带剧透风险。
+            "玩家关于当前汤题的是/否提问由游戏判定流程回答，你不要替它给「是」或「否」，"
+            "也不要猜测汤底；这类问题可以只说一句「这个我用提问来答」，或提醒他在提问框里问。"
         ).strip()
         prompt = (
             f"当前发言者：{public_name}（{visitor.number}号），身份={identity}，"

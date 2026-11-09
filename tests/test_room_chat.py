@@ -185,3 +185,56 @@ async def test_player_can_switch_game_from_room_chat() -> None:
     assert room.game_type == "tictactoe"
     assert room.status == "setup"
     assert "井字棋" in str(room.messages[-1]["content"])
+
+
+# ---------------- 海龟汤：带问号的发言不该被复核成闲聊 ----------------
+
+
+def make_soup_room(status: str = "active") -> SimpleNamespace:
+    from astrbot_plugin_game_companion_huahuo.turtle_soup import TurtleSoupGame
+
+    return SimpleNamespace(
+        game_type="turtle_soup",
+        status=status,
+        game=TurtleSoupGame(
+            difficulty="normal", max_hints=3, content_level="normal"
+        ),
+    )
+
+
+def test_question_mark_is_a_confident_question() -> None:
+    """「电梯门还能正常打开吗？」必须稳定进判定。
+
+    真实事故：同一句话一次被判提问、一次被复核成闲聊，于是花火一会儿答「能」
+    一会儿答「否」——两个都是人格在自由发挥，根本不是判定结果。
+    """
+    room = make_soup_room()
+    action, options = GameCompanionPlugin._room_chat_action(
+        room, "电梯上升的过程中，电梯门还能正常打开吗？"
+    )
+    assert action == "soup_question"
+    assert options.get("confident") is True
+
+
+def test_trailing_particle_question_is_confident() -> None:
+    room = make_soup_room()
+    action, options = GameCompanionPlugin._room_chat_action(room, "他是不是被困住了呢")
+    assert action == "soup_question"
+    assert options.get("confident") is True
+
+
+def test_vague_statement_still_goes_through_the_refiner() -> None:
+    """没有问句特征的短句留给人格/复核判断，不能被硬当提问吃掉。"""
+    room = make_soup_room()
+    action, options = GameCompanionPlugin._room_chat_action(room, "嗯嗯随便聊聊")
+    assert action == "soup_question"
+    assert not options.get("confident")
+
+
+def test_explicit_answer_is_confident() -> None:
+    room = make_soup_room()
+    action, options = GameCompanionPlugin._room_chat_action(
+        room, "答案是我不小心按了按钮"
+    )
+    assert action == "soup_answer"
+    assert options.get("confident") is True
