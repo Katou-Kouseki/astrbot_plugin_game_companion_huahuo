@@ -1778,8 +1778,18 @@ class GameCompanionPlugin(Star):
             .lower()
             or "builtin_first"
         )
-        if self.turtle_soup_library_priority not in {"builtin_first", "online_first"}:
+        if self.turtle_soup_library_priority not in {
+            "builtin_first",
+            "online_first",
+            "generated_first",
+        }:
             self.turtle_soup_library_priority = "builtin_first"
+        # 预生成：开局出好题后，后台再让模型备一道「下一题」存起来。
+        # 池子空了就得现场等生成 + 自检几十秒，提前备好下一局直接命中。
+        # 0 表示关闭，不再单独放一个开关，省得两个配置项互相打架。
+        self.turtle_soup_prefetch_target = self._cfg_int(
+            "turtle_soup.prefetch_target", 1, minimum=0, maximum=3
+        )
         # 海龟汤默认难度：娱乐 / 简单 / 普通 / 困难（房间里仍可改）
         self.turtle_soup_difficulty = self._soup_difficulty(
             self._cfg_str("turtle_soup.difficulty", "normal")
@@ -2126,6 +2136,8 @@ class GameCompanionPlugin(Star):
             allow_download=self.allow_cloudflared_download,
         )
         self._watchdog_task: asyncio.Task | None = None
+        # 海龟汤「预生成下一题」的后台任务：同一时刻只跑一个，避免多房间把生成模型打满
+        self._soup_prefetch_task: asyncio.Task | None = None
         self._tunnel_recovery_task: asyncio.Task | None = None
         self._next_tunnel_retry_at = 0.0
         # 房间访问地址的 base（协议+主机+端口）缓存：首次解析成功后固定下来，
@@ -3868,7 +3880,7 @@ class GameCompanionPlugin(Star):
             return
         if event_name == "soup_generation_requested":
             if isinstance(room.game, TurtleSoupGame):
-                self._spawn(self._prepare_turtle_soup(room, room.game))
+                self._spawn(self._prepare_turtle_soup_task(room, room.game))
             return
         if event_name == "undercover_word_pair_requested":
             # 尝试用 LLM 生成一对词条，经去重窗口检查后持久化；失败留给 room_manager 本地 fallback
@@ -5230,13 +5242,16 @@ class GameCompanionPlugin(Star):
         return ranked[0][1]
 
     async def _prepare_turtle_soup(self, room: GameRoom, game: TurtleSoupGame) -> None:
-        """出题闭环：自定义投稿 → 网络题库 / 内置题库 → 往期生成 → LLM 生成 → 兜底题。
+        """出题闭环：自定义投稿 →（可选）往期生成 → 网络题库 / 内置题库 → 往期生成
+        → LLM 生成 → 兜底题。
 
         各段的共同约束是「不能和账本里的题目实质重复」，且任一环节成功就记账，
         让下一次出题（不论哪个房间、是否重启）都能看到它。
 
         自定义投稿排最前：玩家私聊投的题如果总被两百多道内置题挤掉，投了也白投。
         内置题库放在 LLM 之前：现成的题出得快也更省调用，挑不出新题时才让模型现编。
+        预生成池（`turtle_soup.library_priority = generated_first`）可以提到最前：
+        题是后台提前备好的，命中即出，等于用「慢的时候多花一次调用」换「每次都秒开」。
         """
         if game.mode != "bot_host":
             return
@@ -5245,6 +5260,10 @@ class GameCompanionPlugin(Star):
             deck.recent_signatures(12)
         )
         last_error = ""
+        priority = (
+            str(getattr(self, "turtle_soup_library_priority", "builtin_first"))
+            or "builtin_first"
+        ).strip().lower()
 
         # ⓪ 自定义题目（玩家私聊投稿）：优先级最高
         try:
@@ -5271,12 +5290,14 @@ class GameCompanionPlugin(Star):
                 )
                 return
 
-        # ① / ② 网络题库与内置题库：谁先谁后由 `turtle_soup.library_priority`
+        # ① 预生成池优先：后台已经备好的新题，出题是瞬时的
+        if priority == "generated_first":
+            if await self._generated_soup_puzzle(room, game, deck, excluded):
+                return
+
+        # ② / ③ 网络题库与内置题库：谁先谁后由 `turtle_soup.library_priority`
         # 决定。内置题不用联网、出得快，网络题更新鲜，两种需求都有人要。
-        prefer_builtin = (
-            str(getattr(self, "turtle_soup_library_priority", "builtin_first"))
-            or "builtin_first"
-        ).strip().lower() == "builtin_first"
+        prefer_builtin = priority == "builtin_first"
         loaders = (
             ("内置题库", self._builtin_soup_puzzle),
             ("网络题库", self._online_soup_puzzle),
@@ -5291,8 +5312,59 @@ class GameCompanionPlugin(Star):
                 last_error = f"{label}不可用：{exc}"
                 logger.info("[GameCompanion] %s不可用，换下一种来源：%s", label, exc)
 
-        # ③ 往期生成：模型以前出过、被存下来的题。能用就先用，省一次生成 + 一次校验；
+        # ④ 往期生成：模型以前出过、被存下来的题。能用就先用，省一次生成 + 一次校验；
         # 管理台改过的题也走这里，改完下一局就能生效。
+        if priority != "generated_first":
+            if await self._generated_soup_puzzle(room, game, deck, excluded):
+                return
+
+        # ⑤ LLM 生成（最多 3 次）+ 独立校验
+        try:
+            puzzle = await self._generate_soup_puzzle(
+                room,
+                content_level=game.content_level,
+                difficulty=room.difficulty,
+                excluded=excluded,
+                deck=deck,
+                attempts=3,
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            last_error = str(exc)
+            puzzle = None
+        if puzzle is not None:
+            # 无论是否成功落库都要收手：落库失败通常意味着这一局已经换题/结束了
+            if await self.manager.complete_turtle_soup_generation(
+                room, game, puzzle, source="llm"
+            ):
+                deck.remember(puzzle, source="llm")
+                # 存下来：管理台能看能改，以后也能直接复用，不必每局都现编
+                try:
+                    self._soup_generated().add(puzzle)
+                except (OSError, ValueError):
+                    pass
+            return
+
+        # ⑥ 本地兜底题（按账本挑最久没出过的）
+        try:
+            puzzle = self._pick_fallback_puzzle(game.content_level, deck, excluded)
+        except ValueError as exc:
+            logger.warning("[GameCompanion] 海龟汤无可用兜底题：%s", exc)
+            return
+        applied = await self.manager.complete_turtle_soup_generation(
+            room, game, puzzle, source="fallback"
+        )
+        if applied:
+            deck.remember(puzzle, source="fallback")
+            logger.warning(
+                "[GameCompanion] Bot 出题连续失败，当前局使用内置兜底题《%s》: %s",
+                puzzle.title,
+                last_error or "模型不可用",
+            )
+
+    async def _generated_soup_puzzle(
+        self, room: GameRoom, game: TurtleSoupGame, deck: Any, excluded: set[str]
+    ) -> bool:
+        """从「往期生成」存档里拿一道没出过的题并开局。命中返回 True。"""
         try:
             store = self._soup_generated()
             reused = [
@@ -5302,23 +5374,40 @@ class GameCompanionPlugin(Star):
             ]
         except (OSError, ValueError):
             reused = []
-        if reused:
-            puzzle = random.choice(reused)
-            if await self.manager.complete_turtle_soup_generation(
-                room, game, puzzle, source="generated"
-            ):
-                deck.remember(puzzle, source="generated")
-                store.mark_used(puzzle.signature)
-                logger.info("[GameCompanion] 海龟汤复用往期生成题：《%s》", puzzle.title)
-                return
+        if not reused:
+            return False
+        puzzle = random.choice(reused)
+        if not await self.manager.complete_turtle_soup_generation(
+            room, game, puzzle, source="generated"
+        ):
+            return False
+        deck.remember(puzzle, source="generated")
+        store.mark_used(puzzle.signature)
+        logger.info("[GameCompanion] 海龟汤复用往期生成题：《%s》", puzzle.title)
+        return True
 
-        # ④ LLM 生成（最多 3 次）+ 独立校验
+    async def _generate_soup_puzzle(
+        self,
+        room: GameRoom,
+        *,
+        content_level: str,
+        difficulty: str,
+        excluded: set[str],
+        deck: Any,
+        attempts: int = 3,
+    ) -> Any:
+        """让模型现编一道题并通过独立自检；失败抛最后一次的错误。
+
+        只负责「编 + 校验 + 去重」，不落库：正常出题要交给房间开局，
+        预生成只要存进存档，两者共用这一段。
+        """
         persona = await self._persona_prompt(room)
-        for attempt in range(1, 4):
+        last_error = ""
+        for attempt in range(1, max(1, int(attempts)) + 1):
             try:
                 system_prompt, prompt = generation_prompt(
-                    difficulty=room.difficulty,
-                    content_level=game.content_level,
+                    difficulty=difficulty,
+                    content_level=content_level,
                     recent_signatures=sorted(excluded),
                     recent_titles=deck.recent_titles(5),
                     recent_surfaces=deck.recent_surfaces(3),
@@ -5338,7 +5427,7 @@ class GameCompanionPlugin(Star):
                 data = extract_json_object(raw)
                 if data is None:
                     raise ValueError("出题结果不是有效 JSON")
-                puzzle = puzzle_from_mapping(data, content_level=game.content_level)
+                puzzle = puzzle_from_mapping(data, content_level=content_level)
                 duplicate = deck.find_duplicate(puzzle)
                 if duplicate is not None or puzzle.signature in excluded:
                     title = (duplicate or {}).get("title") or puzzle.title
@@ -5354,17 +5443,7 @@ class GameCompanionPlugin(Star):
                 )
                 if not validation_passed(check):
                     raise ValueError("题目未通过独立自洽性校验")
-                if await self.manager.complete_turtle_soup_generation(
-                    room, game, puzzle, source="llm"
-                ):
-                    deck.remember(puzzle, source="llm")
-                    # 存下来：管理台能看能改，以后也能直接复用，不必每局都现编
-                    try:
-                        self._soup_generated().add(puzzle)
-                    except (OSError, ValueError):
-                        pass
-                    return
-                return
+                return puzzle
             except (RuntimeError, ValueError, OSError) as exc:
                 last_error = str(exc)
                 logger.info(
@@ -5372,23 +5451,90 @@ class GameCompanionPlugin(Star):
                     attempt,
                     exc,
                 )
+        raise ValueError(last_error or "模型没有出出可用的题")
 
-        # ⑤ 本地兜底题（按账本挑最久没出过的）
+    def _soup_prefetch_enabled(self) -> bool:
+        """备用题目标数为 0 即关闭预生成（不再单独放一个开关）。"""
+        return int(getattr(self, "turtle_soup_prefetch_target", 1) or 0) > 0
+
+    async def _prepare_turtle_soup_task(
+        self, room: GameRoom, game: TurtleSoupGame
+    ) -> None:
+        """开局出题的后台任务：出完当前题，顺手把「下一题」备进存档。"""
         try:
-            puzzle = self._pick_fallback_puzzle(game.content_level, deck, excluded)
-        except ValueError as exc:
-            logger.warning("[GameCompanion] 海龟汤无可用兜底题：%s", exc)
+            await self._prepare_turtle_soup(room, game)
+        finally:
+            self._schedule_soup_prefetch(room, game)
+
+    def _schedule_soup_prefetch(self, room: GameRoom, game: TurtleSoupGame) -> None:
+        """把「预生成下一题」丢到后台，绝不挡当前这一局。
+
+        池子空了就得在现场等模型生成 + 自检（几十秒，还常被判重打回）；
+        提前备一道，下一局（换房间也一样）直接命中「往期生成」，出题是瞬时的。
+        已经有一道在生成中就不再排队，避免同时开几个房间时把生成模型打满。
+        """
+        if not self._soup_prefetch_enabled():
             return
-        applied = await self.manager.complete_turtle_soup_generation(
-            room, game, puzzle, source="fallback"
-        )
-        if applied:
-            deck.remember(puzzle, source="fallback")
-            logger.warning(
-                "[GameCompanion] Bot 出题连续失败，当前局使用内置兜底题《%s》: %s",
-                puzzle.title,
-                last_error or "模型不可用",
+        if getattr(game, "mode", "") != "bot_host":
+            return
+        running = getattr(self, "_soup_prefetch_task", None)
+        if running is not None and not running.done():
+            return
+        content_level = str(getattr(game, "content_level", "normal") or "normal")
+        difficulty = str(getattr(room, "difficulty", "normal") or "normal")
+        try:
+            self._soup_prefetch_task = self._spawn(
+                self._soup_prefetch(room, content_level, difficulty)
             )
+        except RuntimeError:
+            # 事件循环正在关闭（插件重载/退出）：补货没意义，安静跳过
+            self._soup_prefetch_task = None
+
+    async def _soup_prefetch(
+        self, room: GameRoom, content_level: str, difficulty: str
+    ) -> None:
+        """后台补货：让「没出过的生成题」保持 `prefetch_target` 道。
+
+        任何失败都只记日志——这是锦上添花的事，不能影响正在进行的对局，
+        也不能因为模型抖动就每局都重试到天亮。
+        """
+        try:
+            target = max(0, int(getattr(self, "turtle_soup_prefetch_target", 1) or 0))
+            if target <= 0:
+                return
+            store = self._soup_generated()
+            deck = self._soup_deck()
+            try:
+                need = target - len(store.unused(content_level))
+            except (OSError, ValueError):
+                return
+            if need <= 0:
+                return
+            excluded = set(deck.recent_signatures(12)) | store.signatures()
+            for _ in range(min(need, 2)):
+                try:
+                    puzzle = await self._generate_soup_puzzle(
+                        room,
+                        content_level=content_level,
+                        difficulty=difficulty,
+                        excluded=excluded,
+                        deck=deck,
+                        attempts=2,
+                    )
+                except (RuntimeError, ValueError, OSError) as exc:
+                    logger.info(
+                        "[GameCompanion] 预生成海龟汤没成功（不影响当前对局）：%s", exc
+                    )
+                    return
+                if store.add(puzzle):
+                    excluded.add(puzzle.signature)
+                    logger.info(
+                        "[GameCompanion] 已预生成一道海龟汤备用：《%s》", puzzle.title
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 后台补货失败不许炸到游戏
+            logger.debug("[GameCompanion] 预生成海龟汤异常: %s", exc)
 
     async def _online_soup_puzzle(
         self, room: GameRoom, game: TurtleSoupGame, deck: Any, excluded: set[str]
@@ -7117,10 +7263,7 @@ class GameCompanionPlugin(Star):
         target = self.announce_target(room)
         if not target:
             return
-        try:
-            await self.context.send_message(target, MessageChain(parts))
-        except Exception as exc:
-            logger.info("[GameCompanion] 轮次播报发送失败：%s", exc)
+        await self._deliver(target, MessageChain(parts), what="轮次播报")
 
     async def _flush_soup_group_sync(self, room_id: str) -> None:
         """窗口到期后把攒下的问答合并成一条（优先合并聊天记录）发到群里。"""
@@ -7176,12 +7319,8 @@ class GameCompanionPlugin(Star):
             target = self.announce_target(room)
             if not target:
                 return False
-            try:
-                await self.context.send_message(target, chain)
-                return True
-            except Exception as exc:  # 平台不支持合并转发时会在这里抛
-                logger.info("[GameCompanion] 合并聊天记录发送失败：%s", exc)
-                return False
+            # 平台不支持合并转发时这里会失败，交给调用方换图片/纯文字兜底
+            return await self._deliver(target, chain, what="问答速报")
 
         # 条数少 → 图片更能吸引人；条数多 → 合并记录更完整。两种互相兜底，
         # 都失败才退回纯文本（至少让群里知道网页那边在问什么）。
@@ -7212,13 +7351,111 @@ class GameCompanionPlugin(Star):
         return text
 
     @staticmethod
+    def _platform_meta_of(inst: Any) -> tuple[str, str]:
+        """取适配器实例的 (id, name)。
+
+        `id` 是这条适配器配置的唯一标识，`name` 是「aiocqhttp」这类适配器类型名
+        （AstrBot 事件里的 `platform_meta.name` 就是它）。两者不是一回事：同一个
+        aiocqhttp 适配器可以被用户改名，id 也可能是 `aiocqhttp-1` 这种带后缀的。
+        """
+        meta: Any = None
+        try:
+            meta = inst.meta() if callable(getattr(inst, "meta", None)) else getattr(
+                inst, "meta", None
+            )
+        except Exception:  # noqa: BLE001 - 适配器自定义实现什么都可能抛
+            meta = None
+        pid = str(getattr(meta, "id", "") or "").strip()
+        name = str(getattr(meta, "name", "") or "").strip()
+        if not pid:
+            pid = str(getattr(inst, "platform_id", "") or "").strip()
+        if not name:
+            name = str(getattr(inst, "platform_name", "") or "").strip()
+        return pid, name
+
+    def _platform_instances(self) -> list[Any]:
+        manager = getattr(getattr(self, "context", None), "platform_manager", None)
+        insts = getattr(manager, "platform_insts", None)
+        try:
+            return list(insts or ())
+        except TypeError:
+            return []
+
+    def _platform_ids(self) -> list[str]:
+        return [
+            pid
+            for pid, _ in (self._platform_meta_of(inst) for inst in self._platform_instances())
+            if pid
+        ]
+
+    def _resolve_platform_id(self, preferred: str) -> str:
+        """把会话串里的平台 id 换成本机真实存在的那个。
+
+        AstrBot 的 `context.send_message` 是按 `platform.meta().id` 找适配器的
+        （找不到只打一行 warning 然后 return False）。管理台建的房间没有来源
+        事件，只能按适配器类型名猜 id；写死 `aiocqhttp` 时，用户改过 id、或同时
+        挂了两条 QQ 适配器，消息就会死在
+        `cannot find platform for session aiocqhttp:GroupMessage:xxx`。
+        """
+        available = [
+            (pid, name)
+            for pid, name in (self._platform_meta_of(inst) for inst in self._platform_instances())
+            if pid
+        ]
+        if not available:
+            # 拿不到注册表（老版本框架 / 单测最小实例）：保持原样，交给框架处理
+            return preferred
+        ids = [pid for pid, _ in available]
+        if preferred and preferred in ids:
+            return preferred
+        # 明确指向别的适配器（qq_official / telegram 等）时不要挪到 QQ 上：
+        # 发错平台比发不出去更糟，这里只兜「QQ 适配器改过 id」这一种情况。
+        if preferred and preferred.strip().lower() not in {
+            "", "aiocqhttp", "onebot", "admin", "web",
+        }:
+            return preferred
+        for pid, name in available:
+            lowered = name.lower()
+            if "aiocqhttp" in lowered or "onebot" in lowered:
+                return pid
+        return preferred
+
+    def _session_with_platform(self, session: str) -> str:
+        """会话串校正：MessageType 合法 + 平台 id 是本机真实存在的那个。"""
+        target = GameCompanionPlugin._normalize_session(session)
+        parts = target.split(":")
+        if len(parts) != 3:
+            return target
+        resolved = self._resolve_platform_id(parts[0])
+        if resolved and resolved != parts[0]:
+            parts[0] = resolved
+            return ":".join(parts)
+        return target
+
+    def announce_problem(self, room: GameRoom) -> str:
+        """播报发不出去的原因（空串代表可以发）。前端提示用，不再笼统说「没绑群」。"""
+        target = self.announce_target(room)
+        if not target:
+            return "这个房间没有绑定 QQ 群，先在管理台绑定群号（或在群里开房）再通知"
+        resolved = self._session_with_platform(target)
+        ids = self._platform_ids()
+        if ids and resolved.split(":")[0] not in ids:
+            return (
+                "没找到能发群的 QQ 适配器（当前已加载："
+                + "、".join(ids)
+                + "），请确认 QQ 平台已启用后再通知"
+            )
+        return ""
+
+    @staticmethod
     def announce_target(room: GameRoom) -> str:
         """播报要发到哪个会话；发不出去时返回空串。
 
         群房直接用开房会话。管理台开的链接房 `session_id` 是 `admin:console`，
         根本没有对应的平台会话，往里发必然失败——这类房间靠管理台绑定的群号
         （room.group_id）拼出真实群会话。`platform` 为 admin/web 时按 aiocqhttp
-        处理，因为管理台里能拿到群号的只有 QQ 适配器。
+        处理，因为管理台里能拿到群号的只有 QQ 适配器（真实 id 由
+        `_session_with_platform` 在发送前校正）。
 
         拼出来的第二段必须是 `GroupMessage`（不是 `group`），否则 AstrBot 解析
         会话时就抛错，消息连发送环节都到不了。
@@ -7234,6 +7471,37 @@ class GameCompanionPlugin(Star):
             platform = "aiocqhttp"
         return f"{platform}:GroupMessage:{group}"
 
+    async def _deliver(self, session: str, chain: Any, *, what: str = "消息") -> bool:
+        """按真实平台 id 主动发一条消息，返回是否真的发出去了。
+
+        平台不在本机时提前判定失败：`context.send_message` 遇到不存在的平台只会
+        打一行 warning 再返回 False，调用方要是没看返回值，就会误写幂等标记，
+        之后这一局再也播不出去（管理台开台通知就是这么丢的）。
+        """
+        target = self._session_with_platform(session)
+        if not target:
+            return False
+        ids = self._platform_ids()
+        platform = target.split(":")[0]
+        if ids and platform not in ids:
+            logger.warning(
+                "[GameCompanion] %s没发出去：会话 %s 的平台「%s」不在本机适配器里（现有：%s）",
+                what,
+                target,
+                platform,
+                "、".join(ids),
+            )
+            return False
+        try:
+            sent = await self.context.send_message(target, chain)
+        except Exception as exc:  # noqa: BLE001 - 平台侧异常不该打断游戏
+            logger.warning("[GameCompanion] %s发送失败（%s）：%s", what, target, exc)
+            return False
+        if sent is False:
+            logger.warning("[GameCompanion] %s没发出去：平台未找到会话 %s", what, target)
+            return False
+        return True
+
     async def _send_to_origin(self, room: GameRoom, text: str) -> bool:
         """把纯文字发到开房群，返回是否真的发出去了。
 
@@ -7246,12 +7514,7 @@ class GameCompanionPlugin(Star):
         target = self.announce_target(room)
         if not target:
             return False
-        try:
-            await self.context.send_message(target, MessageChain([Plain(text)]))
-            return True
-        except Exception as exc:
-            logger.warning("[GameCompanion] 回发游戏消息失败: %s", exc)
-            return False
+        return await self._deliver(target, MessageChain([Plain(text)]), what="群消息")
 
     async def undercover_recap(self, room: GameRoom) -> str:
         """生成一局谁是卧底的短复盘摘要（结算卡「生成复盘」/「通知到群」共用）。
@@ -9695,8 +9958,8 @@ class GameCompanionPlugin(Star):
                 target = self.announce_target(room)
                 if not target:
                     return False
-                await self.context.send_message(target, MessageChain(parts))
-                return True
+                if await self._deliver(target, MessageChain(parts), what="战报图"):
+                    return True
         except Exception as exc:
             logger.warning("[GameCompanion] 发送战报图片失败，回退纯文字: %s", exc)
         if text or recap:
@@ -9776,10 +10039,8 @@ class GameCompanionPlugin(Star):
         logger.info("[GameCompanion] 已触发卧底战绩报表推送")
 
     async def _send_report_piece(self, umoid: str, text: str) -> None:
-        try:
-            await self.context.send_message(umoid, MessageChain([Plain(text)]))
-        except Exception as exc:
-            logger.warning("[GameCompanion] 战绩报表发送失败(%s): %s", umoid, exc)
+        # 白名单里的会话串可能写的是旧的平台 id，发送前统一校正一遍
+        await self._deliver(umoid, MessageChain([Plain(text)]), what="战绩报表")
 
     @staticmethod
     def _report_window_days(mode: str) -> int:
@@ -10224,18 +10485,11 @@ class GameCompanionPlugin(Star):
                 f"请在 {self.manager.empty_player_timeout} 秒内进入玩家席，"
                 "否则房间会自动销毁。"
             )
-        try:
-            delivered = await self.context.send_message(
-                room.session_id,
-                MessageChain([Plain("\n".join(lines))]),
-            )
-        except Exception as exc:
-            logger.warning(
-                "[GameCompanion] 独立发送房间链接失败，将交由模型回复回退: %s",
-                exc,
-            )
-            return False
-        if not delivered:
+        if not await self._deliver(
+            room.session_id,
+            MessageChain([Plain("\n".join(lines))]),
+            what="房间链接",
+        ):
             logger.warning(
                 "[GameCompanion] 未找到房间会话对应平台，将交由模型回复回退: session=%s",
                 room.session_id,
@@ -11440,8 +11694,15 @@ class GameCompanionPlugin(Star):
             .lower()
             or "builtin_first"
         )
-        if self.turtle_soup_library_priority not in {"builtin_first", "online_first"}:
+        if self.turtle_soup_library_priority not in {
+            "builtin_first",
+            "online_first",
+            "generated_first",
+        }:
             self.turtle_soup_library_priority = "builtin_first"
+        self.turtle_soup_prefetch_target = self._cfg_int(
+            "turtle_soup.prefetch_target", 1, minimum=0, maximum=3
+        )
         self.turtle_soup_free_questioning = self._cfg_bool(
             "turtle_soup.free_questioning", True
         )

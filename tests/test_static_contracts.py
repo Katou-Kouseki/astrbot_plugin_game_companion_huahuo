@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.91"
+    assert metadata["version"] == "0.5.92"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1510,8 +1510,43 @@ def test_soup_announce_requires_a_target_group() -> None:
     server = (ROOT / "server.py").read_text(encoding="utf-8")
     main = (ROOT / "main.py").read_text(encoding="utf-8")
 
-    assert server.count("announce_target") >= 3
+    # 「没绑群」和「找不到 QQ 适配器」是两种原因，前端要能分开提示
+    assert server.count("announce_problem") >= 3
     assert "def announce_target" in main
+    assert "def announce_problem" in main
+
+
+def test_announce_resolves_the_real_platform_id() -> None:
+    """平台 id 不能写死 `aiocqhttp`。
+
+    AstrBot 按 `platform.meta().id` 找适配器，`aiocqhttp` 只是适配器类型名
+    (`meta().name`)。用户改过适配器 id 时，写死的会话串会让
+    `context.send_message` 直接返回 False 并只打一行 warning
+    （`cannot find platform for session ...`），管理台开台通知就是这么丢的。
+    """
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "def _resolve_platform_id" in main
+    assert "def _session_with_platform" in main
+    assert "def _deliver" in main
+    # 所有主动发送都走统一出口，避免又冒出直接拼会话串的调用
+    assert "await self.context.send_message(" in main
+    assert main.count("context.send_message(") <= 2
+
+
+def test_turtle_soup_prefetches_the_next_puzzle() -> None:
+    """预生成：开局出好题后，后台顺手备好下一题，下一局直接命中存档。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+    assert "async def _soup_prefetch(" in main
+    assert "def _schedule_soup_prefetch(" in main
+    assert "_prepare_turtle_soup_task" in main
+    soup = schema["turtle_soup"]["items"]
+    # 预生成只留一个「备用题数量」，0 即关闭：两个开关容易互相打架
+    assert soup["prefetch_target"]["default"] == 1
+    assert "prefetch_generated" not in soup
+    assert "generated_first" in soup["library_priority"]["options"]
 
 
 def test_soup_difficulty_and_library_admin_are_wired() -> None:

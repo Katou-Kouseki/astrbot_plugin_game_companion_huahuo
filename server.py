@@ -707,12 +707,10 @@ class GameRoomServer:
             )
         except PermissionError as exc:
             return self._forbidden(exc)
-        if not self.plugin.announce_target(room):
+        problem = self.plugin.announce_problem(room)
+        if problem:
             return web.json_response(
-                {
-                    "status": "error",
-                    "message": "这个房间没有绑定 QQ 群，先在管理台绑定群号（或在群里开房）再通知",
-                },
+                {"status": "error", "message": problem},
                 status=400,
             )
         key = f"soup:{int(getattr(room, 'completed_games', 0) or 0)}"
@@ -1082,12 +1080,10 @@ class GameRoomServer:
         except PermissionError as exc:
             return self._forbidden(exc)
         image_data = self._image_payload(payload)
-        if not self.plugin.announce_target(room):
+        problem = self.plugin.announce_problem(room)
+        if problem:
             return web.json_response(
-                {
-                    "status": "error",
-                    "message": "这个房间没有绑定 QQ 群，先在管理台绑定群号（或在群里开房）再通知",
-                },
+                {"status": "error", "message": problem},
                 status=400,
             )
         try:
@@ -1138,12 +1134,10 @@ class GameRoomServer:
             )
         except PermissionError as exc:
             return self._forbidden(exc)
-        if not self.plugin.announce_target(room):
+        problem = self.plugin.announce_problem(room)
+        if problem:
             return web.json_response(
-                {
-                    "status": "error",
-                    "message": "这个房间没有绑定 QQ 群，先在管理台绑定群号（或在群里开房）再通知",
-                },
+                {"status": "error", "message": problem},
                 status=400,
             )
         if room.last_announced_uid == key:

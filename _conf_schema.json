@@ -407,12 +407,6 @@
         "type": "bool",
         "default": true
       },
-      "max_hints": {
-        "description": "海龟汤每局最多提示次数",
-        "type": "int",
-        "default": 3,
-        "hint": "范围 0-20；整局总次数（不是每人一份），按题目提示顺序发放，不同玩家拿到的提示不会重复。0 表示不额外限制。「按难度自动决定次数」开启时以难度表为准。"
-      },
       "content_level": {
         "description": "题目内容等级",
         "type": "string",
@@ -430,7 +424,7 @@
         "hint": "all_ages 为全年龄，normal 为普通悬疑，unrestricted 允许更沉重题材但仍遵守安全限制。"
       },
       "difficulty": {
-        "description": "海龟汤默认难度",
+        "description": "默认难度",
         "type": "string",
         "default": "normal",
         "options": [
@@ -447,73 +441,73 @@
         ],
         "hint": "新建房间时的默认难度，房间里仍可按局面调整。娱乐：提问与推理都不限次数、提示 15 次，猜中条件最松（部分正确也算过）；简单：提问 90 / 提示 10 / 推理 8，核心推理正确即可；普通：提问 35 / 提示 5 / 推理 4，核心推理正确即可；困难：提问 15 / 提示 1 / 推理 2，必须完全还原。"
       },
-      "follow_difficulty": {
-        "description": "按难度自动决定次数",
-        "type": "bool",
-        "default": true,
-        "hint": "开启时，提问/提示/推理次数由本局难度决定（娱乐：提问不限、提示 15、推理不限；简单：90/10/8；普通：35/5/4；困难：15/1/2），下面三项自定义数值不生效。关闭后一律使用下面的自定义数值。"
-      },
       "max_players": {
-        "description": "海龟汤最大玩家席数",
+        "description": "最大玩家席数",
         "type": "int",
         "default": 0,
         "hint": "0 表示不限制（默认）：群里谁想加入都能坐下，人多也不会被挡在门外；填正数则按该值封顶。"
       },
+      "follow_difficulty": {
+        "description": "次数按难度自动决定",
+        "type": "bool",
+        "default": true,
+        "hint": "开启时，提问/提示/推理次数由本局难度决定（娱乐：提问不限、提示 15、推理不限；简单：90/10/8；普通：35/5/4；困难：15/1/2），下面三项自定义数值不生效。关闭后一律使用下面的自定义数值。"
+      },
       "max_questions": {
-        "description": "每局提问次数上限",
+        "description": "每局提问上限",
         "type": "int",
         "default": 15,
         "hint": "这一局的「是/否提问」用完就停，推理另有额度。填 0 表示不限制。仅在「按难度自动决定次数」关闭时生效。"
       },
+      "max_hints": {
+        "description": "每局提示上限",
+        "type": "int",
+        "default": 3,
+        "hint": "范围 0-20；整局总次数（不是每人一份），按题目提示顺序发放，不同玩家拿到的提示不会重复。0 表示不额外限制。「按难度自动决定次数」开启时以难度表为准。"
+      },
       "max_answers": {
-        "description": "每局推理次数上限",
+        "description": "每局推理上限",
         "type": "int",
         "default": 8,
         "hint": "整局共享（不是每人一份）：群里二十个人各猜一次就是二十次模型判定，按人头给额度等于没有上限。最后一次仍没人答对时直接揭晓汤底并结算。填 0 表示不限制。仅在「按难度自动决定次数」关闭时生效。"
       },
       "free_questioning": {
-        "description": "自由提问（默认开启，不强制轮次）",
+        "description": "自由提问（不强制轮次）",
         "type": "bool",
         "default": true,
         "hint": "默认开启：任意玩家席成员都能随时提问/答题，谁想到就问，不用等轮次——群里人多时尤其明显，20 个人轮流问一轮要等 20 次。关闭后回到按玩家席顺位轮流提问，并启用回合超时自动换人。观众仍需先加入玩家席。"
       },
       "free_question_cooldown": {
-        "description": "自由提问判定冷却（秒）",
+        "description": "判定冷却（秒）",
         "type": "int",
         "default": 1,
         "hint": "范围 0-30；限制两次 LLM 判定之间的最短间隔，防止玩家连续提问把模型打满。0 表示不额外限速（仍受单格判断锁约束）。"
       },
       "auto_reveal_seconds": {
-        "description": "超时揭晓汤底（秒）",
+        "description": "超时揭晓（秒）",
         "type": "int",
         "default": 1800,
         "hint": "本题长时间没有任何推进（提问、推理、提示）且还没解开时，自动收题并公布汤底，避免一题永远挂着；0 表示关闭，只保留玩家投票揭晓。"
       },
+      "bot_join_player_host": {
+        "description": "玩家出题时 Bot 参与",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，玩家自荐出题的对局里花火作为普通参与者一起提问/推理（它看不到汤底，只能看汤面和已公开问答）；节奏按在线玩家数自动换算——N 个玩家各问一次，才轮到它问一次。关闭后只有真人玩家猜。"
+      },
       "generation_provider_id": {
-        "description": "海龟汤出题模型",
+        "description": "出题模型",
         "type": "string",
         "default": "",
         "_special": "select_provider",
         "hint": "下拉选择 AstrBot 里已配置的聊天模型 Provider；留空跟随当前会话模型。建议选擅长推理与创作的模型，出题与自检都走它。"
       },
       "judge_provider_id": {
-        "description": "海龟汤判断模型",
+        "description": "判断模型",
         "type": "string",
         "default": "",
         "_special": "select_provider",
         "hint": "下拉选择 AstrBot 里已配置的聊天模型 Provider；留空跟随当前会话模型。判定要快，建议选响应快的模型。"
-      },
-      "bot_join_player_host": {
-        "description": "玩家出题时花火参与",
-        "type": "bool",
-        "default": true,
-        "hint": "开启后，玩家自荐出题的对局里花火作为普通参与者一起提问/推理（它看不到汤底，只能看汤面和已公开问答）；节奏按在线玩家数自动换算——N 个玩家各问一次，才轮到它问一次。关闭后只有真人玩家猜。"
-      },
-      "online_pool_url": {
-        "description": "网络题库地址（可选）",
-        "type": "string",
-        "default": "",
-        "hint": "留空表示只用 LLM 生成 + 内置题库。填 http(s) 地址时优先从这里取题；需返回 JSON 数组或 {\"puzzles\": [...]}，字段与 LLM 出题一致（title/surface/solution/key_facts/hints/theme/trick）。拉取失败会自动回退 LLM。"
       },
       "library_enabled": {
         "description": "启用内置题库",
@@ -527,34 +521,48 @@
         "default": "builtin_first",
         "options": [
           "builtin_first",
-          "online_first"
+          "online_first",
+          "generated_first"
         ],
         "labels": [
           "优先内置题库",
-          "优先网络题库"
+          "优先网络题库",
+          "优先模型生成题"
         ],
-        "hint": "决定内置题库与网络题库谁先用（自定义投稿永远排最前，投了就会被玩到）。优先内置：不联网、出题快，适合大部分场景；优先网络：题目更新鲜，但要能连上题库地址，失败会自动换下一种来源。"
+        "hint": "决定海龟汤从哪类题源先取（自定义投稿永远排最前，投了就会被玩到）。优先内置：不联网、出题快，适合大部分场景；优先网络：题目更新鲜，但要能连上题库地址；优先模型生成：先用户模型提前备好的题，用完自动回落到内置/网络题库。三种来源哪个失败都会自动换下一种。"
+      },
+      "online_pool_url": {
+        "description": "网络题库地址",
+        "type": "string",
+        "default": "",
+        "hint": "留空表示只用 LLM 生成 + 内置题库。填 http(s) 地址时优先从这里取题；需返回 JSON 数组或 {\"puzzles\": [...]}，字段与 LLM 出题一致（title/surface/solution/key_facts/hints/theme/trick）。拉取失败会自动回退 LLM。"
+      },
+      "prefetch_target": {
+        "description": "备用题数量（0 = 关闭预生成）",
+        "type": "int",
+        "default": 1,
+        "hint": "「模型出题」里还没出过的题少于这个数就在后台补一道：下一局直接用现成的新题，不必现场等模型生成加自检。填 0 关闭预生成，范围 0-3；填太大等于每局多花好几次模型调用。补货失败不影响当前对局。"
       },
       "qq_bridge_enabled": {
-        "description": "启用群聊互通（总开关）",
+        "description": "启用群聊互通",
         "type": "bool",
         "default": true,
         "hint": "关掉之后，群里完全不参与海龟汤：汤 提问 / 汤 开局 等指令不响应，@花火 也不会被当成提问，模型工具同样停用——所有提问与推理都要回网页房间做。适合不想让机器人在群里接游戏消息、或和其它插件抢消息的场合。"
       },
       "qq_at_question": {
-        "description": "群里 @花火 直接说话即提问",
+        "description": "群里 @Bot 说话即提问",
         "type": "bool",
         "default": true,
         "hint": "开启后，群里 @花火 说「和灯塔有关吗」就当作这一局的提问，不必写「汤 提问」；够长的陈述句会当作推理提交。没有进行中的海龟汤时不生效，照常聊天。想只保留指令写法可关闭。"
       },
       "qq_sync_questions": {
-        "description": "网页里的问答同步到群",
+        "description": "网页问答同步到群",
         "type": "bool",
         "default": true,
         "hint": "网页房间里问的问题、交的推理，会攒十几秒合并成一条消息发到群里，让只在群里看的人跟得上进度。不会每条都发（那样会刷屏），一次最多列 4 条，多的写「还有 N 条」；提问里贴着汤底的片段会被遮掉。"
       },
       "qq_auto_bind": {
-        "description": "群聊提问自动安排玩家席",
+        "description": "群聊提问自动入座",
         "type": "bool",
         "default": true,
         "hint": "开启后，还没坐进玩家席的人在群里提问/推理时会自动占一个空位（网页端会显示「从群里自动加入玩家席」）；座位满了或单人房已有人在玩时，仍提示用「绑定玩家 令牌」。关闭后一律要求先在网页绑定。"
@@ -566,19 +574,19 @@
         "hint": "只对「严格轮次」有用（关掉上面的自由提问后生效）：每次换人，群里发一条「轮到 @某某 提问了」，绑了 QQ 的人会被 @ 到，没绑的显示座位号。自由提问没有轮次，不会播报。"
       },
       "group_announce_enabled": {
-        "description": "开启海龟汤群通报",
+        "description": "结算可通知到群",
         "type": "bool",
         "default": false,
         "hint": "开启后，结算面板上「通知到群」可用，把本局汤面、部分提问与结果发到开房群（一局一次，不含汤底）。"
       },
       "group_announce_auto": {
-        "description": "海龟汤自动播报",
+        "description": "结算自动播报",
         "type": "bool",
         "default": false,
         "hint": "开启后每局结束自动发群通报，无需手动点按钮；服务端没有页面可画图，自动播报固定为纯文字。"
       },
       "group_announce_style": {
-        "description": "海龟汤通报方式",
+        "description": "群通报方式",
         "type": "string",
         "default": "text",
         "options": [
@@ -594,7 +602,7 @@
         "hint": "图片为结算面板生成的海龟汤战报（汤面 + 提问摘录，不含汤底）；自动播报始终为纯文字。"
       },
       "group_announce_recap": {
-        "description": "海龟汤通报附带复盘",
+        "description": "群通报附带复盘",
         "type": "bool",
         "default": true,
         "hint": "开启后随通报附带「花火复盘」（只聊提问路线，不剧透汤底）。"

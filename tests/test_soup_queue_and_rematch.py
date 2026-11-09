@@ -5,8 +5,12 @@ from __future__ import annotations
 import asyncio
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+
+from astrbot.api.event import MessageChain
+from astrbot.api.message_components import Plain
 
 from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
 from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
@@ -215,3 +219,104 @@ def test_group_id_input_is_validated() -> None:
         GameCompanionPlugin._normalize_group_id("abc")
     with pytest.raises(ValueError):
         GameCompanionPlugin._normalize_group_id("12")
+
+
+def _platform(pid: str, name: str, type_name: str = "") -> SimpleNamespace:
+    meta = SimpleNamespace(id=pid, name=name, type=type_name)
+    return SimpleNamespace(meta=lambda: meta)
+
+
+def _plugin_with_platforms(*platforms: SimpleNamespace) -> GameCompanionPlugin:
+    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin.context = SimpleNamespace(
+        platform_manager=SimpleNamespace(platform_insts=list(platforms))
+    )
+    return plugin
+
+
+def test_platform_id_is_resolved_from_the_adapter_type() -> None:
+    """适配器 id 被改过（如 `huahuo`）时，`aiocqhttp` 只是类型名，不能当 id 用。
+
+    AstrBot 按 `platform.meta().id` 找适配器，找不到就只打一行 warning 并返回
+    False：`cannot find platform for session aiocqhttp:GroupMessage:xxx`。
+    """
+    plugin = _plugin_with_platforms(_platform("huahuo", "aiocqhttp"))
+
+    assert plugin._resolve_platform_id("aiocqhttp") == "huahuo"
+    assert (
+        plugin._session_with_platform("aiocqhttp:GroupMessage:576554510")
+        == "huahuo:GroupMessage:576554510"
+    )
+
+
+def test_platform_id_keeps_a_matching_id() -> None:
+    plugin = _plugin_with_platforms(
+        _platform("aiocqhttp", "aiocqhttp"), _platform("qq2", "aiocqhttp")
+    )
+
+    assert plugin._resolve_platform_id("aiocqhttp") == "aiocqhttp"
+    assert plugin._resolve_platform_id("qq2") == "qq2"
+
+
+def test_platform_id_is_left_alone_without_a_registry() -> None:
+    """拿不到平台注册表（老框架 / 最小实例）时保持原样，交给框架处理。"""
+    plugin = _plugin_with_platforms()
+
+    assert plugin._resolve_platform_id("aiocqhttp") == "aiocqhttp"
+    assert (
+        plugin._session_with_platform("aiocqhttp:GroupMessage:123")
+        == "aiocqhttp:GroupMessage:123"
+    )
+
+
+@pytest.mark.asyncio
+async def test_deliver_skips_sending_when_the_platform_is_missing() -> None:
+    """平台不在本机就别发，也别让调用方以为发成功了（幂等标记会卡死播报）。"""
+    plugin = _plugin_with_platforms(_platform("huahuo", "aiocqhttp"))
+    plugin.context.send_message = AsyncMock()
+    room = SimpleNamespace(
+        session_id="admin:console", platform="admin", group_id="576554510"
+    )
+
+    ok = await plugin._deliver(
+        GameCompanionPlugin.announce_target(room),
+        MessageChain([Plain("x")]),
+        what="测试",
+    )
+
+    assert ok is True
+    plugin.context.send_message.assert_awaited_once()
+    sent_session = plugin.context.send_message.await_args.args[0]
+    assert sent_session == "huahuo:GroupMessage:576554510"
+
+
+@pytest.mark.asyncio
+async def test_deliver_reports_false_for_an_unloaded_platform() -> None:
+    plugin = _plugin_with_platforms(_platform("telegram", "telegram"))
+    plugin.context.send_message = AsyncMock()
+    room = SimpleNamespace(
+        session_id="admin:console", platform="admin", group_id="576554510"
+    )
+
+    ok = await plugin._deliver(
+        GameCompanionPlugin.announce_target(room),
+        MessageChain([Plain("x")]),
+        what="测试",
+    )
+
+    assert ok is False
+    plugin.context.send_message.assert_not_called()
+
+
+def test_announce_problem_distinguishes_missing_group_from_missing_adapter() -> None:
+    bound = SimpleNamespace(
+        session_id="admin:console", platform="admin", group_id="576554510"
+    )
+    unbound = SimpleNamespace(session_id="admin:console", platform="admin", group_id="")
+
+    ready = _plugin_with_platforms(_platform("huahuo", "aiocqhttp"))
+    assert ready.announce_problem(bound) == ""
+    assert "没有绑定 QQ 群" in ready.announce_problem(unbound)
+
+    no_qq = _plugin_with_platforms(_platform("telegram", "telegram"))
+    assert "QQ 适配器" in no_qq.announce_problem(bound)

@@ -298,3 +298,132 @@ async def test_llm_puzzle_is_saved_for_later_reuse(tmp_path: Path) -> None:
     store = GeneratedSoupStore(tmp_path / "generated.json")
     assert len(store) == 1
     assert store.listing()[0]["title"] == "会消失的脚印"
+
+
+# ---------------- 预生成（后台备下一题） ----------------
+
+
+def patch_prompts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """出题/自检提示词固定成两句话，专心测预生成的调度逻辑。"""
+    monkeypatch.setattr(main_module, "generation_prompt", lambda **_kw: ("sys", "prompt"))
+    monkeypatch.setattr(main_module, "validation_prompt", lambda _p: ("sys", "check"))
+    monkeypatch.setattr(main_module, "validation_passed", lambda _text: True)
+
+
+def generated_payload(title: str, theme: str) -> str:
+    return json.dumps(
+        {
+            "title": title,
+            "surface": f"{title}：一个人每天都在重复做同一件看起来很蠢的事，为什么？",
+            "solution": (
+                "他这么做是为了让楼下的家人听见动静，确认彼此都还平安，"
+                "这件事本身并不蠢，只是外人不知道原因。"
+            ),
+            "key_facts": ["动作是为了发出声音", "楼下住着家人", "确认平安"],
+            "hints": ["和声音有关", "和楼下的家人有关", "是为了确认"],
+            "theme": theme,
+            "trick": "把报平安当成怪癖",
+        },
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_prefetch_stores_a_spare_puzzle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """开局出好题后，后台再备一道：下一局直接命中存档，不用现场等生成。"""
+    plugin = make_plugin(tmp_path)
+    plugin.turtle_soup_prefetch_target = 1
+    patch_prompts(monkeypatch)
+    plugin._call_room_model = AsyncMock(  # noqa: SLF001
+        side_effect=[generated_payload("备用题甲", "备用甲"), json.dumps({"ok": True})]
+    )
+
+    await plugin._soup_prefetch(make_room(), "normal", "normal")  # noqa: SLF001
+
+    store = GeneratedSoupStore(tmp_path / "generated.json")
+    assert len(store) == 1
+    assert store.stats()["unused"] == 1
+
+
+@pytest.mark.asyncio
+async def test_prefetch_skips_when_the_pool_is_full(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = make_plugin(tmp_path)
+    plugin.turtle_soup_prefetch_target = 1
+    plugin._soup_generated().add(make_puzzle())  # noqa: SLF001
+    patch_prompts(monkeypatch)
+    plugin._call_room_model = AsyncMock(  # noqa: SLF001
+        side_effect=AssertionError("池子里还有备用题，不该再调模型")
+    )
+
+    await plugin._soup_prefetch(make_room(), "normal", "normal")  # noqa: SLF001
+
+    assert len(GeneratedSoupStore(tmp_path / "generated.json")) == 1
+
+
+@pytest.mark.asyncio
+async def test_prefetch_refills_after_the_spare_puzzle_was_played(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """用过的题不再算「备用」：账本会按最近 12 道去重，它其实用不上了。"""
+    plugin = make_plugin(tmp_path)
+    plugin.turtle_soup_prefetch_target = 1
+    store = plugin._soup_generated()  # noqa: SLF001
+    store.add(make_puzzle())
+    store.mark_used(make_puzzle().signature)
+    patch_prompts(monkeypatch)
+    plugin._call_room_model = AsyncMock(  # noqa: SLF001
+        side_effect=[generated_payload("备用题乙", "备用乙"), json.dumps({"ok": True})]
+    )
+
+    await plugin._soup_prefetch(make_room(), "normal", "normal")  # noqa: SLF001
+
+    assert len(GeneratedSoupStore(tmp_path / "generated.json")) == 2
+
+
+@pytest.mark.asyncio
+async def test_prefetch_never_raises_on_model_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """补货是锦上添花：模型挂了只记日志，不能把正在玩的对局带崩。"""
+    plugin = make_plugin(tmp_path)
+    plugin.turtle_soup_prefetch_target = 2
+    patch_prompts(monkeypatch)
+    plugin._call_room_model = AsyncMock(  # noqa: SLF001
+        side_effect=RuntimeError("模型不可用")
+    )
+
+    await plugin._soup_prefetch(make_room(), "normal", "normal")  # noqa: SLF001
+
+    assert len(GeneratedSoupStore(tmp_path / "generated.json")) == 0
+
+
+def test_prefetch_is_off_when_target_is_zero(tmp_path: Path) -> None:
+    plugin = make_plugin(tmp_path)
+    plugin.turtle_soup_prefetch_target = 0
+    assert plugin._soup_prefetch_enabled() is False  # noqa: SLF001
+
+    plugin.turtle_soup_prefetch_target = 2
+    assert plugin._soup_prefetch_enabled() is True  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_generated_first_priority_uses_the_spare_puzzle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """选「优先模型生成题」时先吃预生成池，池子空了才轮到内置/网络题库。"""
+    plugin = make_plugin(tmp_path)
+    plugin._soup_generated().add(make_puzzle())  # noqa: SLF001
+    plugin.turtle_soup_library_priority = "generated_first"
+    plugin._call_room_model = AsyncMock(  # noqa: SLF001
+        side_effect=AssertionError("有备用题时不该再调模型")
+    )
+
+    game = TurtleSoupGame(difficulty="normal", max_hints=3, content_level="normal")
+    await plugin._prepare_turtle_soup(make_room(), game)
+
+    assert game.puzzle_source == "generated"
+    assert game.puzzle is not None and game.puzzle.title == "测试生成的题甲"

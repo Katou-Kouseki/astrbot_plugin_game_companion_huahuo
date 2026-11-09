@@ -1528,7 +1528,7 @@
       + (builtin.disabled ? ` · 停用 ${builtin.disabled}` : "");
     document.getElementById("libGenerated").textContent = String(generated.total ?? 0);
     document.getElementById("libGeneratedHint").textContent = generated.total
-      ? `可复用 ${generated.available ?? 0} 道${generated.disabled ? ` · 停用 ${generated.disabled}` : ""}`
+      ? `待用 ${generated.unused ?? 0} 道 · 可复用 ${generated.available ?? 0} 道${generated.disabled ? ` · 停用 ${generated.disabled}` : ""}`
       : "模型出题后自动入库";
     document.getElementById("libCustom").textContent = String(custom.total ?? 0);
     document.getElementById("libCustomLimit").textContent = custom.limit

@@ -122,6 +122,26 @@ class GeneratedSoupStore:
                 result.append(puzzle)
         return result
 
+    def unused(self, max_content_level: str = "unrestricted") -> list[SoupPuzzle]:
+        """还没出过的题（预生成的目标就是让这些保持够用）。
+
+        `last_used_at > 0` 说明至少已经上过一次桌：账本还会按近 12 道去重，
+        所以它们基本用不上，计入「备用」只会让预生成误以为池子还满。
+        """
+        ceiling = _LEVEL_ORDER.get(normalize_content_level(max_content_level), 2)
+        result: list[SoupPuzzle] = []
+        for row in self.items:
+            if row.get("disabled") or float(row.get("last_used_at") or 0.0) > 0:
+                continue
+            mapping = row.get("puzzle") or {}
+            level = normalize_content_level(mapping.get("content_level"))
+            if _LEVEL_ORDER.get(level, 1) > ceiling:
+                continue
+            puzzle = self._build(row)
+            if puzzle is not None:
+                result.append(puzzle)
+        return result
+
     def signatures(self) -> set[str]:
         return {
             puzzle.signature
@@ -157,15 +177,19 @@ class GeneratedSoupStore:
     def stats(self) -> dict[str, Any]:
         counts = {"all_ages": 0, "normal": 0, "unrestricted": 0}
         disabled = 0
+        unused = 0
         for row in self.items:
             level = normalize_content_level((row.get("puzzle") or {}).get("content_level"))
             counts[level] = counts.get(level, 0) + 1
             if row.get("disabled"):
                 disabled += 1
+            elif float(row.get("last_used_at") or 0.0) <= 0:
+                unused += 1
         return {
             "total": len(self.items),
             "available": len(self.items) - disabled,
             "disabled": disabled,
+            "unused": unused,
             "by_level": counts,
             "limit": self.limit,
         }
