@@ -53,6 +53,10 @@ h2 { margin: 0; font-size: 16px; }
 .icon-button svg, .secondary-button svg, .primary-button svg, .row-button svg { width: 16px; }
 .secondary-button { padding: 0 11px; border: 1px solid var(--line); background: var(--surface); color: var(--text); }
 .primary-button { padding: 0 13px; border: 1px solid var(--green); background: var(--green); color: #fff; }
+/* 管理台嵌在 AstrBot 面板里，外层主题会把 button 的文字色改回深色，
+   结果深绿底上是深灰字（「开新房间」看着像禁用）。这里把主按钮的文字
+   与图标颜色钉死，只影响这一类按钮。 */
+.primary-button, .primary-button span, .primary-button svg { color: #fff !important; }
 .danger-button { padding: 0 10px; border: 1px solid #dbb4ae; background: var(--red-soft); color: var(--red); }
 
 .metrics { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); border-radius: 6px; background: var(--surface); margin: 18px 0; }
@@ -77,6 +81,12 @@ h2 { margin: 0; font-size: 16px; }
 /* 右上角「开新房间」工具条：玩法下拉 + 主按钮 + 隧道地址，窄屏自动换行 */
 .section-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
 .section-tools .game-select { min-height: 34px; font-size: 13px; }
+/* 开房时可选填的播报群号：管理台的链接房没有 QQ 会话，靠它把战报发进群 */
+.section-tools .group-input {
+  width: 132px; min-height: 34px; padding: 0 8px; font-size: 13px;
+  border: 1px solid var(--line); border-radius: 5px;
+  background: var(--surface); color: var(--text);
+}
 .section-tools .primary-button { white-space: nowrap; }
 .tunnel-url { max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
 .table-wrap { position: relative; min-height: 160px; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }

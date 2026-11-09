@@ -84,9 +84,11 @@ class GameRoomServer:
     def _build_app(self) -> web.Application:
         """Build the room application for the real server and isolated tests."""
         app = web.Application(
-            # 通知到群的海报图以 base64 放进 JSON 请求体（1080 宽 PNG 约 300-900KB，
-            # base64 膨胀 1/3，预留 2MB 足够；图片拉取验证仍由插件负责）。
-            client_max_size=2 * 1024 * 1024,
+            # 通知到群的海报图以 base64 放进 JSON 请求体（PNG 越漂亮越大，
+            # base64 再膨胀 1/3）。给到 8MB：2MB 时 1080 宽的战报图会直接撞
+            # 「Maximum request body size exceeded」，而报错发生在路由之前，
+            # 玩家只会看到一句看不懂的英文。
+            client_max_size=8 * 1024 * 1024,
             middlewares=[self._error_middleware],
         )
         app.router.add_get("/", self._serve_index)
@@ -445,6 +447,16 @@ class GameRoomServer:
         room = self._room(request)
         payload = await self._payload(request)
         visitor_token = str(payload.get("visitor_token") or "")
+        if room.game_type == "turtle_soup":
+            # 海龟汤不走「模型决定要不要再来一局」：直接退回准备状态，
+            # 让玩家有机会点「我来出题」，或者等人齐了再开始。
+            await self.manager.prepare_soup_next_round(room, visitor_token)
+            self._log_room_op(
+                room, "room_prepare_round", "海龟汤回到准备状态", visitor_token
+            )
+            return self._response(
+                {"prepared": True, "room": self._room_payload(room, visitor_token)}
+            )
         await self.manager.request_rematch(room, visitor_token)
         self._log_room_op(room, "room_rematch", "申请再来一局", visitor_token)
         return self._response({"room": self._room_payload(room, visitor_token)})
@@ -692,6 +704,14 @@ class GameRoomServer:
             )
         except PermissionError as exc:
             return self._forbidden(exc)
+        if not self.plugin.announce_target(room):
+            return web.json_response(
+                {
+                    "status": "error",
+                    "message": "这个房间没有绑定 QQ 群，先在管理台绑定群号（或在群里开房）再通知",
+                },
+                status=400,
+            )
         key = f"soup:{int(getattr(room, 'completed_games', 0) or 0)}"
         if room.last_announced_uid == key:
             return self._response({
@@ -1035,6 +1055,14 @@ class GameRoomServer:
         except PermissionError as exc:
             return self._forbidden(exc)
         image_data = self._image_payload(payload)
+        if not self.plugin.announce_target(room):
+            return web.json_response(
+                {
+                    "status": "error",
+                    "message": "这个房间没有绑定 QQ 群，先在管理台绑定群号（或在群里开房）再通知",
+                },
+                status=400,
+            )
         try:
             text = await self.plugin.undercover_announce_result(room, image_data)
         except Exception as exc:
@@ -1083,6 +1111,14 @@ class GameRoomServer:
             )
         except PermissionError as exc:
             return self._forbidden(exc)
+        if not self.plugin.announce_target(room):
+            return web.json_response(
+                {
+                    "status": "error",
+                    "message": "这个房间没有绑定 QQ 群，先在管理台绑定群号（或在群里开房）再通知",
+                },
+                status=400,
+            )
         if room.last_announced_uid == key:
             return self._response({
                 "announced": bool(room.last_announced_text),
@@ -1314,17 +1350,23 @@ class GameRoomServer:
             room.game_type == "turtle_soup"
             and getattr(self.manager, "turtle_soup_free_questioning", True)
         )
+        # 本次对局的三项额度：跟难度走（娱乐/简单/普通/困难各不同），
+        # 前端据此拼「已问 12/35 · 提示剩 2」，也用来显示难度对应的次数说明。
+        soup_limits = (
+            self.manager.soup_limits(room)
+            if room.game_type == "turtle_soup"
+            else {"questions": 0, "hints": 0, "answers": 0}
+        )
         # 每局提问上限（0 = 不限）：前端拼「已问 12/30 · 提示剩 2」
         snapshot["soup_question_limit"] = (
-            int(getattr(self.manager, "turtle_soup_max_questions", 15) or 0)
-            if room.game_type == "turtle_soup"
-            else 0
+            int(soup_limits["questions"]) if room.game_type == "turtle_soup" else 0
         )
         # 每局推理上限（0 = 不限）：用完还没人答对就直接揭晓，前端要能提前提醒
         snapshot["soup_answer_limit"] = (
-            int(getattr(self.manager, "turtle_soup_max_answers", 8) or 0)
-            if room.game_type == "turtle_soup"
-            else 0
+            int(soup_limits["answers"]) if room.game_type == "turtle_soup" else 0
+        )
+        snapshot["soup_hint_limit"] = (
+            int(soup_limits["hints"]) if room.game_type == "turtle_soup" else 0
         )
         # 快照指纹：前端下一次轮询带上它，内容没变就只回一个几十字节的小包。
         # 必须放在最后——指纹覆盖这里之前的所有字段。

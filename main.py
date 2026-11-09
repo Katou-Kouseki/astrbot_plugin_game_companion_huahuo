@@ -74,6 +74,7 @@ from .turtle_soup import (
     all_fallback_puzzles,
     normalize_content_level,
     puzzle_from_mapping,
+    soup_solve_policy,
 )
 from .turtle_soup_ai import (
     JUDGE_RETRY_SUFFIX,
@@ -1731,7 +1732,7 @@ class GameCompanionPlugin(Star):
             for game_type in SUPPORTED_GAMES
         }
         self.turtle_soup_max_hints = self._cfg_int(
-            "turtle_soup.max_hints", 3, minimum=0, maximum=8
+            "turtle_soup.max_hints", 3, minimum=0, maximum=20
         )
         self.turtle_soup_content_level = normalize_content_level(
             self._cfg("turtle_soup.content_level", "normal")
@@ -1767,6 +1768,24 @@ class GameCompanionPlugin(Star):
         # LLM 之前；关掉就只剩「网络题库 → LLM → 内置兜底 12 条」。
         self.turtle_soup_library_enabled = self._cfg_bool(
             "turtle_soup.library_enabled", True
+        )
+        # 内置题库与网络题库谁优先：内置不联网、出得快；网络题库更新鲜。
+        # 自定义投稿永远排最前（玩家投了就该被玩到），这项只管后两者。
+        self.turtle_soup_library_priority = (
+            self._cfg_str("turtle_soup.library_priority", "builtin_first")
+            .strip()
+            .lower()
+            or "builtin_first"
+        )
+        if self.turtle_soup_library_priority not in {"builtin_first", "online_first"}:
+            self.turtle_soup_library_priority = "builtin_first"
+        # 海龟汤默认难度：娱乐 / 简单 / 普通 / 困难（房间里仍可改）
+        self.turtle_soup_difficulty = self._soup_difficulty(
+            self._cfg_str("turtle_soup.difficulty", "normal")
+        )
+        # 次数是否跟难度走：开时按难度表，关时用 max_questions / max_hints / max_answers
+        self.turtle_soup_follow_difficulty = self._cfg_bool(
+            "turtle_soup.follow_difficulty", True
         )
         # 群聊互通总开关：关掉后群里不参与海龟汤（指令、@ 入口、模型工具全部停用）
         self.turtle_soup_qq_bridge = self._cfg_bool(
@@ -2044,6 +2063,7 @@ class GameCompanionPlugin(Star):
             turtle_soup_max_players=self.turtle_soup_max_players,
             turtle_soup_max_questions=self.turtle_soup_max_questions,
             turtle_soup_max_answers=self.turtle_soup_max_answers,
+            turtle_soup_follow_difficulty=self.turtle_soup_follow_difficulty,
             turtle_soup_free_questioning=self.turtle_soup_free_questioning,
             turtle_soup_free_question_cooldown=self.turtle_soup_free_question_cooldown,
             turtle_soup_auto_reveal_seconds=self.turtle_soup_auto_reveal_seconds,
@@ -2372,7 +2392,9 @@ class GameCompanionPlugin(Star):
                 session_id,
                 message[:120],
             )
-        difficulty = self._difficulty(kwargs.get("difficulty"))
+        difficulty = self._difficulty_for_game(
+            game_type, kwargs.get("difficulty")
+        )
         turtle_soup_mode = self._turtle_soup_mode(kwargs.get("turtle_soup_mode"))
         try:
             room, reused, restarted = await self._create_or_reuse_room_from_event(
@@ -5226,64 +5248,25 @@ class GameCompanionPlugin(Star):
                 )
                 return
 
-        # ① 网络题库（可选）：命中即用，省一次 LLM 生成 + 一次校验
-        if getattr(self, "turtle_soup_online_pool_url", ""):
+        # ① / ② 网络题库与内置题库：谁先谁后由 `turtle_soup.library_priority`
+        # 决定。内置题不用联网、出得快，网络题更新鲜，两种需求都有人要。
+        prefer_builtin = (
+            str(getattr(self, "turtle_soup_library_priority", "builtin_first"))
+            or "builtin_first"
+        ).strip().lower() == "builtin_first"
+        loaders = (
+            ("内置题库", self._builtin_soup_puzzle),
+            ("网络题库", self._online_soup_puzzle),
+        )
+        if not prefer_builtin:
+            loaders = tuple(reversed(loaders))
+        for label, loader in loaders:
             try:
-                online = await fetch_online_puzzles(
-                    self.turtle_soup_online_pool_url,
-                    content_level=game.content_level,
-                    limit=12,
-                    timeout=12,
-                )
-                usable = [
-                    puzzle
-                    for puzzle in deck.would_repeat(online)
-                    if puzzle.signature not in excluded
-                ]
-                if usable:
-                    puzzle = random.choice(usable)
-                    if await self.manager.complete_turtle_soup_generation(
-                        room, game, puzzle
-                    ):
-                        deck.remember(puzzle, source="online")
-                        logger.info("[GameCompanion] 海龟汤采用网络题库题目：%s", puzzle.title)
-                        return
+                if await loader(room, game, deck, excluded):
+                    return
             except (RuntimeError, ValueError, OSError) as exc:
-                last_error = f"网络题库不可用：{exc}"
-                logger.info("[GameCompanion] 网络题库拉取失败，改走 LLM：%s", exc)
-
-        # ② 内置题库（soup_library.json）：先用「汤面完全相同」快速筛掉出过的，
-        # 再对候选做一次语义判重。命中缓存直接用，没缓存就先让模型补全字段，
-        # 补全失败自动退回规则版——不能让「模型不可用」变成「出不了题」。
-        if getattr(self, "turtle_soup_library_enabled", True):
-            library = self._soup_library()
-            candidates = library.entries_for(game.content_level)
-            if candidates:
-                recent_surfaces = deck.known_surfaces()
-                fresh = [
-                    entry
-                    for entry in candidates
-                    if normalize_text(entry.surface) not in recent_surfaces
-                ]
-                pool = list(fresh or candidates)
-                random.shuffle(pool)
-                enricher = self._soup_library_enricher(room)
-                for entry in pool[:3]:
-                    rule_puzzle = library.rule_puzzle(entry)
-                    if rule_puzzle is None:
-                        continue
-                    if rule_puzzle.signature in excluded or deck.has(rule_puzzle):
-                        continue
-                    puzzle = await library.puzzle_for(entry, enricher) or rule_puzzle
-                    if await self.manager.complete_turtle_soup_generation(
-                        room, game, puzzle
-                    ):
-                        deck.remember(puzzle, source="library")
-                        logger.info(
-                            "[GameCompanion] 海龟汤采用内置题库题目：《%s》",
-                            puzzle.title,
-                        )
-                        return
+                last_error = f"{label}不可用：{exc}"
+                logger.info("[GameCompanion] %s不可用，换下一种来源：%s", label, exc)
 
         # ③ LLM 生成（最多 3 次）+ 独立校验
         persona = await self._persona_prompt(room)
@@ -5355,6 +5338,69 @@ class GameCompanionPlugin(Star):
                 puzzle.title,
                 last_error or "模型不可用",
             )
+
+    async def _online_soup_puzzle(
+        self, room: GameRoom, game: TurtleSoupGame, deck: Any, excluded: set[str]
+    ) -> bool:
+        """网络题库：命中即用，省一次 LLM 生成 + 一次校验。没配地址就跳过。"""
+        if not getattr(self, "turtle_soup_online_pool_url", ""):
+            return False
+        online = await fetch_online_puzzles(
+            self.turtle_soup_online_pool_url,
+            content_level=game.content_level,
+            limit=12,
+            timeout=12,
+        )
+        usable = [
+            puzzle
+            for puzzle in deck.would_repeat(online)
+            if puzzle.signature not in excluded
+        ]
+        if not usable:
+            return False
+        puzzle = random.choice(usable)
+        if not await self.manager.complete_turtle_soup_generation(room, game, puzzle):
+            return False
+        deck.remember(puzzle, source="online")
+        logger.info("[GameCompanion] 海龟汤采用网络题库题目：%s", puzzle.title)
+        return True
+
+    async def _builtin_soup_puzzle(
+        self, room: GameRoom, game: TurtleSoupGame, deck: Any, excluded: set[str]
+    ) -> bool:
+        """内置题库（soup_library.json）：先用「汤面完全相同」快速筛掉出过的，
+        再对候选做一次语义判重。命中缓存直接用，没缓存就先让模型补全字段，
+        补全失败自动退回规则版——不能让「模型不可用」变成「出不了题」。
+        """
+        if not getattr(self, "turtle_soup_library_enabled", True):
+            return False
+        library = self._soup_library()
+        candidates = library.entries_for(game.content_level)
+        if not candidates:
+            return False
+        recent_surfaces = deck.known_surfaces()
+        fresh = [
+            entry
+            for entry in candidates
+            if normalize_text(entry.surface) not in recent_surfaces
+        ]
+        pool = list(fresh or candidates)
+        random.shuffle(pool)
+        enricher = self._soup_library_enricher(room)
+        for entry in pool[:3]:
+            rule_puzzle = library.rule_puzzle(entry)
+            if rule_puzzle is None:
+                continue
+            if rule_puzzle.signature in excluded or deck.has(rule_puzzle):
+                continue
+            puzzle = await library.puzzle_for(entry, enricher) or rule_puzzle
+            if await self.manager.complete_turtle_soup_generation(room, game, puzzle):
+                deck.remember(puzzle, source="library")
+                logger.info(
+                    "[GameCompanion] 海龟汤采用内置题库题目：《%s》", puzzle.title
+                )
+                return True
+        return False
 
     async def _soup_bot_turn(self, room: GameRoom, game: TurtleSoupGame) -> None:
         """玩家出题人模式：花火作为普通参与者，节奏按在线玩家数自动换算。
@@ -5469,14 +5515,14 @@ class GameCompanionPlugin(Star):
         )
         # 提问次数上限：只挡提问，不挡推理——次数用完后推理仍然可以提交，
         # 否则这局永远解不开。上限为 0 表示不限。
-        limit = self._soup_question_limit()
+        limit = self._soup_question_limit(room)
         if (
             limit
             and host_game is not None
             and int(getattr(host_game, "player_question_count", host_game.question_count))
             >= limit
         ):
-            progress = self._soup_progress(host_game)
+            progress = self._soup_progress(host_game, room)
             return {
                 "limited": True,
                 "verdict": None,
@@ -5501,7 +5547,7 @@ class GameCompanionPlugin(Star):
                 "verdict": None,
                 "reply": "问题已提交，等出题人回答。",
                 "question_count": host_game.question_count,
-                **self._soup_progress(host_game),
+                **self._soup_progress(host_game, room),
             }
         game, question = await self.manager.begin_turtle_soup_interaction(
             room,
@@ -5550,7 +5596,7 @@ class GameCompanionPlugin(Star):
                     "coverage": 1.0,
                     "reply": "推理正确，汤底已经揭晓。",
                     "solution": game.puzzle.solution,
-                    **self._soup_progress(game),
+                    **self._soup_progress(game, room),
                 }
             applied = await self.manager.resolve_turtle_soup_question(
                 room,
@@ -5566,7 +5612,7 @@ class GameCompanionPlugin(Star):
                 "verdict": verdict,
                 "reply": VERDICT_LABELS[verdict],
                 "question_count": game.question_count,
-                **self._soup_progress(game),
+                **self._soup_progress(game, room),
             }
         except Exception as exc:
             await self.manager.cancel_turtle_soup_interaction(room, game, str(exc))
@@ -5574,11 +5620,29 @@ class GameCompanionPlugin(Star):
                 raise
             raise RuntimeError("Bot 暂时无法判断这个问题，请稍后重试") from exc
 
-    def _soup_question_limit(self) -> int:
-        """每局提问上限；0 表示不限。"""
-        return max(0, int(getattr(self, "turtle_soup_max_questions", 15) or 0))
+    def _soup_limits(self, room: GameRoom | None) -> dict[str, int]:
+        """本局的提问/提示/推理次数：按难度档位，或按自定义配置。
 
-    def _soup_progress(self, game: TurtleSoupGame | None) -> dict[str, Any]:
+        次数与难度联动后，这三个数字不能再从插件实例上直接取——同一进程里
+        不同房间的难度可以不一样（一个娱乐局、一个困难局）。`room` 缺省时退回
+        插件级数值，方便不依赖房间的调用方（例如只算展示文案）。
+        """
+        manager = getattr(self, "manager", None)
+        if room is not None and manager is not None and hasattr(manager, "soup_limits"):
+            return manager.soup_limits(room)
+        return {
+            "questions": max(0, int(getattr(self, "turtle_soup_max_questions", 15) or 0)),
+            "hints": max(0, int(getattr(self, "turtle_soup_max_hints", 3) or 0)),
+            "answers": max(0, int(getattr(self, "turtle_soup_max_answers", 8) or 0)),
+        }
+
+    def _soup_question_limit(self, room: GameRoom | None = None) -> int:
+        """每局提问上限；0 表示不限。"""
+        return int(self._soup_limits(room)["questions"])
+
+    def _soup_progress(
+        self, game: TurtleSoupGame | None, room: GameRoom | None = None
+    ) -> dict[str, Any]:
         """网页与群聊共用的进度字段：还剩几次提问、几次提示、几次推理。
 
         以前群里只回一句判定，玩家看不见「问了几次、还剩几次」，人一多就会
@@ -5595,12 +5659,12 @@ class GameCompanionPlugin(Star):
                 "answer_left": None,
                 "hint_left": 0,
             }
-        limit = self._soup_question_limit()
+        limit = self._soup_question_limit(room)
         # 只算玩家问的：花火的提问不该吃掉玩家的额度，否则「已问 15/15」里
         # 有一半是花火问的，玩家会以为自己被限得莫名其妙。
         asked = int(getattr(game, "player_question_count", game.question_count))
         # 推理额度与提问额度是两套：整局共享，用完自动揭晓
-        answer_limit = self._soup_answer_limit()
+        answer_limit = self._soup_answer_limit(room)
         answered = int(getattr(game, "answer_attempts", 0) or 0)
         return {
             "question_count": asked,
@@ -5614,22 +5678,36 @@ class GameCompanionPlugin(Star):
             "hint_left": int(getattr(game, "hint_left", 0)),
         }
 
-    def _soup_answer_limit(self) -> int:
+    def _soup_answer_limit(self, room: GameRoom) -> int:
         """每局推理上限；0 表示不限。与 manager 用同一个值，别各算一遍。"""
-        value = getattr(self, "turtle_soup_max_answers", None)
-        if value is None:
-            value = getattr(getattr(self, "manager", None), "turtle_soup_max_answers", 0)
-        return max(0, int(value or 0))
+        return int(self._soup_limits(room)["answers"])
 
     @staticmethod
-    def _soup_bonus_hint(game: TurtleSoupGame, judgment: Any) -> str:
+    def _soup_answer_solved(room: GameRoom, judgment: Any) -> bool:
+        """按本局难度的「猜中条件」判断这次推理算不算解开。
+
+        娱乐：完全还原 / 核心推理正确 / 部分正确都算过；
+        简单、普通：核心推理正确以上；
+        困难：必须完全还原，且覆盖度足够高才认。
+        """
+        policy = soup_solve_policy(getattr(room, "difficulty", "normal"))
+        coverage = float(getattr(judgment, "coverage", 0) or 0)
+        if bool(getattr(judgment, "solved", False)):
+            return policy != "exact" or coverage >= 0.9
+        threshold = {"partial": 0.45, "core": 0.7}.get(policy)
+        return threshold is not None and coverage >= threshold
+
+    @staticmethod
+    def _soup_bonus_hint(
+        game: TurtleSoupGame, judgment: Any, solved: bool = False
+    ) -> str:
         """连续三次「很接近」却解不出时，主动送一条中等强度的提示。
 
         玩家反馈的死循环是：「一直是接近了、但还缺关键内容」，可模型不给方向、
         提示又要自己花次数申请。这里的闭环是：连续 3 次覆盖率达到 0.6 仍未解开，
         免费送一条题库中段的提示（最多一次），既推得动，也不至于直接泄底。
         """
-        if judgment.solved or game.puzzle is None:
+        if solved or judgment.solved or game.puzzle is None:
             return ""
         if int(getattr(game, "auto_hints_sent", 0) or 0) >= 1:
             return ""
@@ -5672,7 +5750,7 @@ class GameCompanionPlugin(Star):
                 "solved": False,
                 "reply": "推理已提交，等出题人判断。",
                 "answer_attempts": host_game.answer_attempts,
-                **self._soup_progress(host_game),
+                **self._soup_progress(host_game, room),
             }
         game, answer = await self.manager.begin_turtle_soup_interaction(
             room,
@@ -5704,18 +5782,19 @@ class GameCompanionPlugin(Star):
                 fact_count=len(game.puzzle.key_facts),
                 discovered_facts=game.discovered_facts,
             )
-            bonus_hint = self._soup_bonus_hint(game, judgment)
+            solved = self._soup_answer_solved(room, judgment)
+            bonus_hint = self._soup_bonus_hint(game, judgment, solved=solved)
             reply = coverage_reply(
                 judgment.coverage,
                 judgment.missing,
-                solved=judgment.solved,
+                solved=solved,
                 bonus_hint=bonus_hint,
             )
             applied = await self.manager.resolve_turtle_soup_answer(
                 room,
                 game,
                 answer,
-                solved=judgment.solved,
+                solved=solved,
                 source=source,
                 matched_facts=judgment.matched,
                 reply=reply,
@@ -5725,16 +5804,16 @@ class GameCompanionPlugin(Star):
             if not applied:
                 raise RuntimeError("房间状态已经变化，请重新查看当前题目")
             result: dict[str, Any] = {
-                "solved": judgment.solved,
+                "solved": solved,
                 "coverage": round(judgment.coverage, 2),
                 "reply": reply,
                 # 差在哪一环：前端可以直接展示，也可以只用来渲染进度条
                 "missing": judgment.missing,
-                **self._soup_progress(game),
+                **self._soup_progress(game, room),
             }
             if bonus_hint:
                 result["bonus_hint"] = bonus_hint
-            if judgment.solved:
+            if solved:
                 result["solution"] = game.puzzle.solution
             elif game.finished and str(getattr(game, "end_reason", "")) == "answer_limit":
                 # 这次没答对，而且推理额度已经用完：manager 那边直接揭晓了，
@@ -6980,8 +7059,11 @@ class GameCompanionPlugin(Star):
             label = f"{number} 号玩家" + (f"（{name}）" if name else "")
             parts.append(Plain(label))
         parts.append(Plain(f" 提问了{tail}"))
+        target = self.announce_target(room)
+        if not target:
+            return
         try:
-            await self.context.send_message(room.session_id, MessageChain(parts))
+            await self.context.send_message(target, MessageChain(parts))
         except Exception as exc:
             logger.info("[GameCompanion] 轮次播报发送失败：%s", exc)
 
@@ -7036,8 +7118,11 @@ class GameCompanionPlugin(Star):
             chain = self._soup_sync_chain(items, title)
             if chain is None:
                 return False
+            target = self.announce_target(room)
+            if not target:
+                return False
             try:
-                await self.context.send_message(room.session_id, chain)
+                await self.context.send_message(target, chain)
                 return True
             except Exception as exc:  # 平台不支持合并转发时会在这里抛
                 logger.info("[GameCompanion] 合并聊天记录发送失败：%s", exc)
@@ -7055,6 +7140,26 @@ class GameCompanionPlugin(Star):
                 return
         await self._send_to_origin(room, text)
 
+    @staticmethod
+    def announce_target(room: GameRoom) -> str:
+        """播报要发到哪个会话；发不出去时返回空串。
+
+        群房直接用开房会话。管理台开的链接房 `session_id` 是 `admin:console`，
+        根本没有对应的平台会话，往里发必然失败——这类房间靠管理台绑定的群号
+        （room.group_id）拼出真实群会话。`platform` 为 admin/web 时按 aiocqhttp
+        处理，因为管理台里能拿到群号的只有 QQ 适配器。
+        """
+        session = str(getattr(room, "session_id", "") or "")
+        group = str(getattr(room, "group_id", "") or "").strip()
+        if session and not session.startswith(("admin:", "web:")):
+            return session
+        if not group:
+            return ""
+        platform = str(getattr(room, "platform", "") or "").strip()
+        if not platform or platform in {"admin", "web"}:
+            platform = "aiocqhttp"
+        return f"{platform}:group:{group}"
+
     async def _send_to_origin(self, room: GameRoom, text: str) -> bool:
         """把纯文字发到开房群，返回是否真的发出去了。
 
@@ -7064,10 +7169,11 @@ class GameCompanionPlugin(Star):
         """
         if not text:
             return False
+        target = self.announce_target(room)
+        if not target:
+            return False
         try:
-            await self.context.send_message(
-                room.session_id, MessageChain([Plain(text)])
-            )
+            await self.context.send_message(target, MessageChain([Plain(text)]))
             return True
         except Exception as exc:
             logger.warning("[GameCompanion] 回发游戏消息失败: %s", exc)
@@ -9512,9 +9618,10 @@ class GameCompanionPlugin(Star):
             if recap:
                 parts.append(Plain(f"\n\n📝 复盘：{recap}"))  # 图片下方空一行再接复盘
             if parts:
-                await self.context.send_message(
-                    room.session_id, MessageChain(parts)
-                )
+                target = self.announce_target(room)
+                if not target:
+                    return False
+                await self.context.send_message(target, MessageChain(parts))
                 return True
         except Exception as exc:
             logger.warning("[GameCompanion] 发送战报图片失败，回退纯文字: %s", exc)
@@ -10504,6 +10611,22 @@ class GameCompanionPlugin(Star):
             },
         }
 
+    @staticmethod
+    def _normalize_group_id(value: Any) -> str:
+        """管理台输入的播报群号：只收数字，长度做个基本校验。
+
+        允许留空（不绑定）；填了就必须是 5~12 位数字，否则后面拼出来的
+        会话 ID 一定发不出去，不如在这里就说清楚。
+        """
+        text = str(value or "").strip().lstrip("#")
+        if not text:
+            return ""
+        if not text.isdigit():
+            raise ValueError("群号只能是数字")
+        if not 5 <= len(text) <= 12:
+            raise ValueError("群号应该是 5~12 位数字")
+        return text
+
     async def page_create_room(self) -> dict[str, Any]:
         """管理台手动开房：不用发 QQ 指令，直接建一个链接房间并回传访问网址。
 
@@ -10515,14 +10638,18 @@ class GameCompanionPlugin(Star):
             game_type = self._game_type(payload.get("game_type") or "gomoku")
         except (TypeError, ValueError) as exc:
             return {"status": "error", "message": str(exc), "data": {}}
-        difficulty = self._difficulty(payload.get("difficulty"))
+        difficulty = self._difficulty_for_game(game_type, payload.get("difficulty"))
+        try:
+            group_id = self._normalize_group_id(payload.get("group_id"))
+        except ValueError as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
         try:
             await self._ensure_public_access()
             room = await self.manager.create_room(
                 source="private",
                 session_id=ADMIN_CONSOLE_SESSION,
                 platform="admin",
-                group_id="",
+                group_id=group_id,
                 creator_qq="",
                 creator_name="游戏管理台",
                 admin_room=True,
@@ -10535,6 +10662,8 @@ class GameCompanionPlugin(Star):
         room.add_message(
             "system", "管理员在游戏管理台创建了这个房间，把访问网址发给朋友即可开局。"
         )
+        if group_id:
+            room.add_message("system", f"战报会发到群 {group_id}。")
         url = self._room_url_safe(room)
         self.manager.record_operation(
             "create_room",
@@ -10563,7 +10692,18 @@ class GameCompanionPlugin(Star):
             return {"status": "error", "message": "房间不存在或已经结束", "data": {}}
         action = str(payload.get("action") or "").strip().lower()
         try:
-            if action == "assign":
+            if action == "bind_group":
+                group_id = self._normalize_group_id(payload.get("group_id"))
+                self.manager.bind_announce_group(room, group_id)
+                self.manager.record_operation(
+                    "bind_group",
+                    f"房间 {room.room_id}：播报群改为"
+                    f"{group_id or '（解除绑定）'}",
+                    operator="游戏管理台",
+                    room_id=room.room_id,
+                    game_type=room.game_type,
+                )
+            elif action == "assign":
                 visitor_number = int(payload.get("visitor_number") or 0)
                 await self.manager.assign_player(
                     room,
@@ -10990,7 +11130,7 @@ class GameCompanionPlugin(Star):
         }
         self.manager.enabled_games.update(self.enabled_games)
         self.turtle_soup_max_hints = self._cfg_int(
-            "turtle_soup.max_hints", 3, minimum=0, maximum=8
+            "turtle_soup.max_hints", 3, minimum=0, maximum=20
         )
         self.turtle_soup_content_level = normalize_content_level(
             self._cfg("turtle_soup.content_level", "normal")
@@ -11004,6 +11144,20 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_max_answers = self._cfg_int(
             "turtle_soup.max_answers", 8, minimum=0, maximum=999
         )
+        self.turtle_soup_difficulty = self._soup_difficulty(
+            self._cfg_str("turtle_soup.difficulty", "normal")
+        )
+        self.turtle_soup_follow_difficulty = self._cfg_bool(
+            "turtle_soup.follow_difficulty", True
+        )
+        self.turtle_soup_library_priority = (
+            self._cfg_str("turtle_soup.library_priority", "builtin_first")
+            .strip()
+            .lower()
+            or "builtin_first"
+        )
+        if self.turtle_soup_library_priority not in {"builtin_first", "online_first"}:
+            self.turtle_soup_library_priority = "builtin_first"
         self.turtle_soup_free_questioning = self._cfg_bool(
             "turtle_soup.free_questioning", True
         )
@@ -11069,6 +11223,7 @@ class GameCompanionPlugin(Star):
         self.manager.turtle_soup_max_players = self.turtle_soup_max_players
         self.manager.turtle_soup_max_questions = self.turtle_soup_max_questions
         self.manager.turtle_soup_max_answers = self.turtle_soup_max_answers
+        self.manager.turtle_soup_follow_difficulty = self.turtle_soup_follow_difficulty
         self.manager.turtle_soup_free_questioning = self.turtle_soup_free_questioning
         self.manager.turtle_soup_free_question_cooldown = self.turtle_soup_free_question_cooldown
         self.manager.turtle_soup_auto_reveal_seconds = (
@@ -12005,6 +12160,39 @@ class GameCompanionPlugin(Star):
     def _difficulty(value: Any) -> Difficulty:
         normalized = str(value or "normal").strip().lower()
         return normalized if normalized in {"easy", "normal", "hard"} else "normal"  # type: ignore[return-value]
+
+    def _difficulty_for_game(self, game_type: str, value: Any) -> Difficulty:
+        """海龟汤多一档「娱乐」，其余玩法仍是 easy/normal/hard。
+
+        分开解析是因为棋类、骰子、黑杰克的难度表都是三档硬编码，把「娱乐」
+        塞进去会直接 KeyError。
+        """
+        if str(game_type or "").strip().lower() == "turtle_soup":
+            return self._soup_difficulty(value)  # type: ignore[return-value]
+        return self._difficulty(value)
+
+    def _soup_difficulty(self, value: Any) -> str:
+        """海龟汤难度：空值用配置里的默认难度，认不出的按普通。"""
+        text = str(value or "").strip().lower()
+        if not text:
+            text = str(getattr(self, "turtle_soup_difficulty", "normal") or "normal")
+        aliases = {
+            "娱乐": "entertainment",
+            "休闲": "entertainment",
+            "放松": "entertainment",
+            "entertainment": "entertainment",
+            "casual": "entertainment",
+            "简单": "easy",
+            "容易": "easy",
+            "easy": "easy",
+            "普通": "normal",
+            "中等": "normal",
+            "normal": "normal",
+            "困难": "hard",
+            "难": "hard",
+            "hard": "hard",
+        }
+        return aliases.get(text, "normal")
 
     @staticmethod
     def _turtle_soup_mode(value: Any) -> TurtleSoupMode:

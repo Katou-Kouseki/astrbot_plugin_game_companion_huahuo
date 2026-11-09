@@ -84,11 +84,24 @@
 
 ## 海龟汤题库
 
-插件自带 226 道海龟汤（`soup_library.json`），出题顺序是：网络题库（配置了 `turtle_soup.online_pool_url` 时）→ 内置题库 → LLM 现编 → 内置兜底 12 条。
+插件自带 226 道海龟汤（`soup_library.json`），出题顺序是：自定义投稿 → 内置题库 / 网络题库（顺序由 `turtle_soup.library_priority` 决定）→ LLM 现编 → 内置兜底 12 条。默认「优先内置题库」，它不联网、出得快；想要更新鲜的题就切到「优先网络题库」，拉取失败会自动换下一种来源。
 
 内置题库只存汤面与汤底，第一次抽到某道题时会用模型补出标题、关键事实、渐进提示、题材与诡计，结果缓存在数据目录的 `soup_library_cache.json`（不改动题库文件）；模型不可用时退回规则版字段，保证照样能开局。题目按内容等级分档，`all_ages` 57 道、`normal` 140 道、`unrestricted` 29 道，受 `turtle_soup.content_level` 控制。
 
 题库内容来自 [`IPF-Sinon/astrbot_plugin_soupai`](https://github.com/IPF-Sinon/astrbot_plugin_soupai)（AGPL-3.0），仅收录汤面与汤底。不想要可直接关闭 `turtle_soup.library_enabled`。
+
+### 难度档位
+
+难度不再只是一个标签，它决定这一局能问几次、能要几次提示、能猜几次，以及「猜中」的门槛：
+
+| 难度 | 提问限制 | 提示次数 | 推理次数 | 猜中条件 |
+| --- | --- | --- | --- | --- |
+| 娱乐 | 不限 | 15 次 | 不限 | 完全还原 / 核心推理正确 / 部分正确 |
+| 简单 | 90 次 | 10 次 | 8 次 | 完全还原 / 核心推理正确 |
+| 普通 | 35 次 | 5 次 | 4 次 | 完全还原 / 核心推理正确 |
+| 困难 | 15 次 | 1 次 | 2 次 | 仅完全还原 |
+
+提问与推理都是**整局共享**，不是每人一份；提示按顺序发放，不同玩家拿到的不会重复。开局时可以在群里写 `汤 开局 困难`，或在网页里切换难度（详见房间界面的难度按钮）。不想按难度表走，就把 `turtle_soup.follow_difficulty` 关掉，改用 `max_questions` / `max_hints` / `max_answers` 三个自定义数值。
 
 ### 投稿自己的题（仅私聊）
 
@@ -230,14 +243,17 @@ Quick Tunnel 首次启动后会先连续检查公网健康状态，确认临时�
 | 棋力中途切换 | — | 游戏管理台「全部房间」列表的棋力下拉，只对五子棋/黑白棋/象棋/围棋/井字棋显示，下一手立即生效 |
 | 解说模型 Provider | 空 | `commentary.provider_id`，在配置中心下拉选择已配置的聊天模型 Provider；留空跟随会话模型 |
 | 解说模型名 | 空 | `commentary.model`，可选，填所选 Provider 下的具体模型名 |
-| 海龟汤每局最多提示 | 3 | `0` 为允许查看全部预生成提示；总量限制，且不同玩家拿到的提示不会重复 |
+| 海龟汤每局最多提示 | 3 | `0` 为允许查看全部预生成提示；总量限制，且不同玩家拿到的提示不会重复；只在关闭「按难度自动决定次数」时生效 |
 | 海龟汤出题模型 Provider | 空 | `turtle_soup.generation_provider_id`，下拉选择；留空跟随会话模型，建议选擅长推理的模型专门出题与自检 |
 | 海龟汤判断模型 Provider | 空 | `turtle_soup.judge_provider_id`，下拉选择；留空跟随会话模型，判定要快，建议选响应快的模型 |
 | 海龟汤内容等级 | `normal` | 可选全年龄、普通或不限制 |
 | 海龟汤最大玩家数 | 不限 | `0` 为无限制（默认）；群体一起玩不再受席位数限制 |
 | 海龟汤自由提问 | 开启 | `turtle_soup.free_questioning`；关掉回到按席位顺位轮流 + 回合超时 |
-| 海龟汤每局提问上限 | 15 | `turtle_soup.max_questions`，`0` 为无限制；只限提问，推理另有额度 |
-| 海龟汤每局推理上限 | 8 | `turtle_soup.max_answers`，`0` 为无限制；整局共享，用完仍没人答对就揭晓汤底 |
+| 海龟汤默认难度 | 普通 | `turtle_soup.difficulty`：娱乐 / 简单 / 普通 / 困难，决定提问、提示、推理次数与猜中条件；新建房间时作为默认值 |
+| 按难度自动决定次数 | 开启 | `turtle_soup.follow_difficulty`；关掉才使用下面三项自定义数值 |
+| 海龟汤每局提问上限 | 15 | `turtle_soup.max_questions`，`0` 为无限制；只在关闭「按难度自动决定次数」时生效 |
+| 海龟汤每局推理上限 | 8 | `turtle_soup.max_answers`，`0` 为无限制；整局共享，用完仍没人答对就揭晓汤底；只在关闭「按难度自动决定次数」时生效 |
+| 题库优先级 | 优先内置 | `turtle_soup.library_priority`：优先内置题库 / 优先网络题库 |
 | 群聊互通总开关 | 开启 | `turtle_soup.qq_bridge_enabled`；关掉后指令、@ 入口、模型工具全部停用 |
 | 网页问答同步到群 | 开启 | `turtle_soup.qq_sync_questions`；攒批合并成一条（优先速报图 / 合并聊天记录） |
 | 轮次换人播报 | 开启 | `turtle_soup.qq_turn_announce`；仅严格轮次生效，换人时群里 @ 下一位 |
@@ -270,7 +286,7 @@ node --check web/app.js
 node --check pages/游戏管理台/manager.js
 ```
 
-最低支持 AstrBot `4.24.2`，当前开发与实机测试版本为 AstrBot `4.27.3`；需要 Python `3.12+`。插件版本为 `0.5.85`。
+最低支持 AstrBot `4.24.2`，当前开发与实机测试版本为 AstrBot `4.27.3`；需要 Python `3.12+`。插件版本为 `0.5.86`。
 
 ## 致谢 / 来源
 

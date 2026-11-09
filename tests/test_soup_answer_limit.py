@@ -70,7 +70,7 @@ async def guess(manager: RoomManager, room, text: str, *, solved: bool = False) 
 
 @pytest.mark.asyncio
 async def test_reveals_when_answer_budget_runs_out() -> None:
-    manager = RoomManager(turtle_soup_max_players=1, turtle_soup_max_answers=2)
+    manager = RoomManager(turtle_soup_max_players=1, turtle_soup_follow_difficulty=False, turtle_soup_max_answers=2)
     room = await build_room(manager)
 
     assert await guess(manager, room, "第一次瞎猜")
@@ -95,7 +95,7 @@ async def test_reveal_is_announced_as_an_event() -> None:
 
     manager = RoomManager(
         turtle_soup_max_players=1,
-        turtle_soup_max_answers=1,
+        turtle_soup_follow_difficulty=False, turtle_soup_max_answers=1,
         event_callback=callback,
     )
     room = await build_room(manager)
@@ -107,7 +107,7 @@ async def test_reveal_is_announced_as_an_event() -> None:
 
 @pytest.mark.asyncio
 async def test_correct_guess_before_budget_ends_keeps_its_own_path() -> None:
-    manager = RoomManager(turtle_soup_max_players=1, turtle_soup_max_answers=3)
+    manager = RoomManager(turtle_soup_max_players=1, turtle_soup_follow_difficulty=False, turtle_soup_max_answers=3)
     room = await build_room(manager)
 
     await guess(manager, room, "先错一次")
@@ -120,7 +120,7 @@ async def test_correct_guess_before_budget_ends_keeps_its_own_path() -> None:
 
 @pytest.mark.asyncio
 async def test_zero_means_unlimited() -> None:
-    manager = RoomManager(turtle_soup_max_players=1, turtle_soup_max_answers=0)
+    manager = RoomManager(turtle_soup_max_players=1, turtle_soup_follow_difficulty=False, turtle_soup_max_answers=0)
     room = await build_room(manager)
 
     for index in range(6):
@@ -133,7 +133,7 @@ async def test_zero_means_unlimited() -> None:
 @pytest.mark.asyncio
 async def test_budget_is_shared_by_the_whole_room() -> None:
     """额度不按人头算：两个人入座，仍然是整局共享一份。"""
-    manager = RoomManager(turtle_soup_max_players=0, turtle_soup_max_answers=3)
+    manager = RoomManager(turtle_soup_max_players=0, turtle_soup_follow_difficulty=False, turtle_soup_max_answers=3)
     room = await build_room(manager)
     second = await manager.join(room)
     await manager.claim_and_start(room, second.token, "")
@@ -206,7 +206,7 @@ async def make_host_room(manager: RoomManager, *, seats: int = 2):
 @pytest.mark.asyncio
 async def test_player_host_mode_also_stops_at_the_budget() -> None:
     """出题人判「不对」也算一次推理：用完就收题，别让一局无限拖下去。"""
-    manager = RoomManager(turtle_soup_max_players=0, turtle_soup_max_answers=2)
+    manager = RoomManager(turtle_soup_max_players=0, turtle_soup_follow_difficulty=False, turtle_soup_max_answers=2)
     room, visitors = await make_host_room(manager)
     host, solver = visitors[0], visitors[1]
     await manager.apply_soup_host(room, host.token)

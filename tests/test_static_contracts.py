@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.85"
+    assert metadata["version"] == "0.5.86"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1480,3 +1480,35 @@ def test_soup_library_is_shipped() -> None:
     # 轮次默认关掉：群里人多时按顺位轮转，一轮要等二十次
     assert soup["free_questioning"]["default"] is True
 
+
+
+def test_announce_poster_fits_in_the_request_body_limit() -> None:
+    """通知到群把战报图放进 JSON 请求体：图要压、上限要够。
+
+    2MB 上限 + PNG 时，1080 宽的战报图会先撞 aiohttp 的
+    「Maximum request body size 2097152 exceeded」，报错发生在路由之前，
+    玩家只看到一句英文，还以为是自己没绑群。
+    """
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "8 * 1024 * 1024" in server
+    assert "soupSharePosterUrl(buildSoupResult(), { jpeg: true })" in script
+
+
+def test_turtle_soup_rematch_returns_to_setup() -> None:
+    """海龟汤的「再来一局」必须回到准备状态，否则玩家抢不到「我来出题」。"""
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert "prepare_soup_next_round" in server
+    assert "async def prepare_soup_next_round" in manager
+
+
+def test_soup_announce_requires_a_target_group() -> None:
+    """发不出去要先说清原因，别让玩家以为点了没反应。"""
+    server = (ROOT / "server.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert server.count("announce_target") >= 3
+    assert "def announce_target" in main

@@ -194,7 +194,12 @@
     if (!select || !button) return;
     button.disabled = true;
     try {
-      const data = await endpoint("POST", "room/create", { game_type: select.value });
+      const groupInput = document.getElementById("newRoomGroup");
+      const groupId = String(groupInput?.value || "").trim();
+      const data = await endpoint("POST", "room/create", {
+        game_type: select.value,
+        group_id: groupId,
+      });
       const url = String(data?.url || "");
       if (url) {
         const copied = await copyText(url);
@@ -202,6 +207,7 @@
       } else {
         showToast("房间已创建，但外部访问地址还没就绪，请先启动临时访问或配置固定地址");
       }
+      if (groupInput) groupInput.value = "";
       await loadRooms();
     } catch (error) {
       showToast(error?.message || "开房失败");
@@ -272,7 +278,9 @@
       origin.append(createText(
         "small",
         consoleRoom
-          ? "链接房间 · 访客由管理台安排入座"
+          ? (room.group_id
+            ? `播报群 ${room.group_id} · 访客由管理台安排入座`
+            : "未绑定播报群 · 战报发不出去（点右侧喇叭绑定）")
           : `${room.creator_name || "创建者"} · ${room.creator_qq || "未知 QQ"}`,
       ));
 
@@ -448,6 +456,36 @@
       assign.innerHTML = '<i data-lucide="user-check"></i>';
       assign.addEventListener("click", () => openAssign(room));
       actionList.appendChild(assign);
+      if (consoleRoom) {
+        // 管理台链接房没有 QQ 会话，战报要发进群只能靠绑一个群号
+        const bindGroup = document.createElement("button");
+        bindGroup.type = "button";
+        bindGroup.className = "row-button";
+        bindGroup.title = room.group_id
+          ? `播报群：${room.group_id}（点击修改）`
+          : "绑定播报群";
+        bindGroup.setAttribute("aria-label", "绑定播报群");
+        bindGroup.innerHTML = '<i data-lucide="megaphone"></i>';
+        bindGroup.addEventListener("click", async () => {
+          const value = window.prompt(
+            "战报要发到哪个 QQ 群？填群号，留空表示解除绑定",
+            room.group_id || "",
+          );
+          if (value === null) return;
+          try {
+            await endpoint("POST", "room/action", {
+              room_id: room.room_id,
+              action: "bind_group",
+              group_id: String(value).trim(),
+            });
+            showToast(String(value).trim() ? `已绑定播报群 ${String(value).trim()}` : "已解除播报群绑定");
+            await loadRooms();
+          } catch (error) {
+            showToast(error?.message || "绑定失败");
+          }
+        });
+        actionList.appendChild(bindGroup);
+      }
       if (room.status === "active") actionList.appendChild(actionButton("pause", "暂停", "pause", room));
       if (room.status === "paused") actionList.appendChild(actionButton("play", "继续", "resume", room));
       actionList.appendChild(actionButton("x", "关闭房间", "close", room, "danger"));

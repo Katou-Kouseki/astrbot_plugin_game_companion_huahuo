@@ -22,6 +22,47 @@ VERDICT_LABELS: dict[SoupVerdict, str] = {
     "compound": "请一次只问一个问题",
 }
 
+# 海龟汤难度档位：难度直接决定参与次数与「算猜中」的门槛。
+# questions / answers 为 0 表示不限；hints 是整局总提示次数（不是每人一份）。
+# solve 是判定口径：
+#   partial — 完全还原 / 核心推理正确 / 部分正确都算过（娱乐档）
+#   core    — 完全还原或核心推理正确（简单、普通）
+#   exact   — 必须完全还原（困难）
+SOUP_DIFFICULTY_PROFILES: dict[str, dict[str, Any]] = {
+    "entertainment": {
+        "label": "娱乐",
+        "questions": 0,
+        "hints": 15,
+        "answers": 0,
+        "solve": "partial",
+    },
+    "easy": {"label": "简单", "questions": 90, "hints": 10, "answers": 8, "solve": "core"},
+    "normal": {"label": "普通", "questions": 35, "hints": 5, "answers": 4, "solve": "core"},
+    "hard": {"label": "困难", "questions": 15, "hints": 1, "answers": 2, "solve": "exact"},
+}
+DEFAULT_SOUP_DIFFICULTY = "normal"
+
+
+def soup_profile(difficulty: str | None) -> dict[str, Any]:
+    """按难度取档位；认不出的值一律按「普通」，不让配置写错就崩。"""
+    return SOUP_DIFFICULTY_PROFILES.get(
+        str(difficulty or "").strip().lower(),
+        SOUP_DIFFICULTY_PROFILES[DEFAULT_SOUP_DIFFICULTY],
+    )
+
+
+def soup_limits_for_difficulty(difficulty: str | None) -> dict[str, int]:
+    profile = soup_profile(difficulty)
+    return {
+        "questions": int(profile["questions"]),
+        "hints": int(profile["hints"]),
+        "answers": int(profile["answers"]),
+    }
+
+
+def soup_solve_policy(difficulty: str | None) -> str:
+    return str(soup_profile(difficulty)["solve"])
+
 
 @dataclass(slots=True, frozen=True)
 class SoupPuzzle:

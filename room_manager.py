@@ -47,6 +47,7 @@ from .turtle_soup import (
     SoupVerdict,
     TurtleSoupGame,
     clean_player_text,
+    soup_limits_for_difficulty,
 )
 from .turtle_soup_deck import redact_spoiler
 from .undercover import UndercoverGame, UCPlayer
@@ -207,6 +208,7 @@ class RoomManager:
         turtle_soup_max_players: int = 0,
         turtle_soup_max_questions: int = 15,
         turtle_soup_max_answers: int = 8,
+        turtle_soup_follow_difficulty: bool = True,
         turtle_soup_free_questioning: bool = True,
         turtle_soup_free_question_cooldown: int = 1,
         turtle_soup_auto_reveal_seconds: int = 1800,
@@ -260,6 +262,9 @@ class RoomManager:
         # 每局推理提交上限：整局共享（不是每人一份）。人多时按人头发额度等于
         # 没有上限——二十个人就是二十次模型判定，这里要的是「猜够次数就收题」。
         self.turtle_soup_max_answers = max(0, int(turtle_soup_max_answers or 0))
+        # 次数跟难度走：娱乐/简单/普通/困难各自的提问、提示、推理次数不一样，
+        # 关掉这项才使用上面三项自定义数值。
+        self.turtle_soup_follow_difficulty = bool(turtle_soup_follow_difficulty)
         self.turtle_soup_free_questioning = bool(turtle_soup_free_questioning)
         self.turtle_soup_free_question_cooldown = max(0, int(turtle_soup_free_question_cooldown))
         # 海龟汤超时兜底揭晓：0 表示不自动揭晓（只能由玩家投票结束）
@@ -1625,7 +1630,7 @@ class RoomManager:
             else:
                 room.game = TurtleSoupGame(
                     difficulty=room.difficulty,
-                    max_hints=self.turtle_soup_max_hints,
+                    max_hints=self.soup_limits(room)["hints"],
                     content_level=self.turtle_soup_content_level,
                     mode=room.turtle_soup_mode,
                 )
@@ -2328,6 +2333,54 @@ class RoomManager:
             room.add_message("system", "花火这次不想再来一局，房间留在结算页。")
             return True
 
+    def bind_announce_group(self, room: GameRoom, group_id: str) -> None:
+        """给房间指定播报群。
+
+        管理台开出来的链接房没有 QQ 会话（session_id 是 `admin:console`），
+        战报发不出去。绑一个群号后，播报按 `<platform>:group:<群号>` 发送。
+        群房本身已经有会话，这里的绑定不会覆盖它。
+        """
+        room.group_id = str(group_id or "").strip()
+        room.touch()
+        room.add_message(
+            "system",
+            f"战报将发送到群 {room.group_id}。" if room.group_id else "已解除播报群绑定。",
+        )
+
+    async def prepare_soup_next_round(
+        self, room: GameRoom, visitor_token: str
+    ) -> None:
+        """海龟汤「再来一局」：回到准备状态，而不是立刻让 Bot 出题。
+
+        以前这里走的是「申请再来一局 → 模型决定 → 直接开新题」，玩家没有
+        任何窗口点「我来出题」。现在只把房间退回 setup：座位保留，谁想自己
+        出题就点「我来出题」，想让 Bot 出就点「开始出题」。
+        """
+        if room.game_type != "turtle_soup":
+            raise ValueError("只有海龟汤需要回到准备状态")
+        async with room.lock:
+            visitor = self._visitor(room, visitor_token)
+            if room.multiplayer.enabled:
+                allowed = room.multiplayer.seat_for_token(visitor.token) is not None
+            else:
+                allowed = bool(room.player_token and visitor.token == room.player_token)
+            if not allowed:
+                raise PermissionError("只有玩家才能再来一局")
+            if room.status not in {"finished", "rematch_pending"}:
+                raise ValueError("当前对局还没有结束")
+            room.status = "setup"
+            room.game = None
+            room.multiplayer.turn_deadline = 0.0
+            room.soup_turn_announced = ""
+            room.touch()
+            room.add_message(
+                "system",
+                "上一局已结束。点「开始出题」由 Bot 出题，也可以点「我来出题」自己出。",
+            )
+        await self._emit(
+            "soup_round_prepared", room, {"visitor_token": visitor_token}
+        )
+
     async def restart_finished_game(
         self, room: GameRoom, *, difficulty: Difficulty
     ) -> None:
@@ -2352,7 +2405,7 @@ class RoomManager:
                 # 补一个占位对局，让下面的海龟汤分支正常重建（自愈）。
                 room.game = TurtleSoupGame(
                     difficulty=room.difficulty,
-                    max_hints=self.turtle_soup_max_hints,
+                    max_hints=self.soup_limits(room)["hints"],
                     content_level=self.turtle_soup_content_level,
                     mode=room.turtle_soup_mode,
                 )
@@ -2368,7 +2421,7 @@ class RoomManager:
             if isinstance(room.game, TurtleSoupGame):
                 room.game = TurtleSoupGame(
                     difficulty=difficulty,
-                    max_hints=self.turtle_soup_max_hints,
+                    max_hints=self.soup_limits(room)["hints"],
                     content_level=self.turtle_soup_content_level,
                     mode=room.turtle_soup_mode,
                 )
@@ -3294,7 +3347,7 @@ class RoomManager:
             )
             game = TurtleSoupGame(
                 difficulty=room.difficulty,
-                max_hints=self.turtle_soup_max_hints,
+                max_hints=self.soup_limits(room)["hints"],
                 content_level=self.turtle_soup_content_level,
                 mode="bot_host",
             )
@@ -3453,7 +3506,7 @@ class RoomManager:
                         game.solver_number = asker
             # 推理额度在玩家出题模式下同样生效：出题人判「不对」也算一次尝试，
             # 用完还没人猜中就收题——不然这局会一直挂到出题人自己不耐烦。
-            limit = self._soup_answer_limit()
+            limit = self._soup_answer_limit(room)
             if (
                 kind != "question"
                 and not game.finished
@@ -3487,6 +3540,24 @@ class RoomManager:
             raise ValueError("当前没有正在进行的海龟汤")
         return game
 
+    # 排队等待上限：同一条判定还没结束时，后来的人排队等，而不是被丢掉。
+    # 前端问答请求的超时必须比它长，否则页面会先报「请求超时」。
+    SOUP_JUDGE_QUEUE_TIMEOUT = 15.0
+
+    def _soup_judge_wait(self, game: TurtleSoupGame, room: GameRoom) -> float:
+        """距离可以开始下一次判定还要等多少秒。
+
+        自由提问的冷却以前是「直接丢掉这句话」，玩家看到的是「上一条还在判定中」，
+        但他要的是判定结果。现在改成排队：冷却过去就接着判，不丢内容。
+        """
+        if not self._turtle_soup_free_mode(room):
+            return 0.0
+        cooldown = max(0, int(self.turtle_soup_free_question_cooldown or 0))
+        if cooldown <= 0:
+            return 0.0
+        elapsed = time.time() - float(getattr(game, "last_judge_at", 0) or 0)
+        return max(0.0, cooldown - elapsed)
+
     async def begin_turtle_soup_interaction(
         self,
         room: GameRoom,
@@ -3497,37 +3568,37 @@ class RoomManager:
         actor_qq: str = "",
         limit: int,
     ) -> tuple[TurtleSoupGame, str]:
-        """Reserve the single judge slot without holding the lock during LLM work."""
+        """Reserve the single judge slot without holding the lock during LLM work.
+
+        拿不到判定位就排队等（上一条判定结束 + 冷却过去），不再直接拒绝：
+        人多时每人轮流问，问的那句一定会被判出来。
+        """
         cleaned = clean_player_text(text, limit=limit)
-        async with room.lock:
-            game = self._turtle_soup_game(room)
-            player_number = self._require_turtle_soup_player(
-                room,
-                source=source,
-                visitor_token=visitor_token,
-                actor_qq=actor_qq,
-            )
-            if room.status == "paused":
-                raise ValueError("当前海龟汤已经暂停")
-            if room.status != "active":
-                raise ValueError("当前没有正在进行的海龟汤")
-            # 自由提问防刷：冷却期内丢弃新的提问/答题，避免玩家轮番提问把 LLM 打满。
-            # （并发由 game.begin_processing() 的单格判断锁兜底，这里是更平滑的限速提示。）
-            if (
-                self._turtle_soup_free_mode(room)
-                and self.turtle_soup_free_question_cooldown > 0
-                and time.time()
-                - float(getattr(game, "last_judge_at", 0) or 0)
-                < self.turtle_soup_free_question_cooldown
-            ):
-                # 文案说「上一条还在判定中」而不是「正在消化推理」：玩家可能只是
-                # 连着问了两个问题，提「推理」会让人以为自己刚才提交了推理。
-                raise ValueError("上一条还在判定中，等一两秒再问～")
-            game.begin_processing()
-            game.processing_player_number = player_number
-            room.multiplayer.turn_deadline = 0.0
-            room.touch()
-            return game, cleaned
+        deadline = time.monotonic() + self.SOUP_JUDGE_QUEUE_TIMEOUT
+        while True:
+            async with room.lock:
+                game = self._turtle_soup_game(room)
+                player_number = self._require_turtle_soup_player(
+                    room,
+                    source=source,
+                    visitor_token=visitor_token,
+                    actor_qq=actor_qq,
+                )
+                if room.status == "paused":
+                    raise ValueError("当前海龟汤已经暂停")
+                if room.status != "active":
+                    raise ValueError("当前没有正在进行的海龟汤")
+                wait = self._soup_judge_wait(game, room)
+                if not game.processing and wait <= 0:
+                    game.begin_processing()
+                    game.processing_player_number = player_number
+                    room.multiplayer.turn_deadline = 0.0
+                    room.touch()
+                    return game, cleaned
+            if time.monotonic() >= deadline:
+                raise ValueError("排队的人有点多，等十几秒再问一次吧")
+            # 判定中：每 0.25 秒回来看一次；只剩一点冷却就直接睡那点时间。
+            await asyncio.sleep(min(0.25, max(0.05, wait)))
 
     async def cancel_turtle_soup_interaction(
         self, room: GameRoom, game: TurtleSoupGame, reason: str
@@ -3601,7 +3672,7 @@ class RoomManager:
             room.touch()
             # 推理次数用完了还是没人答对：这局已经没有翻盘的手段，直接揭晓。
             # 不这么做的话，额度用完后的玩家只能干坐着等超时自动揭晓（默认 30 分钟）。
-            limit = self._soup_answer_limit()
+            limit = self._soup_answer_limit(room)
             if (
                 not solved
                 and limit
@@ -3626,9 +3697,23 @@ class RoomManager:
             )
         return True
 
-    def _soup_answer_limit(self) -> int:
+    def soup_limits(self, room: GameRoom) -> dict[str, int]:
+        """这一局的提问/提示/推理次数：按难度档位，或按自定义配置。
+
+        `follow_difficulty` 关掉时用配置里的三个数字（老行为）；
+        开启时用难度表——娱乐档的 0 就是「不限」，不是「0 次」。
+        """
+        if not getattr(self, "turtle_soup_follow_difficulty", True):
+            return {
+                "questions": max(0, int(self.turtle_soup_max_questions or 0)),
+                "hints": max(0, int(self.turtle_soup_max_hints or 0)),
+                "answers": max(0, int(self.turtle_soup_max_answers or 0)),
+            }
+        return soup_limits_for_difficulty(getattr(room, "difficulty", "normal"))
+
+    def _soup_answer_limit(self, room: GameRoom) -> int:
         """每局推理上限；0 表示不限。"""
-        return max(0, int(getattr(self, "turtle_soup_max_answers", 0) or 0))
+        return max(0, int(self.soup_limits(room)["answers"]))
 
     async def request_turtle_soup_hint(
         self,
@@ -6583,7 +6668,13 @@ class RoomManager:
 
     @staticmethod
     def _difficulty_label(difficulty: Difficulty) -> str:
-        return {"easy": "简单", "normal": "普通", "hard": "困难"}[difficulty]
+        # 海龟汤多一档「娱乐」，别用 [] 直接取，否则新档位会直接抛 KeyError
+        return {
+            "entertainment": "娱乐",
+            "easy": "简单",
+            "normal": "普通",
+            "hard": "困难",
+        }.get(str(difficulty), "普通")
 
     def _require_xiangqi_engine(self) -> PikafishService:
         if self.xiangqi_engine is None:

@@ -185,13 +185,21 @@ def _status_text(plugin: Any, room: GameRoom, game: TurtleSoupGame | None) -> st
         return "🥣 海龟汤正在准备题目，等小会儿再试。"
     title = game.puzzle.title or "本局题目"
     hints_left = int(getattr(game, "hint_left", 0))
-    limit = int(getattr(plugin, "turtle_soup_max_questions", 15) or 0)
+    # 次数跟难度走：同一进程里不同房间难度不同，必须按房间取，不能用插件级配置
+    if hasattr(plugin, "_soup_limits"):
+        limits = plugin._soup_limits(room)
+    else:  # 兼容极简桩对象（测试里只给了部分属性）
+        limits = {
+            "questions": int(getattr(plugin, "turtle_soup_max_questions", 15) or 0),
+            "answers": int(getattr(plugin, "turtle_soup_max_answers", 0) or 0),
+        }
+    limit = int(limits.get("questions", 0) or 0)
     # 只算玩家问的（花火自己的提问不吃玩家额度）
     mine = int(getattr(game, "player_question_count", game.question_count))
     asked = f"{mine} 次"
     if limit:
         asked = f"{mine}/{limit} 次（剩 {max(0, limit - mine)}）"
-    answer_limit = int(getattr(plugin, "turtle_soup_max_answers", 0) or 0)
+    answer_limit = int(limits.get("answers", 0) or 0)
     used_answers = int(getattr(game, "answer_attempts", 0) or 0)
     answer_text = f"推理已交 {used_answers} 次"
     if answer_limit:
@@ -200,7 +208,7 @@ def _status_text(plugin: Any, room: GameRoom, game: TurtleSoupGame | None) -> st
         )
     lines = [
         f"🥣 海龟汤 · {title}",
-        f"已提问 {asked} · 提示剩 {hints_left} 次",
+        f"难度：{_difficulty_cn(room.difficulty)} · 已提问 {asked} · 提示剩 {hints_left} 次",
         answer_text,
     ]
     if room.status == "paused":
@@ -392,6 +400,10 @@ async def run_soup_action(
 
 
 _DIFFICULTY_ALIASES: dict[str, str] = {
+    "娱乐": "entertainment",
+    "休闲": "entertainment",
+    "放松": "entertainment",
+    "entertainment": "entertainment",
     "简单": "easy",
     "容易": "easy",
     "easy": "easy",
@@ -402,6 +414,17 @@ _DIFFICULTY_ALIASES: dict[str, str] = {
     "难": "hard",
     "hard": "hard",
 }
+
+_DIFFICULTY_LABELS: dict[str, str] = {
+    "entertainment": "娱乐",
+    "easy": "简单",
+    "normal": "普通",
+    "hard": "困难",
+}
+
+
+def _difficulty_cn(difficulty: str | None) -> str:
+    return _DIFFICULTY_LABELS.get(str(difficulty or "").strip().lower(), "普通")
 
 
 async def _seat_and_start(plugin: Any, room: GameRoom, event: Any) -> str:
@@ -436,7 +459,10 @@ async def start_soup_room(plugin: Any, event: Any, body: str) -> str:
         return "当前会话已经有一局在玩了。发「汤 状态」看进度；想重开就先让这局结束。"
     difficulty = _DIFFICULTY_ALIASES.get(str(body or "").strip().lower(), "")
     if not difficulty:
-        difficulty = plugin._difficulty(body)
+        # 没写难度就用配置里的默认难度（海龟汤四档，走 _soup_difficulty；
+        # 极简桩对象没有这个方法时退回三档解析）
+        resolver = getattr(plugin, "_soup_difficulty", None)
+        difficulty = resolver("") if callable(resolver) else plugin._difficulty(body)
     try:
         room, _reused, _same = await plugin._create_or_reuse_room_from_event(
             event, difficulty, "turtle_soup", confirm_abandon=False

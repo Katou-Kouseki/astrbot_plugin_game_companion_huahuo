@@ -182,7 +182,7 @@ async def test_only_current_player_can_ask_and_questions_are_shared() -> None:
 
 @pytest.mark.asyncio
 async def test_hints_are_progressive_and_honor_configured_limit() -> None:
-    manager = RoomManager(turtle_soup_max_hints=2)
+    manager = RoomManager(turtle_soup_follow_difficulty=False, turtle_soup_max_hints=2)
     room, visitor, game = await make_soup_room(manager)
     await manager.complete_turtle_soup_generation(room, game, make_puzzle())
 

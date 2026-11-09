@@ -1576,13 +1576,13 @@
     }
   }
 
-  async function request(method, action, payload = {}) {
+  async function request(method, action, payload = {}, timeoutMs) {
     const response = await timedFetch(endpoint(action), {
       method,
       headers: method === "POST" ? { "Content-Type": "application/json" } : {},
       body: method === "POST" ? JSON.stringify(payload) : undefined,
       cache: "no-store",
-    });
+    }, timeoutMs);
     let data = null;
     try { data = await response.json(); } catch (_error) { data = null; }
     if (!response.ok || data?.status === "error") {
@@ -2282,9 +2282,13 @@
             : "座位保留，再来一局换边（你会改执对方的颜色）。";
       } else {
         action.innerHTML = room.game_type === "turtle_soup"
-          ? `<i data-lucide="rotate-ccw"></i><span>${room.turtle_soup_mode === "player_host" ? "申请再出一题" : "申请再来一道"}</span>`
+          ? '<i data-lucide="rotate-ccw"></i><span>再来一局</span>'
           : '<i data-lucide="rotate-ccw"></i><span>申请再来一局</span>';
-        note.textContent = "花火 会结合当前人格决定是否接受。";
+        // 海龟汤不再让模型决定要不要接着开：点一下回到准备状态，
+        // 玩家可以继续点「开始出题」，也可以抢「我来出题」。
+        note.textContent = room.game_type === "turtle_soup"
+          ? "座位保留，回到准备状态：可以让 Bot 出题，也可以自己出题。"
+          : "花火 会结合当前人格决定是否接受。";
       }
     } else if (room.status === "rematch_pending") {
       action.innerHTML = '<i data-lucide="loader-circle"></i><span>等待 花火 回应</span>';
@@ -4806,8 +4810,10 @@
     }
   }
 
-  // 海龟汤战报 PNG：汤面 + 提问摘录 + 结果，刻意不画汤底（保留悬念）
-  async function soupSharePosterUrl(result) {
+  // 海龟汤战报：汤面 + 提问摘录 + 结果，刻意不画汤底（保留悬念）
+  // options.jpeg=true 导出 JPEG：通知到群要把它塞进 JSON 请求体，
+  // 1280 宽的 PNG 轻易到几 MB，会直接撞上传体积上限。
+  async function soupSharePosterUrl(result, options = {}) {
     if (!result) return "";
     const scale = 2;
     const W = 640;
@@ -4817,14 +4823,25 @@
     const measure = document.createElement("canvas").getContext("2d");
     const surfaceLines = wrapPosterLines(measure, result.surface, W - M * 2, fontOf(false, 21), 8);
     const questions = pickSoupQuestions(result, 4);
-    const questionLines = [];
-    questions.forEach((entry) => {
-      const text = `「${String(entry.prompt || "").trim()}」→ ${entry.response || "已答"}`;
-      wrapPosterLines(measure, text, W - M * 2 - 24, fontOf(false, 17), 2)
-        .forEach((line) => questionLines.push(line));
+    // 提问摘录：问题左对齐换行、判定右对齐到同一列，读起来像一张流水账
+    const questionFont = fontOf(false, 16);
+    const verdictFont = fontOf(true, 15);
+    const blocks = questions.map((entry) => {
+      const verdict = String(entry.response || "已答").trim();
+      measure.font = verdictFont;
+      const verdictW = Math.max(40, measure.measureText(verdict).width);
+      const lines = wrapPosterLines(
+        measure,
+        `「${String(entry.prompt || "").trim()}」`,
+        W - M * 2 - 28 - verdictW - 16,
+        questionFont,
+        2,
+      );
+      return { lines, verdict };
     });
-    const statsH = 54;
-    const questionH = questionLines.length ? 44 + questionLines.length * 26 : 0;
+    const questionsH = blocks.length
+      ? 46 + blocks.reduce((sum, block) => sum + block.lines.length * 24 + 10, 0) + 8
+      : 0;
     // 参与玩家：头像 + 昵称单独一块，放在结果条上方（花火是主持人，不在名单里）
     const players = Array.isArray(result.players) ? result.players.slice(0, 8) : [];
     const avatarMap = players.length
@@ -4834,13 +4851,23 @@
             .map((player) => ({ number: player.number, url: player.avatar_url })),
         )
       : new Map();
+    // 一两个人横排：竖排单人会在整屏宽里孤零零飘着，人多了才铺格子
+    const inlinePlayers = players.length > 0 && players.length <= 2;
     const avatarDia = 52;
     const perRow = Math.min(6, Math.max(1, players.length));
     const playerRows = players.length ? Math.ceil(players.length / perRow) : 0;
-    const playersH = players.length
-      ? 30 + playerRows * (avatarDia + 22) + 8
-      : 0;
-    const H = 152 + 46 + surfaceLines.length * 32 + statsH + questionH + playersH + 150;
+    const playersH = !players.length
+      ? 0
+      : inlinePlayers ? 84 : 30 + playerRows * (avatarDia + 22) + 8;
+
+    // 高度按各区块实际占用累加，别用固定尾巴——底部留一大块空白最显乱
+    const surfaceTop = 194;
+    const statsTop = surfaceTop + surfaceLines.length * 32 + 6;
+    let cursorY = statsTop + 34;
+    if (blocks.length) cursorY = cursorY - 8 + questionsH + 14;
+    if (playersH) cursorY = cursorY - 8 + playersH + 12;
+    const resultTop = cursorY - 4;
+    const H = resultTop + 68 + 72;
     const cv = document.createElement("canvas");
     cv.width = W * scale; cv.height = H * scale;
     const c = cv.getContext("2d");
@@ -4875,27 +4902,36 @@
     c.fillStyle = "#ffffff";
     c.fillText(truncatePosterText(c, titleText, W - M * 2), M, 108);
     // 汤面
-    let y = 194;
+    let y = surfaceTop;
     c.fillStyle = "#f0e4d2"; c.font = fontOf(false, 21);
     surfaceLines.forEach((line) => { c.fillText(line, M, y); y += 32; });
     // 统计
-    y += 6;
     c.fillStyle = "#c0a887"; c.font = fontOf(false, 16);
     const facts = result.facts ? ` · 关键事实 ${result.discovered}/${result.facts}` : "";
-    c.fillText(`提问 ${result.questions} 次 · 提示 ${result.hints} 次 · 推理 ${result.attempts} 次${facts}`, M, y);
-    y += 34;
-    // 提问摘录（卡片式）
-    if (questionLines.length) {
-      const boxH = 34 + questionLines.length * 26;
-      rr(M, y - 22, W - M * 2, boxH, 12);
+    c.fillText(`提问 ${result.questions} 次 · 提示 ${result.hints} 次 · 推理 ${result.attempts} 次${facts}`, M, statsTop);
+    y = statsTop + 34;
+    // 提问摘录（卡片式）：问题左对齐，判定右对齐成一列
+    if (blocks.length) {
+      const qTop = y - 8;
+      rr(M, qTop, W - M * 2, questionsH, 12);
       c.fillStyle = "rgba(255,255,255,.05)"; c.fill();
       c.strokeStyle = "rgba(255,209,102,.22)"; c.lineWidth = 1; c.stroke();
+      c.textAlign = "left";
       c.fillStyle = "#e5c99a"; c.font = fontOf(false, 15);
-      c.fillText("他们问过", M + 14, y + 4);
-      y += 30;
-      c.fillStyle = "#dccdb6"; c.font = fontOf(false, 17);
-      questionLines.forEach((line) => { c.fillText(line, M + 14, y); y += 26; });
-      y += 14;
+      c.fillText("他们问过", M + 14, qTop + 24);
+      let qy = qTop + 46;
+      blocks.forEach((block) => {
+        const firstBaseline = qy;
+        c.textAlign = "left";
+        c.fillStyle = "#dccdb6"; c.font = questionFont;
+        block.lines.forEach((line) => { c.fillText(line, M + 14, qy); qy += 24; });
+        c.textAlign = "right";
+        c.fillStyle = "#ffd166"; c.font = verdictFont;
+        c.fillText(block.verdict, W - M - 14, firstBaseline);
+        c.textAlign = "left";
+        qy += 10;
+      });
+      y = qTop + questionsH + 14;
     }
     // 玩家板块（圆形头像 + 昵称），排布在结果条上方
     if (players.length) {
@@ -4905,44 +4941,67 @@
       c.strokeStyle = "rgba(255,209,102,.22)"; c.lineWidth = 1; c.stroke();
       c.textAlign = "left";
       c.fillStyle = "#e5c99a"; c.font = fontOf(false, 15);
-      c.fillText("本局玩家", M + 14, cardTop + 22);
-      const innerW = W - M * 2 - 28;
-      const cellW = Math.min(84, innerW / perRow);
-      const startX = M + 14 + (innerW - cellW * perRow) / 2 + cellW / 2;
-      players.forEach((player, index) => {
-        const cx = startX + (index % perRow) * cellW;
-        const cy = cardTop + 30 + avatarDia / 2 + Math.floor(index / perRow) * (avatarDia + 22);
-        drawSoupAvatar(
-          c, cx, cy, avatarDia, player, avatarMap.get(Number(player.number)),
-        );
-        c.textAlign = "center";
-        c.fillStyle = "#dccdb6"; c.font = fontOf(false, 13);
-        c.fillText(
-          truncatePosterText(c, String(player.name || ""), cellW - 6),
-          cx,
-          cy + avatarDia / 2 + 16,
-        );
-        c.textAlign = "left";
-      });
-      y = cardTop + playersH + 8;
+      c.fillText("本局玩家", M + 14, cardTop + 24);
+      if (inlinePlayers) {
+        // 一两个人：头像与昵称横排，靠左，别在整屏宽里居中飘着
+        players.forEach((player, index) => {
+          const cx = M + 14 + 94 + index * 176;
+          const cy = cardTop + 46;
+          drawSoupAvatar(
+            c, cx, cy, 38, player, avatarMap.get(Number(player.number)),
+          );
+          c.textAlign = "left";
+          c.fillStyle = "#f0e4d2"; c.font = fontOf(true, 16);
+          c.fillText(
+            truncatePosterText(c, String(player.name || ""), 112),
+            cx + 26,
+            cy + 6,
+          );
+        });
+      } else {
+        const innerW = W - M * 2 - 28;
+        const cellW = Math.min(84, innerW / perRow);
+        const startX = M + 14 + cellW / 2;
+        players.forEach((player, index) => {
+          const cx = startX + (index % perRow) * cellW;
+          const cy = cardTop + 30 + avatarDia / 2 + Math.floor(index / perRow) * (avatarDia + 22);
+          drawSoupAvatar(
+            c, cx, cy, avatarDia, player, avatarMap.get(Number(player.number)),
+          );
+          c.textAlign = "center";
+          c.fillStyle = "#dccdb6"; c.font = fontOf(false, 13);
+          c.fillText(
+            truncatePosterText(c, String(player.name || ""), cellW - 6),
+            cx,
+            cy + avatarDia / 2 + 16,
+          );
+          c.textAlign = "left";
+        });
+      }
+      y = cardTop + playersH + 12;
     }
-    // 结果条
+    // 结果条：解开与没解开是两种话术，别在「已解开」下面写「先卖个关子」
     const solved = Boolean(result.solved);
-    rr(M, y - 8, W - M * 2, 62, 12);
+    rr(M, resultTop, W - M * 2, 68, 12);
     c.fillStyle = solved ? "rgba(255,209,102,.16)" : "rgba(255,255,255,.06)";
     c.fill();
+    c.textAlign = "left";
     c.fillStyle = solved ? "#ffd166" : "#c9bda8";
     c.font = fontOf(true, 22);
-    c.fillText(solved ? "🏆 汤底被解开了" : "🌫 这道题没人解开", M + 16, y + 30);
-    c.fillStyle = "rgba(240,228,210,.55)"; c.font = fontOf(false, 13);
-    c.fillText("汤底？先卖个关子。", M + 16, y + 50);
+    c.fillText(solved ? "🏆 汤底被解开了" : "🌫 这道题没人解开", M + 16, resultTop + 32);
+    c.fillStyle = "rgba(240,228,210,.6)"; c.font = fontOf(false, 13);
+    c.fillText(
+      solved ? "汤底已揭晓 · 回群里看看正确答案" : "汤底？先卖个关子。",
+      M + 16,
+      resultTop + 54,
+    );
     // 底部
     c.textAlign = "center";
     c.fillStyle = "#ffd166"; c.font = fontOf(true, 18);
-    c.fillText("花火陪你玩 · 想知道答案，就自己来试一局", W / 2, H - 46);
+    c.fillText("花火陪你玩 · 想知道答案，就自己来试一局", W / 2, H - 44);
     c.fillStyle = "rgba(229,201,154,.55)"; c.font = fontOf(false, 13);
     c.fillText(new Date().toISOString().slice(0, 10), W / 2, H - 20);
-    return cv.toDataURL("image/png");
+    return options.jpeg ? cv.toDataURL("image/jpeg", 0.9) : cv.toDataURL("image/png");
   }
 
   async function diceAction(action) {
@@ -4985,7 +5044,10 @@
     });
     render();
     try {
-      const data = await request("POST", "chat", { visitor_token: visitorToken, text });
+      // 海龟汤的判定可能要排队（上一条还在判），给它比普通请求更长的超时，
+      // 否则服务端还在排队，页面先弹「请求超时」。
+      const chatTimeout = room?.game_type === "turtle_soup" ? 45000 : undefined;
+      const data = await request("POST", "chat", { visitor_token: visitorToken, text }, chatTimeout);
       setRoom(data.room);
     } catch (error) {
       // 发送失败：恢复输入框中的原文，方便用户重试
@@ -7012,7 +7074,8 @@
       btn.textContent = "通知中…";
       let image = "";
       try {
-        image = await soupSharePosterUrl(buildSoupResult()) || "";
+        // 通知到群要放进 JSON 请求体：用 JPEG 压一下，PNG 可能几 MB 传不上去
+        image = await soupSharePosterUrl(buildSoupResult(), { jpeg: true }) || "";
       } catch (_imageError) { image = ""; }
       try {
         const data = await request("POST", "soup/announce", {
