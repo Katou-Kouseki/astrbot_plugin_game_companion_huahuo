@@ -44,7 +44,7 @@ def make_plugin(*, room: SimpleNamespace | None = None) -> GameCompanionPlugin:
     )
     plugin.manager = SimpleNamespace(empty_player_timeout=60)
     plugin._create_or_reuse_room_from_event = AsyncMock(
-        return_value=(room, False, False)
+        return_value=(room, False, False, False)
     )
     plugin._remember_bot_ctx = lambda *_args, **_kwargs: None
     plugin._room_url = lambda _room: "https://example.test/room/token"

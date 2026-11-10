@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.01"
+    assert metadata["version"] == "0.6.02"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1757,17 +1757,24 @@ def test_soup_announce_image_keeps_room_link() -> None:
 
 
 def test_soup_hint_syncs_and_reveal_solution_gated() -> None:
-    """网页提示同步到群；汤底只在群内有人附议时发，网页玩家揭晓只通知。"""
+    """网页提示同步到群；汤底只在群内参与揭晓时发，其余路径也要有通知。"""
     main = (ROOT / "main.py").read_text(encoding="utf-8")
+    room_manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
     css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
 
     # 提示跟着问答同步（kind 纳入 hint，正文取 response）
     assert '"hint"' in main
     assert "申请了提示" in main
-    # 揭晓汤底：群内附议才给完整汤底
+    # 揭晓汤底：按「本局群内参与过」判定，而不是最后一次操作者来源
     assert "def _announce_soup_reveal" in main
-    assert "with_solution=True" in main
-    assert "with_solution=False" in main
+    assert "qq_participated" in main
+    assert "with_solution=qq_participated" in main
+    # 猜中、额度用尽、超时三条路径都要发揭晓事件，群里不能静默
+    assert '"reason": "solved" if solved else "answer_limit"' in room_manager
+    assert '"source": "system"' in room_manager
+    assert "qq_reveal_interest" in room_manager
+    # 收尾那次推理也要进群同步队列
+    assert '"new_facts": 0 if solved or auto_reveal else len(newly_discovered)' in room_manager
     # 合成「结束」条目不再同步成「花火推理」
     assert "entry.verdict is None" in main
     # 夜间模式「提问」发送按钮背景改暗（不再用亮金色 var(--gold)）
@@ -1862,12 +1869,14 @@ def test_game_stage_visibility_runs_on_every_render() -> None:
     assert '["turtle_soup", "pig_dice", "draw_guess", "blackjack", "undercover"].includes(room?.game_type)' in app
 
 
-def test_blackjack_auto_stand_uses_connection_not_heartbeat_freshness() -> None:
-    """二十一点自动停牌只认「浏览器是否离开」，不再用 15 秒心跳陈旧度抢回合。"""
+def test_blackjack_auto_stand_tolerates_short_heartbeat_gaps() -> None:
+    """二十一点：主动离席立即托管，短暂心跳中断不抢回合，长时间断网才自动停牌。"""
     rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
 
     assert "offline = not previous.connected" in rm
-    # 之前的 15 秒心跳陈旧度判定已移除（仅海龟汤换人仍用 15s，属另一场景）
+    assert "BLACKJACK_OFFLINE_SECONDS = 120" in rm
+    assert "heartbeat_gap >= self.BLACKJACK_OFFLINE_SECONDS" in rm
+    # 15 秒抢回合的判定不再回来（仅海龟汤换人仍用 15s，属另一场景）
     assert "current - visitor.last_seen_at < 15" not in rm.split("def _advance_blackjack_turn", 1)[1].split("async def _blackjack_dealer_turn", 1)[0]
 
 

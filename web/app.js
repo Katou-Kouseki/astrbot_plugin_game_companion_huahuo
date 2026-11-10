@@ -1717,6 +1717,9 @@
       soupResultShownKey = "";
       const overlay = document.getElementById("boardResultOverlay");
       if (overlay) overlay.hidden = true;
+      // 时间线「查看全部」弹层是独立节点，不随汤面板隐藏；
+      // 不关掉会留下 body.soup-sheet-open，换玩法后整页滚动被锁死。
+      closeSoupSheet();
       syncGameUi();
     }
     syncDrawState();
@@ -3102,6 +3105,9 @@
       && game?.phase === "ready"
       && !game?.finished;
     form.hidden = !canUse;
+    // 移动端默认隐藏按钮文字，判定中要把「判断中…」露出来
+    const sendButton = document.getElementById("soupComposerSend");
+    if (sendButton) sendButton.classList.toggle("is-busy", soupComposerBusy);
     if (!canUse) return;
     const answering = soupComposerMode === "answer";
     form.classList.toggle("is-answer", answering);
@@ -3158,6 +3164,8 @@
       if (data?.limited && reply) showToast(reply);
       else if (mode === "answer" && data?.solved) showToast("汤底解开了");
     } catch (error) {
+      // 提交前就清空了输入框，失败/超时要把原文还回去，别让用户重打一整段推理
+      if (input && !input.value.trim()) input.value = text;
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
       showToast(error?.message || "提交失败");
     } finally {
@@ -4860,7 +4868,7 @@
     };
   }
 
-  // 只挑问出过关键事实的提问（其次取最近的）：这些最能勾起「到底怎么回事」
+  // 只挑问出过关键事实的提问（去重后不够再从全部提问补齐）
   // 同一问题不同玩家可能各问一遍，战报「他们问过」里去重，只保留最早一条
   function pickSoupQuestions(result, limit = 4) {
     const all = (result?.entries || []).filter(
@@ -4870,20 +4878,23 @@
     const strong = all.filter((entry) =>
       ["yes", "partial", "compound"].includes(String(entry.verdict || "")),
     );
-    const source = (strong.length ? strong : all).slice();
-    source.reverse();
     const picked = [];
     const seen = new Set();
-    for (const entry of source) {
-      if (picked.length >= limit) break;
-      const key = String(entry.prompt || "")
-        .replace(/\s+/g, "")
-        .replace(/[？?！!，,。.、：:]/g, "");
-      if (!key || seen.has(key)) continue;
-      seen.add(key);
-      picked.push(entry);
-    }
-    return picked.reverse();
+    const take = (entries) => {
+      for (const entry of entries) {
+        if (picked.length >= limit) break;
+        const key = String(entry.prompt || "")
+          .replace(/\s+/g, "")
+          .replace(/[？?！!，,。.、：:]/g, "");
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        picked.push(entry);
+      }
+    };
+    // 从旧到新遍历，重复问题保留最早那一条；去重后不够条数再从全部提问里补齐
+    take(strong.length ? strong : all);
+    if (picked.length < limit) take(all);
+    return picked;
   }
 
   let soupResultShownKey = "";
@@ -5487,7 +5498,12 @@
       const black = Number(room.game.black_count || 0);
       const white = Number(room.game.white_count || 0);
       if (room.game.winner || room.game.draw) {
-        label.textContent = `${room.game.draw ? "平局" : room.game.winner === humanSide ? iWinText : `${opponentLabel}获胜`} · 黑 ${black} : 白 ${white}`;
+        const outcome = room.game.draw
+          ? "平局"
+          : (!room.is_player && frozenWinner
+            ? `${frozenWinner} 获胜`
+            : (room.game.winner === humanSide ? iWinText : `${opponentLabel}获胜`));
+        label.textContent = `${outcome} · 黑 ${black} : 白 ${white}`;
       } else if (pendingMove) {
         label.textContent = `${opponentLabel} 思考中 · 黑 ${black} : 白 ${white}`;
       } else {
@@ -6028,11 +6044,12 @@
     const seats = roomSeats(target);
     const draw = !!game.draw;
     const winner = game.winner;
-    const sideTextOf = (side) => (
-      gt === "xiangqi"
+    const sideTextOf = (side) => {
+      if (!side) return "";
+      return gt === "xiangqi"
         ? (side === "red" ? "红" : "黑")
-        : (side === "black" ? "黑" : "白")
-    );
+        : (side === "black" ? "黑" : "白");
+    };
     let title = "平局";
     let badge = "🤝";
     let winnerName = "";

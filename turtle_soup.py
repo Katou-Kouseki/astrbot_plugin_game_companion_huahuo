@@ -182,6 +182,9 @@ class TurtleSoupGame:
     reveal_requested_by: str = ""
     reveal_requested_at: float = 0.0
     reveal_votes: dict[str, bool] = field(default_factory=dict)
+    # 本局是否有群里的人发起/附议过揭晓：决定揭晓时能不能把汤底发到群。
+    # 放在题目对象上，新开一局会自然重置，不会串到下一题。
+    qq_reveal_interest: bool = False
     # 每次提交推理的覆盖率历史：连续「很接近」却解不出时，给一条免费提示。
     coverage_history: list[float] = field(default_factory=list)
     last_missing: str = ""

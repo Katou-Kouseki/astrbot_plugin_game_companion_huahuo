@@ -336,8 +336,11 @@ async def test_finished_multiplayer_room_waits_until_all_players_leave() -> None
 
 
 @pytest.mark.asyncio
-async def test_departed_player_leaves_seat_while_game_is_active() -> None:
-    """对局进行中（人数型玩法）玩家关掉网页，也要把座位清出来，别人才能补位。"""
+async def test_turtle_soup_keeps_seats_while_game_is_active() -> None:
+    """海龟汤对局中不摘离线座位：群里玩家可能几分钟不说话、网页玩家关了标签页还会回来。
+
+    0.5.93 起这条规则是刻意的：座位没有轮次依赖，中途摘掉会让人回来变成观众。
+    """
     manager = RoomManager(multiplayer_turn_timeout=60, idle_timeout=0)
     room = await make_room(manager)
     first = await manager.join(room)
@@ -359,7 +362,7 @@ async def test_departed_player_leaves_seat_while_game_is_active() -> None:
     second.last_seen_at = now + 9
     await manager.sweep_expired(now=now + 9)
 
-    assert first.token not in [
+    assert first.token in [
         seat.visitor_token for seat in room.multiplayer.seats
     ]
 

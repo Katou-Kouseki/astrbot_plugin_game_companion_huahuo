@@ -237,10 +237,11 @@ async def test_player_host_mode_also_stops_at_the_budget() -> None:
 
 @pytest.mark.asyncio
 async def test_reveal_event_gates_solution_on_group_vote() -> None:
-    """汤底只在群内有人附议（source=qq）时发到群；网页玩家揭晓只发「已揭晓」通知。
+    """汤底只在本局群内有人参与揭晓时发到群；其余路径也要发一条「已揭晓」提示。
 
     以前 reveal 事件会把合成「投票揭晓汤底」条目塞进群同步，群里看到的是
-    「花火推理：投票揭晓汤底 → 本题已揭晓，汤底见下方」，却看不到汤底。
+    「花火推理：投票揭晓汤底 → 本题已揭晓，汤底见下方」，却看不到汤底；
+    后来又矫枉过正，超时和猜中这两条路径群里干脆一点声音都没有。
     """
     from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
 
@@ -252,19 +253,44 @@ async def test_reveal_event_gates_solution_on_group_vote() -> None:
     room = SimpleNamespace(game_type="turtle_soup", session_id="aiocqhttp:group:1")
 
     await plugin._on_room_event(  # noqa: SLF001
-        "soup_revealed", room, {"source": "qq", "reason": "revealed"}
+        "soup_revealed",
+        room,
+        {"source": "qq", "reason": "revealed", "qq_participated": True},
     )
     assert calls == [{"with_solution": True}]
 
     calls.clear()
     await plugin._on_room_event(  # noqa: SLF001
-        "soup_revealed", room, {"source": "web", "reason": "revealed"}
+        "soup_revealed",
+        room,
+        {"source": "web", "reason": "revealed", "qq_participated": False},
     )
-    # 只有网页玩家投票揭晓：不主动把汤底发到群
-    assert calls == []
+    # 只有网页玩家投票揭晓：群里知道已揭晓，但不给汤底
+    assert calls == [{"with_solution": False}]
 
+    calls.clear()
     await plugin._on_room_event(  # noqa: SLF001
-        "soup_revealed", room, {"source": "web", "reason": "answer_limit"}
+        "soup_revealed",
+        room,
+        {"source": "web", "reason": "answer_limit", "qq_participated": False},
     )
     # 网页玩家的推理额度用完自动揭晓：群里只说「已揭晓」，不给汤底
+    assert calls == [{"with_solution": False}]
+
+    calls.clear()
+    # 群里发起、网页玩家投最后一票：按「本局群内参与过」而不是最后一票来源判定
+    await plugin._on_room_event(  # noqa: SLF001
+        "soup_revealed",
+        room,
+        {"source": "web", "reason": "revealed", "qq_participated": True},
+    )
+    assert calls == [{"with_solution": True}]
+
+    calls.clear()
+    # 超时自动揭晓也不能让群里静默
+    await plugin._on_room_event(  # noqa: SLF001
+        "soup_revealed",
+        room,
+        {"source": "system", "reason": "timeout", "qq_participated": False},
+    )
     assert calls == [{"with_solution": False}]

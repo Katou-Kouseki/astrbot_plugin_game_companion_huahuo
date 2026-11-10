@@ -4108,14 +4108,14 @@ class GameCompanionPlugin(Star):
             self._spawn(self._announce_soup_reveal_vote(room, payload, kind="voted"))
             return
         if event_name == "soup_revealed":
-            source = str(payload.get("source") or "")
-            if source == "qq":
-                # 群内有人附议（或群里的人的推理触发揭晓）→ 把完整汤底发到群
-                self._spawn(self._announce_soup_reveal(room, with_solution=True))
-            elif payload.get("reason") == "answer_limit":
-                # 网页玩家的推理额度用完自动揭晓：群里说一声，但汤底不主动给
-                # （他们没参与揭晓，想看答案进网页）。
-                self._spawn(self._announce_soup_reveal(room, with_solution=False))
+            # 超时、猜中、投票、额度用尽都会走这里，任何一条路径都不能让群里没声音。
+            # 完整汤底只在本局群里有人发起/附议/推理揭晓时才发，其余只提示「已揭晓」。
+            qq_participated = bool(payload.get("qq_participated")) or (
+                str(payload.get("source") or "") == "qq"
+            )
+            self._spawn(
+                self._announce_soup_reveal(room, with_solution=qq_participated)
+            )
             return
         if event_name == "soup_answer_attempted":
             self._queue_soup_group_sync(room)
@@ -7512,18 +7512,20 @@ class GameCompanionPlugin(Star):
             return
         if not self.announce_target(room):
             return
-        game.opening_announced = True
         try:
             # viewport_height 压到内容以下，full_page 就按内容高度截，去掉底部黑边
             b64 = await self._soup_t2i(_SOUP_OPEN_TMPL, data, viewport_height=100)
         except Exception as exc:
             logger.info("[GameCompanion] 开局卡渲染失败，回退纯文字：%s", exc)
             b64 = ""
+        # 真发出去了才写幂等标记：以前写在发送前，禁言/平台没加载时这一局的
+        # 汤面就再也不会出现在群里。
         if b64 and await self._send_to_origin_image(room, "", b64):
+            game.opening_announced = True
             return
         text = self._soup_opening_text(room, game)
-        if text:
-            await self._send_to_origin(room, text)
+        if text and await self._send_to_origin(room, text):
+            game.opening_announced = True
 
     async def _announce_soup_reveal_vote(
         self, room: GameRoom, payload: dict[str, Any], *, kind: str
@@ -7533,10 +7535,9 @@ class GameCompanionPlugin(Star):
         网页端发起揭晓时群里完全没动静，群友根本不知道在表决，也就没法附议。
         这里只在群房里发，复用群聊互通开关（和问答同步一致）。
         """
-        if getattr(room, "source", "") != "group":
-            return
         if not getattr(self, "turtle_soup_qq_bridge", True):
             return
+        # 管理台开了房但绑定了群号，也算「能通知到群」，不要按房间来源一刀切
         if not self.announce_target(room):
             return
         votes = int(payload.get("votes") or 0)
@@ -7560,10 +7561,9 @@ class GameCompanionPlugin(Star):
         只有网页玩家揭晓时不主动给汤底，只说明「已揭晓、进网页看」，避免剧透没参与的
         群友。网页玩家的推理额度用完自动揭晓（answer_limit）也走后者。
         """
-        if getattr(room, "source", "") != "group":
-            return
         if not getattr(self, "turtle_soup_qq_bridge", True):
             return
+        # 管理台开了房但绑定了群号，也算「能通知到群」，不要按房间来源一刀切
         if not self.announce_target(room):
             return
         game = room.game
@@ -7573,9 +7573,9 @@ class GameCompanionPlugin(Star):
             text = f"🥣 汤底揭晓：\n{game.puzzle.solution}"
         else:
             text = "🥣 本局汤底已揭晓。"
-            tail = self._soup_room_link_tail(room)
-            if tail:
-                text += "\n" + tail
+        tail = self._soup_room_link_tail(room)
+        if tail:
+            text += "\n" + tail
         await self._send_to_origin(room, text)
 
     async def _announce_soup_turn(self, room: GameRoom, payload: dict[str, Any]) -> None:
@@ -7639,7 +7639,9 @@ class GameCompanionPlugin(Star):
 
         style = (getattr(self, "turtle_soup_qq_sync_style", "text") or "text").lower()
         if style == "image":
-            if await self._flush_soup_sync_image(room, web_items):
+            # 用入队时冻结的标题：这 12 秒里玩家可能已经点了「再来一道」
+            puzzle = str(bucket.get("puzzle") or "")
+            if await self._flush_soup_sync_image(room, web_items, puzzle):
                 return
             # 横条图失败退回纯文字
         text = self._soup_sync_text(web_items)
@@ -7672,7 +7674,7 @@ class GameCompanionPlugin(Star):
         return f"🥣 {head}\n" + "\n".join(lines)
 
     async def _flush_soup_sync_image(
-        self, room: GameRoom, items: list[dict[str, Any]]
+        self, room: GameRoom, items: list[dict[str, Any]], puzzle: str = ""
     ) -> bool:
         """把每条网页问答渲染成一条压扁的横条图，逐条发到群里。
 
@@ -7680,7 +7682,9 @@ class GameCompanionPlugin(Star):
         横条只留头像 + 网页玩家信息 + 提问 + 判定结果，宽 720、高几十像素。
         """
         sent_any = False
-        for item in items[: self.SOUP_SYNC_MAX_LINES]:
+        failed: list[dict[str, Any]] = []
+        batch = items[: self.SOUP_SYNC_MAX_LINES]
+        for item in batch:
             try:
                 avatars = await self._soup_sync_avatars([item])
             except Exception as exc:
@@ -7688,16 +7692,24 @@ class GameCompanionPlugin(Star):
                 avatars = {}
             try:
                 b64 = await self._soup_sync_t2i(
-                    self._soup_sync_image_data([item], "", avatars)
+                    self._soup_sync_image_data([item], puzzle, avatars)
                 )
             except Exception as exc:
                 logger.info("[GameCompanion] 问答速报横条渲染失败：%s", exc)
+                failed.append(item)
                 continue
             try:
                 if await self._send_to_origin_image(room, "", b64):
                     sent_any = True
+                else:
+                    failed.append(item)
             except Exception as exc:
                 logger.info("[GameCompanion] 问答速报横条发送失败：%s", exc)
+                failed.append(item)
+        # 超过横条上限的、以及渲染/发送失败的条目不能静默丢掉，用纯文字补发。
+        rest = failed + items[self.SOUP_SYNC_MAX_LINES :]
+        if rest and await self._send_to_origin(room, self._soup_sync_text(rest)):
+            sent_any = True
         return sent_any
 
     @staticmethod
@@ -9633,7 +9645,8 @@ class GameCompanionPlugin(Star):
         return [
             item
             for item in pending
-            if str(item.get("game_type") or room.game_type) == room.game_type
+            if item.get("cross_game_pending")
+            or str(item.get("game_type") or room.game_type) == room.game_type
         ]
 
     @classmethod
@@ -9739,6 +9752,10 @@ class GameCompanionPlugin(Star):
         `_take_board_pending` 会按「新 game_type」过滤把它们直接丢掉，群里
         永远看不到那几局的结果；而且新旧玩法挤进一条「连战 N 局」会张冠李戴。
         """
+        # 没有攒下连战时也要重新起算：残留的冷却时间戳和幂等键会让新玩法
+        # 第一局的通报被当成「已经发过」直接吞掉。
+        room.last_board_announce_at = 0.0
+        room.last_announced_uid = ""
         pending = list(getattr(room, "pending_board_announces", None) or [])
         if not pending:
             return
@@ -9760,13 +9777,26 @@ class GameCompanionPlugin(Star):
                 task.cancel()
         if not old_entries:
             return
+        sent = False
         try:
-            await self._send_board_series(room, old_entries)
+            sent = await self._send_board_series(room, old_entries)
         except Exception as exc:
             logger.warning(
                 "[GameCompanion] 换游戏时旧玩法连战播报失败: %s", exc
             )
-        # 新玩法第一局要按「单局」正常通报，不能接上旧玩法的冷却窗口
+        if not sent:
+            # 群发失败只返回 False 不抛异常；条目已经出队，得放回去等下一轮补发。
+            # 打上跨玩法标记，否则 _take_board_pending 会按新 game_type 把它们丢掉。
+            kept = []
+            for entry in old_entries:
+                item = dict(entry)
+                item["cross_game_pending"] = True
+                kept.append(item)
+            room.pending_board_announces = kept + list(
+                getattr(room, "pending_board_announces", None) or []
+            )
+        # 发送成功也会写回幂等键，所以这里再清一次：
+        # 新玩法第一局要按「单局」正常通报，不能接上旧玩法的冷却窗口。
         room.last_board_announce_at = 0.0
         room.last_announced_uid = ""
 

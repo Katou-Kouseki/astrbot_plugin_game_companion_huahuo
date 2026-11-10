@@ -49,10 +49,13 @@ def add_entry(game: TurtleSoupGame, *, kind: str, prompt: str, response: str, nu
     )
 
 
-def make_plugin(*, sync: bool = True, bridge: bool = True) -> GameCompanionPlugin:
+def make_plugin(
+    *, sync: bool = True, bridge: bool = True, style: str = "text"
+) -> GameCompanionPlugin:
     plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
     plugin.turtle_soup_qq_sync = sync
     plugin.turtle_soup_qq_bridge = bridge
+    plugin.turtle_soup_qq_sync_style = style
     plugin._send_to_origin = AsyncMock(return_value=True)  # noqa: SLF001
     # 真实窗口是 12 秒；测试里不许真等
     plugin.SOUP_SYNC_WINDOW = 0
@@ -77,7 +80,8 @@ async def test_three_web_questions_merge_into_one_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_more_than_four_lines_are_summarized() -> None:
+async def test_text_mode_keeps_every_line() -> None:
+    """默认纯文字：不截断也不省略，问了 7 条就老老实实列 7 条。"""
     plugin = make_plugin()
     room = make_room()
     for index in range(7):
@@ -88,8 +92,9 @@ async def test_more_than_four_lines_are_summarized() -> None:
 
     _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
     assert text.startswith("🥣 网页那边刚问了 7 条：")
-    assert "…还有 3 条" in text
-    assert text.count("· ") == plugin.SOUP_SYNC_MAX_LINES
+    assert "第0个问题" in text
+    assert "第6个问题" in text
+    assert "还有 3 条" not in text
 
 
 @pytest.mark.asyncio
@@ -185,23 +190,8 @@ async def test_spoiler_fragments_are_redacted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prefers_forward_nodes_when_supported(monkeypatch: pytest.MonkeyPatch) -> None:
-    """合并聊天记录可用时，走折叠消息而不是刷一屏纯文本。"""
-    import astrbot.api.message_components as mc
-
-    class FakeNode:
-        def __init__(self, content=None, name="", uin="0"):
-            self.content = content or []
-            self.name = name
-            self.uin = uin
-
-    class FakeNodes:
-        def __init__(self, nodes=None):
-            self.nodes = list(nodes or [])
-
-    monkeypatch.setattr(mc, "Node", FakeNode, raising=False)
-    monkeypatch.setattr(mc, "Nodes", FakeNodes, raising=False)
-
+async def test_text_mode_does_not_use_forward_nodes() -> None:
+    """默认纯文字：合并转发能力即使可用也不再走，一批只发一条文字。"""
     plugin = make_plugin()
     plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
     room = make_room()
@@ -211,15 +201,8 @@ async def test_prefers_forward_nodes_when_supported(monkeypatch: pytest.MonkeyPa
 
     await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
 
-    plugin.context.send_message.assert_awaited_once()
-    _session, chain = plugin.context.send_message.await_args.args
-    nodes = chain.chain[0].nodes
-    # 1 个标题节点 + 2 条问答
-    assert len(nodes) == 3
-    assert nodes[0].name == "花火·海龟汤"
-    assert nodes[1].name == "3号提问·网页"
-    # 合并成功就不该再补一条纯文本
-    plugin._send_to_origin.assert_not_awaited()  # noqa: SLF001
+    plugin.context.send_message.assert_not_awaited()
+    plugin._send_to_origin.assert_awaited_once()  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -245,8 +228,8 @@ async def test_falls_back_to_text_when_forward_fails(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.asyncio
 async def test_uses_t2i_image_for_small_batches() -> None:
-    """条数少时优先发图：群里看着显眼，也更容易把人拉进房间。"""
-    plugin = make_plugin()
+    """切到横条图模式时，条数少就逐条发图。"""
+    plugin = make_plugin(style="image")
     plugin.html_render = AsyncMock(return_value="https://img.example/card.png")
     plugin._download_image_base64 = AsyncMock(return_value="BASE64DATA")
     plugin._send_to_origin_image = AsyncMock(return_value=True)
@@ -262,15 +245,9 @@ async def test_uses_t2i_image_for_small_batches() -> None:
 
 
 @pytest.mark.asyncio
-async def test_large_batch_prefers_forward_record(monkeypatch: pytest.MonkeyPatch) -> None:
-    """条数多时优先合并聊天记录：图片塞不下，折叠记录才装得完整。"""
-    import astrbot.api.message_components as mc
-
-    monkeypatch.setattr(mc, "Node", lambda **kwargs: kwargs, raising=False)
-    monkeypatch.setattr(mc, "Nodes", lambda nodes: {"nodes": nodes}, raising=False)
-
-    plugin = make_plugin()
-    plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+async def test_image_mode_falls_back_to_text_for_overflow() -> None:
+    """横条图只发前几条，超出上限的不能静默丢掉：用纯文字补齐。"""
+    plugin = make_plugin(style="image")
     plugin.html_render = AsyncMock(return_value="https://img.example/card.png")
     plugin._download_image_base64 = AsyncMock(return_value="BASE64DATA")
     plugin._send_to_origin_image = AsyncMock(return_value=True)
@@ -281,8 +258,10 @@ async def test_large_batch_prefers_forward_record(monkeypatch: pytest.MonkeyPatc
         plugin._queue_soup_group_sync(room)  # noqa: SLF001
     await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
 
-    plugin.context.send_message.assert_awaited_once()
-    plugin._send_to_origin_image.assert_not_awaited()  # noqa: SLF001
+    assert plugin._send_to_origin_image.await_count == plugin.SOUP_SYNC_MAX_LINES  # noqa: SLF001
+    plugin._send_to_origin.assert_awaited_once()  # noqa: SLF001
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "第7个问题" in text
 
 
 def test_image_data_limits_rows_and_keeps_overflow() -> None:

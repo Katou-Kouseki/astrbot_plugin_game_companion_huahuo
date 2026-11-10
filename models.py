@@ -435,6 +435,11 @@ class GameRoom:
     last_board_result: dict[str, object] | None = None
     # 海龟汤终局快照：群通知 / 分享战报 / 复盘读取本局汤面、提问与结果（不含汤底）
     last_soup_result: dict[str, object] | None = None
+    # 谁是卧底当前行动点（某位发言人 / 某一轮投票）的标识与起始时间。
+    # 挂机要从「轮到他」开始算，不能用全局最后一次操作时间，
+    # 否则等别人发言的在线玩家一进投票轮就被当成挂机交给 Bot 代投。
+    undercover_action_key: str = ""
+    undercover_action_at: float = 0.0
     # 上一次自动播报的时间戳（0 = 从未播报），用于刷屏节流
     last_board_announce_at: float = 0.0
     # 冷却窗口内结束的对局先攒在这里，窗口结束时合并成一条「连战 N 局」发出，

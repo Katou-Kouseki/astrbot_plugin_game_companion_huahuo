@@ -502,7 +502,8 @@ body.soup-sheet-open { overflow: hidden; }
 .soup-composer-send:disabled { opacity: .55; }
 .soup-composer.is-answer .soup-composer-send { background: #9b4b37; color: #fff; }
 body.dark .soup-composer-send { background: #6b5a26; color: #f4e9d3; }
-body.dark .soup-composer.is-answer .soup-composer-send { color: #f7efe3; }
+/* 推理模式的按钮规则特异性更高，夜间背景要在这里单独压暗 */
+body.dark .soup-composer.is-answer .soup-composer-send { background: #6b3a2c; color: #f7efe3; }
 .soup-hint-row { gap: 8px; }
 .soup-hint-row #soupRevealButton {
   border-color: color-mix(in srgb, var(--warning) 32%, transparent);
@@ -1703,6 +1704,8 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   .soup-composer-modes button { padding: 6px 8px; font-size: 12px; }
   .soup-composer-send { padding: 0 11px; }
   .soup-composer-send span { display: none; }
+  /* 判定中要把「判断中…」露出来，否则手机上只剩一个灰掉的图标 */
+  .soup-composer-send.is-busy span { display: inline; }
   .soup-sheet { padding: 0; }
   .soup-sheet-card {
     width: 100%;

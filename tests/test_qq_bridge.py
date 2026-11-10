@@ -161,7 +161,7 @@ async def test_bare_soup_command_starts_a_room() -> None:
         add_message=lambda *_args, **_kwargs: None,
     )
     plugin._create_or_reuse_room_from_event = AsyncMock(
-        return_value=(created, False, False)
+        return_value=(created, False, False, False)
     )
     plugin._room_url = lambda _room: "https://example.com/room/x"
 
@@ -515,7 +515,7 @@ def make_start_plugin() -> SimpleNamespace:
         ),
     )
     plugin._create_or_reuse_room_from_event = AsyncMock(
-        return_value=(room, False, False)
+        return_value=(room, False, False, False)
     )
     return plugin
 
@@ -670,7 +670,8 @@ class TestAtIntent:
             ("复盘", ("recap", "")),
             ("揭晓", ("reveal", "")),
             ("开局", ("start", "")),
-            ("来局海龟汤", None),
+            ("来局海龟汤", ("start", "")),
+            ("来一局海龟汤", ("start", "")),
             ("提示是什么意思", None),
             ("和灯塔有关吗", None),
             ("", None),
@@ -730,7 +731,7 @@ class TestAtIntent:
             add_message=lambda *_args, **_kwargs: None,
         )
         plugin._create_or_reuse_room_from_event = AsyncMock(
-            return_value=(created, False, False)
+            return_value=(created, False, False, False)
         )
         plugin._room_url = lambda _room: "https://example.com/room/x"
 

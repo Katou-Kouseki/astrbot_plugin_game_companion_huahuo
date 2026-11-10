@@ -258,6 +258,8 @@ async def test_closed_room_does_not_get_a_late_summary() -> None:
 async def test_summary_keeps_the_puzzle_title_it_started_with() -> None:
     """12 秒内点「再来一道」时，标题要跟问答一起冻结，不能读新题。"""
     plugin = make_sync_plugin()
+    # 这个用例测的是横条图渲染参数，默认纯文字模式不会走图
+    plugin.turtle_soup_qq_sync_style = "image"
     game = make_ready_game(max_hints=3)
     old_title = game.puzzle.title
     room = make_group_room(game)

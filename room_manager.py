@@ -200,6 +200,9 @@ class RoomManager:
     # 谁是卧底：在线但长时间无操作（页面开着、人走开了）视为「挂机」，交 LLM 托管。
     # 只按心跳判断不出这种「人在线但没动作」的情况，得看 seat.last_action_at。
     UNDERCOVER_AFK_SECONDS = 90
+    # 二十一点：浏览器没主动离开、但心跳停了这么久，才当人真的不在并自动停牌。
+    # 15 秒太短，切后台/网络抖一下就被抢回合；只看 connected 又让断网一直卡着。
+    BLACKJACK_OFFLINE_SECONDS = 120
     IDENTITY_TOKEN_TTL_SECONDS = 300
     CHAT_COOLDOWN_SECONDS = 0.8
 
@@ -3759,16 +3762,30 @@ class RoomManager:
                 self._advance_multiplayer_turn(room)
         if solved or auto_reveal:
             await self._finish_game(room)
-        if auto_reveal:
+        if solved or auto_reveal:
+            # 猜中和额度用尽都会结束本局，以前只有后者发揭晓事件，
+            # 群里对「猜中了」这一局完全没声音。
             await self._emit(
-                "soup_revealed", room, {"reason": "answer_limit", "source": source}
-            )
-        if not solved and not auto_reveal:
-            await self._emit(
-                "soup_answer_attempted",
+                "soup_revealed",
                 room,
-                {"source": source, "new_facts": len(newly_discovered)},
+                {
+                    "reason": "solved" if solved else "answer_limit",
+                    "source": source,
+                    "qq_participated": bool(
+                        source == "qq" or getattr(game, "qq_reveal_interest", False)
+                    ),
+                },
             )
+        # 收尾那一次推理同样要进群同步队列：本局结束时也别把它漏掉。
+        # 已经结束时不再让 LLM 补一句「接近答案」的评论。
+        await self._emit(
+            "soup_answer_attempted",
+            room,
+            {
+                "source": source,
+                "new_facts": 0 if solved or auto_reveal else len(newly_discovered),
+            },
+        )
         return True
 
     def soup_limits(self, room: GameRoom) -> dict[str, int]:
@@ -3940,6 +3957,8 @@ class RoomManager:
         revealed = False
         async with room.lock:
             game = self._turtle_soup_game(room)
+            if source == "qq":
+                game.qq_reveal_interest = True
             early_host_seat = (
                 room.multiplayer.seat_for_token(visitor_token)
                 if source == "web" and visitor_token
@@ -4013,7 +4032,17 @@ class RoomManager:
         }
         if revealed:
             await self._finish_game(room)
-            await self._emit("soup_revealed", room, {"reason": "revealed", "source": source})
+            await self._emit(
+                "soup_revealed",
+                room,
+                {
+                    "reason": "revealed",
+                    "source": source,
+                    "qq_participated": bool(
+                        source == "qq" or getattr(game, "qq_reveal_interest", False)
+                    ),
+                },
+            )
         else:
             await self._emit("soup_reveal_requested", room, payload)
         return payload
@@ -4030,6 +4059,8 @@ class RoomManager:
         revealed = False
         async with room.lock:
             game = self._turtle_soup_game(room)
+            if source == "qq" and agree:
+                game.qq_reveal_interest = True
             # 附议同样不受轮次限制，否则发起人之外的人永远投不了票
             self._require_turtle_soup_seat(
                 room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
@@ -4068,7 +4099,17 @@ class RoomManager:
         }
         if revealed:
             await self._finish_game(room)
-            await self._emit("soup_revealed", room, {"reason": "revealed", "source": source})
+            await self._emit(
+                "soup_revealed",
+                room,
+                {
+                    "reason": "revealed",
+                    "source": source,
+                    "qq_participated": bool(
+                        source == "qq" or getattr(game, "qq_reveal_interest", False)
+                    ),
+                },
+            )
         else:
             await self._emit("soup_reveal_voted", room, payload)
         return payload
@@ -4108,7 +4149,15 @@ class RoomManager:
             game.reveal(reason=reason, source="web")
             room.touch()
         await self._finish_game(room)
-        await self._emit("soup_revealed", room, {"reason": reason, "source": "system"})
+        await self._emit(
+            "soup_revealed",
+            room,
+            {
+                "reason": reason,
+                "source": "system",
+                "qq_participated": bool(getattr(game, "qq_reveal_interest", False)),
+            },
+        )
         return True
 
     def _snapshot_soup_result(self, room: GameRoom) -> None:
@@ -5552,9 +5601,13 @@ class RoomManager:
             return True
         if now - visitor.last_seen_at >= self.DUEL_OFFLINE_SECONDS:
             return True
-        # 在线但长时间没动作（页面开着、人走开了）：心跳新鲜不代表人在，
-        # 按「最后一次发言/投票」判断挂机，避免整局干等整轮超时。
+        # 在线但长时间没动作（页面开着、人走开了）：心跳新鲜不代表人在。
+        # 只从「轮到当前这个行动点」开始算挂机。用全局最后一次发言/投票会把
+        # 一直在等别人回合的在线玩家也判成挂机，一进投票轮就被 Bot 代投。
         last = float(getattr(seat, "last_action_at", 0.0) or seat.seated_at)
+        action_at = float(getattr(room, "undercover_action_at", 0.0) or 0.0)
+        if action_at > 0:
+            last = max(last, action_at)
         return now - last >= self.UNDERCOVER_AFK_SECONDS
 
     def _restore_undercover_autopilot(self, room: GameRoom, now: float) -> None:
@@ -5587,6 +5640,22 @@ class RoomManager:
                 "system", f"{self._visitor_label(visitor)} 已重新连接，托管已解除。"
             )
 
+    @staticmethod
+    def _mark_undercover_action_point(
+        room: GameRoom, game: UndercoverGame, now: float
+    ) -> None:
+        """换发言人 / 进入新一轮投票时，把挂机计时的起点重置为现在。"""
+        round_no = len(getattr(game, "rounds", None) or [])
+        if game.phase == "voting":
+            key = f"voting:{round_no}"
+        elif game.phase in ("speech", "pk"):
+            key = f"{game.phase}:{round_no}:{getattr(game, 'expected_speaker_number', None)}"
+        else:
+            key = str(game.phase)
+        if getattr(room, "undercover_action_key", "") != key:
+            room.undercover_action_key = key
+            room.undercover_action_at = float(now)
+
     def _undercover_autopilot_due(self, room: GameRoom, now: float) -> bool:
         """是否有「托管/离线玩家」正卡着当前行动点，需要立刻代打。
 
@@ -5598,6 +5667,7 @@ class RoomManager:
             return False
         if room.status != "active":
             return False
+        self._mark_undercover_action_point(room, game, now)
         if now - float(getattr(room, "undercover_autopilot_at", 0.0) or 0.0) < 3.0:
             return False
         if game.phase in ("speech", "pk"):
@@ -5909,7 +5979,12 @@ class RoomManager:
         if previous is not None:
             hand = game.hands.get(_visitor_uid(previous.token))
             if hand is not None and hand.status == "playing":
-                offline = not previous.connected
+                heartbeat_gap = now - float(
+                    getattr(previous, "last_seen_at", 0.0) or now
+                )
+                offline = not previous.connected or (
+                    heartbeat_gap >= self.BLACKJACK_OFFLINE_SECONDS
+                )
                 if offline:
                     game.stand(_visitor_uid(previous.token))
                     room.add_message(

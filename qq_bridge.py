@@ -474,7 +474,7 @@ async def start_soup_room(plugin: Any, event: Any, body: str) -> str:
         resolver = getattr(plugin, "_soup_difficulty", None)
         difficulty = resolver("") if callable(resolver) else plugin._difficulty(body)
     try:
-        room, _reused, _same = await plugin._create_or_reuse_room_from_event(
+        room, _reused, _same, _switched = await plugin._create_or_reuse_room_from_event(
             event, difficulty, "turtle_soup", confirm_abandon=False
         )
     except PermissionError as exc:
@@ -670,6 +670,14 @@ _AT_INTENTS: dict[str, str] = {
     "来局": "start",
     "开房": "start",
     "再来一局": "start",
+    # 帮助里承诺的「@我 来局海龟汤」，以前既没开局还会被当成一次提问
+    "来局海龟汤": "start",
+    "来一局海龟汤": "start",
+    "开一局海龟汤": "start",
+    "开个海龟汤": "start",
+    "来个海龟汤": "start",
+    "玩海龟汤": "start",
+    "来局汤": "start",
 }
 _AT_PUNCT_RE = re.compile(
     r"[\s，。！？!?、,.~～…·:：;；\"'“”‘’()（）\[\]【】<>《》]"
