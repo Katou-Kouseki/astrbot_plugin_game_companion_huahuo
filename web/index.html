@@ -153,6 +153,12 @@
           <p id="soupJudgeText" class="soup-judge-text"></p>
           <div id="soupJudgeActions" class="soup-judge-actions"></div>
         </section>
+        <div class="soup-history-head">
+          <span class="soup-history-title">问答时间线</span>
+          <button id="soupHistoryAll" class="soup-history-all" type="button" hidden>
+            查看全部 <b id="soupHistoryTotal">0</b> 条
+          </button>
+        </div>
         <div id="soupHistory" class="soup-history" aria-live="polite"></div>
         <section id="soupResultPanel" class="soup-result" hidden>
           <header class="soup-result-head">
@@ -177,7 +183,42 @@
           <span class="label">完整汤底</span>
           <p id="soupSolutionText"></p>
         </section>
+        <form id="soupComposer" class="soup-composer" hidden>
+          <div class="soup-composer-modes" role="group" aria-label="提交类型">
+            <button type="button" data-soup-mode="question" class="is-active">提问</button>
+            <button type="button" data-soup-mode="answer">推理</button>
+          </div>
+          <input
+            id="soupComposerInput"
+            type="text"
+            maxlength="500"
+            autocomplete="off"
+            placeholder="问一个是/否问题，例如：和灯塔有关吗？"
+          />
+          <button id="soupComposerSend" class="soup-composer-send" type="submit">
+            <i data-lucide="send"></i><span id="soupComposerSendText">发送</span>
+          </button>
+        </form>
       </section>
+
+      <div id="soupHistorySheet" class="soup-sheet" hidden>
+        <div class="soup-sheet-backdrop" data-soup-sheet-close></div>
+        <section
+          class="soup-sheet-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="soupSheetTitle"
+        >
+          <header class="soup-sheet-head">
+            <strong id="soupSheetTitle">全部问答</strong>
+            <span id="soupSheetCount" class="soup-sheet-count"></span>
+            <button id="soupSheetClose" class="icon-btn" type="button" aria-label="关闭">
+              <i data-lucide="x"></i>
+            </button>
+          </header>
+          <div id="soupSheetList" class="soup-sheet-list"></div>
+        </section>
+      </div>
 
       <section id="diceStage" class="dice-stage" hidden aria-label="贪心骰子">
         <header class="dice-header">

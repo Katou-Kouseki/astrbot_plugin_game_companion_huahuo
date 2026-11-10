@@ -260,19 +260,68 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 .soup-turn { margin: 0 26px 12px; min-height: 20px; color: var(--warning); font-size: 13px; font-weight: 650; }
 .soup-hint-row { display: flex; justify-content: flex-end; margin: 0 26px 8px; }
 .soup-hint-row .secondary-action { min-height: 34px; font-size: 13px; }
+/* 时间线抬头：默认只放最近几条，想翻旧账点右边那个按钮 */
+.soup-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 26px 7px;
+}
+.soup-history-title {
+  color: #747d77;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .1em;
+}
+.soup-history-all {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.soup-history-all b { color: var(--text-strong); }
+.soup-history-all:hover { border-color: var(--gold); color: var(--text-strong); }
+.soup-history-all[hidden] { display: none; }
 .soup-history {
   flex: 1;
   min-height: 180px;
-  max-height: 330px;
+  /* 以前钉死 330px，四五条就开始内部滚动，外层页面还有一根 —— 套娃滚动。
+     现在跟着视口走：窗口越大看得越多，小屏再由媒体查询取消内部滚动。 */
+  max-height: clamp(340px, 56vh, 780px);
   display: grid;
   align-content: start;
   gap: 10px;
   margin: 0 26px;
   padding: 4px 2px 18px;
   overflow: auto;
+  overscroll-behavior: contain;
 }
-.soup-entry { display: grid; gap: 4px; }
-.soup-entry .prompt { margin: 0; color: #56615a; font-size: 13px; line-height: 1.5; }
+.soup-entry {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+}
+.soup-entry-avatar { display: flex; justify-content: center; padding-top: 1px; }
+.soup-entry-avatar .uc-avatar {
+  width: 28px;
+  height: 28px;
+  border-width: 1px;
+  font-size: 12.5px;
+}
+/* 花火自己问的、系统给的提示：没有座位号，用金色小人区分 */
+.soup-entry-avatar .soup-avatar-bot {
+  background: color-mix(in srgb, var(--gold) 24%, transparent);
+  border-color: color-mix(in srgb, var(--gold) 46%, transparent);
+  color: #7a5a12;
+}
+body.dark .soup-entry-avatar .soup-avatar-bot { color: #ffd79a; }
+.soup-entry-body { display: grid; gap: 4px; min-width: 0; }
+.soup-entry .prompt { margin: 0; color: #56615a; font-size: 13px; line-height: 1.5; word-break: break-word; }
 .soup-entry .response {
   width: fit-content;
   max-width: 100%;
@@ -301,6 +350,136 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 }
 body.dark .soup-qq-badge { background: #24405a; color: #b9d4ee; }
 .soup-empty { margin: auto; color: var(--muted); font-size: 13px; }
+
+/* 全部问答：默认时间线只给最近几条，翻旧账走这个弹层（独立滚动，不挤汤面） */
+.soup-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+.soup-sheet[hidden] { display: none; }
+/* 弹层打开时锁住背后页面，避免手指滑动穿透到汤面 */
+body.soup-sheet-open { overflow: hidden; }
+.soup-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(14, 18, 16, .52);
+  backdrop-filter: blur(3px);
+}
+.soup-sheet-card {
+  position: relative;
+  width: min(720px, 100%);
+  max-height: min(82vh, 760px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-solid);
+  box-shadow: var(--panel-shadow);
+  overflow: hidden;
+}
+.soup-sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.soup-sheet-head strong { font-size: 15px; color: var(--text-strong); }
+.soup-sheet-count { color: var(--muted); font-size: 12px; }
+.soup-sheet-head .icon-btn { margin-left: auto; }
+.soup-sheet-list {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 16px 18px 24px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.soup-sheet-list .soup-entry .prompt { font-size: 13.5px; }
+.soup-sheet-list .soup-entry .response { font-size: 14.5px; }
+
+/* 常驻输入条：手机上不用切到「聊天」页再打字，桌面也少一次跳转 */
+.soup-composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  backdrop-filter: blur(10px);
+}
+.soup-composer[hidden] { display: none; }
+.soup-composer-modes {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-alt);
+}
+.soup-composer-modes button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.soup-composer-modes button.is-active {
+  background: var(--surface-solid);
+  color: var(--text-strong);
+  font-weight: 700;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .08);
+}
+.soup-composer.is-answer .soup-composer-modes button[data-soup-mode="answer"].is-active {
+  background: #9b4b37;
+  color: #fff;
+}
+.soup-composer input {
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-solid);
+  color: var(--text);
+  font-size: 14px;
+}
+.soup-composer input::placeholder { color: var(--muted); }
+.soup-composer input:focus {
+  outline: 2px solid color-mix(in srgb, var(--gold) 42%, transparent);
+  outline-offset: 1px;
+}
+.soup-composer-send {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 38px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--gold);
+  color: #241a08;
+  font-size: 13.5px;
+  font-weight: 750;
+}
+.soup-composer-send svg { width: 15px; }
+.soup-composer-send:disabled { opacity: .55; }
+.soup-composer.is-answer .soup-composer-send { background: #9b4b37; color: #fff; }
+body.dark .soup-composer-send { color: #20180a; }
+body.dark .soup-composer.is-answer .soup-composer-send { color: #fff; }
 .soup-hint-row { gap: 8px; }
 .soup-hint-row #soupRevealButton {
   border-color: color-mix(in srgb, var(--warning) 32%, transparent);
@@ -1480,7 +1659,8 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   h1 { font-size: 18px; }
   .room-state { flex-wrap: wrap; justify-content: flex-end; max-width: 48%; font-size: 11px; }
   .board-stage { border-radius: 3px; }
-  .soup-stage { min-height: calc(100vh - 96px); border-radius: 3px; }
+  /* 手机上取消内部滚动后，stage 不能再裁切，否则 sticky 输入条没法贴住屏幕底 */
+  .soup-stage { min-height: calc(100vh - 96px); border-radius: 3px; overflow: visible; }
   .soup-header { padding: 18px 16px 13px; }
   .soup-header h2 { font-size: 20px; }
   .soup-difficulty { margin: 0 16px 10px; }
@@ -1489,7 +1669,22 @@ body.dark .uc-reveal-word { color: #f7faf7; border-bottom-color: #7be0a9; }
   .soup-progress { grid-template-columns: repeat(2, 1fr); margin: 0 16px 15px; }
   .soup-progress div:nth-child(2) { border-right: 0; }
   .soup-progress div:nth-child(-n+2) { border-bottom: 1px solid #dde2de; }
-  .soup-history { margin: 0 16px; max-height: 300px; }
+  /* 手机上不再让时间线自己滚：整页一根滚动条，滑到底就是最新一条 */
+  .soup-history { margin: 0 16px; max-height: none; overflow: visible; padding-bottom: 8px; }
+  .soup-history-head { margin: 0 16px 7px; }
+  .soup-composer { padding: 9px 12px calc(10px + env(safe-area-inset-bottom)); gap: 6px; }
+  .soup-composer-modes button { padding: 6px 8px; font-size: 12px; }
+  .soup-composer-send { padding: 0 11px; }
+  .soup-composer-send span { display: none; }
+  .soup-sheet { padding: 0; }
+  .soup-sheet-card {
+    width: 100%;
+    max-height: 100%;
+    height: 100%;
+    border-radius: 0;
+    border: 0;
+  }
+  .soup-sheet-list { padding: 14px 16px calc(22px + env(safe-area-inset-bottom)); }
   .soup-solution { margin: 0 16px 15px; }
   .dice-stage { min-height: calc(100vh - 96px); border-radius: 3px; }
   .dice-header { padding: 18px 16px 14px; }

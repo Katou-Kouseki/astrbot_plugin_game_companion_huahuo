@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.93"
+    assert metadata["version"] == "0.5.94"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1648,3 +1648,45 @@ def test_soup_source_and_generated_library_are_wired() -> None:
     assert (ROOT / "soup_generated.py").exists()
     assert "def _soup_generated" in main
     assert 'source="generated"' in main
+
+
+def test_soup_timeline_preview_and_full_sheet() -> None:
+    """时间线：默认只留最近几条，翻旧账走「查看全部」弹层，不再套娃滚动。"""
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+    css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    # 主时间线只放最近几条，其余进弹层
+    assert "SOUP_HISTORY_PREVIEW = 5" in app
+    assert "soupHistoryAll" in page
+    assert "soupHistorySheet" in page
+    assert "function openSoupSheet" in app
+    assert "function closeSoupSheet" in app
+    # 高度不再钉死 330px，而是跟随视口；手机上取消内部滚动
+    assert "max-height: clamp(" in css
+    assert "max-height: 330px" not in css
+    assert "overflow: visible" in css
+
+
+def test_soup_timeline_shows_player_avatar_and_name() -> None:
+    """时间线带上玩家头像与昵称：不再只有「1 号 / 2 号」认人。"""
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "function soupEntryNode" in app
+    assert "ucSeatAvatarNode" in app
+    assert "soup-entry-avatar" in app
+    assert "function soupSeatLabel" in app
+    # 提示 / 花火自己问的没有座位号，用金色小人兜底
+    assert "soup-avatar-bot" in app
+
+
+def test_soup_composer_inline_input() -> None:
+    """常驻输入条：提问/推理二选一，直接提交，不必切到「聊天」页。"""
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    page = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="soupComposer"' in page
+    assert 'data-soup-mode="answer"' in page
+    assert "function submitSoupComposer" in app
+    assert "soup/question" in app
+    assert "soup/answer" in app

@@ -2898,6 +2898,226 @@
   // 海龟汤问答记录签名：内容没变化时跳过重建，避免每秒 replaceChildren 打断复制
   let lastSoupHistorySignature = "";
 
+  // 主时间线只显示最近几条，其余进「查看全部」弹层（弹层里才滚动）
+  const SOUP_HISTORY_PREVIEW = 5;
+  const SOUP_COMPOSER_MODES = {
+    question: {
+      placeholder: "问一个是/否问题，例如：和灯塔有关吗？",
+      send: "发送",
+    },
+    answer: {
+      placeholder: "说出你推断的完整真相，提交会计入推理次数",
+      send: "提交推理",
+    },
+  };
+  let soupComposerMode = "question";
+  let soupComposerBusy = false;
+
+  function soupEmptyNode(game) {
+    const empty = document.createElement("span");
+    empty.className = "soup-empty";
+    empty.textContent = game?.preparing
+      ? "题目生成并校验后会显示在这里"
+      : "还没有公开问答";
+    return empty;
+  }
+
+  /** 座位的人名标签：有昵称就用「昵称 · 2 号」，没昵称退回「2 号」 */
+  function soupSeatLabel(number) {
+    const n = Number(number || 0);
+    if (!n) return "玩家";
+    const seat = (Array.isArray(room?.player_seats) ? room.player_seats : [])
+      .find((s) => Number(s.number) === n);
+    const name = String(seat?.display_name || "").trim();
+    return name ? `${name} · ${n} 号` : `${n} 号`;
+  }
+
+  /**
+   * 一条问答：左边是谁，右边说了什么。
+   * 以前只有「1 号问题：…」，一屏十几条全靠数字认人；现在直接挂座位头像，
+   * QQ 头像能拉到就用真的，拉不到退回首字；提示/花火自己问的用金色小人。
+   */
+  function soupEntryNode(entry) {
+    const item = document.createElement("article");
+    // 判定结果给个自己的颜色：是=绿、否=红、部分正确=橙、无关=灰、复合提问=蓝。
+    // 提示已经是黄色、推理是红色，判定如果全用同一种绿，一眼看不出问的结果。
+    // 只给「提问」上色：推理条目也带 verdict（答对=yes/未中=partial），
+    // 加了类会把推理原本的红色盖掉。
+    const verdict = entry.kind === "question"
+      ? String(entry.verdict || "").trim()
+      : "";
+    item.className = [
+      "soup-entry",
+      entry.kind || "question",
+      entry.pending ? "pending" : "",
+      verdict ? `v-${verdict}` : "",
+    ].filter(Boolean).join(" ");
+
+    const avatar = document.createElement("span");
+    avatar.className = "soup-entry-avatar";
+    const number = Number(entry.player_number || 0);
+    if (number > 0) {
+      avatar.appendChild(ucSeatAvatarNode(number, "small"));
+    } else {
+      const bot = document.createElement("span");
+      bot.className = "uc-avatar uc-avatar-small soup-avatar-bot";
+      bot.textContent = entry.kind === "hint" ? "提" : "花";
+      avatar.appendChild(bot);
+    }
+
+    const prompt = document.createElement("p");
+    prompt.className = "prompt";
+    const promptText = entry.kind === "reverse"
+      ? `${soupSeatLabel(entry.player_number)} 线索/回答：${entry.prompt || ""}`
+      : entry.kind === "hint"
+      ? "玩家申请了提示"
+      : `${soupSeatLabel(entry.player_number)}${entry.kind === "answer" ? "猜测" : "问题"}：${entry.prompt || ""}`;
+    prompt.textContent = promptText;
+    // 群里问的和网页问的混在一起时，得能分清来源，否则会以为是自己问过
+    if (entry.source === "qq") {
+      const badge = document.createElement("span");
+      badge.className = "soup-qq-badge";
+      badge.textContent = "QQ";
+      prompt.append(" ", badge);
+    }
+    const response = document.createElement("p");
+    response.className = "response";
+    response.textContent = entry.kind === "reverse" && entry.pending
+      ? sanitizeDisplayText(entry.response || "花火 推理中")
+      : entry.kind === "reverse"
+      ? `花火 ${entry.bot_action === "guess" ? "猜测" : "提问"}：${sanitizeDisplayText(entry.response || "")}`
+      : sanitizeDisplayText(entry.response || "花火 判断中");
+
+    const body = document.createElement("div");
+    body.className = "soup-entry-body";
+    body.append(prompt, response);
+    item.append(avatar, body);
+    return item;
+  }
+
+  function syncSoupHistoryHead(entries) {
+    const button = document.getElementById("soupHistoryAll");
+    if (!button) return;
+    // 条数不够就没有「全部」可言，别在只有三条的时候也摆个按钮
+    button.hidden = entries.length <= SOUP_HISTORY_PREVIEW;
+    const total = document.getElementById("soupHistoryTotal");
+    if (total) total.textContent = String(entries.length);
+  }
+
+  function renderSoupSheetBody(entries) {
+    const list = document.getElementById("soupSheetList");
+    if (!list) return;
+    const prevScrollTop = list.scrollTop;
+    list.replaceChildren();
+    if (!entries.length) {
+      const empty = document.createElement("span");
+      empty.className = "soup-empty";
+      empty.textContent = "还没有公开问答";
+      list.appendChild(empty);
+    } else {
+      entries.forEach((entry) => list.appendChild(soupEntryNode(entry)));
+    }
+    list.scrollTop = prevScrollTop;
+    const count = document.getElementById("soupSheetCount");
+    if (count) count.textContent = `${entries.length} 条 · 最新的在下面`;
+  }
+
+  function soupEntries() {
+    return Array.isArray(room?.game?.entries) ? room.game.entries : [];
+  }
+
+  function openSoupSheet() {
+    const sheet = document.getElementById("soupHistorySheet");
+    if (!sheet) return;
+    const entries = soupEntries();
+    renderSoupSheetBody(entries);
+    sheet.hidden = false;
+    document.body.classList.add("soup-sheet-open");
+    // 打开就停在最新一条，翻旧账往上滑
+    const list = document.getElementById("soupSheetList");
+    if (list) list.scrollTop = list.scrollHeight;
+    document.getElementById("soupSheetClose")?.focus();
+  }
+
+  function closeSoupSheet() {
+    const sheet = document.getElementById("soupHistorySheet");
+    if (!sheet || sheet.hidden) return;
+    sheet.hidden = true;
+    document.body.classList.remove("soup-sheet-open");
+  }
+
+  function soupPlayerHosted(game) {
+    return game?.mode === "player_host" || room?.turtle_soup_mode === "player_host";
+  }
+
+  /** 输入条只在「我坐着 + 局在进行 + 不是我在出题」时出现 */
+  function syncSoupComposer(game, playerHosted) {
+    const form = document.getElementById("soupComposer");
+    if (!form) return;
+    const canUse = room?.game_type === "turtle_soup"
+      && !!room.is_player
+      && !playerHosted
+      && room.status === "active"
+      && game?.phase === "ready"
+      && !game?.finished;
+    form.hidden = !canUse;
+    if (!canUse) return;
+    const answering = soupComposerMode === "answer";
+    form.classList.toggle("is-answer", answering);
+    form.querySelectorAll("[data-soup-mode]").forEach((btn) => {
+      const active = btn.getAttribute("data-soup-mode") === soupComposerMode;
+      btn.classList.toggle("is-active", active);
+      btn.setAttribute("aria-pressed", active ? "true" : "false");
+    });
+    const input = document.getElementById("soupComposerInput");
+    if (input && !input.value.trim()) {
+      input.placeholder = SOUP_COMPOSER_MODES[soupComposerMode].placeholder;
+    }
+    const sendText = document.getElementById("soupComposerSendText");
+    if (sendText) sendText.textContent = SOUP_COMPOSER_MODES[soupComposerMode].send;
+  }
+
+  async function submitSoupComposer(event) {
+    event.preventDefault();
+    if (soupComposerBusy || !room) return;
+    const input = document.getElementById("soupComposerInput");
+    const text = String(input?.value || "").trim();
+    if (!text) return;
+    const mode = soupComposerMode;
+    // 推理提交会直接拿去判对错，太短的基本是误触；提问则不限（一问一句很正常）
+    if (mode === "answer" && text.length < 6) {
+      showToast("推理请写完整一些，一句话说不清汤底");
+      return;
+    }
+    soupComposerBusy = true;
+    const send = document.getElementById("soupComposerSend");
+    if (send) send.disabled = true;
+    try {
+      // 判定可能要排队（上一条还在判），和聊天入口一样给更长的超时
+      const data = await request(
+        "POST",
+        mode === "answer" ? "soup/answer" : "soup/question",
+        { visitor_token: visitorToken, text },
+        45000,
+      );
+      if (input) {
+        input.value = "";
+        input.placeholder = SOUP_COMPOSER_MODES[mode].placeholder;
+      }
+      if (data?.room) setRoom(data.room);
+      const reply = String(data?.reply || "").trim();
+      if (data?.limited && reply) showToast(reply);
+      else if (mode === "answer" && data?.solved) showToast("汤底解开了");
+    } catch (error) {
+      try { await loadState(); } catch (_syncError) { /* polling will retry */ }
+      showToast(error?.message || "提交失败");
+    } finally {
+      soupComposerBusy = false;
+      if (send) send.disabled = false;
+      render();
+    }
+  }
+
   function renderTurtleSoup() {
     if (room?.game_type !== "turtle_soup") return;
     const game = room.game;
@@ -3030,59 +3250,27 @@
       const soupWasNearBottom = history.scrollHeight - history.scrollTop - history.clientHeight < 48;
       history.replaceChildren();
       if (!entries.length) {
-        const empty = document.createElement("span");
-        empty.className = "soup-empty";
-        empty.textContent = game?.preparing ? "题目生成并校验后会显示在这里" : "还没有公开问答";
-        history.appendChild(empty);
+        history.appendChild(soupEmptyNode(game));
       } else {
-        entries.forEach((entry) => {
-          const item = document.createElement("article");
-          // 判定结果给个自己的颜色：是=绿、否=红、部分正确=橙、无关=灰、复合提问=蓝。
-          // 提示已经是黄色、推理是红色，判定如果全用同一种绿，一眼看不出问的结果。
-          // 只给「提问」上色：推理条目也带 verdict（答对=yes/未中=partial），
-          // 加了类会把推理原本的红色盖掉。
-          const verdict = entry.kind === "question"
-            ? String(entry.verdict || "").trim()
-            : "";
-          item.className = [
-            "soup-entry",
-            entry.kind || "question",
-            entry.pending ? "pending" : "",
-            verdict ? `v-${verdict}` : "",
-          ].filter(Boolean).join(" ");
-          const prompt = document.createElement("p");
-          prompt.className = "prompt";
-          const promptText = entry.kind === "reverse"
-            ? `${entry.player_number || "?"} 号线索/回答：${entry.prompt || ""}`
-            : entry.kind === "hint"
-            ? "玩家申请了提示"
-            : `${entry.player_number ? `${entry.player_number} 号` : "玩家"}${entry.kind === "answer" ? "猜测" : "问题"}：${entry.prompt || ""}`;
-          prompt.textContent = promptText;
-          // 群里问的和网页问的混在一起时，得能分清来源，否则会以为是自己问过
-          if (entry.source === "qq") {
-            const badge = document.createElement("span");
-            badge.className = "soup-qq-badge";
-            badge.textContent = "QQ";
-            prompt.append(" ", badge);
-          }
-          const response = document.createElement("p");
-          response.className = "response";
-          response.textContent = entry.kind === "reverse" && entry.pending
-            ? sanitizeDisplayText(entry.response || "花火 推理中")
-            : entry.kind === "reverse"
-            ? `花火 ${entry.bot_action === "guess" ? "猜测" : "提问"}：${sanitizeDisplayText(entry.response || "")}`
-            : sanitizeDisplayText(entry.response || "花火 判断中");
-          item.append(prompt, response);
-          history.appendChild(item);
+        // 默认只留最近几条：以前几十条全塞进来，容器钉死 330px，四五条就开始内部滚动，
+        // 想翻旧账只能在这条窄缝里慢慢滑。现在主时间线只看最新，翻旧账走「查看全部」。
+        entries.slice(-SOUP_HISTORY_PREVIEW).forEach((entry) => {
+          history.appendChild(soupEntryNode(entry));
         });
         // 和聊天窗一致：在底部才跟随滚到底，上滑翻历史则原地恢复，别把「爬楼」拽回底部
-        if (soupWasNearBottom) {
+        if (history.scrollHeight > history.clientHeight + 4 && soupWasNearBottom) {
           history.scrollTop = history.scrollHeight;
         } else {
           history.scrollTop = soupPrevScrollTop;
         }
       }
+      syncSoupHistoryHead(entries);
+      // 抽屉关着就不用维护里面那几十条 DOM，打开时 openSoupSheet 会现渲染
+      if (document.getElementById("soupHistorySheet")?.hidden === false) {
+        renderSoupSheetBody(entries);
+      }
     }
+    syncSoupComposer(game, playerHosted);
 
     // 揭晓汤底：不是投降，是「这题到此为止」；多人房需要过半玩家同意
     const revealButton = document.getElementById("soupRevealButton");
@@ -7073,6 +7261,30 @@
   document.getElementById("diceRollAction").addEventListener("click", () => diceAction("roll"));
   document.getElementById("diceHoldAction").addEventListener("click", () => diceAction("hold"));
   document.getElementById("soupHintButton").addEventListener("click", soupHint);
+  // 常驻输入条：提问 / 推理二选一，不用切到「聊天」页再打字
+  const soupComposerEl = document.getElementById("soupComposer");
+  if (soupComposerEl) {
+    soupComposerEl.addEventListener("submit", submitSoupComposer);
+    soupComposerEl.querySelectorAll("[data-soup-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        soupComposerMode = btn.getAttribute("data-soup-mode") === "answer"
+          ? "answer"
+          : "question";
+        // 切到推理时把焦点直接给输入框：少点一次，手机上尤其明显
+        const input = document.getElementById("soupComposerInput");
+        if (input) input.focus();
+        renderTurtleSoup();
+      });
+    });
+  }
+  document.getElementById("soupHistoryAll")?.addEventListener("click", openSoupSheet);
+  document.getElementById("soupSheetClose")?.addEventListener("click", closeSoupSheet);
+  document.querySelectorAll("[data-soup-sheet-close]").forEach((el) => {
+    el.addEventListener("click", closeSoupSheet);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeSoupSheet();
+  });
   const soupRevealButton = document.getElementById("soupRevealButton");
   if (soupRevealButton) {
     soupRevealButton.addEventListener("click", soupReveal);
