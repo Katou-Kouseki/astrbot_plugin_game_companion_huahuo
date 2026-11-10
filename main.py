@@ -2635,6 +2635,84 @@ class GameCompanionPlugin(Star):
                 pass
         yield event.plain_result(reply)
 
+    async def _soup_explicit_reply(self, event: AstrMessageEvent):
+        """明确指令的公共出口：复用「汤 xxx」的解析，统一只回一条。"""
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return
+        reply = await handle_soup_command(self, event)
+        if not reply:
+            return
+        stop = getattr(event, "stop_event", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        yield event.plain_result(reply)
+
+    # 和「棋类日报」一样，把每个动作直接注册成 AstrBot 顶层指令。
+    # `/` 是 AstrBot 的默认指令前缀：注册「汤状态」后发 `/汤状态` 即可，
+    # 指令页里也能逐条看到。这些是精确匹配，不会把 @Bot 的普通聊天吞掉。
+    @filter.command("汤开局")
+    async def soup_cmd_start(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤状态")
+    async def soup_cmd_status(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤帮助")
+    async def soup_cmd_help(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤复盘")
+    async def soup_cmd_recap(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤提问")
+    async def soup_cmd_question(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤推理")
+    async def soup_cmd_answer(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤验证")
+    async def soup_cmd_verify(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤提示")
+    async def soup_cmd_hint(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤查看")
+    async def soup_cmd_history(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤揭晓")
+    async def soup_cmd_reveal(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤附议")
+    async def soup_cmd_agree(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
+    @filter.command("汤反对")
+    async def soup_cmd_disagree(self, event: AstrMessageEvent):
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
     @filter.command_group("game")
     def game_commands(self):
         """花火陪你玩的显式 QQ 指令。"""
@@ -3215,15 +3293,18 @@ class GameCompanionPlugin(Star):
         )
 
     @filter.regex(
-        r"^\s*(?:\[CQ:at[^\]]*\]\s*|@[^\s]{1,24}\s+)?[/!！]?\s*"
-        r"(?:海龟汤|汤(?=\s|$|开局|开房|开始|提问|问一下|推理|答题|答案|看答案|揭晓"
-        r"|附议|同意|反对|提示|状态|查看|帮助|菜单))"
+        # 不带 / 的「汤 xxx」由这里兜底；带 / 的是 AstrBot 明确指令，
+        # 交给上面的 @filter.command 处理，避免两个入口对同一条消息各回一次。
+        r"^\s*(?:\[CQ:at[^\]]*\]\s*|@[^\s]{1,24}\s+)?"
+        r"(?:海龟汤|汤(?=\s|$|开局|开房|开始|提问|问一下|推理|验证|答题|答案|看答案"
+        r"|揭晓|复盘|回顾|附议|同意|反对|提示|状态|查看|帮助|菜单))"
     )
     async def soup_qq_command(self, event: AstrMessageEvent):
-        """群聊里的海龟汤指令：提问 / 推理 / 提示 / 揭晓 / 状态。
+        """群聊里的海龟汤指令（不带 / 的写法）：提问 / 推理 / 提示 / 揭晓 / 状态。
 
         只在当前会话有进行中的海龟汤房间时才真的处理；其余情况静默放行，
         让这条消息继续走正常聊天（「汤圆好吃」之类不能被当成指令）。
+        带 `/` 的明确指令走 @filter.command，不在这里重复处理。
         """
         if not getattr(self, "turtle_soup_qq_bridge", True):
             return
@@ -3240,11 +3321,12 @@ class GameCompanionPlugin(Star):
 
     @filter.regex(r"^[\s\S]+$")
     async def soup_qq_at_say(self, event: AstrMessageEvent):
-        """群里 @ 花火直接说话，就当作这一局的提问，不用写「汤 提问」。
+        """默认开启，但只有当前群有进行中的海龟汤时才生效。
 
-        只接管「有进行中的海龟汤 + 发送者已在玩家席」的消息。其他群友 @ 花火
-        仍然是正常聊天——不能因为群里开了一局，就把所有人的搭话都吃掉。
-        想回到纯指令模式，把 `turtle_soup.qq_at_question` 关掉即可。
+        @Bot 明确像提问或作答的内容、以及「提示」这个动作会接到这一局；
+        没有进行中的海龟汤时一个字都不接管，@Bot 照常跟模型聊天。
+        模糊短句、状态 / 复盘 / 开局等也不在这里猜，请用 `/汤xxx` 明确指令。
+        想彻底只用明确指令，把 `turtle_soup.qq_at_question` 关掉即可。
         """
         if not getattr(self, "turtle_soup_qq_at_question", True):
             return

@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.02"
+    assert metadata["version"] == "0.6.03"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1536,14 +1536,40 @@ def test_soup_sync_report_has_no_truncation_and_shows_real_avatars() -> None:
     assert "群里 @花火 直接问一句" in main
 
 
-def test_soup_at_message_handles_pure_action_phrases() -> None:
-    """`@我 提示` 是动作而不是提问；群里也要能直接开局。"""
+def test_soup_at_message_only_takes_over_during_a_running_game() -> None:
+    """@Bot 只在有进行中的海龟汤时接管；只留提示动作和明确提问 / 作答。"""
     bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
 
+    # 门控要放在所有动作之前：没对局就一个字都不接管
+    body = bridge.split("async def handle_soup_at_message", 1)[1]
+    gate = body.index("room = soup_room_for_session(plugin, session_id)")
+    assert gate < body.index("classify_at_intent(text)")
+    assert gate < body.index("classify_at_message(text)")
+    assert 'if room is None:\n        return ""' in body
+    # @Bot 的整句意图表里不再有状态 / 复盘 / 开局等词（_ACTIONS 是明确指令表，保留）
+    intents = bridge.split("_AT_INTENTS:", 1)[1].split("}", 1)[0]
+    for word in ("状态", "复盘", "开局", "揭晓", "帮助", "查看"):
+        assert f'"{word}"' not in intents, word
     assert "def classify_at_intent" in bridge
-    assert "classify_at_intent(text)" in bridge
-    assert "start_soup_room" in bridge
-    assert "@我 说「来局海龟汤」" in bridge
+    assert "SOUP_EXPLICIT_COMMANDS" in bridge
+    # 明确像作答的内容仍要走推理，模糊短句放行
+    classifier = bridge.split("def classify_at_message", 1)[1].split("def ", 1)[0]
+    assert 'return "answer"' in classifier
+    assert "return None" in classifier
+
+
+def test_soup_explicit_commands_are_registered() -> None:
+    """和「棋类日报」一样，把每个动作直接注册成 AstrBot 顶层指令。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    for command in (
+        "汤开局", "汤状态", "汤帮助", "汤复盘", "汤提问", "汤推理",
+        "汤验证", "汤提示", "汤查看", "汤揭晓", "汤附议", "汤反对",
+    ):
+        assert f'@filter.command("{command}")' in main, command
+    # 带 / 的明确指令由 command 独占，通配 regex 不再同时吃斜杠
+    head = main[: main.index("async def soup_qq_command")]
+    assert "[/!！]?" not in head[-400:]
 
 
 def test_soup_announce_requires_a_target_group() -> None:

@@ -283,8 +283,12 @@ class TestAtMessage:
             # 不带「我觉得」这类措辞，但明显是一整段陈述 → 也算推理
             ("他是灯塔管理员，灯灭了他才发现，所以自责跳楼", "answer"),
             ("就是灯塔管理员忘了点灯，船撞礁沉了", "answer"),
-            # 太短的陈述更像感叹，按提问处理（多问一句代价更小）
-            ("灯灭了", "question"),
+            # 太短的陈述、以及状态 / 复盘这类词，都不该被当成提问或指令
+            ("灯灭了", None),
+            ("状态", None),
+            ("复盘", None),
+            ("帮助", None),
+            ("答案", None),
             # 寒暄不该变成提问
             ("你好", None),
             ("在吗", None),
@@ -656,7 +660,7 @@ async def test_recap_without_any_room_says_so() -> None:
 
 
 class TestAtIntent:
-    """`@我 提示` 是动作，不是提问：以前会被判一次「无关」，白扣额度。"""
+    """@Bot 的整句动作只剩「提示」；其余词改走明确指令，也不能没对局就开局。"""
 
     @pytest.mark.parametrize(
         "text,expected",
@@ -665,13 +669,15 @@ class TestAtIntent:
             ("给个提示", ("hint", "")),
             ("提示一下", ("hint", "")),
             ("来点提示", ("hint", "")),
-            ("状态", ("status", "")),
-            ("还剩几次", ("status", "")),
-            ("复盘", ("recap", "")),
-            ("揭晓", ("reveal", "")),
-            ("开局", ("start", "")),
-            ("来局海龟汤", ("start", "")),
-            ("来一局海龟汤", ("start", "")),
+            # 状态 / 复盘 / 揭晓 / 开局 / 帮助 改走 /汤xxx 明确指令
+            ("状态", None),
+            ("还剩几次", None),
+            ("复盘", None),
+            ("揭晓", None),
+            ("开局", None),
+            ("帮助", None),
+            ("来局海龟汤", None),
+            ("来一局海龟汤", None),
             ("提示是什么意思", None),
             ("和灯塔有关吗", None),
             ("", None),
@@ -711,44 +717,63 @@ class TestAtIntent:
         assert await handle_soup_at_message(plugin, make_event("@花火 提示")) == ""
 
     @pytest.mark.asyncio
-    async def test_start_intent_opens_a_room(self) -> None:
-        """群里 @我 说「来局海龟汤」直接开局，不用先进网页点开始。"""
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "来局海龟汤",
+            "开局",
+            "帮助",
+            "状态",
+            "复盘",
+            "和灯塔有关吗？",
+            "我觉得他是灯塔管理员，灯灭了导致沉船",
+        ],
+    )
+    async def test_no_room_never_takes_over_at_message(self, text: str) -> None:
+        """没有进行中的海龟汤时，@Bot 一律是普通聊天：不开局、不弹菜单、不提问。"""
         from astrbot_plugin_game_companion_huahuo.qq_bridge import (
             handle_soup_at_message,
         )
 
         plugin = make_plugin(None)
-        plugin.manager.start_game = AsyncMock(return_value=True)
-        plugin._soup_difficulty = lambda _text: "normal"
-        created = SimpleNamespace(
-            status="setup",
-            player_qq="",
-            player_token="pt",
-            multiplayer=SimpleNamespace(
-                enabled=False, seat_for_qq=lambda _qq: None, seats=[], capacity=0
-            ),
-            visitors={},
-            add_message=lambda *_args, **_kwargs: None,
-        )
         plugin._create_or_reuse_room_from_event = AsyncMock(
-            return_value=(created, False, False, False)
+            return_value=(make_room(), False, False, False)
         )
-        plugin._room_url = lambda _room: "https://example.com/room/x"
 
-        reply = await handle_soup_at_message(plugin, make_event("@花火 来局海龟汤"))
-
-        assert "海龟汤开好了" in reply
-        plugin._create_or_reuse_room_from_event.assert_awaited_once()
+        assert await handle_soup_at_message(plugin, make_event(f"@花火 {text}")) == ""
+        plugin._create_or_reuse_room_from_event.assert_not_awaited()
+        plugin.submit_turtle_soup_question.assert_not_awaited()
+        plugin.submit_turtle_soup_answer.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_start_intent_while_playing_points_to_status(self) -> None:
+    async def test_action_words_are_left_to_chat_while_playing(self) -> None:
+        """有对局时，状态 / 开局 / 复盘这类词也不再靠整句关键词变成指令。"""
+        from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+            handle_soup_at_message,
+        )
+
+        for text in ("开局", "状态", "复盘", "答案", "灯灭了"):
+            plugin = make_plugin(make_at_room())
+            assert await handle_soup_at_message(
+                plugin, make_event(f"@花火 {text}")
+            ) == ""
+            plugin.submit_turtle_soup_question.assert_not_awaited()
+            plugin.submit_turtle_soup_answer.assert_not_awaited()
+            plugin.manager.request_turtle_soup_hint.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_explicit_answer_still_works_while_playing(self) -> None:
+        """有对局时，@Bot 明确像作答的内容依然要提交成推理。"""
         from astrbot_plugin_game_companion_huahuo.qq_bridge import (
             handle_soup_at_message,
         )
 
         plugin = make_plugin(make_at_room())
-        reply = await handle_soup_at_message(plugin, make_event("@花火 开局"))
-        assert "已经在进行中" in reply
+        await handle_soup_at_message(
+            plugin, make_event("@花火 我觉得他是灯塔管理员，灯灭了导致船只失事")
+        )
+        plugin.submit_turtle_soup_answer.assert_awaited_once()
+        plugin.submit_turtle_soup_question.assert_not_awaited()
 
 
 def test_help_text_mentions_the_quick_ways_in() -> None:

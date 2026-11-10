@@ -12,9 +12,9 @@
 1. **不做会话接管**。参考项目开局后会接管群里所有消息（`session_waiter`），
    自然但会吞掉群聊、和别的插件抢消息。我们的房间以网页为主，群里是"顺手
    问一句"的补充通道，所以用显式指令，只在有房间时响应。
-2. **@ 花火说话也算提问**（见 :func:`classify_at_message`）。只接管「已绑定玩家席
-   的人 @ 花火」的消息，其他人 @ 花火照常聊天；判不准时一律当提问而不是推理——
-   推理判错可能直接揭晓汤底，代价比多问一句高得多。
+2. **@Bot 说话也算提问，但门控很严**：只有当前群确实有进行中的海龟汤时才接管，
+   而且只认明确像提问 / 推理的句式和「提示」这个动作；模糊短句交回模型聊天。
+   状态、复盘、揭晓等一律走 `/汤xxx` 明确指令，不靠整句关键词猜意图。
 3. **指令失败要说人话**。没绑座位是最高频的失败，直接给绑定引导，
    而不是把 `PermissionError` 原文丢到群里。
 """
@@ -30,18 +30,18 @@ from .turtle_soup import VERDICT_LABELS, TurtleSoupGame
 from .turtle_soup_deck import redact_spoiler
 
 HELP_TEXT = (
-    "🥣 海龟汤群内指令\n"
-    "• 汤 —— 一句「汤」直接开局（也可 @我 说「来局海龟汤」）\n"
-    "• 汤 开局 困难 —— 指定难度开局（娱乐 / 简单 / 普通 / 困难）\n"
-    "• 汤 提问 你的问题 —— 问一个是/否问题（直接 @我 问一句也行）\n"
-    "• 汤 推理 你的推理 —— 提交对汤底的完整推断\n"
-    "• 汤 提示 —— 要一条提示（消耗一次机会，也可以直接 @我 说「提示」）\n"
-    "• 汤 揭晓 —— 发起揭晓汤底（多人房需其他人同意）\n"
-    "• 汤 附议 / 汤 反对 —— 对揭晓表决表态\n"
-    "• 汤 状态 —— 看当前进度（难度、已问次数、提示与推理剩余）\n"
-    "• 汤 查看 —— 看最近几条问答\n"
-    "• 汤 复盘 —— 结束后看完整回顾（汤面 + 汤底 + 关键问答）\n"
-    "（也支持 汤提问 / 海龟汤 提问 等写法；需先把 QQ 绑定到玩家席）"
+    "🥣 海龟汤群内指令（/ 是 AstrBot 的指令前缀，带不带都行）\n"
+    "• /汤 —— 开一局（也可写 汤 开局 困难：娱乐 / 简单 / 普通 / 困难）\n"
+    "• /汤提问 你的问题 —— 问一个是/否问题\n"
+    "• /汤推理 你的推理 —— 提交对汤底的完整推断（/汤验证 同义）\n"
+    "• /汤提示 —— 要一条提示，消耗一次机会（写「汤 提示」也行）\n"
+    "• /汤状态 —— 看当前进度（已问次数、提示与推理剩余）\n"
+    "• /汤查看 —— 看最近几条问答\n"
+    "• /汤揭晓 —— 发起揭晓汤底；/汤附议、/汤反对 参与表决\n"
+    "• /汤复盘 —— 结束后看完整回顾（汤面 + 汤底 + 关键问答）\n"
+    "• /汤帮助 —— 再看这份菜单\n"
+    "对局进行中也可以直接 @我 问一句、交一段推理，或者说「提示」。\n"
+    "群里没有进行中的海龟汤时，@我 就是普通聊天，不会被游戏接管。"
 )
 
 # 动作词按长度倒序匹配，避免「看答案」被「答案」抢先切开。
@@ -52,6 +52,7 @@ _ACTIONS: dict[str, str] = {
     "提问": "question",
     "问一下": "question",
     "推理": "answer",
+    "验证": "answer",
     "答题": "answer",
     "答案": "answer",
     "看答案": "reveal",
@@ -69,6 +70,24 @@ _ACTIONS: dict[str, str] = {
     "菜单": "help",
 }
 _ACTION_WORDS = sorted(_ACTIONS, key=len, reverse=True)
+
+# 直接注册给 AstrBot 的明确指令词（和「棋类日报」一样用 @filter.command）。
+# `/` 是 AstrBot 的默认指令前缀，不是指令名的一部分：注册「汤状态」后发 `/汤状态` 即可。
+# 这些词只由指令系统精确匹配，不参与 @Bot 的整句意图猜测，不会吃掉普通聊天。
+SOUP_EXPLICIT_COMMANDS: tuple[str, ...] = (
+    "汤开局",
+    "汤状态",
+    "汤帮助",
+    "汤复盘",
+    "汤提问",
+    "汤推理",
+    "汤验证",
+    "汤提示",
+    "汤查看",
+    "汤揭晓",
+    "汤附议",
+    "汤反对",
+)
 
 _PREFIX_RE = re.compile(r"^\s*[/!！]\s*")
 _NO_ROOM_ACTIONS = frozenset(
@@ -460,7 +479,7 @@ async def _seat_and_start(plugin: Any, room: GameRoom, event: Any) -> str:
 async def start_soup_room(plugin: Any, event: Any, body: str) -> str:
     """「汤 开局」：走确定性建房路径，建好就把人安排进座位并开局。
 
-    为什么不交给模型：群里说「来局海龟汤」和「汤 开局」应该得到同一个结果，
+    为什么不交给模型：群里说「/汤」和「汤 开局」应该得到同一个结果，
     但模型那条路要过意图校验，还可能被上下文带偏。这里直接调建房逻辑，
     群聊建房权限（只有游戏管理员 / 已放开非管理员建房）完全复用同一套判断。
     """
@@ -629,9 +648,13 @@ def _strip_at_prefix(text: str) -> str:
     return _AT_PREFIX_RE.sub("", str(text or "")).strip()
 
 
-# 「@我 提示」这类**整句就是要个动作**的短句：以前它们会被当成一句提问，
-# 既白扣一次问答额度，群里还会收到「提示 → 无关」这种莫名其妙的判定。
-# 只认整句完全匹配（去掉标点空白后），避免把「提示是什么意思」也吃掉。
+# @Bot 的整句动作**只保留「要提示」**：这是玩汤时最自然的口语动作，
+# 而且就算判错也只消耗一次提示额度。
+# 状态 / 复盘 / 揭晓 / 开局 / 帮助 / 查看 这些一律走 `/汤状态` 那样的明确指令，
+# 不再靠一大堆整句关键词猜意图——否则群里有人 @ 模型说「答案」「状态」「帮助」
+# 也会被当成游戏指令，把正常聊天吃掉。
+# 注意：无论哪种动作，都只在当前群确实有进行中的海龟汤房间时才生效
+# （门控在 handle_soup_at_message 最前面）。
 _AT_INTENTS: dict[str, str] = {
     "提示": "hint",
     "给个提示": "hint",
@@ -644,40 +667,6 @@ _AT_INTENTS: dict[str, str] = {
     "下一条提示": "hint",
     "再来个提示": "hint",
     "换个提示": "hint",
-    "hint": "hint",
-    "状态": "status",
-    "进度": "status",
-    "看进度": "status",
-    "还有几次": "status",
-    "还剩几次": "status",
-    "剩下几次": "status",
-    "查看": "history",
-    "历史": "history",
-    "问答记录": "history",
-    "复盘": "recap",
-    "回顾": "recap",
-    "揭晓": "reveal",
-    "看答案": "reveal",
-    "公布答案": "reveal",
-    "答案": "reveal",
-    "帮助": "help",
-    "菜单": "help",
-    "怎么玩": "help",
-    "玩法": "help",
-    "开局": "start",
-    "开一局": "start",
-    "来一局": "start",
-    "来局": "start",
-    "开房": "start",
-    "再来一局": "start",
-    # 帮助里承诺的「@我 来局海龟汤」，以前既没开局还会被当成一次提问
-    "来局海龟汤": "start",
-    "来一局海龟汤": "start",
-    "开一局海龟汤": "start",
-    "开个海龟汤": "start",
-    "来个海龟汤": "start",
-    "玩海龟汤": "start",
-    "来局汤": "start",
 }
 _AT_PUNCT_RE = re.compile(
     r"[\s，。！？!?、,.~～…·:：;；\"'“”‘’()（）\[\]【】<>《》]"
@@ -685,10 +674,10 @@ _AT_PUNCT_RE = re.compile(
 
 
 def classify_at_intent(text: str) -> tuple[str, str] | None:
-    """把「@我 的整句话」判成一个动作；不是纯动作就返回 None。
+    """把「@Bot 的整句话」判成提示动作；其余一律返回 None。
 
-    只做整句匹配：`@我 提示` → hint；`@我 提示是什么意思` 仍然走正常提问/闲聊。
-    这是为了修「群里 @bot 说『提示』，bot 把它当问题判了一次」。
+    只做整句匹配：`@我 提示` → hint；`@我 提示是什么意思` 走正常判定或闲聊。
+    这里**只认提示**，别的动作请用明确指令，避免把普通聊天词当成指令。
     """
     normalized = str(text or "").strip()
     if not normalized:
@@ -701,13 +690,12 @@ def classify_at_intent(text: str) -> tuple[str, str] | None:
 
 
 def classify_at_message(text: str) -> str | None:
-    """把「@花火 说的一句话」判成 question / answer；不值得处理时返回 None。
+    """把「@Bot 说的一句话」判成 question / answer；不明确就交回正常聊天。
 
-    判据是**句式**而不是关键词：带疑问特征（问号、吗、是不是、为什么……）就是
-    提问；不带疑问特征、又够长的陈述句，按推理提交——这样「@花火 他是灯塔管理员，
-    灯灭了导致沉船」也能直接当推理，不用写「汤 推理」。
-
-    模糊时偏向提问：多问一句只是浪费一轮，而推理判错会推进覆盖率甚至直接揭晓汤底。
+    只认**明确像提问或作答**的内容：带疑问特征（问号、吗、是不是、为什么……）
+    算提问；够长的陈述句、或带「我觉得 / 答案是」这类措辞算推理提交，
+    所以「@我 他是灯塔管理员，灯灭了导致沉船」依然能直接当推理。
+    短句、感叹、搭话不再一律兜底成提问，免得群里 @ 模型聊天被吃掉。
     """
     normalized = str(text or "").strip()
     if not normalized:
@@ -732,7 +720,8 @@ def classify_at_message(text: str) -> str | None:
         hint in normalized for hint in _AT_ANSWER_HINTS
     ):
         return "answer"
-    return "question"
+    # 不明确就不接管：交回模型正常聊天
+    return None
 
 
 def _qq_has_seat(room: GameRoom, qq: str) -> bool:
@@ -793,40 +782,31 @@ async def ensure_qq_seat(
 
 
 async def handle_soup_at_message(plugin: Any, event: Any) -> str:
-    """@ 花火说的一句话 → 这一局的一次提问/推理；不该接管时返回空串。
+    """有进行中的海龟汤时，才把 @Bot 的明确提问 / 推理 / 「提示」接到这一局。
 
-    只在「有进行中的海龟汤 + 发送者已在玩家席」时接管。其他群友 @ 花火仍然是
-    正常聊天——不能因为群里开了一局，就把所有人的搭话都吃掉。
+    **门控放在最前面**：当前会话没有进行中的海龟汤房间就一个字都不接管，
+    @Bot 照常走模型聊天。以前「@我 来局海龟汤」「@我 帮助」在没房间时也会
+    凭空开局或弹菜单，群里只想跟模型说话的人全被当成指令。
 
-    例外是几个**纯动作短句**（`@我 提示` / `@我 状态` / `@我 开局`）：
-    它们本来就是指令，不该被当成一次提问判掉。
+    状态 / 复盘 / 揭晓 / 查看 / 开局 等动作请用 `/汤状态` 这类明确指令；
+    这里只留「提示」和明确像提问、作答的句式。
     """
     session_id = str(getattr(event, "unified_msg_origin", "") or "")
-    qq = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
     text = _strip_at_prefix(str(getattr(event, "message_str", "") or ""))
     # 已经写成指令的交给指令入口，避免两个入口各回一条
     if parse_soup_command(text) is not None:
         return ""
+    room = soup_room_for_session(plugin, session_id)
+    if room is None:
+        return ""
+    qq = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
     actor_name = str(getattr(event, "get_sender_name", lambda: "")() or "").strip()
     intent = classify_at_intent(text)
     if intent is not None:
         action, body = intent
-        room = soup_room_for_session(plugin, session_id)
-        if action == "start":
-            if room is not None:
-                return "这一局已经在进行中了。发「汤 状态」看进度；想换一局就先把它结束。"
-            return await start_soup_room(plugin, event, body)
-        if room is None:
-            # 没开局时的「提示 / 状态」不接管：让正常聊天（或模型）去回答
-            if action == "help":
-                return HELP_TEXT
-            return ""
         return await run_soup_action(
             plugin, room, action, body, qq, actor_name=actor_name
         )
-    room = soup_room_for_session(plugin, session_id)
-    if room is None:
-        return ""
     action = classify_at_message(text)
     if action is None:
         return ""
