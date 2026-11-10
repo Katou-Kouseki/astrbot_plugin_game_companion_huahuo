@@ -4156,9 +4156,10 @@ class GameCompanionPlugin(Star):
     ) -> bool:
         """玩家出题模式：网页 / Bot 挂起待裁决时，群里补一条可引用的提示。
 
-        群里自己提问时回执已经带上原文和引导，不用重复发；但网页玩家或 Bot
+        群里自己提问时回执已经带上原文，不用重复发；但网页玩家或 Bot
         提交时在群里一条消息都没有，出题人光看群根本不知道现在该裁哪一条，
-        很容易引用了别人的消息却判到这一条上。
+        很容易引用了别人的消息却判到这一条上。裁决引导整局只带一次，
+        后面的提示只写清「现在裁的是哪条」，免得每问一句都刷一大段。
         """
         if not getattr(self, "turtle_soup_qq_bridge", True):
             return False
@@ -4174,7 +4175,10 @@ class GameCompanionPlugin(Star):
         label = _pending_label(described)
         if not label:
             return False
-        body = f"📋 待裁决：{label}\n{_pending_verdict_hint(described)}"
+        claim = getattr(getattr(room, "game", None), "claim_judge_hint", None)
+        body = f"📋 待裁决：{label}"
+        if callable(claim) and claim():
+            body += f"\n{_pending_verdict_hint(described)}"
         return await self._send_to_origin(room, body)
 
     async def _on_room_event(
@@ -4182,8 +4186,8 @@ class GameCompanionPlugin(Star):
     ) -> None:
         game_label = self._game_label(room.game_type)
         if event_name == "soup_host_question":
-            # 玩家出题模式专属：群里提问的回执已带原文与引导，这里只补
-            # 网页 / Bot 提交的那条，让群里始终有明确的待裁决对象可引用。
+            # 玩家出题模式专属：群里提问的回执已带原文（第一条还带裁决引导），
+            # 这里只补网页 / Bot 提交的那条，让群里始终有明确的待裁决对象可引用。
             if str(payload.get("source") or "") != "qq" and getattr(
                 self, "turtle_soup_qq_bridge", True
             ):
@@ -6224,6 +6228,9 @@ class GameCompanionPlugin(Star):
                 "pending_number": int(pending.get("asker_number") or 0),
                 "pending_for_bot": bool(pending.get("for_bot")),
                 "pending_kind": "question",
+                # 群里提问的回执由 qq_bridge 渲染，裁决引导整局只领一次；
+                # 网页来源不领，留给 soup_host_question 事件的群提示去领。
+                "show_judge_hint": source == "qq" and host_game.claim_judge_hint(),
                 **self._awaiting_host_progress(host_game, room, "question"),
             }
         game, question = await self.manager.begin_turtle_soup_interaction(
@@ -6450,6 +6457,7 @@ class GameCompanionPlugin(Star):
                 "pending_number": int(pending.get("asker_number") or 0),
                 "pending_for_bot": bool(pending.get("for_bot")),
                 "pending_kind": "answer",
+                "show_judge_hint": source == "qq" and host_game.claim_judge_hint(),
                 **self._awaiting_host_progress(host_game, room, "answer"),
             }
         game, answer = await self.manager.begin_turtle_soup_interaction(

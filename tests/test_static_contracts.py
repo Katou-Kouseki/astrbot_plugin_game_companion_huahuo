@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.09"
+    assert metadata["version"] == "0.6.10"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2212,10 +2212,11 @@ def test_group_soup_judgement_is_host_only() -> None:
 
 
 def test_pending_receipts_show_what_is_being_judged() -> None:
-    """玩家出题：待裁决与裁决回执都带原文与引用引导，判非所问能当场发现。"""
+    """玩家出题：回执带原文；引用引导整局只发一次，后续不刷屏。"""
     main = (ROOT / "main.py").read_text(encoding="utf-8")
     bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
     rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    soup = (ROOT / "turtle_soup.py").read_text(encoding="utf-8")
 
     assert "def _pending_label" in bridge
     assert "def _pending_verdict_hint" in bridge
@@ -2231,3 +2232,11 @@ def test_pending_receipts_show_what_is_being_judged() -> None:
     # 群里自己提问的回执已经带原文，不重复补发
     assert 'str(payload.get("source") or "") != "qq"' in main
     assert '"source": source' in rm and '"asker_number": number' in rm
+
+    # 引导只在第一条待裁决出现：群里、网页/Bot 两条链路共用同一局的领取名额
+    assert "judge_hint_announced: bool = False" in soup
+    assert "def claim_judge_hint" in soup
+    assert 'source == "qq" and host_game.claim_judge_hint()' in main
+    assert '"show_judge_hint":' in main
+    assert 'result.get("show_judge_hint")' in bridge
+    assert 'claim = getattr(getattr(room, "game", None), "claim_judge_hint", None)' in main

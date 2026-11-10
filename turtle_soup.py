@@ -214,6 +214,8 @@ class TurtleSoupGame:
     puzzle_source_note: str = ""
     # 开局卡（汤面 + 难度 + 次数）是否已经发到群里：同一局只发一次
     opening_announced: bool = False
+    # 玩家出题：群里的裁决引导只在第一条待裁决时发一次，之后回执保持精简
+    judge_hint_announced: bool = False
 
     @property
     def puzzle_source_label(self) -> str:
@@ -388,6 +390,17 @@ class TurtleSoupGame:
         pending = self.pending_judge
         self.pending_judge = None
         return dict(pending) if pending else None
+
+    def claim_judge_hint(self) -> bool:
+        """本局第一次调用返回 True，之后都是 False。
+
+        由真正要往群里发消息的那一方来领：没有群、桥关了就根本不会走到这里，
+        引导名额留给下一条待裁决；新开一局会换新对象，自然重置。
+        """
+        if self.judge_hint_announced:
+            return False
+        self.judge_hint_announced = True
+        return True
 
     def request_reveal(self, uid: str) -> dict[str, object]:
         """发起「揭晓汤底」：多人房需要过半同意，单人房直接生效。"""

@@ -348,7 +348,11 @@ def _pending_label(result: dict[str, Any]) -> str:
 
 
 def _pending_verdict_hint(result: dict[str, Any]) -> str:
-    """只在玩家出题模式出现的裁决引导：引用谁的消息都行，判定词按类型分。"""
+    """玩家出题模式的一次性裁决引导：引用谁的消息都行，判定词按类型分。
+
+    只在本局第一条待裁决消息里出现；后面每条再挂一遍又长又刷屏，
+    忘记怎么用可以看 /汤帮助。
+    """
     words = (
         "对 / 不对"
         if result.get("pending_kind") == "answer"
@@ -370,7 +374,9 @@ def _question_reply(game: TurtleSoupGame | None, body: str, result: dict[str, An
         label = _pending_label(result)
         head = f"📋 待裁决：{label}" if label else "📋 问题已提交，等出题人回答。"
         tail = _progress_tail(result)
-        return f"{head}\n{_pending_verdict_hint(result)}" + (f"\n{tail}" if tail else "")
+        # 裁决引导整局只发一次，之后的待裁决回执只留对象 + 进度，不刷屏
+        hint = f"\n{_pending_verdict_hint(result)}" if result.get("show_judge_hint") else ""
+        return f"{head}{hint}" + (f"\n{tail}" if tail else "")
     verdict = str(result.get("verdict") or "")
     return f"🙋 {body}\n💡 {VERDICT_LABELS.get(verdict, result.get('reply') or '已记录')}{_progress_tail(result)}"
 
@@ -388,7 +394,9 @@ def _answer_reply(result: dict[str, Any]) -> str:
         label = _pending_label(result)
         head = f"📋 待裁决：{label}" if label else "📋 推理已提交，等出题人判断。"
         tail = _progress_tail(result)
-        return f"{head}\n{_pending_verdict_hint(result)}" + (f"\n{tail}" if tail else "")
+        # 裁决引导整局只发一次，之后的待裁决回执只留对象 + 进度，不刷屏
+        hint = f"\n{_pending_verdict_hint(result)}" if result.get("show_judge_hint") else ""
+        return f"{head}{hint}" + (f"\n{tail}" if tail else "")
     coverage = result.get("coverage")
     reply = str(result.get("reply") or "还没有完全对上")
     if isinstance(coverage, (int, float)):

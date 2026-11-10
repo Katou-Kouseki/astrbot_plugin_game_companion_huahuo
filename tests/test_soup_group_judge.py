@@ -414,29 +414,37 @@ def test_quote_shortcut_regex_is_strict() -> None:
         assert not pattern.match(text), text
 
 
-def test_pending_receipts_carry_question_and_guidance() -> None:
-    """玩家出题：待裁决回执带原文、提问者和两种引用方式的引导。"""
-    question = _question_reply(
+def test_pending_receipts_show_guidance_only_once() -> None:
+    """玩家出题：第一条待裁决回执带引导，之后只留裁决对象 + 进度。"""
+    base = {
+        "action": "awaiting_host",
+        "pending_text": "和灯塔有关吗？",
+        "pending_asker": "玩家2",
+        "pending_number": 2,
+        "pending_for_bot": False,
+        "pending_kind": "question",
+        "question_count": 3,
+        "question_limit": 35,
+        "hint_left": 2,
+        "answer_left": 4,
+    }
+    first = _question_reply(None, "和灯塔有关吗？", {**base, "show_judge_hint": True})
+    assert "📋 待裁决" in first
+    assert "玩家2（2 号）问「和灯塔有关吗？」" in first
+    assert "引用本条" in first and "引用提问人那条消息" in first
+    assert "是 / 否 / 无关 / 部分正确" in first
+    assert "已问 3/35" in first
+
+    later = _question_reply(
         None,
-        "和灯塔有关吗？",
-        {
-            "action": "awaiting_host",
-            "pending_text": "和灯塔有关吗？",
-            "pending_asker": "玩家2",
-            "pending_number": 2,
-            "pending_for_bot": False,
-            "pending_kind": "question",
-            "question_count": 3,
-            "question_limit": 35,
-            "hint_left": 2,
-            "answer_left": 4,
-        },
+        "和船有关吗？",
+        {**base, "pending_text": "和船有关吗？", "show_judge_hint": False},
     )
-    assert "📋 待裁决" in question
-    assert "玩家2（2 号）问「和灯塔有关吗？」" in question
-    assert "引用本条" in question and "引用提问人那条消息" in question
-    assert "是 / 否 / 无关 / 部分正确" in question
-    assert "已问 3/35" in question
+    assert "玩家2（2 号）问「和船有关吗？」" in later
+    assert "已问 3/35" in later
+    # 不带标记（默认）也要保持精简，别悄悄把长引导加回来
+    assert "引用本条" not in later and "判定词" not in later
+    assert "引用本条" not in _question_reply(None, "和船有关吗？", base)
 
     answer = _answer_reply(
         {
@@ -445,11 +453,21 @@ def test_pending_receipts_carry_question_and_guidance() -> None:
             "pending_number": 3,
             "pending_for_bot": False,
             "pending_kind": "answer",
+            "show_judge_hint": True,
         }
     )
     assert "交推理「我猜他是守塔人忘了点灯」" in answer
     assert "对 / 不对" in answer
     assert "是 / 否" not in answer
+    quiet = _answer_reply(
+        {
+            "action": "awaiting_host",
+            "pending_text": "我猜他是守塔人忘了点灯",
+            "pending_kind": "answer",
+        }
+    )
+    assert "交推理「我猜他是守塔人忘了点灯」" in quiet
+    assert "判定词" not in quiet
 
     # 普通（Bot 出题）模式不该冒出裁决引导
     normal = _question_reply(
@@ -457,6 +475,49 @@ def test_pending_receipts_carry_question_and_guidance() -> None:
     )
     assert "引用本条" not in normal
     assert "待裁决" not in normal
+
+
+def test_judge_hint_is_claimed_once_per_game() -> None:
+    """一次性标记挂在题目对象上，新开一局自然重置。"""
+    game = TurtleSoupGame(difficulty="normal", max_hints=3, content_level="normal")
+    assert game.claim_judge_hint() is True
+    assert game.claim_judge_hint() is False
+    assert game.claim_judge_hint() is False
+    fresh = TurtleSoupGame(difficulty="normal", max_hints=3, content_level="normal")
+    assert fresh.claim_judge_hint() is True
+
+
+@pytest.mark.asyncio
+async def test_submission_only_claims_hint_for_group_source() -> None:
+    """群里提交才领引导；网页提交留给 soup_host_question 的群提示去领。"""
+    manager, plugin, room = await make_host_room()
+    game = manager._turtle_soup_game(room)  # noqa: SLF001
+    game.clear_pending_judge()
+
+    first = await plugin.submit_turtle_soup_question(
+        room, "是不是在下雨？", source="qq", actor_qq=ASKER_QQ
+    )
+    assert first.get("show_judge_hint") is True
+    assert "引用本条" in _question_reply(game, "是不是在下雨？", first)
+
+    game.clear_pending_judge()
+    second = await plugin.submit_turtle_soup_question(
+        room, "伞是新的吗？", source="qq", actor_qq=ASKER_QQ
+    )
+    assert second.get("show_judge_hint") is False
+    assert "引用本条" not in _question_reply(game, "伞是新的吗？", second)
+
+    _manager2, plugin2, room2 = await make_host_room()
+    game2 = _manager2._turtle_soup_game(room2)  # noqa: SLF001
+    game2.clear_pending_judge()
+    web = await plugin2.submit_turtle_soup_question(
+        room2,
+        "和灯塔有关吗？",
+        source="web",
+        visitor_token=room2.multiplayer.seats[1].visitor_token,
+    )
+    assert web.get("show_judge_hint") is False
+    assert game2.claim_judge_hint() is True, "网页来源不该把群里的引导名额用掉"
 
 
 def test_pending_label_keeps_full_text_and_marks_bot_asker() -> None:
@@ -485,13 +546,18 @@ def test_pending_label_keeps_full_text_and_marks_bot_asker() -> None:
 
 @pytest.mark.asyncio
 async def test_bot_pending_is_announced_to_group() -> None:
-    """网页 / Bot 挂起待裁决时群里补一条可引用的提示。"""
+    """网页 / Bot 挂起待裁决时群里补提示；引导只在第一条出现。"""
     from unittest.mock import AsyncMock
 
     plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
     plugin.turtle_soup_qq_bridge = True
     plugin.announce_target = lambda _room: "aiocqhttp:GroupMessage:1"  # noqa: SLF001
     plugin._send_to_origin = AsyncMock(return_value=True)  # noqa: SLF001
+    room = SimpleNamespace(
+        game=TurtleSoupGame(
+            difficulty="normal", max_hints=3, content_level="normal"
+        )
+    )
     payload = {
         "kind": "question",
         "text": "灯塔当天有人值班吗？",
@@ -502,11 +568,20 @@ async def test_bot_pending_is_announced_to_group() -> None:
     }
 
     assert await plugin._announce_soup_pending_to_group(  # noqa: SLF001
-        SimpleNamespace(), payload
+        room, payload
     ) is True
-    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
-    assert "Bot问「灯塔当天有人值班吗？」" in text
-    assert "引用本条" in text and "引用提问人那条消息" in text
+    _room, first = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "Bot问「灯塔当天有人值班吗？」" in first
+    assert "引用本条" in first and "引用提问人那条消息" in first
+
+    # 同一局第二条：还写清裁的是哪条，但不再挂那一大段引导
+    second_payload = {**payload, "text": "那天有船经过吗？"}
+    assert await plugin._announce_soup_pending_to_group(  # noqa: SLF001
+        room, second_payload
+    ) is True
+    _room, second = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "Bot问「那天有船经过吗？」" in second
+    assert "引用本条" not in second and "判定词" not in second
 
 
 @pytest.mark.asyncio
