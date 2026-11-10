@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.00"
+    assert metadata["version"] == "0.6.01"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1848,3 +1848,63 @@ def test_game_switch_resets_frontend_residual_state() -> None:
     assert 'boardResultShownKey = ""' in app
     assert "boardLastResult = null" in app
     assert 'soupResultShownKey = ""' in app
+
+
+def test_game_stage_visibility_runs_on_every_render() -> None:
+    """换游戏（投票/管理台/群指令）后棋盘要跟着新玩法切 stage，不能残留上一款棋盘。"""
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "function applyGameStageVisibility" in app
+    # renderInner 每次渲染都重切 stage 可见性（不只在 game_type 变化时）
+    body = app.split("function renderInner()", 1)[1].split("function renderSeat", 1)[0]
+    assert "applyGameStageVisibility();" in body
+    # 非棋类玩法不画棋盘
+    assert '["turtle_soup", "pig_dice", "draw_guess", "blackjack", "undercover"].includes(room?.game_type)' in app
+
+
+def test_blackjack_auto_stand_uses_connection_not_heartbeat_freshness() -> None:
+    """二十一点自动停牌只认「浏览器是否离开」，不再用 15 秒心跳陈旧度抢回合。"""
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert "offline = not previous.connected" in rm
+    # 之前的 15 秒心跳陈旧度判定已移除（仅海龟汤换人仍用 15s，属另一场景）
+    assert "current - visitor.last_seen_at < 15" not in rm.split("def _advance_blackjack_turn", 1)[1].split("async def _blackjack_dealer_turn", 1)[0]
+
+
+def test_chat_bubbles_distinguish_mine_other_and_bot() -> None:
+    """聊天气泡：自己右侧、他人与花火左侧；三种气泡颜色。"""
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    # 消息带上发送者 uid，前端据此判「我 / 别人」
+    assert '"sender_uid": _visitor_uid(visitor.token)' in models
+    assert "sender_uid === room.visitor_uid" in app
+    assert " mine" in app and " other" in app
+    # 三种气泡底色
+    assert "--chat-user-bg" in css and "--chat-other-bg" in css and "--chat-bot-bg" in css
+    assert ".message.user.mine" in css and ".message.user.other" in css
+
+
+def test_board_announce_names_loser_in_fallback() -> None:
+    """棋类通报单人局兜底也要写清胜方与败方（玩家 vs 花火）。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "花火落败" in main
+    assert "玩家落败" in main
+
+
+def test_undercover_afk_autopilot_and_name_layout() -> None:
+    """谁是卧底：在线挂机也交 LLM 托管；战报玩家名「1号 李思」带空格且逐行。"""
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    # 挂机托管：按 last_action_at 判断「在线但长时间无操作」
+    assert "UNDERCOVER_AFK_SECONDS" in rm
+    assert "now - last >= self.UNDERCOVER_AFK_SECONDS" in rm
+    # 发言/投票刷新挂机判定
+    assert "self._touch_seat_action(room, visitor.token)" in rm
+    # 战报名「号」后带空格，不再「1号李思」
+    assert 'f"{num}号" + (f" {name}" if name else "")' in main
+    # 玩家逐行，不再顿号挤在一行
+    assert '"\\n".join(winners)' in main

@@ -1840,7 +1840,12 @@
     );
   }
 
-  function syncGameUi() {
+  // 每种玩法对应一块独立的 stage（棋盘/牌桌/汤面板/骰子/画板/卧底面板）。
+  // 换游戏后必须按新 game_type 重新切可见性——以前只在 join 和 loadState 检测到
+  // 「game_type 变化」时才调 syncGameUi，而投票换游戏、管理台切换这些动作走的是
+  // setRoom 直接 render 的路径，根本没触发 syncGameUi，于是从象棋切到二十一点时
+  // 棋盘还留在页面上。抽成独立函数后在每次 render 都调一次，杜绝残留。
+  function applyGameStageVisibility() {
     if (!room) return;
     const xiangqi = room.game_type === "xiangqi";
     const weiqi = room.game_type === "weiqi";
@@ -1894,6 +1899,15 @@
         ? "你画我猜作画区"
         : (tictactoe ? "三乘三井字棋棋盘" : othello ? "八乘八黑白棋棋盘" : "十五乘十五五子棋棋盘"),
     );
+  }
+
+  function syncGameUi() {
+    if (!room) return;
+    applyGameStageVisibility();
+    const xiangqi = room.game_type === "xiangqi";
+    const tictactoe = room.game_type === "tictactoe";
+    const othello = room.game_type === "othello";
+    const weiqi = room.game_type === "weiqi";
     const buttons = Array.from(document.querySelectorAll("[data-side]"));
     let values = [["human_black", "我先手"], ["bot_black", "花火先手"], ["random", "随机"]];
     if (xiangqi) {
@@ -1963,6 +1977,9 @@
 
   function renderInner() {
     if (!room) return;
+    // 每次渲染都按当前 game_type 重切 stage 可见性：换游戏（投票/管理台/群指令）
+    // 走 setRoom 直接 render 的路径，不经过 syncGameUi，得在这里兜住，避免棋盘残留。
+    applyGameStageVisibility();
     // 提子动画按「手数变化」触发，必须在画棋盘之前同步状态
     syncCaptureFx();
     // 谁是卧底房间：隐藏通用「玩家/平局/花火」比分（多人语音局不适用），右侧由战绩榜与阶段条接管
@@ -2724,8 +2741,14 @@
 
     messages.slice(-60).forEach((message) => {
       const role = message.role || "system";
+      // 「我发的」还是「别人发的」：只有 user 消息分左右与颜色，system 居中、bot 恒靠左
+      const mine = role === "user"
+        && Boolean(message.sender_uid)
+        && message.sender_uid === room.visitor_uid;
       const item = document.createElement("article");
-      item.className = `message ${role} ${message.message_type || "chat"}`;
+      item.className = `message ${role} ${message.message_type || "chat"}${
+        role === "user" ? (mine ? " mine" : " other") : ""
+      }`;
       if (role !== "system") {
         const head = document.createElement("div");
         head.className = "message-head";
@@ -6346,7 +6369,7 @@
   }
 
   function drawBoard() {
-    if (["turtle_soup", "pig_dice", "draw_guess"].includes(room?.game_type)) return;
+    if (["turtle_soup", "pig_dice", "draw_guess", "blackjack", "undercover"].includes(room?.game_type)) return;
     if (room?.game_type === "weiqi") drawWeiqi();
     else if (room?.game_type === "xiangqi") drawXiangqi();
     else if (room?.game_type === "tictactoe") drawTicTacToe();

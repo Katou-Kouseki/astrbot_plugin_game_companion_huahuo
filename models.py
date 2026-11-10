@@ -573,6 +573,9 @@ class GameRoom:
                 "sender_name": sender_name,
                 "sender_number": sender_number,
                 "sender_bound": sender_bound,
+                # 发送者的公开稳定标识：前端据此区分「我发的」和「别人发的」，
+                # 做聊天视角左/右与气泡颜色。用不可逆短 uid，绝不泄露原始 token。
+                "sender_uid": _visitor_uid(visitor.token) if visitor is not None else "",
             }
         )
         self.next_message_id += 1

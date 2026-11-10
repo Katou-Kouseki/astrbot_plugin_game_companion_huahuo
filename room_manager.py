@@ -197,6 +197,9 @@ class RoomManager:
     QQ_SEAT_OFFLINE_SECONDS = 1800
     # 棋类对弈：心跳超过该秒数没更新就认为掉线，先暂停等重连而不是直接判负
     DUEL_OFFLINE_SECONDS = 15
+    # 谁是卧底：在线但长时间无操作（页面开着、人走开了）视为「挂机」，交 LLM 托管。
+    # 只按心跳判断不出这种「人在线但没动作」的情况，得看 seat.last_action_at。
+    UNDERCOVER_AFK_SECONDS = 90
     IDENTITY_TOKEN_TTL_SECONDS = 300
     CHAT_COOLDOWN_SECONDS = 0.8
 
@@ -2119,7 +2122,7 @@ class RoomManager:
             hand = game.hands.get(_visitor_uid(visitor.token))
             if hand is None or hand.status != "playing":
                 continue
-            if visitor.connected and current - visitor.last_seen_at < 15:
+            if visitor.connected:
                 state.current_turn_index = index
                 self._reset_turn_deadline(room, now=current)
                 return game.all_players_done()
@@ -5538,7 +5541,7 @@ class RoomManager:
     def _undercover_seat_detached(
         self, room: GameRoom, seat: PlayerSeat | None, now: float
     ) -> bool:
-        """该座位是否「没人操作」：托管中、访客已离开、或心跳超时。"""
+        """该座位是否「没人操作」：托管中、访客已离开、心跳超时、或在线挂机。"""
         if seat is None:
             return True
         player = self._undercover_player_for_seat(room, seat)
@@ -5547,7 +5550,12 @@ class RoomManager:
         visitor = room.visitors.get(seat.visitor_token)
         if visitor is None or not visitor.connected:
             return True
-        return now - visitor.last_seen_at >= self.DUEL_OFFLINE_SECONDS
+        if now - visitor.last_seen_at >= self.DUEL_OFFLINE_SECONDS:
+            return True
+        # 在线但长时间没动作（页面开着、人走开了）：心跳新鲜不代表人在，
+        # 按「最后一次发言/投票」判断挂机，避免整局干等整轮超时。
+        last = float(getattr(seat, "last_action_at", 0.0) or seat.seated_at)
+        return now - last >= self.UNDERCOVER_AFK_SECONDS
 
     def _restore_undercover_autopilot(self, room: GameRoom, now: float) -> None:
         """玩家重新连上（心跳恢复）后自动解除托管。"""
@@ -5901,9 +5909,7 @@ class RoomManager:
         if previous is not None:
             hand = game.hands.get(_visitor_uid(previous.token))
             if hand is not None and hand.status == "playing":
-                offline = not (
-                    previous.connected and now - previous.last_seen_at < 15
-                )
+                offline = not previous.connected
                 if offline:
                     game.stand(_visitor_uid(previous.token))
                     room.add_message(
@@ -7002,6 +7008,7 @@ class RoomManager:
             expected = room.game.expected_speaker_number
             self._reset_turn_deadline(room)
             room.touch()
+            self._touch_seat_action(room, visitor.token)
             snapshot = room.game.snapshot(player_number)
             # 状态转义：平票 PK 子轮不需要自动推进，等玩家继续
             if expected is None and phase in {"speech", "pk"}:
@@ -7107,6 +7114,7 @@ class RoomManager:
             result = room.game.submit_vote(voter_number, target)
             self._reset_turn_deadline(room)
             room.touch()
+            self._touch_seat_action(room, visitor.token)
             round_number = room.game.current_round_number
             need_pk = bool(result.get("need_pk"))
             pk_targets = [int(x) for x in result.get("pk_targets") or []]

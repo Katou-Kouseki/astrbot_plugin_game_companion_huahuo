@@ -837,16 +837,21 @@ def _pillow_wrap(
     d: Any, text: str, max_w: int, f: Any, max_lines: int, efont: Any = None
 ) -> list[str]:
     out: list[str] = []
-    cur = ""
-    for ch in str(text or ""):
-        nxt = cur + ch
-        if cur and _pillow_font_length(d, nxt, f, efont) > max_w:
+    # 先按显式换行切段（战报里「每个玩家一行」就靠它），再对每段按宽度折行
+    for segment in str(text or "").split("\n"):
+        cur = ""
+        for ch in segment:
+            nxt = cur + ch
+            if cur and _pillow_font_length(d, nxt, f, efont) > max_w:
+                out.append(cur)
+                cur = ch
+            else:
+                cur = nxt
+        if cur:
             out.append(cur)
-            cur = ch
-        else:
-            cur = nxt
-    if cur:
-        out.append(cur)
+        elif segment == "":
+            # 连续换行导致的空段也保留成空行，别把相邻两行黏在一起
+            out.append("")
     if len(out) > max_lines:
         out = out[:max_lines]
         out[-1] = (out[-1] or "")[:-1] + "…"
@@ -975,11 +980,11 @@ _UNDERCOVER_POSTER_TMPL = """<!DOCTYPE html>
 <div class="poster">
   <div class="head"><span class="t">📢 谁是卧底 · 战况通知</span><span class="r">{{ title }}</span></div>
   <div class="big">{{ camp_cn }} 获胜</div>
-  {% if winners %}<div class="winners">🎉 {{ winners|join(' · ') }}</div>{% endif %}
+  {% if winners %}<div class="winners">🎉 {% for w in winners %}{{ w }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>{% endif %}
   {% if cw or uw %}
   <div class="pills">{% if cw %}<span class="pill c">🛡️ 平民「{{ cw }}」</span>{% endif %}{% if uw %}<span class="pill u">🕵️ 卧底「{{ uw }}」</span>{% endif %}</div>
   {% endif %}
-  {% if losers %}<div class="losers">💔 败方：{{ losers|join('、') }}</div>{% endif %}
+  {% if losers %}<div class="losers">💔 败方：{% for l in losers %}{{ l }}{% if not loop.last %}<br>{% endif %}{% endfor %}</div>{% endif %}
   <div class="wm">由 花火 监督生成</div>
   <div class="bar"></div>
 </div>
@@ -8779,9 +8784,9 @@ class GameCompanionPlugin(Star):
         elif payload.get("draw"):
             result = "🤝 平局"
         elif payload.get("human_won") is True:
-            result = "🏆 玩家获胜"
+            result = "🏆 玩家获胜 · 花火落败"
         elif payload.get("human_won") is False:
-            result = "🏆 花火获胜"
+            result = "🏆 花火获胜 · 玩家落败"
         else:
             result = "🏁 本局结束"
         return f"♟️ {label}战报\n{result}\n⏱️ 共 {moves} 手"
@@ -8893,6 +8898,8 @@ class GameCompanionPlugin(Star):
                 "🏆",
                 "#ffd166",
             )
+            # 单人局（玩家 vs 花火）：负方恒为花火，这里没有座位可查，直接写死
+            loser_line = f"败方：{_huahuo_label('花火')}"
         elif payload.get("human_won") is False:
             title, sub, badge, accent = (
                 "花火 获胜",
@@ -8900,6 +8907,7 @@ class GameCompanionPlugin(Star):
                 "🏆",
                 "#ffd166",
             )
+            loser_line = "败方：玩家"
         else:
             title, sub, badge, accent = (
                 "本局结束",
@@ -9323,13 +9331,16 @@ class GameCompanionPlugin(Star):
                 "civilian": "平民", "undercover": "卧底", "whiteboard": "白板",
             }.get(camp, camp)
             winners = [
-                f"{getattr(p, 'number', '?')}号{getattr(p, 'display_name', '') or ''}"
-                f"（{camp_text}）"
+                f"{getattr(p, 'number', '?')}号"
+                + (f" {getattr(p, 'display_name', '')}" if getattr(p, 'display_name', '') else "")
+                + f"（{camp_text}）"
                 for p in players
                 if getattr(p, "camp", None) == camp
             ]
             lines.append(
-                f"🏆 胜利方：{'、'.join(winners)}" if winners else f"🏆 胜利方：{camp_text}"
+                f"🏆 胜利方：\n" + "\n".join(winners)
+                if winners
+                else f"🏆 胜利方：{camp_text}"
             )
         losers = [
             p for p in players
@@ -9339,12 +9350,13 @@ class GameCompanionPlugin(Star):
             camp_text_of = {
                 "civilian": "平民", "undercover": "卧底", "whiteboard": "白板",
             }
-            names = "、".join(
-                f"{getattr(p, 'number', '?')}号{getattr(p, 'display_name', '') or ''}"
-                f"（{camp_text_of.get(getattr(p, 'camp', ''), getattr(p, 'camp', '') or '?')}）"
+            names = "\n".join(
+                f"{getattr(p, 'number', '?')}号"
+                + (f" {getattr(p, 'display_name', '')}" if getattr(p, 'display_name', '') else "")
+                + f"（{camp_text_of.get(getattr(p, 'camp', ''), getattr(p, 'camp', '') or '?')}）"
                 for p in losers
             )
-            lines.append(f"💔 失败方：{names}")
+            lines.append(f"💔 失败方：\n{names}")
         return "\n".join(lines)
 
     @staticmethod
@@ -9815,7 +9827,7 @@ class GameCompanionPlugin(Star):
                 return f"🏆 {winner}胜 {loser}（执{loser_side}）"
             if loser:
                 return f"🏆 {winner}胜 {loser}"
-            return f"🏆 花火获胜{side_text}"
+            return f"🏆 花火获胜{side_text} · 玩家落败"
         name = str(entry.get("winner_name") or "")
         loser = str(entry.get("loser_name") or "")
         if name and loser:
@@ -9823,7 +9835,10 @@ class GameCompanionPlugin(Star):
             return f"🏆 {name}{side_text}胜 {loser_text}"
         if name:
             return f"🏆 {name}获胜{side_text}"
-        return f"🏆 玩家获胜{side_text}"
+        # 单人局兜底（无座位可查胜者）：按 human_won 判负方，负方必是玩家或花火之一
+        if entry.get("human_won") is False:
+            return f"🏆 花火获胜{side_text} · 玩家落败"
+        return f"🏆 玩家获胜{side_text} · 花火落败"
 
     def _board_series_text(
         self, room: GameRoom, entries: list[dict[str, object]]
@@ -10002,10 +10017,11 @@ class GameCompanionPlugin(Star):
         ]
         camp_cn_of = {"civilian": "平民", "undercover": "卧底", "whiteboard": "白板"}
         winners = [
-            f"{num}号{name}".strip() for num, name, p_camp in names if p_camp == camp
+            f"{num}号" + (f" {name}" if name else "")
+            for num, name, p_camp in names if p_camp == camp
         ]
         losers = [
-            f"{num}号{name}".strip()
+            f"{num}号" + (f" {name}" if name else "")
             + (f"（{camp_cn_of.get(p_camp, p_camp or '?')}）" if p_camp else "")
             for num, name, p_camp in names
             if p_camp and p_camp != camp
@@ -10124,13 +10140,14 @@ class GameCompanionPlugin(Star):
 
         # 获胜玩家名单（金色，最多 3 行）
         winners = [
-            f"{num}号{name}".strip() for num, name, p_camp in names if p_camp == camp
+            f"{num}号" + (f" {name}" if name else "")
+            for num, name, p_camp in names if p_camp == camp
         ]
         w_line_count = 0
         if winners:
             w_font = _pillow_font(True, int(26 * S))
             ef_w = _pillow_emoji_font(int(26 * S))
-            lines = _pillow_wrap(d, "🎉 " + " · ".join(winners), W - 2 * M, w_font, 3, ef_w)
+            lines = _pillow_wrap(d, "🎉 " + "\n".join(winners), W - 2 * M, w_font, 3, ef_w)
             w_line_count = len(lines)
             for i, line in enumerate(lines):
                 _pillow_draw_text(
@@ -10172,14 +10189,15 @@ class GameCompanionPlugin(Star):
         # 底部失败方
         camp_cn_of = {"civilian": "平民", "undercover": "卧底", "whiteboard": "白板"}
         losers = [
-            f"{num}号{name}".strip() + (f"（{camp_cn_of.get(p_camp, p_camp or '?')}）" if p_camp else "")
+            f"{num}号" + (f" {name}" if name else "")
+            + (f"（{camp_cn_of.get(p_camp, p_camp or '?')}）" if p_camp else "")
             for num, name, p_camp in names
             if p_camp and p_camp != camp
         ]
         if losers:
             l_font = _pillow_font(False, int(17 * S))
             ef_l = _pillow_emoji_font(int(17 * S))
-            lines = _pillow_wrap(d, "💔 败方：" + "、".join(losers), W - 2 * M - int(150 * S), l_font, 2, ef_l)
+            lines = _pillow_wrap(d, "💔 败方：" + "\n".join(losers), W - 2 * M - int(150 * S), l_font, 2, ef_l)
             for i, line in enumerate(lines):
                 _pillow_draw_text(
                     d, M, int(636 * S) + i * int(26 * S),
@@ -12622,7 +12640,7 @@ class GameCompanionPlugin(Star):
             await self._undercover_force_all_votes(room)
 
     def _uc_seat_detached(self, room: GameRoom, seat) -> bool:
-        """该座位是否「没人操作」：托管中、访客已离开、或心跳超时。"""
+        """该座位是否「没人操作」：托管中、访客已离开、心跳超时、或在线挂机。"""
         return self.manager._undercover_seat_detached(room, seat, time.time())
 
     async def _undercover_autopilot_tick(self, room: GameRoom) -> None:
