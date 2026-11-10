@@ -3589,8 +3589,13 @@ class RoomManager:
         visitor_token: str,
         *,
         verdict: str,
+        via_group: bool = False,
     ) -> dict[str, object]:
-        """出题人裁决：问题给四选一，推理给「猜对了 / 不对」。"""
+        """出题人裁决：问题给四选一，推理给「猜对了 / 不对」。
+
+        `via_group` 只影响局末群通知去重：出题人本人就在群里裁决时，群里已经
+        看到原文和裁决回执，不必再由问答同步补一条；网页裁决仍照常同步。
+        """
         finished = False
         pending: dict[str, object] = {}
         async with room.lock:
@@ -3685,6 +3690,8 @@ class RoomManager:
                 "finished": finished,
                 "for_bot": for_bot,
                 "entry_seq": judged_seq,
+                "origin": origin,
+                "judged_in_group": via_group,
             },
         )
         return {

@@ -37,6 +37,9 @@ HELP_TEXT = (
     "• /汤状态 —— 看当前进度（已问次数、提示与推理剩余）\n"
     "• /汤查看 —— 看最近几条问答\n"
     "• /汤揭晓 —— 发起揭晓汤底；/汤附议、/汤反对 参与表决\n"
+    "• /汤裁决 是|否|无关|部分正确 —— 我来出题时裁决待回答的问题\n"
+    "   （推理用 /汤裁决 对|不对；也可引用那条「等出题人回答」直接回判定词）\n"
+    "   只有出题人本人能裁决，且要先在网页绑定好玩家席\n"
     "• /汤复盘 —— 结束后看完整回顾（汤面 + 汤底 + 关键问答）\n"
     "• /汤帮助 —— 再看这份菜单\n"
     "对局进行中也可以直接 @我 问一句、交一段推理，或者说「提示」。\n"
@@ -59,6 +62,7 @@ _ACTIONS: dict[str, str] = {
     "附议": "agree",
     "同意": "agree",
     "反对": "disagree",
+    "裁决": "judge",
     "提示": "hint",
     "复盘": "recap",
     "回顾": "recap",
@@ -86,6 +90,7 @@ SOUP_EXPLICIT_COMMANDS: tuple[str, ...] = (
     "汤揭晓",
     "汤附议",
     "汤反对",
+    "汤裁决",
 )
 
 _PREFIX_RE = re.compile(r"^\s*[/／!！]\s*")
@@ -97,13 +102,15 @@ _NO_ROOM_ACTIONS = frozenset(
         "reveal",
         "agree",
         "disagree",
+        "judge",
         "status",
         "history",
         "recap",
     }
 )
-# 看进度、看历史、看复盘、看帮助不需要座位，观众也能用
-_NO_SEAT_ACTIONS = frozenset({"status", "history", "help", "recap"})
+# 看进度、看历史、看复盘、看帮助不需要座位，观众也能用。
+# 裁决也在这里：自动入座会把出题人塞到别的座位，反而被权限校验挡掉。
+_NO_SEAT_ACTIONS = frozenset({"status", "history", "help", "recap", "judge"})
 
 
 def parse_soup_command(message: str) -> tuple[str, str] | None:
@@ -345,6 +352,157 @@ def _answer_reply(result: dict[str, Any]) -> str:
     return f"{reply}{_progress_tail(result)}"
 
 
+# ---------------- 玩家出题：群内裁决 ----------------
+
+# 只有「本局确实挂着一条待裁决内容」+「说话的人就是出题人」时才认这些词。
+# 按待裁决类型分表：问题用「是 / 否」，推理用「对 / 不对」，免得同一个「对」
+# 在两种场景里被解释成不同结果还浑然不觉。
+_SOUP_JUDGE_QUESTION_WORDS: dict[str, str] = {
+    "是": "yes",
+    "是的": "yes",
+    "否": "no",
+    "不是": "no",
+    "无关": "irrelevant",
+    "部分正确": "partial",
+    "是也不是": "compound",
+}
+_SOUP_JUDGE_ANSWER_WORDS: dict[str, str] = {
+    "对": "correct",
+    "对了": "correct",
+    "猜对了": "correct",
+    "正确": "correct",
+    "不对": "wrong",
+    "错了": "wrong",
+    "错": "wrong",
+}
+_SOUP_JUDGE_WORDS = sorted(
+    set(_SOUP_JUDGE_QUESTION_WORDS) | set(_SOUP_JUDGE_ANSWER_WORDS),
+    key=len,
+    reverse=True,
+)
+# 给 main.py 的粗筛正则复用，保证词表只有这一份来源
+SOUP_JUDGE_WORD_PATTERN = "|".join(re.escape(word) for word in _SOUP_JUDGE_WORDS)
+
+_SOUP_JUDGE_LABELS: dict[str, str] = {
+    "yes": "是",
+    "no": "否",
+    "irrelevant": "无关",
+    "partial": "部分正确",
+    "compound": "是也不是",
+    "correct": "推理成立，汤底揭晓",
+    "wrong": "还不对",
+}
+
+
+def parse_soup_judgement(text: str, kind: str) -> str | None:
+    """把一句短判定词翻成裁决值；不是本类型该用的词就返回 None。"""
+    bare = re.sub(
+        r"[\s，。！？!?、,.~～…·:：;；\"'“”‘’()（）\[\]【】]",
+        "",
+        str(text or ""),
+    )
+    table = (
+        _SOUP_JUDGE_ANSWER_WORDS if kind == "answer" else _SOUP_JUDGE_QUESTION_WORDS
+    )
+    return table.get(bare)
+
+
+def soup_quote_present(event: Any) -> bool:
+    """这条消息是否「引用 / 回复」了另一条消息。
+
+    各平台给的引用形态不一致：aiocqhttp 可能是 Reply 组件，也可能在 message_str
+    里留 [CQ:reply,...]，有的适配层把 id 挂在 extra。这里只做鸭子类型探测，
+    不 import 任何具体组件类，避免在没装该平台时直接报错。
+    """
+    raw = str(getattr(event, "message_str", "") or "")
+    if re.search(r"\[CQ:(?:reply|quote)\b", raw, re.IGNORECASE):
+        return True
+    # 有些适配层把引用拍平成「[回复 xxx 的消息]」这样的文本前缀
+    if re.search(r"\[(?:回复|引用|reply|quote)[^\]]*\]", raw, re.IGNORECASE):
+        return True
+    for holder in (event, getattr(event, "message_obj", None)):
+        if holder is None:
+            continue
+        chain = getattr(holder, "message", None) or getattr(
+            holder, "message_chain", None
+        )
+        if isinstance(chain, (list, tuple)):
+            for comp in chain:
+                name = type(comp).__name__.lower()
+                if (
+                    name in {"reply", "quote", "reference"}
+                    or "reply" in name
+                    or "quote" in name
+                ):
+                    return True
+                if str(getattr(comp, "type", "") or "").lower() in {"reply", "quote"}:
+                    return True
+        extra = getattr(holder, "extra", None)
+        if isinstance(extra, dict) and any(
+            key in extra
+            for key in ("reply", "quote", "reply_id", "quoted_message_id")
+        ):
+            return True
+    return False
+
+
+def soup_judge_text(event: Any) -> str:
+    """把 CQ 码 / @ 前缀 / 首尾标点去掉，只留判定词。"""
+    text = str(getattr(event, "message_str", "") or "")
+    # 引用 / @ 的方括号码都去掉，剩下的必须整句就是一个判定词
+    text = re.sub(r"\[[^\]]*\]", "", text)
+    return _strip_at_prefix(text).strip()
+
+
+async def judge_soup_from_group(
+    plugin: Any,
+    room: GameRoom,
+    qq: str,
+    body: str,
+    *,
+    explicit: bool = False,
+) -> str | None:
+    """群里裁决「等出题人回答」的那一条；不该接管时返回 None（静默放行）。
+
+    权限以 `judge_soup_pending` 为唯一准绳，这里只把 QQ 换成座位 token，并在
+    调用前再用出题人座位号挡一次：明确指令要能说清「你不是出题人」，引用快捷
+    路径则必须完全不打扰普通聊天。
+    """
+    game = plugin.manager._turtle_soup_game(room)
+    pending = getattr(game, "pending_judge", None) if game is not None else None
+    if game is None or not getattr(game, "host_number", 0) or not pending:
+        return "现在没有等待出题人裁决的内容。" if explicit else None
+
+    seat = room.multiplayer.seat_for_qq(qq) if room.multiplayer.enabled else None
+    if seat is None:
+        return (
+            "只有出题人能裁决：请先在网页房间绑定玩家席"
+            "（取一次性令牌，群里发「绑定玩家 令牌」）。"
+            if explicit
+            else None
+        )
+    if int(seat.number) != int(game.host_number):
+        return "只有出题人能裁决，这一局的出题人不是你。" if explicit else None
+
+    verdict = parse_soup_judgement(body, str(pending.get("kind") or "question"))
+    if verdict is None:
+        return (
+            "裁决要用：问题填「是 / 否 / 无关 / 部分正确」，推理填「对 / 不对」。"
+            if explicit
+            else None
+        )
+
+    try:
+        await plugin.manager.judge_soup_pending(
+            room, seat.visitor_token, verdict=verdict, via_group=True
+        )
+    except PermissionError as exc:
+        return f"{exc}" if explicit else None
+    except (ValueError, RuntimeError, OSError) as exc:
+        return f"裁决失败：{exc}" if explicit else None
+    return f"✅ 出题人裁决：{_SOUP_JUDGE_LABELS.get(verdict, verdict)}"
+
+
 async def _dispatch(
     plugin: Any, room: GameRoom, action: str, body: str, qq: str
 ) -> str:
@@ -357,6 +515,11 @@ async def _dispatch(
         return _history_text(room, game)
     if action == "recap":
         return _recap_text(room, game)
+    if action == "judge":
+        # 明确指令 /汤裁决：不是出题人、没有待裁决内容都要给一句人话
+        return (
+            await judge_soup_from_group(plugin, room, qq, body, explicit=True)
+        ) or ""
     if action == "hint":
         hint = await plugin.manager.request_turtle_soup_hint(
             room, source="qq", actor_qq=qq
@@ -821,6 +984,11 @@ async def handle_soup_at_message(plugin: Any, event: Any) -> str:
         return ""
     qq = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
     actor_name = str(getattr(event, "get_sender_name", lambda: "")() or "").strip()
+    # 玩家出题时，出题人 @Bot 直接回一个判定词就是裁决。必须排在「提示」和
+    # 提问/推理句式之前，否则「是」会被放行、或被引擎当成一次闲聊。
+    judged = await judge_soup_from_group(plugin, room, qq, text)
+    if judged:
+        return judged
     intent = classify_at_intent(text)
     if intent is not None:
         action, body = intent

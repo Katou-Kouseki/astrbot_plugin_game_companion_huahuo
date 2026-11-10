@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.07"
+    assert metadata["version"] == "0.6.08"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1566,7 +1566,7 @@ def test_soup_explicit_commands_are_registered() -> None:
 
     for command in (
         "汤开局", "汤状态", "汤帮助", "汤复盘", "汤提问", "汤推理",
-        "汤验证", "汤提示", "汤查看", "汤揭晓", "汤附议", "汤反对",
+        "汤验证", "汤提示", "汤查看", "汤揭晓", "汤附议", "汤反对", "汤裁决",
     ):
         assert f'@filter.command("{command}")' in main, command
     # 带 / 的明确指令由 command 独占，通配 regex 不再同时吃斜杠
@@ -2171,3 +2171,41 @@ def test_soup_poster_questions_fill_up_and_longform_is_full_width() -> None:
     assert "if (picked.length < limit) take(all)" in app
     assert "width: 100%;" in main and ".strip.longform" in main
     assert "width: 88%" not in main
+
+
+def test_group_soup_judgement_is_host_only() -> None:
+    """群内裁决：明确指令 + 引用快捷入口，权限锁死出题人。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    # 明确指令与「引用 + 判定词（不用 @Bot）」快捷入口
+    assert '"汤裁决"' in bridge
+    assert '@filter.command("汤裁决")' in main
+    assert "SOUP_JUDGE_WORD_PATTERN" in bridge and "SOUP_JUDGE_WORD_PATTERN" in main
+    quote_handler = main.split("async def soup_qq_quote_judge", 1)[1].split(
+        "async def ", 1
+    )[0]
+    assert "soup_quote_present(event)" in quote_handler
+    assert "is_at_or_wake_command" in quote_handler
+    assert "judge_soup_from_group" in quote_handler
+    # @Bot 那条路径也接裁决，且不受「@Bot 当提问」开关影响
+    at_handler = main.split("async def soup_qq_at_say", 1)[1].split("async def ", 1)[0]
+    assert "judge_soup_from_group" in at_handler
+    assert at_handler.index("judge_soup_from_group") < at_handler.index(
+        'if not getattr(self, "turtle_soup_qq_at_question", True):'
+    )
+
+    # 权限：只认已确认身份的出题人座位，落库仍以 judge_soup_pending 为准
+    assert "seat_for_qq(qq)" in bridge
+    assert "int(seat.number) != int(game.host_number)" in bridge
+    assert "await plugin.manager.judge_soup_pending(" in bridge
+    no_seat = bridge.split("_NO_SEAT_ACTIONS =", 1)[1].split(")", 1)[0]
+    assert '"judge"' in no_seat
+    # 问题 / 推理两套判定词表，不混用
+    assert "_SOUP_JUDGE_QUESTION_WORDS" in bridge
+    assert "_SOUP_JUDGE_ANSWER_WORDS" in bridge
+    # 群内裁决不再补一条重复的问答同步
+    assert "via_group: bool = False" in rm
+    assert '"judged_in_group": via_group' in rm
+    assert "judged_in_group and question_from_group" in main

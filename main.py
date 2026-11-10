@@ -43,10 +43,14 @@ from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
 from .qq_bridge import (
+    SOUP_JUDGE_WORD_PATTERN,
     _progress_tail,
     handle_soup_at_message,
     handle_soup_command,
+    judge_soup_from_group,
     run_soup_action,
+    soup_judge_text,
+    soup_quote_present,
     soup_room_for_session,
     start_soup_room,
 )
@@ -2763,6 +2767,12 @@ class GameCompanionPlugin(Star):
         async for result in self._soup_explicit_reply(event):
             yield result
 
+    @filter.command("汤裁决")
+    async def soup_cmd_judge(self, event: AstrMessageEvent):
+        """我来出题时，出题人在群里裁决那条待回答的提问 / 推理。"""
+        async for result in self._soup_explicit_reply(event):
+            yield result
+
     @filter.command_group("game")
     def game_commands(self):
         """花火陪你玩的显式 QQ 指令。"""
@@ -3350,7 +3360,7 @@ class GameCompanionPlugin(Star):
         # 半角 / 仍留给上面的 @filter.command，不放进这里，避免两个入口各回一条。
         r"／?\s*"
         r"(?:海龟汤|汤(?=\s|$|开局|开房|开始|提问|问一下|推理|验证|答题|答案|看答案"
-        r"|揭晓|复盘|回顾|附议|同意|反对|提示|状态|查看|帮助|菜单))"
+        r"|揭晓|复盘|回顾|附议|同意|反对|裁决|提示|状态|查看|帮助|菜单))"
     )
     async def soup_qq_command(self, event: AstrMessageEvent):
         """群聊里的海龟汤指令（不带 / 的写法）：提问 / 推理 / 提示 / 揭晓 / 状态。
@@ -3372,6 +3382,41 @@ class GameCompanionPlugin(Star):
                 pass
         yield event.plain_result(reply)
 
+    @filter.regex(
+        r"^\s*(?:\[[^\]]*\]\s*)*(?:@[^\s]{1,24}\s+)?\s*"
+        r"(?:" + SOUP_JUDGE_WORD_PATTERN + r")"
+        r"[。\.！!？?~～、,，\s]*$"
+    )
+    async def soup_qq_quote_judge(self, event: AstrMessageEvent):
+        """引用「等出题人回答」那条 + 一句判定词，不 @Bot 也能裁决。
+
+        门控极窄：只在没 @Bot 且确实带引用时才走这里（@Bot 的情况交给
+        soup_qq_at_say → handle_soup_at_message，避免两个入口各回一条）；还要
+        当前群有玩家出题对局、有待裁决内容、说话人就是出题人。任何一条不满足
+        都静默放行——群里随口说「是」「对」不会被游戏吞掉。
+        """
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return
+        if getattr(event, "is_at_or_wake_command", False):
+            return
+        if not soup_quote_present(event):
+            return
+        session_id = str(getattr(event, "unified_msg_origin", "") or "")
+        room = soup_room_for_session(self, session_id)
+        if room is None:
+            return
+        qq = str(event.get_sender_id() or "").strip()
+        reply = await judge_soup_from_group(self, room, qq, soup_judge_text(event))
+        if not reply:
+            return
+        stop = getattr(event, "stop_event", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        yield event.plain_result(reply)
+
     @filter.regex(r"^[\s\S]+$")
     async def soup_qq_at_say(self, event: AstrMessageEvent):
         """默认开启，但只有当前群有进行中的海龟汤时才生效。
@@ -3381,11 +3426,31 @@ class GameCompanionPlugin(Star):
         模糊短句、状态 / 复盘 / 开局等也不在这里猜，请用 `/汤xxx` 明确指令。
         想彻底只用明确指令，把 `turtle_soup.qq_at_question` 关掉即可。
         """
-        if not getattr(self, "turtle_soup_qq_at_question", True):
-            return
         if not getattr(self, "turtle_soup_qq_bridge", True):
             return
         if not getattr(event, "is_at_or_wake_command", False):
+            return
+        # 裁决词是「指令」不是「@Bot 聊天」，不能跟着 qq_at_question 一起被关掉。
+        # 这里先接住 @Bot 的判定词；不 @Bot 的引用消息由 soup_qq_quote_judge 接。
+        room = soup_room_for_session(
+            self, str(getattr(event, "unified_msg_origin", "") or "")
+        )
+        judged = ""
+        if room is not None:
+            qq = str(event.get_sender_id() or "").strip()
+            judged = (
+                await judge_soup_from_group(self, room, qq, soup_judge_text(event))
+            ) or ""
+        if judged:
+            stop = getattr(event, "stop_event", None)
+            if callable(stop):
+                try:
+                    stop()
+                except Exception:
+                    pass
+            yield event.plain_result(judged)
+            return
+        if not getattr(self, "turtle_soup_qq_at_question", True):
             return
         reply = await handle_soup_at_message(self, event)
         if not reply:
@@ -4098,11 +4163,16 @@ class GameCompanionPlugin(Star):
                 # 玩家出题模式不走模型判定，裁决落库才是「有结果了」的时刻。
                 # 群里提交的问题当时只回「等出题人回答」，判定结果群里没见过，
                 # 所以哪怕来源是群，这一条也必须同步过去。
-                self._queue_soup_group_sync(
-                    room,
-                    host_verdict=True,
-                    entry_seq=int(payload.get("entry_seq") or 0),
-                )
+                # 唯一例外：出题人本人就在群里裁决、提问也来自群——群里刚看到
+                # 裁决回执，再补一条问答同步就是刷屏；网页玩家提问仍要同步原文。
+                judged_in_group = bool(payload.get("judged_in_group"))
+                question_from_group = str(payload.get("origin") or "") == "qq"
+                if not (judged_in_group and question_from_group):
+                    self._queue_soup_group_sync(
+                        room,
+                        host_verdict=True,
+                        entry_seq=int(payload.get("entry_seq") or 0),
+                    )
             if game.host_number and not game.finished:
                 self._spawn(self._soup_bot_turn(room, game))
             return
