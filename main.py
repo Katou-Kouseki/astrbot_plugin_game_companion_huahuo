@@ -4083,6 +4083,12 @@ class GameCompanionPlugin(Star):
                     )
                 )
             return
+        if event_name == "soup_reveal_requested":
+            self._spawn(self._announce_soup_reveal_vote(room, payload, kind="requested"))
+            return
+        if event_name == "soup_reveal_voted":
+            self._spawn(self._announce_soup_reveal_vote(room, payload, kind="voted"))
+            return
         if event_name == "soup_revealed":
             # 额度用完自动揭晓时不再发 soup_answer_attempted，最后一次推理和
             # 「为什么突然结束了」都挂在这条 reveal 记录上，得单独入队才不会漏。
@@ -7471,6 +7477,34 @@ class GameCompanionPlugin(Star):
         if text:
             await self._send_to_origin(room, text)
 
+    async def _announce_soup_reveal_vote(
+        self, room: GameRoom, payload: dict[str, Any], *, kind: str
+    ) -> None:
+        """揭晓投票同步到群：发起 / 投票都喊一声，群友才知道能参与。
+
+        网页端发起揭晓时群里完全没动静，群友根本不知道在表决，也就没法附议。
+        这里只在群房里发，复用群聊互通开关（和问答同步一致）。
+        """
+        if getattr(room, "source", "") != "group":
+            return
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return
+        if not self.announce_target(room):
+            return
+        votes = int(payload.get("votes") or 0)
+        required = int(payload.get("required") or 0)
+        actor = str(payload.get("actor") or "有玩家")
+        if kind == "requested":
+            left = max(0, required - votes)
+            text = (
+                f"🗳 {actor} 发起揭晓汤底（{votes}/{required}）。"
+                f"还差 {left} 人：发「汤 附议」同意，或「汤 反对」否决。"
+            )
+        else:
+            word = "同意" if bool(payload.get("agree")) else "不同意"
+            text = f"🗳 {actor} {word}揭晓（{votes}/{required}）。"
+        await self._send_to_origin(room, text)
+
     async def _announce_soup_turn(self, room: GameRoom, payload: dict[str, Any]) -> None:
         """严格轮次的「轮到谁提问」播报到群里，能 @ 就 @。
 
@@ -7972,14 +8006,20 @@ class GameCompanionPlugin(Star):
             lines.append("🌫 这题最终没人解开，汤底已经揭晓。")
         lines.append("想知道答案？开一局，或者去问玩过的人。")
         # 战报里附上房间链接：群友点进去就能在网页里看完整汤底（战报本身为防剧透不露汤底）
-        try:
-            room_url = self._room_url(room)
-        except Exception:
-            room_url = ""
-        if room_url:
-            lines.append(f"🔗 房间链接：{room_url}")
-            lines.append("想看完整汤底？点上面的链接进网页房间查看。")
+        tail = self._soup_room_link_tail(room)
+        if tail:
+            lines.append(tail)
         return "\n".join(lines)
+
+    def _soup_room_link_tail(self, room: GameRoom) -> str:
+        """战报尾部的房间链接与「进网页看完整汤底」引导；拿不到链接返回空串。"""
+        try:
+            url = self._room_url(room)
+        except Exception:
+            return ""
+        if not url:
+            return ""
+        return f"🔗 房间链接：{url}\n想看完整汤底？点上面的链接进网页房间查看。"
 
     def _soup_game_summary(self, room: GameRoom) -> str:
         """把本局关键信息拼成复盘用的摘要（明确排除汤底）。"""
@@ -8436,8 +8476,15 @@ class GameCompanionPlugin(Star):
         if not want_text and not want_image:
             want_text = True
         if want_image and image_data:
+            recap_with_link = recap
+            if not want_text:
+                # 只发图（style=image）时正文被省了，房间链接引导得跟着复盘走，
+                # 否则群友看完复盘也不知道去哪看完整汤底。
+                tail = self._soup_room_link_tail(room)
+                if tail:
+                    recap_with_link = (recap + "\n\n" + tail) if recap else tail
             sent = await self._send_to_origin_image(
-                room, text if want_text else "", image_data, recap
+                room, text if want_text else "", image_data, recap_with_link
             )
             return text if sent else ""
         sent = await self._send_to_origin(

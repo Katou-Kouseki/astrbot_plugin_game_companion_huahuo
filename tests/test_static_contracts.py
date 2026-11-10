@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.96"
+    assert metadata["version"] == "0.5.97"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1722,9 +1722,32 @@ def test_soup_sync_strip_and_result_link() -> None:
     # 判定简写：提问只给「是 / 否 / 无关」
     assert "verdict_label" in main
     # 战报末尾附房间链接 + 网页查看引导
-    assert "房间链接：{room_url}" in main
+    assert "房间链接：{url}" in main
     assert "想看完整汤底？点上面的链接进网页房间查看" in main
     # 前端：推理条目给独立样式（徽章 + 紫色左边框），发送按钮白字
     assert "soup-kind-badge" in app
     assert ".soup-entry.answer" in css
     assert "color: #ffffff" in css
+
+
+def test_soup_reveal_vote_syncs_to_group() -> None:
+    """网页发起揭晓/投票要同步到群，群友才知道能附议。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert "soup_reveal_requested" in main
+    assert "soup_reveal_voted" in main
+    assert "def _announce_soup_reveal_vote" in main
+    # payload 带上 actor / agree，群里才知道谁在表决
+    assert '"actor"' in rm
+    assert '"agree"' in rm
+    # 群里附议/反对的指引
+    assert "汤 附议" in main
+
+
+def test_soup_announce_image_keeps_room_link() -> None:
+    """图片战报（只发图不发正文）也要带上房间链接引导。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "def _soup_room_link_tail" in main
+    assert "recap_with_link" in main

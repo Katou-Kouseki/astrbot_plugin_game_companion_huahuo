@@ -3995,6 +3995,9 @@ class RoomManager:
             "votes": votes,
             "required": required,
             "revealed": revealed,
+            "actor": self._soup_actor_label(
+                room, source=source, visitor_token=visitor_token, actor_qq=actor_qq
+            ),
             "text": (
                 "本题已揭晓汤底。"
                 if revealed
@@ -4048,6 +4051,8 @@ class RoomManager:
             "votes": votes,
             "required": required,
             "revealed": revealed,
+            "actor": actor,
+            "agree": bool(agree),
             "text": (
                 "本题已揭晓汤底。"
                 if revealed
