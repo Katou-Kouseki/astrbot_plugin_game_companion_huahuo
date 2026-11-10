@@ -37,8 +37,9 @@ HELP_TEXT = (
     "• /汤状态 —— 看当前进度（已问次数、提示与推理剩余）\n"
     "• /汤查看 —— 看最近几条问答\n"
     "• /汤揭晓 —— 发起揭晓汤底；/汤附议、/汤反对 参与表决\n"
-    "• /汤裁决 是|否|无关|部分正确 —— 我来出题时裁决待回答的问题\n"
-    "   （推理用 /汤裁决 对|不对；也可引用那条「等出题人回答」直接回判定词）\n"
+    "• /汤裁决 是|否|无关|部分正确 —— 玩家出题时裁决待回答的问题\n"
+    "   （推理用 /汤裁决 对|不对；也可【引用本条回执】或【引用提问人那条消息】\n"
+    "    直接回判定词，不用 @Bot）\n"
     "   只有出题人本人能裁决，且要先在网页绑定好玩家席\n"
     "• /汤复盘 —— 结束后看完整回顾（汤面 + 汤底 + 关键问答）\n"
     "• /汤帮助 —— 再看这份菜单\n"
@@ -322,6 +323,43 @@ def _history_text(room: GameRoom, game: TurtleSoupGame | None) -> str:
     return "\n".join(lines)
 
 
+def _pending_label(result: dict[str, Any]) -> str:
+    """把「当前真正待裁决的是哪条」写成一句可核对的话。
+
+    玩家出题模式同一时间只挂一条待裁决内容，群里刷屏时出题人却可能引用了
+    另一条消息。回执里带上提问者和原文，判非所问当场就能看出来。
+    """
+    text = re.sub(r"\s+", " ", str(result.get("pending_text") or "")).strip()
+    if not text:
+        return ""
+    who = str(result.get("pending_asker") or "").strip()
+    number = int(result.get("pending_number") or 0)
+    if result.get("pending_for_bot"):
+        who = "Bot"
+    elif who and number:
+        who = f"{who}（{number} 号）"
+    elif number:
+        who = f"{number} 号"
+    else:
+        who = who or "玩家"
+    verb = "交推理" if result.get("pending_kind") == "answer" else "问"
+    # 原文完整带出，不按字数砍半句：群里就是靠它核对裁的是哪一条
+    return f"{who}{verb}「{text}」"
+
+
+def _pending_verdict_hint(result: dict[str, Any]) -> str:
+    """只在玩家出题模式出现的裁决引导：引用谁的消息都行，判定词按类型分。"""
+    words = (
+        "对 / 不对"
+        if result.get("pending_kind") == "answer"
+        else "是 / 否 / 无关 / 部分正确"
+    )
+    return (
+        "出题人【引用本条】或【引用提问人那条消息】，"
+        f"回一个判定词（{words}）就能裁决；也可以在网页点裁决按钮。"
+    )
+
+
 def _question_reply(game: TurtleSoupGame | None, body: str, result: dict[str, Any]) -> str:
     if result.get("solved"):
         solution = str(result.get("solution") or "").strip()
@@ -329,7 +367,10 @@ def _question_reply(game: TurtleSoupGame | None, body: str, result: dict[str, An
     if result.get("limited"):
         return f"⏳ {result.get('reply') or '本局提问次数已经用完'}{_progress_tail(result)}"
     if result.get("action") == "awaiting_host":
-        return f"问题已提交，等出题人回答。{_progress_tail(result)}"
+        label = _pending_label(result)
+        head = f"📋 待裁决：{label}" if label else "📋 问题已提交，等出题人回答。"
+        tail = _progress_tail(result)
+        return f"{head}\n{_pending_verdict_hint(result)}" + (f"\n{tail}" if tail else "")
     verdict = str(result.get("verdict") or "")
     return f"🙋 {body}\n💡 {VERDICT_LABELS.get(verdict, result.get('reply') or '已记录')}{_progress_tail(result)}"
 
@@ -344,7 +385,10 @@ def _answer_reply(result: dict[str, Any]) -> str:
         head = "⏳ 本局推理机会已经用完，没人答对。"
         return f"{head}\n汤底揭晓：\n{solution}" if solution else head + "汤底已揭晓。"
     if result.get("action") == "awaiting_host":
-        return f"推理已提交，等出题人判断。{_progress_tail(result)}"
+        label = _pending_label(result)
+        head = f"📋 待裁决：{label}" if label else "📋 推理已提交，等出题人判断。"
+        tail = _progress_tail(result)
+        return f"{head}\n{_pending_verdict_hint(result)}" + (f"\n{tail}" if tail else "")
     coverage = result.get("coverage")
     reply = str(result.get("reply") or "还没有完全对上")
     if isinstance(coverage, (int, float)):
@@ -492,6 +536,16 @@ async def judge_soup_from_group(
             else None
         )
 
+    # 裁决会清掉 pending，先把「到底裁的是哪条」留下来写进回执
+    judged_label = _pending_label(
+        {
+            "pending_text": pending.get("text"),
+            "pending_asker": pending.get("asker_name"),
+            "pending_number": pending.get("asker_number"),
+            "pending_for_bot": pending.get("for_bot"),
+            "pending_kind": pending.get("kind"),
+        }
+    )
     try:
         await plugin.manager.judge_soup_pending(
             room, seat.visitor_token, verdict=verdict, via_group=True
@@ -500,7 +554,10 @@ async def judge_soup_from_group(
         return f"{exc}" if explicit else None
     except (ValueError, RuntimeError, OSError) as exc:
         return f"裁决失败：{exc}" if explicit else None
-    return f"✅ 出题人裁决：{_SOUP_JUDGE_LABELS.get(verdict, verdict)}"
+    result = f"✅ 出题人裁决：{_SOUP_JUDGE_LABELS.get(verdict, verdict)}"
+    if judged_label:
+        result += f"\n📋 本条裁决对象：{judged_label}"
+    return result
 
 
 async def _dispatch(

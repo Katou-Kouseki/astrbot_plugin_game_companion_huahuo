@@ -44,6 +44,8 @@ from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
 from .qq_bridge import (
     SOUP_JUDGE_WORD_PATTERN,
+    _pending_label,
+    _pending_verdict_hint,
     _progress_tail,
     handle_soup_at_message,
     handle_soup_command,
@@ -4149,10 +4151,44 @@ class GameCompanionPlugin(Star):
             raise ValueError("当前会话没有唯一活动房间，请说明房间编号")
         return rooms[0]
 
+    async def _announce_soup_pending_to_group(
+        self, room: GameRoom, payload: dict[str, Any]
+    ) -> bool:
+        """玩家出题模式：网页 / Bot 挂起待裁决时，群里补一条可引用的提示。
+
+        群里自己提问时回执已经带上原文和引导，不用重复发；但网页玩家或 Bot
+        提交时在群里一条消息都没有，出题人光看群根本不知道现在该裁哪一条，
+        很容易引用了别人的消息却判到这一条上。
+        """
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return False
+        if not self.announce_target(room):
+            return False
+        described = {
+            "pending_text": payload.get("text"),
+            "pending_asker": payload.get("asker_name"),
+            "pending_number": payload.get("asker_number"),
+            "pending_for_bot": payload.get("for_bot"),
+            "pending_kind": payload.get("kind"),
+        }
+        label = _pending_label(described)
+        if not label:
+            return False
+        body = f"📋 待裁决：{label}\n{_pending_verdict_hint(described)}"
+        return await self._send_to_origin(room, body)
+
     async def _on_room_event(
         self, event_name: str, room: GameRoom, payload: dict[str, Any]
     ) -> None:
         game_label = self._game_label(room.game_type)
+        if event_name == "soup_host_question":
+            # 玩家出题模式专属：群里提问的回执已带原文与引导，这里只补
+            # 网页 / Bot 提交的那条，让群里始终有明确的待裁决对象可引用。
+            if str(payload.get("source") or "") != "qq" and getattr(
+                self, "turtle_soup_qq_bridge", True
+            ):
+                self._spawn(self._announce_soup_pending_to_group(room, payload))
+            return
         if event_name == "soup_turn_changed":
             # 严格轮次换了人：往群里播报「轮到谁」，能 @ 就 @ 那一位
             await self._announce_soup_turn(room, payload)
@@ -6176,10 +6212,18 @@ class GameCompanionPlugin(Star):
                 visitor_token=visitor_token,
                 actor_qq=actor_qq,
             )
+            pending = host_game.pending_judge or {}
             return {
                 "action": "awaiting_host",
                 "verdict": None,
                 "reply": "问题已提交，等出题人回答。",
+                # 群里刷屏时出题人容易引用错消息：把当前真正待裁决的对象带回
+                # 回执，裁决时也照着它显示，判非所问能当场看出来。
+                "pending_text": str(pending.get("text") or text),
+                "pending_asker": str(pending.get("asker_name") or ""),
+                "pending_number": int(pending.get("asker_number") or 0),
+                "pending_for_bot": bool(pending.get("for_bot")),
+                "pending_kind": "question",
                 **self._awaiting_host_progress(host_game, room, "question"),
             }
         game, question = await self.manager.begin_turtle_soup_interaction(
@@ -6395,11 +6439,17 @@ class GameCompanionPlugin(Star):
                 actor_qq=actor_qq,
                 limit=800,
             )
+            pending = host_game.pending_judge or {}
             return {
                 "action": "awaiting_host",
                 "solved": False,
                 "reply": "推理已提交，等出题人判断。",
                 "answer_attempts": host_game.answer_attempts + 1,
+                "pending_text": str(pending.get("text") or text),
+                "pending_asker": str(pending.get("asker_name") or ""),
+                "pending_number": int(pending.get("asker_number") or 0),
+                "pending_for_bot": bool(pending.get("for_bot")),
+                "pending_kind": "answer",
                 **self._awaiting_host_progress(host_game, room, "answer"),
             }
         game, answer = await self.manager.begin_turtle_soup_interaction(

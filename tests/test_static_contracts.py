@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.08"
+    assert metadata["version"] == "0.6.09"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2209,3 +2209,25 @@ def test_group_soup_judgement_is_host_only() -> None:
     assert "via_group: bool = False" in rm
     assert '"judged_in_group": via_group' in rm
     assert "judged_in_group and question_from_group" in main
+
+
+def test_pending_receipts_show_what_is_being_judged() -> None:
+    """玩家出题：待裁决与裁决回执都带原文与引用引导，判非所问能当场发现。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert "def _pending_label" in bridge
+    assert "def _pending_verdict_hint" in bridge
+    # 两种引用方式都要写进引导，别让出题人以为只能引用某一条
+    assert "引用本条" in bridge and "引用提问人那条消息" in bridge
+    assert "是 / 否 / 无关 / 部分正确" in bridge and "对 / 不对" in bridge
+    # 原文完整带出，裁决回执也要写清裁的是哪条
+    assert "本条裁决对象" in bridge
+    assert '"pending_text": str(pending.get("text") or text)' in main
+    assert "_pending_verdict_hint(described)" in main
+    assert "def _announce_soup_pending_to_group" in main
+    assert 'if event_name == "soup_host_question":' in main
+    # 群里自己提问的回执已经带原文，不重复补发
+    assert 'str(payload.get("source") or "") != "qq"' in main
+    assert '"source": source' in rm and '"asker_number": number' in rm

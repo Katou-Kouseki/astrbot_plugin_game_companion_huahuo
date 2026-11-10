@@ -11,6 +11,9 @@ import pytest
 from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
 from astrbot_plugin_game_companion_huahuo.models import PlayerSeat
 from astrbot_plugin_game_companion_huahuo.qq_bridge import (
+    _answer_reply,
+    _pending_label,
+    _question_reply,
     handle_soup_at_message,
     handle_soup_command,
     judge_soup_from_group,
@@ -196,7 +199,10 @@ async def test_only_host_can_judge() -> None:
     assert manager._turtle_soup_game(room).pending_judge  # noqa: SLF001
 
     reply = await judge_soup_from_group(plugin, room, HOST_QQ, "是")
-    assert reply == "✅ 出题人裁决：是"
+    assert str(reply).startswith("✅ 出题人裁决：是")
+    # 回执要写清裁的是哪条，出题人引用错消息时当场能看出来
+    assert "本条裁决对象" in str(reply)
+    assert "是不是在下雨？" in str(reply)
     game = manager._turtle_soup_game(room)  # noqa: SLF001
     assert game.pending_judge is None
     assert game.entries[-1].verdict == "yes"
@@ -252,7 +258,9 @@ async def test_at_bot_short_verdict_is_a_judgement() -> None:
     event = make_event("@bot 是")
     event.is_at_or_wake_command = True
 
-    assert await handle_soup_at_message(plugin, event) == "✅ 出题人裁决：是"
+    judged_reply = await handle_soup_at_message(plugin, event)
+    assert judged_reply.startswith("✅ 出题人裁决：是")
+    assert "是不是在下雨？" in judged_reply
     assert manager._turtle_soup_game(room).pending_judge is None  # noqa: SLF001
 
     manager2, plugin2, _room2 = await make_host_room()
@@ -357,7 +365,10 @@ async def test_quote_shortcut_works_without_mentioning_bot() -> None:
             async for result in GameCompanionPlugin.soup_qq_quote_judge(plugin, event)
         ]
 
-    assert await run("[CQ:reply,id=12]是") == ["✅ 出题人裁决：是"]
+    shortcut = await run("[CQ:reply,id=12]是")
+    assert len(shortcut) == 1
+    assert shortcut[0].startswith("✅ 出题人裁决：是")
+    assert "是不是在下雨？" in shortcut[0]
     assert manager._turtle_soup_game(room).pending_judge is None  # noqa: SLF001
 
     manager2, plugin2, _room2 = await make_host_room()
@@ -401,3 +412,144 @@ def test_quote_shortcut_regex_is_strict() -> None:
         assert pattern.match(text), text
     for text in ("是不是和灯塔有关", "是的吧", "我觉得对", "汤 裁决 是", "对啊"):
         assert not pattern.match(text), text
+
+
+def test_pending_receipts_carry_question_and_guidance() -> None:
+    """玩家出题：待裁决回执带原文、提问者和两种引用方式的引导。"""
+    question = _question_reply(
+        None,
+        "和灯塔有关吗？",
+        {
+            "action": "awaiting_host",
+            "pending_text": "和灯塔有关吗？",
+            "pending_asker": "玩家2",
+            "pending_number": 2,
+            "pending_for_bot": False,
+            "pending_kind": "question",
+            "question_count": 3,
+            "question_limit": 35,
+            "hint_left": 2,
+            "answer_left": 4,
+        },
+    )
+    assert "📋 待裁决" in question
+    assert "玩家2（2 号）问「和灯塔有关吗？」" in question
+    assert "引用本条" in question and "引用提问人那条消息" in question
+    assert "是 / 否 / 无关 / 部分正确" in question
+    assert "已问 3/35" in question
+
+    answer = _answer_reply(
+        {
+            "action": "awaiting_host",
+            "pending_text": "我猜他是守塔人忘了点灯",
+            "pending_number": 3,
+            "pending_for_bot": False,
+            "pending_kind": "answer",
+        }
+    )
+    assert "交推理「我猜他是守塔人忘了点灯」" in answer
+    assert "对 / 不对" in answer
+    assert "是 / 否" not in answer
+
+    # 普通（Bot 出题）模式不该冒出裁决引导
+    normal = _question_reply(
+        None, "和灯塔有关吗？", {"verdict": "yes", "reply": "是"}
+    )
+    assert "引用本条" not in normal
+    assert "待裁决" not in normal
+
+
+def test_pending_label_keeps_full_text_and_marks_bot_asker() -> None:
+    """原文不按字数砍半句；Bot 自己提问时标注 Bot，别写成某个玩家。"""
+    long_text = "是不是因为他忘了点灯导致船只失事？" * 12
+    label = _pending_label(
+        {
+            "pending_text": long_text,
+            "pending_asker": "玩家2",
+            "pending_number": 2,
+            "pending_kind": "question",
+        }
+    )
+    assert long_text in label and "…" not in label
+
+    bot = _pending_label(
+        {
+            "pending_text": "灯塔当天有人值班吗？",
+            "pending_asker": "花火",
+            "pending_for_bot": True,
+            "pending_kind": "question",
+        }
+    )
+    assert bot.startswith("Bot问「")
+
+
+@pytest.mark.asyncio
+async def test_bot_pending_is_announced_to_group() -> None:
+    """网页 / Bot 挂起待裁决时群里补一条可引用的提示。"""
+    from unittest.mock import AsyncMock
+
+    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin.turtle_soup_qq_bridge = True
+    plugin.announce_target = lambda _room: "aiocqhttp:GroupMessage:1"  # noqa: SLF001
+    plugin._send_to_origin = AsyncMock(return_value=True)  # noqa: SLF001
+    payload = {
+        "kind": "question",
+        "text": "灯塔当天有人值班吗？",
+        "asker_name": "花火",
+        "asker_number": 0,
+        "for_bot": True,
+        "source": "web",
+    }
+
+    assert await plugin._announce_soup_pending_to_group(  # noqa: SLF001
+        SimpleNamespace(), payload
+    ) is True
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "Bot问「灯塔当天有人值班吗？」" in text
+    assert "引用本条" in text and "引用提问人那条消息" in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source,bridge,expected",
+    [("qq", True, 0), ("web", True, 1), ("web", False, 0)],
+)
+async def test_host_question_event_only_announces_non_group(
+    source, bridge, expected
+) -> None:
+    """群里自己提问的回执已带原文，不重复发；桥关掉时也不发。"""
+    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    plugin.turtle_soup_qq_bridge = bridge
+    plugin._game_label = lambda _gt: "海龟汤"  # noqa: SLF001
+    spawned: list = []
+    plugin._spawn = lambda coro: spawned.append(coro) or coro.close()  # noqa: SLF001
+    room = SimpleNamespace(game_type="turtle_soup")
+
+    await plugin._on_room_event(  # noqa: SLF001
+        "soup_host_question",
+        room,
+        {"kind": "question", "text": "和灯塔有关吗？", "source": source},
+    )
+
+    assert len(spawned) == expected
+
+
+@pytest.mark.asyncio
+async def test_host_question_event_carries_identity() -> None:
+    """事件带上提问者与来源，群里才能分辨该补哪一条提示。"""
+    manager, _plugin, room = await make_host_room()
+    emitted: list[tuple[str, dict]] = []
+
+    async def capture(name: str, _room, payload: dict) -> None:
+        emitted.append((name, dict(payload)))
+
+    manager.event_callback = capture
+    manager._turtle_soup_game(room).clear_pending_judge()  # noqa: SLF001
+    await manager.begin_soup_host_judgement(
+        room, "和灯塔有关吗？", kind="question", source="qq", actor_qq=ASKER_QQ
+    )
+
+    payload = next(p for name, p in emitted if name == "soup_host_question")
+    assert payload["source"] == "qq"
+    assert payload["asker_number"] == 2
+    assert payload["text"] == "和灯塔有关吗？"

@@ -3579,7 +3579,14 @@ class RoomManager:
         await self._emit(
             "soup_host_question",
             room,
-            {"kind": kind, "text": cleaned, "asker_name": name, "for_bot": for_bot},
+            {
+                "kind": kind,
+                "text": cleaned,
+                "asker_name": name,
+                "asker_number": number,
+                "for_bot": for_bot,
+                "source": source,
+            },
         )
         return game
 
