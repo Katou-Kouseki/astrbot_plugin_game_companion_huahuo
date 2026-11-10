@@ -11,7 +11,7 @@ import re
 import socket
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
@@ -1086,8 +1086,8 @@ _SOUP_SYNC_TMPL = """<!DOCTYPE html>
   .strip.hint .progress { color: rgba(255,224,170,.62); }
   /* 推理往往是一整段话：不再用横条把正文挤在判定胶囊旁边，改成窄而竖长的卡片。
      宽度收一点、高度随内容自然撑开，正文独占整块宽度，长推理不用挤成一小坨。 */
-  .strip.longform { display: block; box-sizing: border-box; width: 88%; margin: 0 auto;
-    min-height: 78px; padding: 10px 12px; }
+  .strip.longform { display: block; box-sizing: border-box; width: 100%;
+    min-height: 78px; padding: 10px 11px; }
   .lf-head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
   .lf-head .meta { flex: 1 1 auto; margin-bottom: 0; }
   .strip.longform .text { font-size: 14.5px; line-height: 1.65;
@@ -4106,6 +4106,13 @@ class GameCompanionPlugin(Star):
             if game.host_number and not game.finished:
                 self._spawn(self._soup_bot_turn(room, game))
             return
+        if event_name == "soup_host_puzzle_submitted":
+            # 玩家出的题默认进投稿库，管理台题库管理里能看、能改、能删。
+            self._record_host_soup_submission(payload)
+            # 标题 / 提示留空时后台补，不挡开局；填了的字段一律不覆盖。
+            if payload.get("need_title") or payload.get("need_hints"):
+                self._spawn(self._enrich_soup_host_puzzle(room, dict(payload)))
+            return
         if event_name == "soup_generation_requested":
             if isinstance(room.game, TurtleSoupGame):
                 self._spawn(self._prepare_turtle_soup_task(room, room.game))
@@ -5455,6 +5462,95 @@ class GameCompanionPlugin(Star):
             )
             self.soup_custom_store = store
         return store
+
+    def _record_host_soup_submission(self, payload: dict[str, Any]) -> None:
+        """玩家出题开局时把题面 + 汤底记入投稿库，管理台题库管理可看可改可删。
+
+        同一道题重复开局只留一条；写库失败不影响这一局继续玩。
+        """
+        surface = str(payload.get("surface") or "").strip()
+        solution = str(payload.get("solution") or "").strip()
+        if not surface or not solution:
+            return
+        try:
+            store = self._soup_custom()
+            if any(
+                str(getattr(entry, "surface", "") or "").strip() == surface
+                for entry in store.entries
+            ):
+                return
+            store.add(
+                surface,
+                solution,
+                content_level=str(payload.get("content_level") or "normal"),
+                owner=str(payload.get("owner") or ""),
+            )
+        except Exception as exc:
+            logger.info("[GameCompanion] 玩家出题写入投稿库失败：%s", exc)
+
+    async def _enrich_soup_host_puzzle(
+        self, room: GameRoom, payload: dict[str, Any]
+    ) -> None:
+        """标题 / 提示留空时后台让模型补，不挡开局。
+
+        只补玩家没填的字段；模型不可用或结果解析不出来就保留占位值。回填前后都
+        核对题面，避免这几十秒里玩家点了「再来一局」把结果串到新题上。
+        """
+        surface = str(payload.get("surface") or "").strip()
+        need_title = bool(payload.get("need_title"))
+        need_hints = bool(payload.get("need_hints"))
+        if not surface or not (need_title or need_hints):
+            return
+        game = room.game
+        if not isinstance(game, TurtleSoupGame) or game.puzzle is None:
+            return
+        if str(game.puzzle.surface or "").strip() != surface:
+            return
+        want = (
+            "- title：不超过 20 字的中文题名，不要剧透汤底\n" if need_title else ""
+        ) + (
+            "- hints：3 条渐进提示组成的数组，由弱到强，每条不超过 30 字，"
+            "不能直接说出答案\n"
+            if need_hints
+            else ""
+        )
+        prompt = (
+            "下面是一道海龟汤（情境猜谜）的题面与汤底，请只输出一个 JSON 对象。\n"
+            f"题面：{surface}\n"
+            f"汤底：{str(payload.get('solution') or '').strip()}\n\n"
+            f"需要补充：\n{want}\n"
+            '只输出 JSON，例如 {"title":"…","hints":["…","…","…"]}；'
+            "不需要的字段可以省略，不要加解释或 markdown 代码块。"
+        )
+        try:
+            raw = await self._llm_gen_neutral(prompt)
+            data = extract_json_object(raw or "")
+        except Exception as exc:
+            logger.info("[GameCompanion] 玩家出题补全失败：%s", exc)
+            return
+        if not isinstance(data, dict):
+            return
+        new_title = str(game.puzzle.title or "")
+        if need_title:
+            candidate = re.sub(r"\s+", " ", str(data.get("title") or "")).strip()[:40]
+            if candidate:
+                new_title = candidate
+        new_hints = tuple(game.puzzle.hints)
+        if need_hints and isinstance(data.get("hints"), list):
+            cleaned = [
+                re.sub(r"\s+", " ", str(item or "")).strip()[:80]
+                for item in list(data["hints"])[:3]
+            ]
+            cleaned = [item for item in cleaned if item]
+            if cleaned:
+                new_hints = tuple(cleaned)
+        # 模型跑了半分钟，期间可能已经换题：再核对一次才允许回填
+        if str(game.puzzle.surface or "").strip() != surface:
+            return
+        if new_title == game.puzzle.title and new_hints == game.puzzle.hints:
+            return
+        game.puzzle = replace(game.puzzle, title=new_title, hints=new_hints)
+        room.touch()
 
     def _soup_generated(self) -> GeneratedSoupStore:
         """模型出过的题（懒初始化）：管理台可看可改，出题时优先复用。"""
@@ -8345,6 +8441,8 @@ class GameCompanionPlugin(Star):
 
         同一问题可能被不同玩家各问一遍（或同一人换个措辞再问），战报「他们问过」
         里重复出现会很啰嗦——按去空格去标点的正文去重，只保留最早那条。
+        优先挑问出关键事实的，但**不够 limit 要从全部提问补齐**：本局只有一条
+        「是」、其余都是「不是」时，以前海报上就孤零零一条，明明问了好几个。
         """
         entries = [
             entry
@@ -8360,17 +8458,23 @@ class GameCompanionPlugin(Star):
         ]
         picked: list[dict[str, Any]] = []
         seen: set[str] = set()
-        for entry in reversed(strong or entries):
-            if len(picked) >= limit:
-                break
-            prompt = re.sub(r"\s+", "", str(entry.get("prompt") or ""))
-            # 去掉常见标点，让「和灯塔有关吗？」与「和灯塔有关吗」算同一问
-            key = prompt.translate(str.maketrans("", "", "？?！!，,。.、：:"))
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            picked.append(entry)
-        return list(reversed(picked))
+
+        def take(items: list[dict[str, Any]]) -> None:
+            for entry in items:
+                if len(picked) >= limit:
+                    return
+                prompt = re.sub(r"\s+", "", str(entry.get("prompt") or ""))
+                # 去掉常见标点，让「和灯塔有关吗？」与「和灯塔有关吗」算同一问
+                key = prompt.translate(str.maketrans("", "", "？?！!，,。.、：:"))
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                picked.append(entry)
+
+        take(strong or entries)
+        if len(picked) < limit:
+            take(entries)
+        return picked
 
     @staticmethod
     def _soup_player_line(payload: dict[str, Any], limit: int = 6) -> str:

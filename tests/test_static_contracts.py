@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.06"
+    assert metadata["version"] == "0.6.07"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2137,3 +2137,37 @@ def test_soup_history_allows_page_scroll_chaining() -> None:
     # 全屏弹层仍然锁住背景滚动，别把两处一起放开
     sheet = css.split(".soup-sheet-list {", 1)[1].split("}", 1)[0]
     assert "overscroll-behavior: contain" in sheet
+
+
+def test_host_puzzle_submission_is_recorded_and_enriched() -> None:
+    """玩家出题默认入投稿库；留空的标题/提示走后台模型补全。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+
+    assert '"soup_host_puzzle_submitted"' in rm
+    assert '"need_title": not title_given' in rm
+    assert '"need_hints": not hints_given' in rm
+    assert "def _record_host_soup_submission" in main
+    assert "self._soup_custom()" in main and "store.add(" in main
+    assert "def _enrich_soup_host_puzzle" in main
+    assert "self._spawn(self._enrich_soup_host_puzzle" in main
+    assert "game.puzzle = replace(" in main
+    # 模型跑了半分钟后要复核题面，避免把结果串到新题上
+    assert main.count("!= surface") >= 2
+    # 开局提示语：标题 / 链接 / 玩法各自成段
+    assert '"🥣 海龟汤开好了\\n\\n"' in bridge
+    assert '"· 汤 提问 你的问题\\n"' in bridge
+
+
+
+def test_soup_poster_questions_fill_up_and_longform_is_full_width() -> None:
+    """战报选题不够从全部提问补齐；推理长卡占满宽度不留大白边。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "take(strong or entries)" in main
+    assert "if len(picked) < limit:" in main and "take(entries)" in main
+    assert "if (picked.length < limit) take(all)" in app
+    assert "width: 100%;" in main and ".strip.longform" in main
+    assert "width: 88%" not in main

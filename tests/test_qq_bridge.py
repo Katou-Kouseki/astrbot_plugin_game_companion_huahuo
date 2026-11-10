@@ -557,6 +557,13 @@ async def test_start_command_creates_room_seats_and_starts() -> None:
     plugin.manager.start_game.assert_awaited_once()
     assert "海龟汤开好了" in reply
     assert "https://example.test/room/token" in reply
+    # 标题、链接、玩法各自成段，长链接不再和标题挤在一行
+    lines = reply.splitlines()
+    assert lines[0] == "🥣 海龟汤开好了"
+    assert lines[2] == "🔗 https://example.test/room/token"
+    assert "· 汤 提问 你的问题" in reply
+    assert "· @我 问一句" in reply
+    assert "· @我 交一段推理" in reply
 
 
 @pytest.mark.asyncio

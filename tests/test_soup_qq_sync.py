@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -639,3 +640,146 @@ async def test_group_seconded_reveal_sends_solution_without_link() -> None:
     _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
     assert "守塔人忘了点灯" in text
     assert "想看完整汤底" not in text
+
+
+def _host_game(*, title: str = "1号的汤", hints=()):
+    from dataclasses import replace as _replace
+
+    from astrbot_plugin_game_companion_huahuo.turtle_soup import fallback_puzzle
+
+    game = make_game()
+    game.puzzle = _replace(
+        fallback_puzzle(content_level="normal"), title=title, hints=tuple(hints)
+    )
+    return game
+
+
+def _host_room(game):
+    room = make_room(game=game)
+    room.game_type = "turtle_soup"
+    room.touch = lambda: None
+    return room
+
+
+def _host_payload(game, *, need_title: bool = True, need_hints: bool = True) -> dict:
+    return {
+        "surface": game.puzzle.surface,
+        "solution": game.puzzle.solution,
+        "content_level": "normal",
+        "owner": "20001",
+        "need_title": need_title,
+        "need_hints": need_hints,
+    }
+
+
+@pytest.mark.asyncio
+async def test_host_puzzle_is_recorded_as_custom_submission(tmp_path: Path) -> None:
+    """玩家出题默认进投稿库，管理台题库管理能看能改能删。"""
+    from astrbot_plugin_game_companion_huahuo.soup_custom import CustomSoupStore
+
+    plugin = make_plugin()
+    plugin.soup_custom_store = CustomSoupStore(tmp_path / "custom.json")
+    spawned: list = []
+    plugin._spawn = lambda coro: spawned.append(coro)  # noqa: SLF001
+    game = _host_game()
+    payload = _host_payload(game)
+
+    await plugin._on_room_event(  # noqa: SLF001
+        "soup_host_puzzle_submitted", _host_room(game), payload
+    )
+
+    store = plugin._soup_custom()  # noqa: SLF001
+    assert len(store.entries) == 1
+    assert store.entries[0].surface == game.puzzle.surface
+    assert store.entries[0].solution == game.puzzle.solution
+    assert store.entries[0].owner == "20001"
+    assert len(spawned) == 1
+    spawned[0].close()
+
+    # 同一道题重复开局不重复投稿
+    await plugin._on_room_event(  # noqa: SLF001
+        "soup_host_puzzle_submitted", _host_room(game), payload
+    )
+    assert len(store.entries) == 1
+    spawned[1].close()
+
+
+@pytest.mark.asyncio
+async def test_host_puzzle_enrichment_fills_only_blank_fields() -> None:
+    """后台模型只补留空的标题和提示，玩家填过的不覆盖。"""
+    plugin = make_plugin()
+    game = _host_game()
+    plugin._llm_gen_neutral = AsyncMock(  # noqa: SLF001
+        return_value='{"title":"雨夜的第二把伞","hints":["和她丈夫有关","不是给活人","是替他拿的"]}'
+    )
+
+    await plugin._enrich_soup_host_puzzle(  # noqa: SLF001
+        _host_room(game), _host_payload(game)
+    )
+
+    assert game.puzzle.title == "雨夜的第二把伞"
+    assert len(game.puzzle.hints) == 3
+    assert game.puzzle.hints[0] == "和她丈夫有关"
+
+    # 标题已填：模型返回的标题不能覆盖
+    filled = _host_game(title="玩家自己起的名", hints=())
+    plugin._llm_gen_neutral = AsyncMock(  # noqa: SLF001
+        return_value='{"title":"不该覆盖","hints":["提示一"]}'
+    )
+    await plugin._enrich_soup_host_puzzle(  # noqa: SLF001
+        _host_room(filled), _host_payload(filled, need_title=False)
+    )
+    assert filled.puzzle.title == "玩家自己起的名"
+    assert filled.puzzle.hints == ("提示一",)
+
+
+@pytest.mark.asyncio
+async def test_host_puzzle_enrichment_skips_swapped_or_bad_results() -> None:
+    """换题后不回填；模型结果不可用时保留占位值。"""
+    plugin = make_plugin()
+    game = _host_game()
+    old_puzzle = game.puzzle
+    plugin._llm_gen_neutral = AsyncMock(return_value="不是 JSON")  # noqa: SLF001
+    await plugin._enrich_soup_host_puzzle(  # noqa: SLF001
+        _host_room(game), _host_payload(game)
+    )
+    assert game.puzzle is old_puzzle
+
+    # 模型跑完时题面已经换了：不能把上一题的标题贴到新题上
+    from dataclasses import replace as _replace
+
+    async def swap_then_answer(_prompt):
+        game.puzzle = _replace(game.puzzle, surface="另一道题的汤面")
+        return '{"title":"旧题标题","hints":["旧提示"]}'
+
+    plugin._llm_gen_neutral = swap_then_answer  # noqa: SLF001
+    await plugin._enrich_soup_host_puzzle(  # noqa: SLF001
+        _host_room(game), _host_payload(game)
+    )
+    assert game.puzzle.title == old_puzzle.title
+
+
+def test_soup_poster_questions_fill_up_from_all_entries() -> None:
+    """只有一条「是」时，服务端战报「他们问过」也要补齐，不能孤零零一条。"""
+    entries = [
+        {"kind": "question", "prompt": "第一问？", "verdict": "no"},
+        {"kind": "question", "prompt": "第二问？", "verdict": "yes"},
+        {"kind": "question", "prompt": "第三问？", "verdict": "irrelevant"},
+        {"kind": "question", "prompt": "第四问？", "verdict": "no"},
+        {"kind": "question", "prompt": "第五问？", "verdict": "no"},
+    ]
+
+    picked = GameCompanionPlugin._soup_pick_questions(  # noqa: SLF001
+        {"entries": entries}, limit=4
+    )
+    assert len(picked) == 4
+    assert picked[0]["prompt"] == "第二问？", "问出关键事实的排最前"
+    assert len({item["prompt"] for item in picked}) == 4
+
+    # 重复提问仍只留一条，且不影响补齐到 4 条
+    dup = entries + [{"kind": "question", "prompt": "第一问", "verdict": "yes"}]
+    picked2 = GameCompanionPlugin._soup_pick_questions(  # noqa: SLF001
+        {"entries": dup}, limit=4
+    )
+    assert len(picked2) == 4
+    assert sum(1 for item in picked2 if item["prompt"].rstrip("？?") == "第一问") == 1

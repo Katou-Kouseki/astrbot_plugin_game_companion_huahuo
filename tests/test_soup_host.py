@@ -336,3 +336,44 @@ def test_bot_join_settings_are_exposed_in_schema() -> None:
     manager = (root / "room_manager.py").read_text(encoding="utf-8")
     assert "def _online_soup_players" in manager
     assert "turtle_soup_bot_join_every" not in manager
+
+
+@pytest.mark.asyncio
+async def test_host_puzzle_submission_reports_blank_fields() -> None:
+    """标题/提示留空时，事件要说明哪些字段待后台补；填过的不要再补。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    emitted: list[tuple[str, dict]] = []
+
+    async def capture(name: str, _room, payload: dict) -> None:
+        emitted.append((name, dict(payload)))
+
+    manager.event_callback = capture
+    room, visitors = await make_room(manager)
+    surface = "她每天都带两把伞出门，明明一个人住。邻居问她，她只说习惯了。为什么？"
+    solution = "她丈夫三年前在雨夜出车祸去世，两人一直同撑一把伞上班，她带两把是替他拿的。"
+    await manager.apply_soup_host(room, visitors[0].token)
+    await manager.start_soup_host_game(
+        room, visitors[0].token,
+        title="", surface=surface, solution=solution, hints=[],
+    )
+
+    payload = next(p for name, p in emitted if name == "soup_host_puzzle_submitted")
+    assert payload["need_title"] is True
+    assert payload["need_hints"] is True
+    assert payload["surface"] == surface
+    assert payload["solution"] == solution
+
+    # 再来一局，这次把标题和提示都填上：不该再起补全任务
+    emitted.clear()
+    manager2 = RoomManager(turtle_soup_max_players=4)
+    manager2.event_callback = capture
+    room2, visitors2 = await make_room(manager2)
+    await manager.apply_soup_host(room2, visitors2[0].token)
+    await manager.start_soup_host_game(
+        room2, visitors2[0].token,
+        title="雨夜的伞", surface=surface, solution=solution,
+        hints=["和上班有关"],
+    )
+    payload2 = next(p for name, p in emitted if name == "soup_host_puzzle_submitted")
+    assert payload2["need_title"] is False
+    assert payload2["need_hints"] is False

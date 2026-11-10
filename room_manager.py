@@ -3443,6 +3443,9 @@ class RoomManager:
             raise ValueError("汤底太短了，至少写清真正的原因")
         hint_list = [str(item).strip()[:80] for item in (hints or []) if str(item).strip()]
         hint_list = hint_list[:3]
+        # 标题和提示允许留空：留空的交给后台模型补，先把局开起来不挡人。
+        title_given = bool(str(title or "").strip())
+        hints_given = bool(hint_list)
         async with room.lock:
             if room.game_type != "turtle_soup":
                 raise ValueError("当前房间不是海龟汤")
@@ -3497,6 +3500,26 @@ class RoomManager:
             )
         await self._emit(
             "game_started", room, {"turtle_soup": True, "host_number": game.host_number}
+        )
+        # 玩家出的题默认进投稿库（管理台题库管理里能看能改能删）；留空的标题 /
+        # 提示由插件层起后台任务补，RoomManager 不依赖 LLM 和投稿存储。
+        await self._emit(
+            "soup_host_puzzle_submitted",
+            room,
+            {
+                "surface": puzzle.surface,
+                "solution": puzzle.solution,
+                "title": puzzle.title,
+                "hints": list(puzzle.hints),
+                "content_level": puzzle.content_level,
+                "owner": (
+                    str(getattr(seat, "qq", "") or "")
+                    if getattr(seat, "identity_confirmed", False)
+                    else ""
+                ),
+                "need_title": not title_given,
+                "need_hints": not hints_given,
+            },
         )
         return game
 

@@ -483,8 +483,10 @@ async def _seat_and_start(plugin: Any, room: GameRoom, event: Any) -> str:
         except (ValueError, RuntimeError, OSError) as exc:
             return f"你已经在玩家席了，但自动开局失败：{exc}。可以在网页里点「开始」。"
     return (
-        "已经把你排进玩家席并开局，"
-        "直接发「汤 提问 你的问题」、或 @我 问一句 / 交一段推理就能玩。"
+        "已经把你排进玩家席并开局，选一种方式就能玩：\n"
+        "· 汤 提问 你的问题\n"
+        "· @我 问一句\n"
+        "· @我 交一段推理"
     )
 
 
@@ -514,7 +516,13 @@ async def start_soup_room(plugin: Any, event: Any, body: str) -> str:
         return f"开不了房：{exc}"
 
     note = await _seat_and_start(plugin, room, event)
-    return f"🥣 海龟汤开好了：{plugin._room_url(room)}\n{note}"
+    # 标题、链接、玩法各自成段：链接很长，跟标题挤一行在手机上会折得很难读，
+    # 三种玩法挤在一句话里也分不清。链接单独一行方便直接点开。
+    return (
+        "🥣 海龟汤开好了\n\n"
+        f"🔗 {plugin._room_url(room)}\n\n"
+        f"{note}"
+    )
 
 
 async def handle_soup_command(plugin: Any, event: Any) -> str:
