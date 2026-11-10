@@ -531,7 +531,10 @@ async def test_scheduled_flush_fires_after_window() -> None:
     await asyncio.sleep(0.8)
 
     assert len(plugin.sent_texts) == 1
-    assert "连战 1 局" in plugin.sent_texts[0]
+    # 只有一局时不再写成「连战 1 局」，按普通单局战报格式发
+    assert "连战" not in plugin.sent_texts[0]
+    assert "小明" in plugin.sent_texts[0]
+    assert "10 手" in plugin.sent_texts[0]
 
 
 def test_board_series_text_tally() -> None:
@@ -552,6 +555,30 @@ def test_board_series_text_tally() -> None:
     assert "小明获胜（执黑）" in text
     assert "21 手" in text
     assert "花火 1 胜" in text and "玩家 1 胜" in text and "1 平" in text
+
+
+def test_board_series_text_single_entry_not_called_streak() -> None:
+    """单局合并战报不写「连战 1 局」：续战一场就 flush 时按普通单局格式发。"""
+    manager = RoomManager(max_private_rooms=0)
+    plugin = _plugin(manager)
+    room = type("R", (), {"game_type": "gomoku"})()
+    entries = [
+        {
+            "winner_is_ai": False,
+            "winner_name": "小明",
+            "winner_side": "black",
+            "loser_name": "花火",
+            "loser_side": "white",
+            "moves": 12,
+        }
+    ]
+
+    text = plugin._board_series_text(room, entries)
+
+    assert "连战" not in text
+    assert "五子棋" in text
+    assert "小明（执黑）胜 花火（执白）" in text
+    assert "12 手" in text
 
 
 @pytest.mark.asyncio
@@ -584,7 +611,9 @@ async def test_series_flushes_immediately_when_humans_leave_seat() -> None:
     await asyncio.sleep(0)
 
     assert len(plugin.sent_texts) == 1
-    assert "连战 1 局" in plugin.sent_texts[0]
+    assert "连战" not in plugin.sent_texts[0]
+    assert "小明" in plugin.sent_texts[0]
+    assert "12 手" in plugin.sent_texts[0]
 
 
 @pytest.mark.asyncio
@@ -617,7 +646,9 @@ async def test_series_flushes_when_human_goes_offline() -> None:
     await asyncio.sleep(0.2)
 
     assert len(plugin.sent_texts) == 1
-    assert "连战 1 局" in plugin.sent_texts[0]
+    assert "连战" not in plugin.sent_texts[0]
+    assert "花火" in plugin.sent_texts[0]
+    assert "12 手" in plugin.sent_texts[0]
     assert room.pending_board_announces == []
 
 

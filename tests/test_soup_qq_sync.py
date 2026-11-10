@@ -32,6 +32,8 @@ def make_room(*, source: str = "group", game: TurtleSoupGame | None = None):
         source=source,
         session_id="aiocqhttp:group:1",
         game=game if game is not None else make_game(),
+        # 0.5.93 起速报按座位号反查 QQ 头像，会读 room.multiplayer.enabled
+        multiplayer=SimpleNamespace(enabled=False),
     )
 
 
@@ -71,7 +73,7 @@ async def test_three_web_questions_merge_into_one_message() -> None:
     _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
     assert text.startswith("🥣 网页那边刚问了 3 条：")
     assert text.count("\n") == 3  # 标题 + 三行
-    assert "3号问：和灯塔有关吗？" in text
+    assert "3号提问：和灯塔有关吗？" in text
 
 
 @pytest.mark.asyncio
@@ -301,3 +303,47 @@ def test_image_data_limits_rows_and_keeps_overflow() -> None:
     assert len(data["items"]) == plugin.SOUP_SYNC_IMAGE_ROWS
     assert data["overflow"] == 3
     assert data["puzzle"] == "灯塔"
+
+
+@pytest.mark.asyncio
+async def test_web_hint_syncs_to_group() -> None:
+    """网页玩家申请的提示也同步到群，走「问答同步到群的形态」（默认纯文字）。"""
+    plugin = make_plugin()
+    room = make_room()
+    add_entry(
+        room.game,
+        kind="hint",
+        prompt="申请提示",
+        response="重点不在他做了什么",
+        number=2,
+    )
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+
+    await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
+
+    plugin._send_to_origin.assert_awaited_once()  # noqa: SLF001
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "2号" in text
+    assert "申请了提示" in text
+    assert "重点不在他做了什么" in text
+    # 提示没有「是/否」判定，不出现箭头判定
+    assert "→" not in text
+
+
+@pytest.mark.asyncio
+async def test_synthetic_reveal_entry_is_not_synced() -> None:
+    """揭晓/放弃的合成「结束」条目不再同步成「花火推理」。"""
+    plugin = make_plugin()
+    room = make_room()
+    room.game.entries.append(
+        SoupEntry(
+            kind="answer",
+            prompt="投票揭晓汤底",
+            response="本题已揭晓，汤底见下方。",
+            source="web",
+        )
+    )
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+
+    await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
+    plugin._send_to_origin.assert_not_awaited()  # noqa: SLF001

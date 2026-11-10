@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.97"
+    assert metadata["version"] == "0.5.98"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1323,9 +1323,10 @@ def test_series_report_names_the_loser() -> None:
     assert '"loser_name"' in entry
     assert '"loser_side"' in entry
 
-    series = main.split("def _board_series_text", 1)[1].split("async def _send_board_series", 1)[0]
-    assert "loser_name" in series
-    assert "胜 {loser_text}" in series or "胜 {loser}" in series
+    # 单局胜负短句抽成了 _board_entry_result，连战列表与单局战报都复用它
+    result = main.split("def _board_entry_result", 1)[1].split("def _board_series_text", 1)[0]
+    assert "loser_name" in result
+    assert "胜 {loser_text}" in result or "胜 {loser}" in result
 
 
 def test_state_polling_supports_unchanged_rev() -> None:
@@ -1751,3 +1752,30 @@ def test_soup_announce_image_keeps_room_link() -> None:
 
     assert "def _soup_room_link_tail" in main
     assert "recap_with_link" in main
+
+
+def test_soup_hint_syncs_and_reveal_solution_gated() -> None:
+    """网页提示同步到群；汤底只在群内有人附议时发，网页玩家揭晓只通知。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    # 提示跟着问答同步（kind 纳入 hint，正文取 response）
+    assert '"hint"' in main
+    assert "申请了提示" in main
+    # 揭晓汤底：群内附议才给完整汤底
+    assert "def _announce_soup_reveal" in main
+    assert "with_solution=True" in main
+    assert "with_solution=False" in main
+    # 合成「结束」条目不再同步成「花火推理」
+    assert "entry.verdict is None" in main
+    # 夜间模式「提问」发送按钮背景改暗（不再用亮金色 var(--gold)）
+    assert "body.dark .soup-composer-send" in css
+    assert "background: #6b5a26" in css
+
+
+def test_board_series_single_game_not_labelled_streak() -> None:
+    """棋类连战：单局 flush 不写成「连战 1 局」，按普通单局格式发。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "def _board_entry_result" in main
+    assert "len(entries) == 1" in main

@@ -4090,9 +4090,14 @@ class GameCompanionPlugin(Star):
             self._spawn(self._announce_soup_reveal_vote(room, payload, kind="voted"))
             return
         if event_name == "soup_revealed":
-            # 额度用完自动揭晓时不再发 soup_answer_attempted，最后一次推理和
-            # 「为什么突然结束了」都挂在这条 reveal 记录上，得单独入队才不会漏。
-            self._queue_soup_group_sync(room)
+            source = str(payload.get("source") or "")
+            if source == "qq":
+                # 群内有人附议（或群里的人的推理触发揭晓）→ 把完整汤底发到群
+                self._spawn(self._announce_soup_reveal(room, with_solution=True))
+            elif payload.get("reason") == "answer_limit":
+                # 网页玩家的推理额度用完自动揭晓：群里说一声，但汤底不主动给
+                # （他们没参与揭晓，想看答案进网页）。
+                self._spawn(self._announce_soup_reveal(room, with_solution=False))
             return
         if event_name == "soup_answer_attempted":
             self._queue_soup_group_sync(room)
@@ -4112,6 +4117,8 @@ class GameCompanionPlugin(Star):
                 self._spawn(
                     self._announce_turtle_soup_hint(room, hint, visitor=visitor)
                 )
+                # 网页玩家申请的提示也同步到群（跟随「问答同步到群的形态」）
+                self._queue_soup_group_sync(room)
             return
         if event_name == "dice_changed":
             action = str(payload.get("action") or "")
@@ -7189,7 +7196,15 @@ class GameCompanionPlugin(Star):
         if not isinstance(game, TurtleSoupGame) or not game.entries:
             return
         entry = game.entries[-1]
-        if entry.kind not in {"question", "answer"}:
+        if entry.kind not in {"question", "answer", "hint"}:
+            return
+        # 揭晓 / 放弃生成的合成「结束」条目不是玩家问答：同步成「花火推理」会让人
+        # 误以为有人又交了推理，还带一句「汤底见下方」却看不到汤底。
+        if (
+            entry.kind == "answer"
+            and entry.verdict is None
+            and entry.player_number is None
+        ):
             return
         # 群里展示要防剧透：贴着汤底的片段先遮掉
         prompt = entry.prompt
@@ -7203,10 +7218,35 @@ class GameCompanionPlugin(Star):
         # 没有座位号的就是花火自己——玩家出题模式下它也是参与者，
         # 以前这里一律写「玩家」，群里会以为是自己人问的。
         who = f"{entry.player_number}号" if entry.player_number else "花火"
-        head = "提问" if entry.kind == "question" else "推理"
         from_qq = entry.source == "qq"
-        label = f"{who}{head}·{'群' if from_qq else '网页'}"
-        line = f"· {who}{'问' if entry.kind == 'question' else '推理'}：{prompt or '（内容为空）'} → {entry.response or '已记录'}"
+        if entry.kind == "hint":
+            # 提示正文在 response 里（prompt 固定是「申请提示」）：群里贴提示内容
+            hint_text = re.sub(r"\s+", " ", str(entry.response or "")).strip()
+            head = "提示"
+            label = f"{who}提示·{'群' if from_qq else '网页'}"
+            line = f"· {who}申请了提示：{hint_text or '（无内容）'}"
+            display_text = hint_text or "（无内容）"
+            result_text = "💡"
+            tone = "near"
+        else:
+            head = "提问" if entry.kind == "question" else "推理"
+            label = f"{who}{head}·{'群' if from_qq else '网页'}"
+            line = f"· {who}{'问' if entry.kind == 'question' else '推理'}：{prompt or '（内容为空）'} → {entry.response or '已记录'}"
+            display_text = prompt or "（内容为空）"
+            tone = {
+                "yes": "yes",
+                "no": "no",
+                "irrelevant": "no",
+                "partial": "near",
+                "compound": "near",
+            }.get(str(entry.verdict or ""), "info")
+            # 判定结果简写：提问只给「是 / 否 / 无关 / 部分正确」，推理保留完整判定
+            # 原文（「沾到边了，但还差致命机制」），群里一眼看懂又不啰嗦。
+            verdict_label = VERDICT_LABELS.get(str(entry.verdict or ""), "")
+            if entry.kind == "question":
+                result_text = verdict_label or (entry.response or "已记录")
+            else:
+                result_text = entry.response or "已记录"
 
         state = self.__dict__.setdefault("_soup_sync_state", {})
         bucket = state.get(room.room_id)
@@ -7231,20 +7271,6 @@ class GameCompanionPlugin(Star):
         if token in bucket["seen"]:
             return
         bucket["seen"].add(token)
-        tone = {
-            "yes": "yes",
-            "no": "no",
-            "irrelevant": "no",
-            "partial": "near",
-            "compound": "near",
-        }.get(str(entry.verdict or ""), "info")
-        # 判定结果简写：提问只给「是 / 否 / 无关 / 部分正确」，推理保留完整判定
-        # 原文（「沾到边了，但还差致命机制」），群里一眼看懂又不啰嗦。
-        verdict_label = VERDICT_LABELS.get(str(entry.verdict or ""), "")
-        if entry.kind == "question":
-            result_text = verdict_label or (entry.response or "已记录")
-        else:
-            result_text = entry.response or "已记录"
         bucket["items"].append(
             {
                 "label": label,
@@ -7258,7 +7284,7 @@ class GameCompanionPlugin(Star):
                 "avatar_url": avatar_url,
                 "source": "群里" if from_qq else "网页",
                 "kind_cn": head,
-                "prompt": prompt or "（内容为空）",
+                "prompt": display_text,
                 "result": result_text,
                 "tone": tone,
             }
@@ -7505,6 +7531,31 @@ class GameCompanionPlugin(Star):
             text = f"🗳 {actor} {word}揭晓（{votes}/{required}）。"
         await self._send_to_origin(room, text)
 
+    async def _announce_soup_reveal(self, room: GameRoom, *, with_solution: bool) -> None:
+        """汤底揭晓时通知到群。
+
+        群内有人附议（`source=qq`）才算「群里参与了揭晓」，这时才把完整汤底发到群；
+        只有网页玩家揭晓时不主动给汤底，只说明「已揭晓、进网页看」，避免剧透没参与的
+        群友。网页玩家的推理额度用完自动揭晓（answer_limit）也走后者。
+        """
+        if getattr(room, "source", "") != "group":
+            return
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return
+        if not self.announce_target(room):
+            return
+        game = room.game
+        if not isinstance(game, TurtleSoupGame) or game.puzzle is None:
+            return
+        if with_solution:
+            text = f"🥣 汤底揭晓：\n{game.puzzle.solution}"
+        else:
+            text = "🥣 本局汤底已揭晓。"
+            tail = self._soup_room_link_tail(room)
+            if tail:
+                text += "\n" + tail
+        await self._send_to_origin(room, text)
+
     async def _announce_soup_turn(self, room: GameRoom, payload: dict[str, Any]) -> None:
         """严格轮次的「轮到谁提问」播报到群里，能 @ 就 @。
 
@@ -7574,14 +7625,17 @@ class GameCompanionPlugin(Star):
 
     def _soup_sync_text(self, items: list[dict[str, Any]]) -> str:
         """把一批网页问答拼成纯文字：一句一条，最省事也不刷屏。"""
-        lines = [
-            (
-                f"网页玩家{item.get('number') or '花火'}"
-                f"{'提问' if item.get('kind') == 'question' else '推理'}："
-                f"{item.get('prompt') or ''} → {item.get('result') or '已记录'}"
-            )
-            for item in items
-        ]
+        lines: list[str] = []
+        for item in items:
+            number = item.get("number") or "花火"
+            if item.get("kind") == "hint":
+                lines.append(f"网页玩家{number} 申请了提示：{item.get('prompt') or ''}")
+            else:
+                action = "提问" if item.get("kind") == "question" else "推理"
+                lines.append(
+                    f"网页玩家{number}{action}：{item.get('prompt') or ''} "
+                    f"→ {item.get('result') or '已记录'}"
+                )
         if len(lines) == 1:
             return lines[0]
         kinds = {item["kind"] for item in items}
@@ -7589,6 +7643,8 @@ class GameCompanionPlugin(Star):
             head = f"网页那边刚问了 {len(items)} 条："
         elif kinds == {"answer"}:
             head = f"网页那边刚交了 {len(items)} 份推理："
+        elif kinds == {"hint"}:
+            head = f"网页那边刚申请了 {len(items)} 条提示："
         else:
             head = f"网页那边刚有 {len(items)} 条动态："
         return f"🥣 {head}\n" + "\n".join(lines)
@@ -9672,49 +9728,55 @@ class GameCompanionPlugin(Star):
                     # 只有自己还是队首时才清时间戳：防抖重排时旧任务不能覆盖新计划
                     room.pending_board_flush_at = 0.0
 
+    @staticmethod
+    def _board_entry_result(entry: dict[str, object]) -> str:
+        """单局胜负短句（不含手数）：连战列表与单局合并战报共用。"""
+        side = {"red": "红", "black": "黑", "white": "白"}.get(
+            str(entry.get("winner_side") or ""), ""
+        )
+        side_text = f"（执{side}）" if side else ""
+        loser_side = {"red": "红", "black": "黑", "white": "白"}.get(
+            str(entry.get("loser_side") or ""), ""
+        )
+        if entry.get("draw"):
+            return "🤝 平局"
+        if entry.get("winner_is_ai"):
+            winner = f"花火{side_text}"
+            loser = str(entry.get("loser_name") or "")
+            if loser and loser_side:
+                return f"🏆 {winner}胜 {loser}（执{loser_side}）"
+            if loser:
+                return f"🏆 {winner}胜 {loser}"
+            return f"🏆 花火获胜{side_text}"
+        name = str(entry.get("winner_name") or "")
+        loser = str(entry.get("loser_name") or "")
+        if name and loser:
+            loser_text = f"{loser}（执{loser_side}）" if loser_side else loser
+            return f"🏆 {name}{side_text}胜 {loser_text}"
+        if name:
+            return f"🏆 {name}获胜{side_text}"
+        return f"🏆 玩家获胜{side_text}"
+
     def _board_series_text(
         self, room: GameRoom, entries: list[dict[str, object]]
     ) -> str:
-        """连战合并文案：逐局胜负 + 手数，末尾总比分。"""
+        """连战合并文案：逐局胜负 + 手数，末尾总比分；单局按普通战报格式。
+
+        以前单局也会被写成「连战 1 局」——玩家刚续战一场、还没停下来，冷却窗口内
+        只有这一局，等它被 flush 时就冒出「连战 1 局」，读起来像系统误判了连战。
+        """
         if not entries:
             return ""
         label = self.manager._game_label(room.game_type)
+        if len(entries) == 1:
+            entry = entries[0]
+            moves = int(entry.get("moves") or 0)
+            return f"♟️ {label} · {self._board_entry_result(entry)} · {moves} 手"
         shown = entries[:10]
         lines = [f"♟️ {label} · 连战 {len(entries)} 局"]
         for index, entry in enumerate(shown, 1):
-            side = {"red": "红", "black": "黑", "white": "白"}.get(
-                str(entry.get("winner_side") or ""), ""
-            )
-            side_text = f"（执{side}）" if side else ""
-            loser_side = {"red": "红", "black": "黑", "white": "白"}.get(
-                str(entry.get("loser_side") or ""), ""
-            )
             moves = int(entry.get("moves") or 0)
-            if entry.get("draw"):
-                result = "🤝 平局"
-            elif entry.get("winner_is_ai"):
-                winner = f"花火{side_text}"
-                loser = str(entry.get("loser_name") or "")
-                result = (
-                    f"🏆 {winner}胜 {loser}（执{loser_side}）"
-                    if loser and loser_side
-                    else f"🏆 {winner}胜 {loser}"
-                    if loser
-                    else f"🏆 花火获胜{side_text}"
-                )
-            else:
-                name = str(entry.get("winner_name") or "")
-                loser = str(entry.get("loser_name") or "")
-                if name and loser:
-                    loser_text = (
-                        f"{loser}（执{loser_side}）" if loser_side else loser
-                    )
-                    result = f"🏆 {name}{side_text}胜 {loser_text}"
-                elif name:
-                    result = f"🏆 {name}获胜{side_text}"
-                else:
-                    result = f"🏆 玩家获胜{side_text}"
-            lines.append(f"{index}. {result} · {moves} 手")
+            lines.append(f"{index}. {self._board_entry_result(entry)} · {moves} 手")
         if len(entries) > len(shown):
             lines.append(f"…另有 {len(entries) - len(shown)} 局略")
         ai_wins = sum(1 for e in entries if e.get("winner_is_ai"))
@@ -9764,10 +9826,12 @@ class GameCompanionPlugin(Star):
         summary = self._board_series_text(room, entries).replace("\n", "；")
         if not summary:
             return ""
+        single = len(entries) == 1
+        topic = "这盘棋" if single else "这一串连续进行的棋类对局（连战）"
         prompt = (
-            "请为一串连续进行的棋类对局（连战）生成简短复盘（中文，2~3 句，"
+            f"请为{topic}生成简短复盘（中文，2~3 句，"
             "轻松俏皮口吻，可以带点网络梗和适度 emoji，不要标题、不要编号、不要客套感谢语）。\n"
-            f"连战情况：{summary}\n"
+            f"对局情况：{summary}\n"
             "风格参考：像一起玩的朋友在茶余饭后聊这几盘棋，点一下整体走势"
             "（谁占上风、有没有被翻盘），绝不攻击或贬低任何一方。"
         )

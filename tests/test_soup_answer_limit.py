@@ -236,16 +236,35 @@ async def test_player_host_mode_also_stops_at_the_budget() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reveal_event_puts_the_last_guess_into_the_group_digest() -> None:
-    """自动揭晓不发 soup_answer_attempted，最后一次推理得靠 reveal 事件入队。"""
+async def test_reveal_event_gates_solution_on_group_vote() -> None:
+    """汤底只在群内有人附议（source=qq）时发到群；网页玩家揭晓只发「已揭晓」通知。
+
+    以前 reveal 事件会把合成「投票揭晓汤底」条目塞进群同步，群里看到的是
+    「花火推理：投票揭晓汤底 → 本题已揭晓，汤底见下方」，却看不到汤底。
+    """
     from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
 
     plugin = object.__new__(GameCompanionPlugin)
-    plugin._game_label = lambda _name: "海龟汤"  # noqa: SLF001
-    queued: list = []
-    plugin._queue_soup_group_sync = lambda room: queued.append(room)  # noqa: SLF001
+    calls: list = []
+    plugin._announce_soup_reveal = lambda _room, **kw: calls.append(kw)  # noqa: SLF001
+    plugin._spawn = lambda coro: coro
 
     room = SimpleNamespace(game_type="turtle_soup", session_id="aiocqhttp:group:1")
-    await plugin._on_room_event("soup_revealed", room, {"reason": "answer_limit"})  # noqa: SLF001
 
-    assert queued == [room]
+    await plugin._on_room_event(  # noqa: SLF001
+        "soup_revealed", room, {"source": "qq", "reason": "revealed"}
+    )
+    assert calls == [{"with_solution": True}]
+
+    calls.clear()
+    await plugin._on_room_event(  # noqa: SLF001
+        "soup_revealed", room, {"source": "web", "reason": "revealed"}
+    )
+    # 只有网页玩家投票揭晓：不主动把汤底发到群
+    assert calls == []
+
+    await plugin._on_room_event(  # noqa: SLF001
+        "soup_revealed", room, {"source": "web", "reason": "answer_limit"}
+    )
+    # 网页玩家的推理额度用完自动揭晓：群里只说「已揭晓」，不给汤底
+    assert calls == [{"with_solution": False}]
