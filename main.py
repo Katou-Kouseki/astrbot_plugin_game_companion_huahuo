@@ -1046,19 +1046,19 @@ _SOUP_SYNC_TMPL = """<!DOCTYPE html>
 <style>
   @page { margin: 0; }
   html, body { margin: 0; padding: 0; background: #1b100b; }
-  .wrap { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
-  .strip { display: flex; align-items: center; gap: 11px; width: 708px; box-sizing: border-box;
-    padding: 9px 13px; border-radius: 10px; background: #2a1c12;
+  .wrap { display: flex; flex-direction: column; gap: 5px; padding: 5px; }
+  .strip { display: flex; align-items: center; gap: 9px; box-sizing: border-box;
+    padding: 8px 11px; border-radius: 9px; background: #2a1c12;
     border: 1px solid rgba(255,215,154,.16); }
-  .avatar { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; overflow: hidden;
-    background: rgba(232,163,61,.22); color: #ffd79a; font-size: 13px; font-weight: 800;
-    text-align: center; line-height: 34px; }
-  .avatar img { width: 34px; height: 34px; object-fit: cover; }
+  .avatar { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; overflow: hidden;
+    background: rgba(232,163,61,.22); color: #ffd79a; font-size: 12px; font-weight: 800;
+    text-align: center; line-height: 30px; }
+  .avatar img { width: 30px; height: 30px; object-fit: cover; }
   .body { flex: 1 1 auto; min-width: 0; }
-  .meta { font-size: 12px; color: rgba(246,231,211,.55); margin-bottom: 1px; }
-  .text { font-size: 16px; line-height: 1.45; color: #fdf3e6; word-break: break-word; }
-  .chip { flex: 0 0 auto; max-width: 160px; padding: 4px 11px; border-radius: 999px;
-    font-size: 13px; font-weight: 700; line-height: 1.3; word-break: break-word; }
+  .meta { font-size: 11.5px; color: rgba(246,231,211,.55); margin-bottom: 1px; }
+  .text { font-size: 15px; line-height: 1.4; color: #fdf3e6; word-break: break-word; }
+  .chip { flex: 0 0 auto; max-width: 130px; padding: 3px 10px; border-radius: 999px;
+    font-size: 12.5px; font-weight: 700; line-height: 1.3; word-break: break-word; }
   .chip.yes { background: rgba(125,220,154,.2); color: #a8f0c0; }
   .chip.no { background: rgba(255,255,255,.1); color: rgba(246,231,211,.8); }
   .chip.near { background: rgba(232,163,61,.22); color: #ffd79a; }
@@ -7349,6 +7349,7 @@ class GameCompanionPlugin(Star):
         template: str,
         data: dict[str, Any],
         *,
+        viewport_width: int = 720,
         viewport_height: int | None = None,
         scale: str = "ultra",
     ) -> str:
@@ -7364,7 +7365,7 @@ class GameCompanionPlugin(Star):
         options = {
             "type": "png",
             "full_page": True,
-            "viewport_width": 720,
+            "viewport_width": viewport_width,
             "device_scale_factor_level": scale,
             "timeout": 20000,
         }
@@ -7378,9 +7379,13 @@ class GameCompanionPlugin(Star):
         return await self._download_image_base64(url)
 
     async def _soup_sync_t2i(self, data: dict[str, Any]) -> str:
-        """把问答速报渲染成横条图片：压扁、不塞标题和脚注，消除底部大片空白。"""
+        """把问答速报渲染成横条图片：压扁、缩短、不塞标题和脚注，消除底部空白。"""
         return await self._soup_t2i(
-            _SOUP_SYNC_TMPL, data, viewport_height=60, scale="normal"
+            _SOUP_SYNC_TMPL,
+            data,
+            viewport_width=440,
+            viewport_height=60,
+            scale="high",
         )
 
     # ---------------- 海龟汤：开局卡（群里也能看见题目） ----------------
@@ -7455,7 +7460,8 @@ class GameCompanionPlugin(Star):
             return
         game.opening_announced = True
         try:
-            b64 = await self._soup_t2i(_SOUP_OPEN_TMPL, data)
+            # viewport_height 压到内容以下，full_page 就按内容高度截，去掉底部黑边
+            b64 = await self._soup_t2i(_SOUP_OPEN_TMPL, data, viewport_height=100)
         except Exception as exc:
             logger.info("[GameCompanion] 开局卡渲染失败，回退纯文字：%s", exc)
             b64 = ""

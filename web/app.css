@@ -497,8 +497,8 @@ body.soup-sheet-open { overflow: hidden; }
 .soup-composer-send svg { width: 15px; }
 .soup-composer-send:disabled { opacity: .55; }
 .soup-composer.is-answer .soup-composer-send { background: #9b4b37; color: #fff; }
-body.dark .soup-composer-send { color: #ffffff; }
-body.dark .soup-composer.is-answer .soup-composer-send { color: #fff; }
+body.dark .soup-composer-send { color: #f4e9d3; }
+body.dark .soup-composer.is-answer .soup-composer-send { color: #f7efe3; }
 .soup-hint-row { gap: 8px; }
 .soup-hint-row #soupRevealButton {
   border-color: color-mix(in srgb, var(--warning) 32%, transparent);

@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.95"
+    assert metadata["version"] == "0.5.96"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1715,9 +1715,10 @@ def test_soup_sync_strip_and_result_link() -> None:
     app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
 
-    # 横条图：压扁，用 viewport_height + normal 缩放消除大片空白
+    # 横条图：压扁、缩短、更清晰，用 viewport_width/viewport_height 消除大片空白
+    assert "viewport_width=440" in main
     assert "viewport_height=60" in main
-    assert 'scale="normal"' in main
+    assert 'scale="high"' in main
     # 判定简写：提问只给「是 / 否 / 无关」
     assert "verdict_label" in main
     # 战报末尾附房间链接 + 网页查看引导

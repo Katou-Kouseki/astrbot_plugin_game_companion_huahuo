@@ -451,7 +451,10 @@ async def _seat_and_start(plugin: Any, room: GameRoom, event: Any) -> str:
             await plugin.manager.start_game(room, token, "")
         except (ValueError, RuntimeError, OSError) as exc:
             return f"你已经在玩家席了，但自动开局失败：{exc}。可以在网页里点「开始」。"
-    return "已经把你排进玩家席并开局，直接发「汤 提问 你的问题」就能问。"
+    return (
+        "已经把你排进玩家席并开局，"
+        "直接发「汤 提问 你的问题」、或 @我 问一句 / 交一段推理就能玩。"
+    )
 
 
 async def start_soup_room(plugin: Any, event: Any, body: str) -> str:

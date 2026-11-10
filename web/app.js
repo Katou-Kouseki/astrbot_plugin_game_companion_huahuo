@@ -3082,11 +3082,19 @@
       btn.setAttribute("aria-pressed", active ? "true" : "false");
     });
     const input = document.getElementById("soupComposerInput");
-    if (input && !input.value.trim()) {
-      input.placeholder = SOUP_COMPOSER_MODES[soupComposerMode].placeholder;
+    if (input) {
+      if (soupComposerBusy) {
+        input.placeholder = "花火判断中，稍等…";
+      } else if (!input.value.trim()) {
+        input.placeholder = SOUP_COMPOSER_MODES[soupComposerMode].placeholder;
+      }
     }
     const sendText = document.getElementById("soupComposerSendText");
-    if (sendText) sendText.textContent = SOUP_COMPOSER_MODES[soupComposerMode].send;
+    if (sendText) {
+      sendText.textContent = soupComposerBusy
+        ? "判断中…"
+        : SOUP_COMPOSER_MODES[soupComposerMode].send;
+    }
   }
 
   async function submitSoupComposer(event) {
@@ -3104,6 +3112,10 @@
     soupComposerBusy = true;
     const send = document.getElementById("soupComposerSend");
     if (send) send.disabled = true;
+    // 提交后立刻清空输入框并给出「判断中」反馈：用户可以接着输入下一句，
+    // 不用等判定返回；按钮变「判断中…」，输入框占位符提示在等 LLM。
+    if (input) input.value = "";
+    render();
     try {
       // 判定可能要排队（上一条还在判），和聊天入口一样给更长的超时
       const data = await request(
@@ -3112,10 +3124,6 @@
         { visitor_token: visitorToken, text },
         45000,
       );
-      if (input) {
-        input.value = "";
-        input.placeholder = SOUP_COMPOSER_MODES[mode].placeholder;
-      }
       if (data?.room) setRoom(data.room);
       const reply = String(data?.reply || "").trim();
       if (data?.limited && reply) showToast(reply);
