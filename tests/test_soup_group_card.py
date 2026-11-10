@@ -75,6 +75,8 @@ def make_plugin() -> GameCompanionPlugin:
     plugin.turtle_soup_max_answers = 4
     plugin._send_to_origin = AsyncMock(return_value=True)  # noqa: SLF001
     plugin._send_to_origin_image = AsyncMock(return_value=True)  # noqa: SLF001
+    # 测试里不真等重试退避
+    plugin.SOUP_OPENING_RETRY_DELAY = 0
     return plugin
 
 
@@ -151,3 +153,41 @@ def test_opening_data_counts_seats_and_limits() -> None:
     assert data["questions"] == "35 次"
     assert data["hints"] == "5 次"
     assert "灯塔管理员" in data["surface"]
+
+
+@pytest.mark.asyncio
+async def test_opening_card_retries_send_then_falls_back_to_text() -> None:
+    """发图两次失败后改发文字，别让这一局的汤面在群里缺席。"""
+    plugin = make_plugin()
+    room = make_room()
+    room.game = make_game()
+    plugin._soup_t2i = AsyncMock(return_value="BASE64")  # noqa: SLF001
+    plugin._send_to_origin_image = AsyncMock(  # noqa: SLF001
+        side_effect=[False, False, False]
+    )
+
+    await plugin._announce_soup_opening(room)  # noqa: SLF001
+
+    assert plugin._send_to_origin_image.await_count == 3  # noqa: SLF001
+    plugin._send_to_origin.assert_awaited_once()  # noqa: SLF001
+    assert room.game.opening_announced is True
+
+
+@pytest.mark.asyncio
+async def test_opening_card_all_failures_do_not_mark_announced_and_schedule_retry() -> None:
+    """渲染、发图、文字全失败：不写幂等标记，并排一次延迟兜底。"""
+    plugin = make_plugin()
+    room = make_room()
+    room.game = make_game()
+    plugin._soup_t2i = AsyncMock(side_effect=RuntimeError("没有 t2i"))  # noqa: SLF001
+    plugin._send_to_origin = AsyncMock(return_value=False)  # noqa: SLF001
+    scheduled: list = []
+    plugin._spawn = lambda coro: scheduled.append(coro)  # noqa: SLF001
+
+    await plugin._announce_soup_opening(room)  # noqa: SLF001
+
+    assert room.game.opening_announced is False
+    assert plugin._soup_t2i.await_count == 3  # noqa: SLF001
+    assert plugin._send_to_origin.await_count == 3  # noqa: SLF001
+    assert len(scheduled) == 1
+    scheduled[0].close()

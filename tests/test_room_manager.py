@@ -102,6 +102,33 @@ async def test_disabled_games_reject_new_rooms_switches_and_rematches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_switch_game_archives_final_result_for_pending_announces() -> None:
+    """刚打完就换玩法：前端快照清空，异步播报/分享战报仍能取到上一局数据。"""
+    from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+
+    manager = RoomManager()
+    room = await create_room(manager, source="group")
+    board_snap = {"game_type": "gomoku", "winner_name": "阿甲", "moves": 23}
+    soup_snap = {"title": "灯塔", "result": "solved"}
+    room.last_board_result = board_snap
+    room.last_soup_result = soup_snap
+    room.status = "finished"
+
+    assert await manager.switch_game(room, "tictactoe")
+    # 前端不能把上一款游戏的胜负带进新玩法
+    assert room.last_board_result is None
+    assert room.last_soup_result is None
+
+    plugin = GameCompanionPlugin.__new__(GameCompanionPlugin)
+    assert plugin._board_result_payload(room) == board_snap
+    assert plugin._soup_result_payload(room) == soup_snap
+
+    # 归档只在短时窗口内有效，过期不再返回旧数据
+    room.archived_result_at = time.time() - 601
+    assert plugin._archived_result(room, "archived_board_result") is None
+
+
+@pytest.mark.asyncio
 async def test_disabling_game_does_not_interrupt_an_active_round() -> None:
     manager = RoomManager()
     room = await create_room(manager, source="private")

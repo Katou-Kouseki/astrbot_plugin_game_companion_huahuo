@@ -80,6 +80,45 @@ async def test_three_web_questions_merge_into_one_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_same_millisecond_same_text_entries_are_not_deduped() -> None:
+    """同一毫秒里连着问两句一样的话，两句都要同步；同一条被两个事件触发才去重。"""
+    plugin = make_plugin()
+    room = make_room()
+    game = room.game
+    add_entry(game, kind="question", prompt="和灯塔有关吗？", response="不是", number=3)
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+    add_entry(game, kind="question", prompt="和灯塔有关吗？", response="不是", number=4)
+    # 强制同一时间戳：旧的「毫秒 + 类型 + 正文」去重键会把两句当成一句
+    for entry in game.entries:
+        entry.at = 1700000000.123
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+    # 同一条记录被第二个事件再触发一次，不该重复进队
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+
+    await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert text.startswith("🥣 网页那边刚问了 2 条：")
+    assert text.count("和灯塔有关吗") == 2
+
+
+@pytest.mark.asyncio
+async def test_admin_room_bound_to_group_still_syncs_questions() -> None:
+    """管理台开房但绑了群号：问答同步不该按开房来源一刀切拦掉。"""
+    plugin = make_plugin()
+    room = make_room(source="admin")
+    room.session_id = "admin:console"
+    room.group_id = "20001"
+    room.platform = "admin"
+    add_entry(room.game, kind="question", prompt="和灯塔有关吗？", response="不是", number=3)
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+
+    await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
+    plugin._send_to_origin.assert_awaited_once()  # noqa: SLF001
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "和灯塔有关吗" in text
+
+
+@pytest.mark.asyncio
 async def test_text_mode_keeps_every_line() -> None:
     """默认纯文字：不截断也不省略，问了 7 条就老老实实列 7 条。"""
     plugin = make_plugin()
@@ -128,6 +167,8 @@ async def test_qq_entries_are_not_echoed_back_to_group() -> None:
 async def test_private_room_has_no_group_to_sync_to() -> None:
     plugin = make_plugin()
     room = make_room(source="private")
+    room.session_id = "aiocqhttp:private:10001"
+    assert plugin._group_announce_session(room) == ""  # noqa: SLF001
     add_entry(room.game, kind="question", prompt="是灯塔吗？", response="是", number=1)
     plugin._queue_soup_group_sync(room)  # noqa: SLF001
 

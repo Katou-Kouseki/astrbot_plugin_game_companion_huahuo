@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -121,6 +122,11 @@ class SoupPuzzle:
         return data
 
 
+# 每条问答的进程内唯一序号：群同步按它去重。以前用「毫秒时间 + 类型 + 正文前
+# 80 字」，同一毫秒里连着添两条同内容就会误判成同一条，中间那条永远发不出去。
+_ENTRY_SEQ = itertools.count(1)
+
+
 @dataclass(slots=True)
 class SoupEntry:
     kind: SoupEntryKind
@@ -131,6 +137,7 @@ class SoupEntry:
     player_number: int | None = None
     bot_action: SoupBotAction | None = None
     at: float = field(default_factory=time.time)
+    seq: int = field(default_factory=lambda: next(_ENTRY_SEQ))
 
     def snapshot(self) -> dict[str, object]:
         return {

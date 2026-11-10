@@ -33,6 +33,19 @@ def _visitor_uid(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:10]
 
 
+def _public_identity(qq: object) -> str:
+    """已绑定 QQ 的不可逆短标识：浏览器重新 join、访客 token 换了也不变。
+
+    聊天视角要认「人」而不是「这一次连接」；只拿 token 派生 uid 的话，身份失效
+    自动重新入房后，自己发过的历史消息会全被归成「别人」。同样是哈希截断，
+    不泄露原始 QQ。
+    """
+    key = str(qq or "").strip()
+    if not key:
+        return ""
+    return hashlib.sha256(("game-companion-qq:" + key).encode("utf-8")).hexdigest()[:12]
+
+
 GameType = Literal[
     "gomoku", "xiangqi", "weiqi", "tictactoe", "othello", "turtle_soup",
     "pig_dice", "draw_guess", "blackjack", "undercover",
@@ -435,6 +448,11 @@ class GameRoom:
     last_board_result: dict[str, object] | None = None
     # 海龟汤终局快照：群通知 / 分享战报 / 复盘读取本局汤面、提问与结果（不含汤底）
     last_soup_result: dict[str, object] | None = None
+    # 换玩法会把 last_* 清空，但局末的自动播报、分享战报都是异步任务，可能在
+    # 清空之后才读快照。这里留一份带时间戳的短时归档，避免「刚打完就换游戏」丢战报。
+    archived_board_result: dict[str, object] | None = None
+    archived_soup_result: dict[str, object] | None = None
+    archived_result_at: float = 0.0
     # 谁是卧底当前行动点（某位发言人 / 某一轮投票）的标识与起始时间。
     # 挂机要从「轮到他」开始算，不能用全局最后一次操作时间，
     # 否则等别人发言的在线玩家一进投票轮就被当成挂机交给 Bot 代投。
@@ -581,6 +599,12 @@ class GameRoom:
                 # 发送者的公开稳定标识：前端据此区分「我发的」和「别人发的」，
                 # 做聊天视角左/右与气泡颜色。用不可逆短 uid，绝不泄露原始 token。
                 "sender_uid": _visitor_uid(visitor.token) if visitor is not None else "",
+                # 身份绑定后按 QQ 派生的稳定归属：token 轮换也不变，前端优先用它
+                "sender_identity": (
+                    _public_identity(getattr(visitor, "qq", ""))
+                    if visitor is not None
+                    else ""
+                ),
             }
         )
         self.next_message_id += 1
@@ -732,6 +756,9 @@ class GameRoom:
             "created_at": self.created_at,
             "visitor_number": visitor.number if visitor else None,
             "visitor_uid": _visitor_uid(visitor.token) if visitor else "",
+            "visitor_identity": (
+                _public_identity(getattr(visitor, "qq", "")) if visitor else ""
+            ),
             "visitor_display_name": (
                 visitor.display_name if visitor and visitor.identity_confirmed else ""
             ),

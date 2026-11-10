@@ -42,6 +42,10 @@ from astrbot_plugin_game_companion_huahuo.turtle_soup import TurtleSoupGame
         ("汤 战报", ("recap", "")),
         ("汤", ("start", "")),
         ("海龟汤", ("start", "")),
+        ("海龟汤 提示", ("hint", "")),
+        # 全角斜杠：AstrBot 指令前缀只认半角 /，这种写法由群聊兜底收下
+        ("／汤状态", ("status", "")),
+        ("／汤提示", ("hint", "")),
         # 没说动作词的整句按提问处理——群里最常用的就是直接问
         ("汤 是不是和灯塔有关", ("question", "是不是和灯塔有关")),
     ],
@@ -52,7 +56,11 @@ def test_parse_commands(message: str, expected: tuple[str, str]) -> None:
 
 @pytest.mark.parametrize(
     "message",
-    ["汤圆好吃", "汤面来了", "今天喝汤", "你画的汤", "", "海龟", "汤勺在哪"],
+    [
+        "汤圆好吃", "汤面来了", "今天喝汤", "你画的汤", "", "海龟", "汤勺在哪",
+        # 「海龟汤」开头但只是闲聊，不该被当成一次提问白扣额度
+        "海龟汤真好玩", "海龟汤面", "海龟汤底到底是什么",
+    ],
 )
 def test_non_commands_are_ignored(message: str) -> None:
     assert parse_soup_command(message) is None
@@ -249,10 +257,14 @@ async def test_room_must_be_active() -> None:
 
 @pytest.mark.asyncio
 async def test_qq_activity_marks_player_online() -> None:
-    """群里说话说明人在，在线人数节奏不能被算成缺席。"""
+    """群里说话说明人在，在线人数节奏不能被算成缺席。
+
+    但群里发言不等于网页还开着：不能把已关闭的浏览器复活成 connected，
+    否则结算后的房间会被误判「还有真人在线」而迟迟不回收。
+    """
     from astrbot_plugin_game_companion_huahuo.qq_bridge import _mark_active
 
-    visitor = SimpleNamespace(last_seen_at=0.0, connected=False)
+    visitor = SimpleNamespace(last_seen_at=0.0, connected=False, left_at=123.0)
     room = SimpleNamespace(
         multiplayer=SimpleNamespace(
             enabled=True,
@@ -261,7 +273,8 @@ async def test_qq_activity_marks_player_online() -> None:
         visitors={"tk": visitor},
     )
     _mark_active(room, "10001")
-    assert visitor.connected is True
+    assert visitor.connected is False
+    assert visitor.left_at is None
     assert visitor.last_seen_at > 0
 
 

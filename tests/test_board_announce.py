@@ -948,3 +948,12 @@ async def test_board_announce_text_includes_loser() -> None:
 
     assert "花火获胜" in text
     assert "小明落败" in text
+
+
+def test_board_entry_result_does_not_guess_winner_without_human_won() -> None:
+    """human_won 缺失时不再硬写「玩家获胜」，避免把战报结论写反。"""
+    result = GameCompanionPlugin._board_entry_result
+    assert "玩家获胜" in result({"human_won": True})
+    assert "花火获胜" in result({"human_won": False})
+    assert result({"human_won": None}) == "🏆 本局已结束"
+    assert result({"human_won": None, "winner_side": "black"}) == "🏆 执黑方获胜"

@@ -1047,7 +1047,8 @@ _SOUP_SYNC_TMPL = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=720">
+<!-- 横条图按 440 视口渲染（保持紧凑不拉长），meta 必须与实际视口一致 -->
+<meta name="viewport" content="width=440">
 <style>
   @page { margin: 0; }
   html, body { margin: 0; padding: 0; background: #1b100b; }
@@ -3296,6 +3297,9 @@ class GameCompanionPlugin(Star):
         # 不带 / 的「汤 xxx」由这里兜底；带 / 的是 AstrBot 明确指令，
         # 交给上面的 @filter.command 处理，避免两个入口对同一条消息各回一次。
         r"^\s*(?:\[CQ:at[^\]]*\]\s*|@[^\s]{1,24}\s+)?"
+        # 全角「／汤」：AstrBot 指令前缀只认半角 /，这种写法得由兜底收下。
+        # 半角 / 仍留给上面的 @filter.command，不放进这里，避免两个入口各回一条。
+        r"／?\s*"
         r"(?:海龟汤|汤(?=\s|$|开局|开房|开始|提问|问一下|推理|验证|答题|答案|看答案"
         r"|揭晓|复盘|回顾|附议|同意|反对|提示|状态|查看|帮助|菜单))"
     )
@@ -4195,8 +4199,12 @@ class GameCompanionPlugin(Star):
             qq_participated = bool(payload.get("qq_participated")) or (
                 str(payload.get("source") or "") == "qq"
             )
+            # 多人房凑够票的那一刻不发 requested/voted，这里按序补一条「表决通过」
+            # 再播揭晓，群里才不会凭空冒出一份汤底。
             self._spawn(
-                self._announce_soup_reveal(room, with_solution=qq_participated)
+                self._announce_soup_decision(
+                    room, payload, with_solution=qq_participated
+                )
             )
             return
         if event_name == "soup_answer_attempted":
@@ -4330,6 +4338,19 @@ class GameCompanionPlugin(Star):
             self._spawn(self._decide_rematch(room, visitor=visitor))
             return
         if event_name == "game_switched":
+            # 换玩法时 room_manager 已归档上一局快照；这里再按事件 payload 兜一次，
+            # 保证「刚结束就换游戏」时还没跑完的异步播报 / 分享战报仍取得到数据。
+            if not float(getattr(room, "archived_result_at", 0.0) or 0.0):
+                board_snap = payload.get("board_result")
+                soup_snap = payload.get("soup_result")
+                if isinstance(board_snap, dict) or isinstance(soup_snap, dict):
+                    room.archived_board_result = (
+                        board_snap if isinstance(board_snap, dict) else None
+                    )
+                    room.archived_soup_result = (
+                        soup_snap if isinstance(soup_snap, dict) else None
+                    )
+                    room.archived_result_at = time.time()
             # 换游戏时旧玩法的连战先发出去，新玩法连战重新起算（第一局按单局通报）
             old_game = str(payload.get("from") or "")
             if old_game:
@@ -7294,7 +7315,9 @@ class GameCompanionPlugin(Star):
             return
         if not getattr(self, "turtle_soup_qq_bridge", True):
             return
-        if getattr(room, "source", "") != "group" or not room.session_id:
+        # 按「能不能通知到群」判定，不按开房来源：管理台开房但绑定了群号时
+        # source 是 admin，以前问答一条都同步不到群里。私聊房仍不放开。
+        if not self._group_announce_session(room):
             return
         game = room.game
         if not isinstance(game, TurtleSoupGame) or not game.entries:
@@ -7370,8 +7393,11 @@ class GameCompanionPlugin(Star):
             }
             state[room.room_id] = bucket
             self._spawn(self._flush_soup_group_sync(room.room_id))
-        # 同一条记录只进队一次：两个事件（问答/推理）都可能触发到这里
-        token = (round(float(entry.at or 0), 3), entry.kind, entry.prompt[:80])
+        # 同一条记录只进队一次：两个事件（问答/推理）都可能触发到这里。
+        # 用条目自己的递增序号去重，不再拿「毫秒时间 + 类型 + 正文」拼键——
+        # 同一毫秒里连添两条同内容、或正文前 80 字一样的长问题，会被吞掉一条。
+        seq = int(getattr(entry, "seq", 0) or 0)
+        token = seq if seq > 0 else id(entry)
         if token in bucket["seen"]:
             return
         bucket["seen"].add(token)
@@ -7515,13 +7541,17 @@ class GameCompanionPlugin(Star):
         return await self._download_image_base64(url)
 
     async def _soup_sync_t2i(self, data: dict[str, Any]) -> str:
-        """把问答速报渲染成横条图片：压扁、缩短、不塞标题和脚注，消除底部空白。"""
+        """把问答速报渲染成横条图片：压扁、缩短、不塞标题和脚注，消除底部空白。
+
+        宽度保持 440（群里不希望横条拉得太长），但清晰度与其它战报海报统一
+        用最高档 ultra；模板 meta 也对齐到 440，避免声明 720 实际 440 的缩放偏差。
+        """
         return await self._soup_t2i(
             _SOUP_SYNC_TMPL,
             data,
             viewport_width=440,
             viewport_height=60,
-            scale="high",
+            scale="ultra",
         )
 
     # ---------------- 海龟汤：开局卡（群里也能看见题目） ----------------
@@ -7574,11 +7604,20 @@ class GameCompanionPlugin(Star):
         ]
         return "\n".join(line for line in lines if line)
 
-    async def _announce_soup_opening(self, room: GameRoom) -> None:
+    # 开局卡发送：渲染 / 发图 / 文字兜底各试几次，全失败再排一次延迟重试
+    SOUP_OPENING_ATTEMPTS = 3
+    SOUP_OPENING_RETRY_DELAY = 0.4
+    SOUP_OPENING_LATE_RETRY_DELAY = 8.0
+
+    async def _announce_soup_opening(
+        self, room: GameRoom, *, _attempt: int = 1
+    ) -> None:
         """题目一出好就往群里发一张开局卡：汤面、难度、次数和玩法。
 
         以前群里只收到「房间链接」，不进网页就不知道在玩什么；群里开的局更是
-        连题面都看不到。t2i 渲染失败就退回纯文字，绝不让这一局没声音。
+        连题面都看不到。t2i 一时不可用、平台刚启动还没发得出消息都很常见，
+        所以渲染 / 发图 / 文字兜底都做有限重试，全失败再排一次延迟兜底。
+        只有真的发出去了才写幂等标记，禁言 / 平台未就绪时不会永久丢掉这一局。
         """
         if not getattr(self, "turtle_soup_qq_bridge", True):
             return
@@ -7594,20 +7633,65 @@ class GameCompanionPlugin(Star):
             return
         if not self.announce_target(room):
             return
-        try:
-            # viewport_height 压到内容以下，full_page 就按内容高度截，去掉底部黑边
-            b64 = await self._soup_t2i(_SOUP_OPEN_TMPL, data, viewport_height=100)
-        except Exception as exc:
-            logger.info("[GameCompanion] 开局卡渲染失败，回退纯文字：%s", exc)
-            b64 = ""
-        # 真发出去了才写幂等标记：以前写在发送前，禁言/平台没加载时这一局的
-        # 汤面就再也不会出现在群里。
-        if b64 and await self._send_to_origin_image(room, "", b64):
-            game.opening_announced = True
-            return
+        attempts = max(1, int(getattr(self, "SOUP_OPENING_ATTEMPTS", 3)))
+        delay = float(getattr(self, "SOUP_OPENING_RETRY_DELAY", 0.4) or 0)
+
+        async def _pause(index: int) -> None:
+            if index + 1 < attempts and delay > 0:
+                await asyncio.sleep(delay)
+
+        b64 = ""
+        for index in range(attempts):
+            try:
+                # viewport_height 压到内容以下，full_page 就按内容高度截，去掉底部黑边
+                b64 = await self._soup_t2i(_SOUP_OPEN_TMPL, data, viewport_height=100)
+                if b64:
+                    break
+            except Exception as exc:
+                logger.info("[GameCompanion] 开局卡渲染失败（第 %d 次）：%s", index + 1, exc)
+                b64 = ""
+            await _pause(index)
+
+        if b64:
+            for index in range(attempts):
+                try:
+                    if await self._send_to_origin_image(room, "", b64):
+                        game.opening_announced = True
+                        return
+                except Exception as exc:
+                    logger.info("[GameCompanion] 开局卡发图失败（第 %d 次）：%s", index + 1, exc)
+                await _pause(index)
+
         text = self._soup_opening_text(room, game)
-        if text and await self._send_to_origin(room, text):
-            game.opening_announced = True
+        if text:
+            for index in range(attempts):
+                try:
+                    if await self._send_to_origin(room, text):
+                        game.opening_announced = True
+                        return
+                except Exception as exc:
+                    logger.info("[GameCompanion] 开局卡文字兜底失败（第 %d 次）：%s", index + 1, exc)
+                await _pause(index)
+
+        logger.warning(
+            "[GameCompanion] 开局卡 %d 次尝试都没发出去，本局群里暂时没有汤面",
+            attempts,
+        )
+        # 开局那一瞬间平台可能还没就绪：过几秒整体再试一次，且不无限自我排队
+        if _attempt < 2:
+            spawn = getattr(self, "_spawn", None)
+            if spawn is not None:
+                spawn(self._retry_soup_opening(room, _attempt + 1))
+
+    async def _retry_soup_opening(self, room: GameRoom, attempt: int) -> None:
+        """开局卡整体失败的延迟兜底：房间还在、还没发过就再试一轮。"""
+        await asyncio.sleep(float(getattr(self, "SOUP_OPENING_LATE_RETRY_DELAY", 8.0)))
+        game = room.game
+        if not isinstance(game, TurtleSoupGame):
+            return
+        if getattr(game, "opening_announced", False):
+            return
+        await self._announce_soup_opening(room, _attempt=attempt)
 
     async def _announce_soup_reveal_vote(
         self, room: GameRoom, payload: dict[str, Any], *, kind: str
@@ -7631,10 +7715,22 @@ class GameCompanionPlugin(Star):
                 f"🗳 {actor} 发起揭晓汤底（{votes}/{required}）。"
                 f"还差 {left} 人：发「汤 附议」同意，或「汤 反对」否决。"
             )
+        elif kind == "passed":
+            text = (
+                f"🗳 {actor} 附议后票数凑齐（{votes}/{required}），本局揭晓汤底。"
+            )
         else:
             word = "同意" if bool(payload.get("agree")) else "不同意"
             text = f"🗳 {actor} {word}揭晓（{votes}/{required}）。"
         await self._send_to_origin(room, text)
+
+    async def _announce_soup_decision(
+        self, room: GameRoom, payload: dict[str, Any], *, with_solution: bool
+    ) -> None:
+        """揭晓由表决达成时，先播表决结果再播汤底，避免两条消息抢顺序。"""
+        if int(payload.get("required") or 0) > 1:
+            await self._announce_soup_reveal_vote(room, payload, kind="passed")
+        await self._announce_soup_reveal(room, with_solution=with_solution)
 
     async def _announce_soup_reveal(self, room: GameRoom, *, with_solution: bool) -> None:
         """汤底揭晓时通知到群。
@@ -7667,7 +7763,7 @@ class GameCompanionPlugin(Star):
         莫名其妙的消息。网页上的玩家多半没绑 QQ，这时退化成带座位号的纯文本，
         不带 @（@ 一个空 QQ 会把整条消息吞掉）。
         """
-        if room.source != "group":
+        if not self._group_announce_session(room):
             return
         if not getattr(self, "turtle_soup_qq_bridge", True):
             return
@@ -7908,6 +8004,17 @@ class GameCompanionPlugin(Star):
         return ""
 
     @staticmethod
+    def _group_announce_session(room: GameRoom) -> str:
+        """能通知到「群」时返回群会话串，否则空串。
+
+        `announce_target` 也接受私聊会话；问答同步 / 轮次播报这类「给一屋子人看」
+        的消息不能在私聊里冒出来。管理台开房但绑了群号时 session_id 是
+        `admin:console`，announce_target 会用 group_id 拼出真实群会话，这里照样认。
+        """
+        session = GameCompanionPlugin.announce_target(room)
+        return session if ":GroupMessage:" in session else ""
+
+    @staticmethod
     def announce_target(room: GameRoom) -> str:
         """播报要发到哪个会话；发不出去时返回空串。
 
@@ -8085,16 +8192,28 @@ class GameCompanionPlugin(Star):
 
     # ---------------- 海龟汤：群通知 / 分享战报 / 花火复盘 ----------------
 
+    # 换玩法归档的有效期：只用来兜住「刚打完就切游戏」时还没跑完的异步播报
+    ARCHIVED_RESULT_TTL_SECONDS = 600
+
+    def _archived_result(self, room: GameRoom, key: str) -> dict[str, Any] | None:
+        """读取换玩法时归档的上一局快照；超时或类型不符都视为没有。"""
+        at = float(getattr(room, "archived_result_at", 0.0) or 0.0)
+        if not at or time.time() - at > self.ARCHIVED_RESULT_TTL_SECONDS:
+            return None
+        snap = getattr(room, key, None)
+        return snap if isinstance(snap, dict) and snap else None
+
     def _soup_result_payload(self, room: GameRoom) -> dict[str, Any] | None:
         """本局海龟汤快照（不带汤底）。
 
         播报是异步任务，玩家可能已经点了「再来一道」；届时 room.game 已换成新题，
         直接读游戏对象会播成新题的汤面。所以统一读 _finish_game 冻结的快照。
+        刚打完就换玩法时 last_* 已被清空，退回短时归档。
         """
         snap = getattr(room, "last_soup_result", None)
         if isinstance(snap, dict) and snap:
             return snap
-        return None
+        return self._archived_result(room, "archived_soup_result")
 
     @staticmethod
     def _soup_pick_questions(
@@ -8418,7 +8537,7 @@ class GameCompanionPlugin(Star):
         import io
 
         data = self._soup_poster_data(room, avatars)
-        S = 1.5
+        S = 2.0
         W = int(720 * S)
         pad = int(46 * S)
         text_w = W - pad * 2
@@ -8794,6 +8913,10 @@ class GameCompanionPlugin(Star):
         snap = getattr(room, "last_board_result", None)
         if isinstance(snap, dict) and snap:
             return snap
+        # 局末自动播报可能晚于「换玩法」才跑；那时 last_* 已清，读短时归档
+        archived = self._archived_result(room, "archived_board_result")
+        if archived is not None:
+            return archived
         game = room.game
         if game is None or not isinstance(game, BOARD_GAME_CLASSES):
             return None
@@ -9181,7 +9304,7 @@ class GameCompanionPlugin(Star):
         import io
 
         data = self._board_poster_data(room)
-        S = 1.5
+        S = 2.0
         W, H = int(720 * S), int(720 * S)
         pad = int(46 * S)
         img = Image.new("RGBA", (W, H), (13, 31, 23, 255))
@@ -9947,10 +10070,16 @@ class GameCompanionPlugin(Star):
             return f"🏆 {name}{side_text}胜 {loser_text}"
         if name:
             return f"🏆 {name}获胜{side_text}"
-        # 单人局兜底（无座位可查胜者）：按 human_won 判负方，负方必是玩家或花火之一
+        # 单人局兜底（无座位可查胜者）：按 human_won 判负方，负方必是玩家或花火之一。
+        # human_won 缺失时不能再默认写「玩家获胜」——旧快照 / 特殊玩法下这个字段
+        # 可能没写，硬猜会把战报结论整个写反。只报能确认的执方，其余中性收尾。
+        if entry.get("human_won") is True:
+            return f"🏆 玩家获胜{side_text} · 花火落败"
         if entry.get("human_won") is False:
             return f"🏆 花火获胜{side_text} · 玩家落败"
-        return f"🏆 玩家获胜{side_text} · 花火落败"
+        if side:
+            return f"🏆 执{side}方获胜"
+        return "🏆 本局已结束"
 
     def _board_series_text(
         self, room: GameRoom, entries: list[dict[str, object]]
@@ -10197,8 +10326,12 @@ class GameCompanionPlugin(Star):
         }.get(camp, (255, 209, 102))
 
         # 文字绘制统一使用模块级 Pillow 助手（_pillow_*），支持中文/emoji 混排
-        S = 1.5
-        W, H, M = int(720 * S), int(720 * S), int(46 * S)
+        S = 2.0
+        W, M = int(720 * S), int(46 * S)
+        # 名单要「每人一行」且不截断，人数多时画布得跟着长高。先按人数开一块
+        # 足够大的画布，画完再按实际内容底部裁掉多余空白。
+        H = int(720 * S) + (len(players) + 4) * int(40 * S)
+        content_bottom = int(720 * S)
         img = Image.new("RGBA", (W, H), (32, 9, 7, 255))
         d = ImageDraw.Draw(img, "RGBA")
         # 背景渐变（深红「大字报」暖调，与分享战报的深蓝区分）
@@ -10219,8 +10352,7 @@ class GameCompanionPlugin(Star):
         stripe = _pillow_blend((61, 18, 14), (255, 255, 255), 12)
         for x in range(-H, W + H, int(36 * S)):
             d.line([(x, 0), (x + H, H)], fill=stripe)
-        # 底部阵营色强调条
-        d.rectangle([0, H - int(10 * S), W, H], fill=camp_col + (255,))
+        # 底部阵营色强调条留到算出实际内容高度后再画，避免画布留白把它顶掉
 
         # 顶部标题行
         title_font = _pillow_font(True, int(22 * S))
@@ -10250,20 +10382,27 @@ class GameCompanionPlugin(Star):
             stroke_fill=(255, 255, 255),
         )
 
-        # 获胜玩家名单（金色，最多 3 行）
+        # 获胜玩家名单（金色，每人一行）：人数多时缩字号，但不再按固定 3 行截断
         winners = [
             f"{num}号" + (f" {name}" if name else "")
             for num, name, p_camp in names if p_camp == camp
         ]
         w_line_count = 0
+        w_line_h = int(40 * S)
         if winners:
-            w_font = _pillow_font(True, int(26 * S))
-            ef_w = _pillow_emoji_font(int(26 * S))
-            lines = _pillow_wrap(d, "🎉 " + "\n".join(winners), W - 2 * M, w_font, 3, ef_w)
+            w_size = int(26 * S) if len(winners) <= 4 else int(20 * S)
+            w_line_h = int(40 * S) if len(winners) <= 4 else int(30 * S)
+            w_font = _pillow_font(True, w_size)
+            ef_w = _pillow_emoji_font(w_size)
+            # 每人一行，再留 2 行给超长名字的自动折行
+            lines = _pillow_wrap(
+                d, "🎉 " + "\n".join(winners), W - 2 * M,
+                w_font, len(winners) + 2, ef_w,
+            )
             w_line_count = len(lines)
             for i, line in enumerate(lines):
                 _pillow_draw_text(
-                    d, W / 2, int(330 * S) + i * int(40 * S),
+                    d, W / 2, int(330 * S) + i * w_line_h,
                     line, w_font, (255, 227, 176, 255), anchor="mm", efont=ef_w,
                 )
 
@@ -10275,8 +10414,10 @@ class GameCompanionPlugin(Star):
                 anchor="mm", efont=ef,
             )
 
+        pill_top = int(330 * S) + max(1, w_line_count) * w_line_h + int(26 * S)
+        pill_block_h = 0
         if cw or uw:
-            pill_top = int(356 * S) + max(1, w_line_count) * int(40 * S)
+            pill_block_h = int(102 * S)
             pill_font = _pillow_font(True, int(20 * S))
             ef_p = _pillow_emoji_font(int(20 * S))
             cw_t = _pillow_truncate(d, f"🛡️ 平民「{cw}」", int(300 * S), pill_font, ef_p)
@@ -10306,19 +10447,36 @@ class GameCompanionPlugin(Star):
             for num, name, p_camp in names
             if p_camp and p_camp != camp
         ]
+        loser_top = max(int(636 * S), pill_top + pill_block_h + int(26 * S))
+        l_line_count = 0
+        l_line_h = int(26 * S)
         if losers:
-            l_font = _pillow_font(False, int(17 * S))
-            ef_l = _pillow_emoji_font(int(17 * S))
-            lines = _pillow_wrap(d, "💔 败方：" + "\n".join(losers), W - 2 * M - int(150 * S), l_font, 2, ef_l)
+            l_size = int(17 * S) if len(losers) <= 4 else int(14 * S)
+            l_line_h = int(26 * S) if len(losers) <= 4 else int(21 * S)
+            l_font = _pillow_font(False, l_size)
+            ef_l = _pillow_emoji_font(l_size)
+            # 同样不按固定 2 行截断：败方每人一行，画布会跟着长高
+            lines = _pillow_wrap(
+                d, "💔 败方：" + "\n".join(losers),
+                W - 2 * M - int(150 * S), l_font, len(losers) + 2, ef_l,
+            )
+            l_line_count = len(lines)
             for i, line in enumerate(lines):
                 _pillow_draw_text(
-                    d, M, int(636 * S) + i * int(26 * S),
+                    d, M, loser_top + i * l_line_h,
                     line, l_font, (255, 255, 255, 140), anchor="ls", efont=ef_l,
                 )
+        content_bottom = max(
+            int(720 * S), loser_top + max(0, l_line_count) * l_line_h + int(56 * S)
+        )
 
-        # 右下角水印
+        # 底部阵营色强调条 + 右下角水印，都贴着真实内容底部
+        d.rectangle(
+            [0, content_bottom - int(10 * S), W, content_bottom],
+            fill=camp_col + (255,),
+        )
         d.text(
-            (W - M, H - int(32 * S)),
+            (W - M, content_bottom - int(32 * S)),
             "由 花火 监督生成",
             font=_pillow_font(False, int(14 * S)),
             fill=(255, 255, 255, 102),
@@ -10329,7 +10487,9 @@ class GameCompanionPlugin(Star):
         import io
 
         buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="PNG")
+        img.crop((0, 0, W, min(content_bottom, H))).convert("RGB").save(
+            buf, format="PNG"
+        )
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
     def _undercover_report_data(
@@ -10391,7 +10551,7 @@ class GameCompanionPlugin(Star):
 
         rows = data.get("rows") or []
         subtitle = str(data.get("subtitle") or "")
-        S = 1.5
+        S = 2.0
         W = int(720 * S)
         pad = int(44 * S)
         header_top = int(40 * S)
@@ -10788,7 +10948,7 @@ class GameCompanionPlugin(Star):
         sections = data.get("sections") or []
         subtitle = str(data.get("subtitle") or "")
         scope = str(data.get("scope") or "")
-        S = 1.5
+        S = 2.0
         W = int(720 * S)
         pad = int(44 * S)
         header_top = int(40 * S)

@@ -2990,6 +2990,37 @@ class RoomManager:
             if room.status in {"active", "paused"} and not force:
                 raise ValueError("当前对局尚未结束，需要明确放弃本局后才能切换游戏")
             previous = room.game_type
+            # 海龟汤对局中故意不摘离线座位（群里的人常关着网页继续玩）。但换成
+            # 别的玩法时，这些长期不在线的座位会变成「僵尸席」占住新玩法容量，
+            # 还会让房间回收一直误判「有真人在线」。只清真正长时间离线的。
+            if previous == "turtle_soup" and room.multiplayer.enabled:
+                now = time.time()
+                stale: list[str] = []
+                for seat in list(room.multiplayer.seats):
+                    if seat.is_ai:
+                        continue
+                    visitor = room.visitors.get(seat.visitor_token)
+                    if visitor is None:
+                        stale.append(seat.visitor_token)
+                        continue
+                    last_seen = float(getattr(visitor, "last_seen_at", 0.0) or 0.0)
+                    if (
+                        not visitor.connected
+                        and now - last_seen >= self.QQ_SEAT_OFFLINE_SECONDS
+                    ):
+                        stale.append(seat.visitor_token)
+                for token in stale:
+                    try:
+                        self._remove_multiplayer_seat(room, token)
+                    except ValueError:
+                        continue
+                if stale:
+                    if room.multiplayer.seats:
+                        self._sync_primary_player(room)
+                    room.add_message(
+                        "system",
+                        f"切换玩法时清掉了 {len(stale)} 个长时间未在线的玩家席。",
+                    )
             room.game_type = game_type
             self._configure_multiplayer(room)
             room.game = None
@@ -2997,6 +3028,15 @@ class RoomManager:
             room.player_empty_since = None if room.player_token else time.time()
             # 换玩法后旧终局快照作废：不清理的话，前端结算弹窗/分享战报会拿到上一款
             # 游戏的胜负结果（比如五子棋的胜者被当成你画我猜的胜者），残留不清。
+            # 但局末自动播报 / 分享战报是异步任务，可能在清空之后才读；先归档一份，
+            # 由 main.py 在 10 分钟内按需取用，超时自动失效。
+            room.archived_board_result = room.last_board_result
+            room.archived_soup_result = room.last_soup_result
+            room.archived_result_at = (
+                time.time()
+                if room.last_board_result or room.last_soup_result
+                else 0.0
+            )
             room.last_board_result = None
             room.last_soup_result = None
             room.touch()
@@ -3005,7 +3045,17 @@ class RoomManager:
                 f"游戏已从{self._game_label(previous)}切换为{self._game_label(game_type)}。",
             )
         await self._emit(
-            "game_switched", room, {"from": previous, "to": game_type, "forced": force}
+            "game_switched",
+            room,
+            {
+                "from": previous,
+                "to": game_type,
+                "forced": force,
+                # 把刚归档的快照一并交给事件消费者：换游戏分支可以立刻用，
+                # 不必再去猜 room 上还剩什么。
+                "board_result": room.archived_board_result,
+                "soup_result": room.archived_soup_result,
+            },
         )
         return True
 
@@ -4041,6 +4091,11 @@ class RoomManager:
                     "qq_participated": bool(
                         source == "qq" or getattr(game, "qq_reveal_interest", False)
                     ),
+                    # 达成揭晓的这一票不再发 requested/voted；把表决结果随揭晓事件
+                    # 带出去，群里才知道是谁把票凑够的。
+                    "votes": int(payload.get("votes") or 0),
+                    "required": int(payload.get("required") or 0),
+                    "actor": str(payload.get("actor") or "有玩家"),
                 },
             )
         else:
@@ -4108,6 +4163,10 @@ class RoomManager:
                     "qq_participated": bool(
                         source == "qq" or getattr(game, "qq_reveal_interest", False)
                     ),
+                    # 同上：最后一票附议不再单独发 voted，结果随揭晓事件一起播
+                    "votes": int(payload.get("votes") or 0),
+                    "required": int(payload.get("required") or 0),
+                    "actor": str(payload.get("actor") or "有玩家"),
                 },
             )
         else:
@@ -5449,6 +5508,7 @@ class RoomManager:
                 if player is None or player.autopilot:
                     continue
                 player.autopilot = True
+                player.autopilot_reason = "offline"
                 room.add_message("system", f"{label} 掉线，已切换托管。")
                 continue
             self._remove_multiplayer_seat(room, seat.visitor_token)
@@ -5487,6 +5547,27 @@ class RoomManager:
         if seat is None:
             return
         seat.last_action_at = time.time() if now is None else float(now)
+        # 在线挂机被临时托管的人，一旦真有操作就算「人回来了」，立刻解除托管。
+        # 这是 AFK 托管唯一可靠的恢复信号：挂机时心跳本来就是新鲜的。
+        self._clear_undercover_afk_autopilot(room, seat)
+
+    def _clear_undercover_afk_autopilot(
+        self, room: GameRoom, seat: PlayerSeat
+    ) -> None:
+        """玩家有真实操作 → 解除「在线挂机」托管（掉线托管走重连流程）。"""
+        game = room.game
+        if not isinstance(game, UndercoverGame) or game.finished:
+            return
+        player = game.player_for_uid(_visitor_uid(seat.visitor_token))
+        if (
+            player is None
+            or not getattr(player, "autopilot", False)
+            or getattr(player, "autopilot_reason", "") != "afk"
+        ):
+            return
+        player.autopilot = False
+        player.autopilot_reason = ""
+        room.add_message("system", f"{player.label} 已回到游戏，托管解除。")
 
     def _duel_afk_seat(self, room: GameRoom, now: float) -> PlayerSeat | None:
         """找一个「页面上仍在线、但长时间没有任何操作」的真人棋类座位。
@@ -5595,7 +5676,10 @@ class RoomManager:
             return True
         player = self._undercover_player_for_seat(room, seat)
         if player is not None and getattr(player, "autopilot", False):
-            return True
+            # 在线挂机的托管只是个「待解除」标记，仍按行动点计时判断：
+            # 否则人回来了、只是还没轮到他操作，也会被永久当成离线立刻代打。
+            if getattr(player, "autopilot_reason", "") != "afk":
+                return True
         visitor = room.visitors.get(seat.visitor_token)
         if visitor is None or not visitor.connected:
             return True
@@ -5611,12 +5695,18 @@ class RoomManager:
         return now - last >= self.UNDERCOVER_AFK_SECONDS
 
     def _restore_undercover_autopilot(self, room: GameRoom, now: float) -> None:
-        """玩家重新连上（心跳恢复）后自动解除托管。"""
+        """掉线托管的玩家重新连上（心跳恢复）后自动解除。
+
+        在线挂机托管（reason=afk）不在这里解除：那种玩家心跳一直新鲜，判据是
+        「有没有真实操作」，交给 `_touch_seat_action` 处理，否则页面没关就会秒解除。
+        """
         game = room.game
         if not isinstance(game, UndercoverGame) or game.finished:
             return
         for player in game.players:
             if not getattr(player, "autopilot", False):
+                continue
+            if getattr(player, "autopilot_reason", "") == "afk":
                 continue
             seat = next(
                 (
@@ -5629,6 +5719,7 @@ class RoomManager:
             if seat is None:
                 # 座位已经不在（开局前离席/退到观众席）：清标记，避免状态残留
                 player.autopilot = False
+                player.autopilot_reason = ""
                 continue
             visitor = room.visitors.get(seat.visitor_token)
             if visitor is None or not visitor.connected:
@@ -5636,6 +5727,7 @@ class RoomManager:
             if now - visitor.last_seen_at >= self.DUEL_OFFLINE_SECONDS:
                 continue
             player.autopilot = False
+            player.autopilot_reason = ""
             room.add_message(
                 "system", f"{self._visitor_label(visitor)} 已重新连接，托管已解除。"
             )
@@ -5656,6 +5748,29 @@ class RoomManager:
             room.undercover_action_key = key
             room.undercover_action_at = float(now)
 
+    def _mark_undercover_afk_actor(
+        self, room: GameRoom, seat: PlayerSeat | None
+    ) -> None:
+        """因为「在线挂机」触发代打时，也写一个托管标记。
+
+        以前 AFK 只让 LLM 代打一次、不留任何状态，玩家回来后没有明确的「解除」
+        路径，只能靠新行动点重新计时蒙对。标记写清楚后，下一次真实操作就会解除。
+        """
+        if seat is None:
+            return
+        game = room.game
+        if not isinstance(game, UndercoverGame) or game.finished:
+            return
+        visitor = room.visitors.get(seat.visitor_token)
+        if visitor is None or not visitor.connected:
+            return  # 真离线由 _vacate_departed_seats 标 offline
+        player = game.player_for_uid(_visitor_uid(seat.visitor_token))
+        if player is None or player.autopilot:
+            return
+        player.autopilot = True
+        player.autopilot_reason = "afk"
+        room.add_message("system", f"{player.label} 长时间未操作，已临时托管。")
+
     def _undercover_autopilot_due(self, room: GameRoom, now: float) -> bool:
         """是否有「托管/离线玩家」正卡着当前行动点，需要立刻代打。
 
@@ -5675,7 +5790,10 @@ class RoomManager:
             if expected is None:
                 return False
             seat = self._undercover_seat_for_number(room, int(expected))
-            return self._undercover_seat_detached(room, seat, now)
+            if not self._undercover_seat_detached(room, seat, now):
+                return False
+            self._mark_undercover_afk_actor(room, seat)
+            return True
         if game.phase == "voting":
             pending = game.pending_round
             if pending is None:
@@ -5685,6 +5803,7 @@ class RoomManager:
                     continue
                 seat = self._undercover_seat_for_number(room, int(number))
                 if self._undercover_seat_detached(room, seat, now):
+                    self._mark_undercover_afk_actor(room, seat)
                     return True
         return False
 

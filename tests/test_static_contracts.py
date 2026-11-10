@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.03"
+    assert metadata["version"] == "0.6.04"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1747,7 +1747,7 @@ def test_soup_sync_strip_and_result_link() -> None:
     # 横条图：压扁、缩短、更清晰，用 viewport_width/viewport_height 消除大片空白
     assert "viewport_width=440" in main
     assert "viewport_height=60" in main
-    assert 'scale="high"' in main
+    assert 'scale="ultra"' in main
     # 判定简写：提问只给「是 / 否 / 无关」
     assert "verdict_label" in main
     # 战报末尾附房间链接 + 网页查看引导
@@ -1943,3 +1943,96 @@ def test_undercover_afk_autopilot_and_name_layout() -> None:
     assert 'f"{num}号" + (f" {name}" if name else "")' in main
     # 玩家逐行，不再顿号挤在一行
     assert '"\\n".join(winners)' in main
+
+
+def test_final_result_survives_game_switch_for_pending_announces() -> None:
+    """换玩法清快照时留短时归档，异步播报/分享战报还能取到上一局。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+
+    assert "archived_board_result" in models and "archived_soup_result" in models
+    assert "def _archived_result" in main
+    assert "ARCHIVED_RESULT_TTL_SECONDS" in main
+    assert '"board_result": room.archived_board_result' in rm
+    assert "return self._archived_result(room," in main
+
+
+def test_soup_group_sync_uses_group_session_not_room_source() -> None:
+    """问答同步按「能否通知到群」判定，管理台绑群房间也发，私聊房不发。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "def _group_announce_session" in main
+    assert '":GroupMessage:"' in main
+    assert "if not self._group_announce_session(room):" in main
+
+
+def test_soup_sync_dedupe_and_reveal_decision() -> None:
+    """群同步按条目递增序号去重；揭晓达成补播表决结果。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    soup = (ROOT / "turtle_soup.py").read_text(encoding="utf-8")
+
+    assert "seq: int = field(default_factory=lambda: next(_ENTRY_SEQ))" in soup
+    assert "token = seq if seq > 0 else id(entry)" in main
+    assert "async def _announce_soup_decision" in main
+    assert 'kind="passed"' in main
+
+
+def test_undercover_and_board_posters_never_truncate_names() -> None:
+    """卧底名单逐行画完不截断；棋类胜负信息不足时不硬猜赢家。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "len(winners) + 2" in main and "len(losers) + 2" in main
+    assert "img.crop((0, 0, W, min(content_bottom, H)))" in main
+    assert 'return "🏆 本局已结束"' in main
+
+
+def test_undercover_afk_autopilot_is_restorable() -> None:
+    """在线挂机托管留原因标记，只在真实操作时解除。"""
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    uc = (ROOT / "undercover.py").read_text(encoding="utf-8")
+    assert "autopilot_reason" in uc and "autopilot_reason" in rm
+    assert "def _clear_undercover_afk_autopilot" in rm
+    assert "def _mark_undercover_afk_actor" in rm
+
+
+def test_chat_bubbles_follow_stable_identity() -> None:
+    """聊天归属按 QQ 派生的稳定标识，token 轮换后历史消息仍算自己的。"""
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    js = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    assert "def _public_identity" in models
+    assert '"sender_identity"' in models and '"visitor_identity"' in models
+    assert "message.sender_identity === room.visitor_identity" in js
+
+
+def test_opening_card_retries_and_late_fallback() -> None:
+    """开局卡渲染/发送有重试，全失败再排延迟兜底。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "SOUP_OPENING_ATTEMPTS = 3" in main
+    assert "async def _retry_soup_opening" in main
+    assert "self._send_to_origin(room, text)" in main
+
+
+def test_soup_zombie_seats_and_room_recycling() -> None:
+    """群里说话不复活已关闭的网页；换玩法清长期离线座位。"""
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    assert "visitor.connected = True" not in bridge.split("def _mark_active", 1)[1].split("def ", 1)[0]
+    assert "切换玩法时清掉了" in rm
+
+
+def test_render_quality_is_uniformly_highest() -> None:
+    """所有 t2i 用 ultra；横条模板 meta 对齐 440；Pillow 海报统一 2x。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "scale=\"high\"" not in main
+    assert main.count('"device_scale_factor_level": "ultra"') == 5
+    assert 'content="width=440"' in main
+    assert "S = 1.5" not in main
+    assert main.count("S = 2.0") == 5
+
+
+def test_fullwidth_slash_and_soup_chatter_are_handled() -> None:
+    """全角／汤能被兜底收下；海龟汤开头的闲聊不再被当提问。"""
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert r"[/／!！]" in bridge
+    assert 'r"／?\\s*"' in main
+    assert 'rest = text[len("海龟汤") :]' in bridge

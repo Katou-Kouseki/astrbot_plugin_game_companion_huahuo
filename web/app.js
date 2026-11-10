@@ -2745,9 +2745,14 @@
     messages.slice(-60).forEach((message) => {
       const role = message.role || "system";
       // 「我发的」还是「别人发的」：只有 user 消息分左右与颜色，system 居中、bot 恒靠左
-      const mine = role === "user"
-        && Boolean(message.sender_uid)
-        && message.sender_uid === room.visitor_uid;
+      // 认「人」不认「这一次连接」：身份失效自动重新 join 后 token 会换，
+      // 只用 sender_uid 会把自己的历史消息全归成别人。绑定过身份就用稳定的
+      // identity 比较，匿名/老消息再回退到 token 派生的 uid。
+      const mine = role === "user" && (
+        room.visitor_identity && message.sender_identity
+          ? message.sender_identity === room.visitor_identity
+          : Boolean(message.sender_uid) && message.sender_uid === room.visitor_uid
+      );
       const item = document.createElement("article");
       item.className = `message ${role} ${message.message_type || "chat"}${
         role === "user" ? (mine ? " mine" : " other") : ""

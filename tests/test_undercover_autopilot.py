@@ -121,6 +121,59 @@ async def test_autopilot_due_when_current_speaker_is_offline() -> None:
 
 
 @pytest.mark.asyncio
+async def test_afk_autopilot_has_explicit_restore_path() -> None:
+    """在线挂机托管要留标记；心跳恢复不解除，真实操作才解除。"""
+    manager = RoomManager()
+    room = await make_room(manager)
+    visitors, game = await seat_players(manager, room)
+    now = time.time()
+    for visitor in visitors:
+        visitor.connected = True
+        visitor.last_seen_at = now
+
+    # 先让行动点建立起来，再把计时起点往前拨，模拟「轮到他之后一直没动」
+    assert manager._undercover_autopilot_due(room, now) is False
+    stale = now - manager.UNDERCOVER_AFK_SECONDS - 1
+    room.undercover_action_at = stale
+    room.multiplayer.seats[0].last_action_at = stale
+    assert manager._undercover_autopilot_due(room, now) is True
+
+    player = game.players[0]
+    assert player.autopilot is True
+    assert player.autopilot_reason == "afk"
+    assert has_message(room, "已临时托管")
+
+    # 心跳一直新鲜，重连流程不能把 AFK 托管秒解除
+    manager._restore_undercover_autopilot(room, now)
+    assert player.autopilot is True
+
+    # 玩家真的操作了一次才算回来
+    manager._touch_seat_action(room, visitors[0].token, now=now)
+    assert player.autopilot is False
+    assert player.autopilot_reason == ""
+    assert has_message(room, "托管解除")
+
+
+@pytest.mark.asyncio
+async def test_offline_autopilot_is_cleared_on_reconnect() -> None:
+    """掉线托管仍按老规则：心跳恢复即解除，不受新增 AFK 分支影响。"""
+    manager = RoomManager()
+    room = await make_room(manager)
+    visitors, game = await seat_players(manager, room)
+    now = time.time()
+    visitors[0].connected = False
+    visitors[0].left_at = now - manager.DEPARTED_LEAVE_GRACE_SECONDS - 1
+    manager._vacate_departed_seats(room, now)
+    assert game.players[0].autopilot_reason == "offline"
+
+    visitors[0].connected = True
+    visitors[0].last_seen_at = now
+    manager._restore_undercover_autopilot(room, now)
+    assert game.players[0].autopilot is False
+    assert game.players[0].autopilot_reason == ""
+
+
+@pytest.mark.asyncio
 async def test_autopilot_due_ignored_for_online_players() -> None:
     manager = RoomManager()
     room = await make_room(manager)

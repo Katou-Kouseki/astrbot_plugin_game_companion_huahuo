@@ -89,7 +89,7 @@ SOUP_EXPLICIT_COMMANDS: tuple[str, ...] = (
     "汤反对",
 )
 
-_PREFIX_RE = re.compile(r"^\s*[/!！]\s*")
+_PREFIX_RE = re.compile(r"^\s*[/／!！]\s*")
 _NO_ROOM_ACTIONS = frozenset(
     {
         "question",
@@ -116,6 +116,12 @@ def parse_soup_command(message: str) -> tuple[str, str] | None:
     text = _PREFIX_RE.sub("", _strip_at_prefix(str(message or ""))).strip()
     if text.startswith("海龟汤"):
         rest = text[len("海龟汤") :]
+        # 和「汤」一样要求后面是空白或已知动作词，否则「海龟汤真好玩」会被
+        # 当成一次提问，白扣一轮额度
+        if rest and not rest[0].isspace() and not any(
+            rest.startswith(word) for word in _ACTION_WORDS
+        ):
+            return None
     elif text.startswith("汤"):
         rest = text[1:]
         if rest and not rest[0].isspace() and not any(
@@ -168,6 +174,10 @@ def _mark_active(room: GameRoom, qq: str) -> None:
 
     同时清掉 `left_at`：群里玩的人可能刚才顺手关了网页，人其实还在群里，
     不清这个标记就会被当成「关页面走人」移出玩家席。
+
+    但**不能**把 `connected` 改回 True：在群里发言只证明人还在群里，不证明
+    网页还开着。以前这里会把早已关页的访客一直「复活」，房间回收时误判
+    「还有真人在线」，结算后挂着的房间就被拖到 30 分钟宽限才销毁。
     """
     if not qq or not room.multiplayer.enabled:
         return
@@ -178,7 +188,6 @@ def _mark_active(room: GameRoom, qq: str) -> None:
     if visitor is None:
         return
     visitor.last_seen_at = time.time()
-    visitor.connected = True
     visitor.left_at = None
 
 

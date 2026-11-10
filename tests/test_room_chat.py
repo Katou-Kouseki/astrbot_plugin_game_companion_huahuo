@@ -67,6 +67,30 @@ async def test_room_chat_distinguishes_anonymous_and_bound_spectators() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_sender_identity_survives_token_rotation() -> None:
+    """同一个已绑定玩家换 token 重新入房，历史消息仍归为「我发的」。"""
+    from astrbot_plugin_game_companion_huahuo.models import _public_identity
+
+    manager = RoomManager()
+    room = await make_room(manager)
+    first = await manager.join(room)
+    first.qq = "10002"
+    first.identity_confirmed = True
+    room.add_message("user", "轮换前的一条消息", visitor=first)
+    message = room.messages[-1]
+    assert message["sender_identity"]
+    assert message["sender_uid"]
+
+    second = await manager.join(room)
+    second.qq = "10002"
+    second.identity_confirmed = True
+    snapshot = room.public_snapshot(second.token)
+    assert snapshot["visitor_uid"] != message["sender_uid"]
+    assert snapshot["visitor_identity"] == message["sender_identity"]
+    assert "10002" not in _public_identity("10002")
+
+
+@pytest.mark.asyncio
 async def test_spectator_game_command_is_denied_and_never_changes_room() -> None:
     manager = RoomManager()
     room = await make_room(manager)

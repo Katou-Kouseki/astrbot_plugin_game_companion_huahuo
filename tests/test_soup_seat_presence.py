@@ -106,3 +106,36 @@ async def test_browser_player_is_still_released_when_waiting() -> None:
     manager._vacate_departed_seats(room, time.time())
 
     assert room.multiplayer.seat_for_token(visitor.token) is None
+
+
+@pytest.mark.asyncio
+async def test_group_chat_does_not_resurrect_a_closed_browser() -> None:
+    """群里说话不代表网页还开着：不能把已离线的访客复活成「在线」。"""
+    from astrbot_plugin_game_companion_huahuo.qq_bridge import _mark_active
+
+    manager = RoomManager(turtle_soup_max_players=0)
+    room, visitor = await make_active_soup(manager)
+    visitor.connected = False
+    visitor.left_at = time.time() - 120
+
+    _mark_active(room, "30001")
+
+    assert visitor.connected is False
+    assert visitor.left_at is None
+    assert manager._has_present_visitors(room, time.time()) is False
+
+
+@pytest.mark.asyncio
+async def test_switching_game_from_soup_drops_long_stale_seats() -> None:
+    """换玩法时清掉长期不在线的海龟汤座位，别让僵尸席占住新玩法容量。"""
+    manager = RoomManager(turtle_soup_max_players=0)
+    room, visitor = await make_active_soup(manager, status="finished")
+    visitor.connected = False
+    visitor.last_seen_at = time.time() - manager.QQ_SEAT_OFFLINE_SECONDS - 1
+    assert room.multiplayer.seats
+
+    assert await manager.switch_game(room, "tictactoe")
+
+    assert visitor.token not in [
+        seat.visitor_token for seat in room.multiplayer.seats
+    ]

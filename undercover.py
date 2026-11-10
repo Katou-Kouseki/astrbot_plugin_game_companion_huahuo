@@ -114,9 +114,11 @@ class UCPlayer:
     is_out: bool = False
     player_id: int = 0
     uid: str = ""
-    # 对局中掉线后由系统接管：座位保留（别人的投票/发言不会因缺人卡住），
-    # 重连后自动解除。注意这不是「出局」，不参与胜负判定。
+    # 对局中由系统接管：座位保留（别人的投票/发言不会因缺人卡住），回来后解除。
+    # 注意这不是「出局」，不参与胜负判定。reason 区分「掉线」与「在线挂机」：
+    # 前者心跳恢复即可解除，后者要等玩家真的有操作，否则页面开着人没回来会误解除。
     autopilot: bool = False
+    autopilot_reason: str = ""  # "" / "offline" / "afk"
 
     @property
     def label(self) -> str:

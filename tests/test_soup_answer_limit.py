@@ -247,7 +247,9 @@ async def test_reveal_event_gates_solution_on_group_vote() -> None:
 
     plugin = object.__new__(GameCompanionPlugin)
     calls: list = []
-    plugin._announce_soup_reveal = lambda _room, **kw: calls.append(kw)  # noqa: SLF001
+    plugin._announce_soup_decision = (  # noqa: SLF001
+        lambda _room, _payload, **kw: calls.append(kw)
+    )
     plugin._spawn = lambda coro: coro
 
     room = SimpleNamespace(game_type="turtle_soup", session_id="aiocqhttp:group:1")
@@ -294,3 +296,33 @@ async def test_reveal_event_gates_solution_on_group_vote() -> None:
         {"source": "system", "reason": "timeout", "qq_participated": False},
     )
     assert calls == [{"with_solution": False}]
+
+
+@pytest.mark.asyncio
+async def test_reveal_decision_announces_vote_before_solution() -> None:
+    """多人房凑够票：先播「表决通过」再播揭晓，且单人房不补这条。"""
+    from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+
+    plugin = object.__new__(GameCompanionPlugin)
+    order: list[str] = []
+
+    async def vote(_room, _payload, *, kind):  # noqa: ANN001
+        order.append(kind)
+
+    async def reveal(_room, *, with_solution):  # noqa: ANN001
+        order.append(f"reveal:{with_solution}")
+
+    plugin._announce_soup_reveal_vote = vote  # noqa: SLF001
+    plugin._announce_soup_reveal = reveal  # noqa: SLF001
+
+    room = SimpleNamespace(game_type="turtle_soup")
+    await plugin._announce_soup_decision(  # noqa: SLF001
+        room, {"votes": 2, "required": 2, "actor": "2号"}, with_solution=True
+    )
+    assert order == ["passed", "reveal:True"]
+
+    order.clear()
+    await plugin._announce_soup_decision(  # noqa: SLF001
+        room, {"votes": 1, "required": 1, "actor": "1号"}, with_solution=False
+    )
+    assert order == ["reveal:False"]
