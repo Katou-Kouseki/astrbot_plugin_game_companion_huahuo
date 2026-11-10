@@ -302,7 +302,10 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
   margin: 0 26px;
   padding: 4px 2px 18px;
   overflow: auto;
-  overscroll-behavior: contain;
+  /* 不能写 contain：它会切断滚动链，鼠标停在这块区域时滚轮到边界后不再传给
+     页面，问答少、容器没溢出时整页更是一点都滚不动。用 auto 让容器先滚、
+     到顶/底后自然接着滚整页。弹层（.soup-sheet-list）仍保留 contain 锁背景。 */
+  overscroll-behavior-y: auto;
 }
 .soup-entry {
   display: grid;

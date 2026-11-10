@@ -475,3 +475,167 @@ def test_history_text_lists_every_question_without_redaction() -> None:
     assert "本局全部问答（8 条）" in text
     assert text.count("忘了点灯导致船只失事") == 8
     assert "……" not in text
+
+
+@pytest.mark.asyncio
+async def test_host_verdict_from_group_question_is_synced() -> None:
+    """玩家出题：群里问的问题经出题人裁决，判定结果必须发到群。"""
+    plugin = make_plugin()
+    plugin._spawn = lambda coro: coro.close() if hasattr(coro, "close") else None
+    room = make_room()
+    add_entry(
+        room.game,
+        kind="question",
+        prompt="是不是和灯塔有关？",
+        response="是",
+        number=2,
+        source="qq",
+    )
+    room.game.entries[-1].verdict = "yes"
+    seq = room.game.entries[-1].seq
+
+    plugin._queue_soup_group_sync(room, host_verdict=True, entry_seq=seq)  # noqa: SLF001
+    await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
+
+    plugin._send_to_origin.assert_awaited_once()  # noqa: SLF001
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "群里玩家2号提问" in text
+    assert "是不是和灯塔有关？" in text
+    assert "出题人裁决：是" in text
+
+
+@pytest.mark.asyncio
+async def test_host_verdict_survives_reveal_end_entry() -> None:
+    """额度用尽那局末尾多一条合成「揭晓」，不能把最后一条裁决结果挡掉。"""
+    plugin = make_plugin()
+    plugin._spawn = lambda coro: coro.close() if hasattr(coro, "close") else None
+    room = make_room()
+    add_entry(
+        room.game,
+        kind="question",
+        prompt="最后一次提问？",
+        response="是",
+        number=2,
+        source="qq",
+    )
+    room.game.entries[-1].verdict = "yes"
+    seq = room.game.entries[-1].seq
+    room.game.reveal(reason="answer_limit", source="qq")
+
+    plugin._queue_soup_group_sync(room, host_verdict=True, entry_seq=seq)  # noqa: SLF001
+    await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
+
+    plugin._send_to_origin.assert_awaited_once()  # noqa: SLF001
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "最后一次提问？" in text
+    assert "出题人裁决：是" in text
+    assert "汤底见下方" not in text
+
+
+@pytest.mark.asyncio
+async def test_normal_mode_still_skips_group_own_questions() -> None:
+    """普通模式没放宽：群里自己问、当场就有判定的，不再重复发一遍。"""
+    plugin = make_plugin()
+    plugin._spawn = lambda coro: coro.close() if hasattr(coro, "close") else None
+    room = make_room()
+    add_entry(
+        room.game,
+        kind="question",
+        prompt="和灯塔有关吗？",
+        response="不是",
+        number=2,
+        source="qq",
+    )
+    room.game.entries[-1].verdict = "no"
+
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+    await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
+    plugin._send_to_origin.assert_not_awaited()  # noqa: SLF001
+
+
+def test_awaiting_host_progress_counts_the_pending_entry() -> None:
+    """玩家出题：挂起中的提问/推理还没落库，群回复进度要算上它。"""
+    plugin = make_plugin()
+    game = make_game()
+    game.question_count = 2
+    game.bot_question_count = 1
+    before = plugin._soup_progress(game, None)  # noqa: SLF001
+
+    question = plugin._awaiting_host_progress(game, None, "question")  # noqa: SLF001
+    assert question["question_count"] == before["question_count"] + 1
+    assert question["question_left"] == before["question_left"] - 1
+    assert question["answer_count"] == before["answer_count"]
+
+    answer = plugin._awaiting_host_progress(game, None, "answer")  # noqa: SLF001
+    assert answer["answer_count"] == before["answer_count"] + 1
+    assert answer["answer_left"] == before["answer_left"] - 1
+    assert answer["question_count"] == before["question_count"]
+
+
+def test_sync_strip_carries_frozen_progress() -> None:
+    """横条图带上入队时冻结的「已问 / 提示剩 / 推理剩」。"""
+    plugin = make_plugin()
+    plugin._spawn = lambda coro: coro.close() if hasattr(coro, "close") else None
+    room = make_room()
+    add_entry(room.game, kind="question", prompt="和灯塔有关吗？", response="是", number=2)
+    room.game.entries[-1].verdict = "yes"
+
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+    item = plugin.__dict__["_soup_sync_state"][room.room_id]["items"][0]
+    assert "已问" in item["progress"]
+    assert "提示剩" in item["progress"]
+    assert "推理剩" in item["progress"]
+
+    data = plugin._soup_sync_image_data([item], "灯塔")  # noqa: SLF001
+    assert data["items"][0]["progress"] == item["progress"]
+
+
+def _reveal_room():
+    room = make_room()
+    room.game.puzzle = SimpleNamespace(
+        title="灯塔", surface="汤面", solution="守塔人忘了点灯", hints=[]
+    )
+    return room
+
+
+def _reveal_plugin(*, enabled: bool, auto: bool):
+    plugin = make_plugin()
+    plugin.turtle_soup_qq_bridge = True
+    plugin.turtle_soup_group_announce_enabled = enabled
+    plugin.turtle_soup_group_announce_auto = auto
+    plugin._room_url = lambda _room: "https://example.com/room/x"  # noqa: SLF001
+    return plugin
+
+
+@pytest.mark.asyncio
+async def test_web_reveal_is_skipped_when_auto_report_covers_it() -> None:
+    """结算自动播报会说明结果并给链接，网页揭晓不再补一条重复通知。"""
+    plugin = _reveal_plugin(enabled=True, auto=True)
+
+    await plugin._announce_soup_reveal(_reveal_room(), with_solution=False)  # noqa: SLF001
+
+    plugin._send_to_origin.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_web_reveal_keeps_link_when_report_is_off() -> None:
+    """播报关掉时仍要兜底，告诉群友去哪看完整汤底。"""
+    plugin = _reveal_plugin(enabled=False, auto=False)
+
+    await plugin._announce_soup_reveal(_reveal_room(), with_solution=False)  # noqa: SLF001
+
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "本局汤底已揭晓" in text
+    assert "想看完整汤底" in text
+
+
+@pytest.mark.asyncio
+async def test_group_seconded_reveal_sends_solution_without_link() -> None:
+    """群里附议才给完整汤底；答案都给了就不再挂链接引导。"""
+    plugin = _reveal_plugin(enabled=True, auto=True)
+
+    await plugin._announce_soup_reveal(_reveal_room(), with_solution=True)  # noqa: SLF001
+
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert "守塔人忘了点灯" in text
+    assert "想看完整汤底" not in text

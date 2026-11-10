@@ -3630,6 +3630,13 @@ class RoomManager:
                     )
                     if correct:
                         game.solver_number = asker
+            # 记住刚落库的那一条问答：下面可能因额度用尽再追加一条合成「揭晓」
+            # 条目，群同步若只取 entries[-1] 就会把裁决结果漏掉。
+            judged_seq = (
+                int(getattr(game.entries[-1], "seq", 0) or 0)
+                if game.entries
+                else 0
+            )
             # 推理额度在玩家出题模式下同样生效：出题人判「不对」也算一次尝试，
             # 用完还没人猜中就收题——不然这局会一直挂到出题人自己不耐烦。
             limit = self._soup_answer_limit(room)
@@ -3649,7 +3656,13 @@ class RoomManager:
         await self._emit(
             "soup_host_judged",
             room,
-            {"kind": kind, "verdict": verdict, "finished": finished, "for_bot": for_bot},
+            {
+                "kind": kind,
+                "verdict": verdict,
+                "finished": finished,
+                "for_bot": for_bot,
+                "entry_seq": judged_seq,
+            },
         )
         return {
             "verdict": verdict,

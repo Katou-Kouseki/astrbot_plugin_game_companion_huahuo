@@ -160,15 +160,29 @@ async def test_host_mode_judgement_is_synced_to_group() -> None:
         status="active",
     )
 
-    await plugin._on_room_event("soup_host_judged", room, {})  # noqa: SLF001
+    await plugin._on_room_event(  # noqa: SLF001
+        "soup_host_judged", room, {"entry_seq": 42}
+    )
 
-    plugin._queue_soup_group_sync.assert_called_once_with(room)  # noqa: SLF001
+    plugin._queue_soup_group_sync.assert_called_once()  # noqa: SLF001
+    assert plugin._queue_soup_group_sync.call_args.args == (room,)  # noqa: SLF001
+    kwargs = plugin._queue_soup_group_sync.call_args.kwargs  # noqa: SLF001
+    # 裁决结果即使源自群里提问也要发到群：群里当时只看到「等出题人回答」
+    assert kwargs.get("host_verdict") is True
+    # 序号要一路带过去，末尾追加「揭晓」合成条目时才不会指错
+    assert kwargs.get("entry_seq") == 42
 
 
 @pytest.mark.asyncio
 async def test_host_mode_judged_entry_uses_qq_source() -> None:
     """群里问的问题经出题人裁决后，记录要标成 qq（速报与角标都看它）。"""
     manager = RoomManager()
+    emitted: list[tuple[str, dict]] = []
+
+    async def capture(event: str, _room: object, payload: dict) -> None:
+        emitted.append((event, dict(payload)))
+
+    manager.event_callback = capture
     room = await manager.create_room(
         source="group",
         session_id="aiocqhttp:group:1",
@@ -208,6 +222,8 @@ async def test_host_mode_judged_entry_uses_qq_source() -> None:
     entries = [entry for entry in game.entries if entry.kind == "question"]
     assert entries, "裁决后必须留下一条问答记录"
     assert entries[-1].source == "qq"
+    judged = next(p for name, p in emitted if name == "soup_host_judged")
+    assert judged["entry_seq"] == entries[-1].seq > 0
 
 
 # ---------------- D. 速报队列的清理与串题 ----------------

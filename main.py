@@ -43,6 +43,7 @@ from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
 from .qq_bridge import (
+    _progress_tail,
     handle_soup_at_message,
     handle_soup_command,
     run_soup_action,
@@ -1077,6 +1078,24 @@ _SOUP_SYNC_TMPL = """<!DOCTYPE html>
   .strip.answer .kind { background: rgba(185,140,255,.24); color: #e3ccff; }
   .strip.hint .kind { background: rgba(255,200,97,.2); color: #ffe1a3; }
   .text { font-size: 15px; line-height: 1.4; color: #fdf3e6; word-break: break-word; }
+  /* 进度条跟在正文下面：群里看图的人也要知道问到几次、还剩几次提示和推理 */
+  .progress { font-size: 10.5px; line-height: 1.35; margin-top: 3px;
+    color: rgba(246,231,211,.5); }
+  .strip.question .progress { color: rgba(190,215,255,.62); }
+  .strip.answer .progress { color: rgba(220,196,255,.62); }
+  .strip.hint .progress { color: rgba(255,224,170,.62); }
+  /* 推理往往是一整段话：不再用横条把正文挤在判定胶囊旁边，改成窄而竖长的卡片。
+     宽度收一点、高度随内容自然撑开，正文独占整块宽度，长推理不用挤成一小坨。 */
+  .strip.longform { display: block; box-sizing: border-box; width: 88%; margin: 0 auto;
+    min-height: 78px; padding: 10px 12px; }
+  .lf-head { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; }
+  .lf-head .meta { flex: 1 1 auto; margin-bottom: 0; }
+  .strip.longform .text { font-size: 14.5px; line-height: 1.65;
+    white-space: pre-wrap; word-break: break-word; }
+  .lf-foot { display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; flex-wrap: wrap; margin-top: 9px; }
+  .strip.longform .chip { max-width: 100%; }
+  .strip.longform .progress { margin-top: 0; }
   .chip { flex: 0 0 auto; max-width: 112px; padding: 3px 9px; border-radius: 999px;
     font-size: 12.5px; font-weight: 700; line-height: 1.3; word-break: break-word; }
   .chip.yes { background: rgba(125,220,154,.2); color: #a8f0c0; }
@@ -1089,14 +1108,29 @@ _SOUP_SYNC_TMPL = """<!DOCTYPE html>
 <body>
 <div class="wrap">
   {% for item in items %}
+  {% if item.strip_class == "answer" %}
+  <div class="strip answer longform">
+    <div class="lf-head">
+      <div class="avatar">{% if item.avatar %}<img src="{{ item.avatar }}" alt="">{% else %}{{ item.number }}{% endif %}</div>
+      <div class="meta">{{ item.source }} · {{ item.number }} · <span class="kind">{{ item.kind }}</span></div>
+    </div>
+    <div class="text">{{ item.text }}</div>
+    <div class="lf-foot">
+      <div class="chip {{ item.tone }}">{{ item.result }}</div>
+      {% if item.progress %}<div class="progress">{{ item.progress }}</div>{% endif %}
+    </div>
+  </div>
+  {% else %}
   <div class="strip {{ item.strip_class }}">
     <div class="avatar">{% if item.avatar %}<img src="{{ item.avatar }}" alt="">{% else %}{{ item.number }}{% endif %}</div>
     <div class="body">
       <div class="meta">{{ item.source }} · {{ item.number }} · <span class="kind">{{ item.kind }}</span></div>
       <div class="text">{{ item.text }}</div>
+      {% if item.progress %}<div class="progress">{{ item.progress }}</div>{% endif %}
     </div>
     <div class="chip {{ item.tone }}">{{ item.result }}</div>
   </div>
+  {% endif %}
   {% endfor %}
 </div>
 </body>
@@ -4061,9 +4095,14 @@ class GameCompanionPlugin(Star):
         if event_name == "soup_host_judged":
             game = room.game
             if isinstance(game, TurtleSoupGame):
-                # 玩家出题模式不走模型判定，之前的群同步挂在问答事件上，
-                # 这类房间的问答一条都到不了群里。裁决落库就是「有结果了」的时刻。
-                self._queue_soup_group_sync(room)
+                # 玩家出题模式不走模型判定，裁决落库才是「有结果了」的时刻。
+                # 群里提交的问题当时只回「等出题人回答」，判定结果群里没见过，
+                # 所以哪怕来源是群，这一条也必须同步过去。
+                self._queue_soup_group_sync(
+                    room,
+                    host_verdict=True,
+                    entry_seq=int(payload.get("entry_seq") or 0),
+                )
             if game.host_number and not game.finished:
                 self._spawn(self._soup_bot_turn(room, game))
             return
@@ -5975,8 +6014,7 @@ class GameCompanionPlugin(Star):
                 "action": "awaiting_host",
                 "verdict": None,
                 "reply": "问题已提交，等出题人回答。",
-                "question_count": host_game.question_count,
-                **self._soup_progress(host_game, room),
+                **self._awaiting_host_progress(host_game, room, "question"),
             }
         game, question = await self.manager.begin_turtle_soup_interaction(
             room,
@@ -6107,6 +6145,23 @@ class GameCompanionPlugin(Star):
             "hint_left": int(getattr(game, "hint_left", 0)),
         }
 
+    def _awaiting_host_progress(
+        self, game: TurtleSoupGame | None, room: GameRoom | None, field: str
+    ) -> dict[str, Any]:
+        """玩家出题模式：这条问答还挂在出题人面前，但玩家已经提交了。
+
+        计数要等出题人裁决落库才 +1，所以群里那句「问题已提交，等出题人回答」
+        若直接用当前进度，括号里的「已问 X」永远比玩家实际问过的少 1。
+        这里把挂起中的这一条补上，等裁决落库后数字才接得上。
+        """
+        progress = self._soup_progress(game, room)
+        count_key = "question_count" if field == "question" else "answer_count"
+        left_key = "question_left" if field == "question" else "answer_left"
+        progress[count_key] = int(progress[count_key]) + 1
+        if progress.get(left_key) is not None:
+            progress[left_key] = max(0, int(progress[left_key]) - 1)
+        return progress
+
     def _soup_answer_limit(self, room: GameRoom) -> int:
         """每局推理上限；0 表示不限。与 manager 用同一个值，别各算一遍。"""
         return int(self._soup_limits(room)["answers"])
@@ -6178,8 +6233,8 @@ class GameCompanionPlugin(Star):
                 "action": "awaiting_host",
                 "solved": False,
                 "reply": "推理已提交，等出题人判断。",
-                "answer_attempts": host_game.answer_attempts,
-                **self._soup_progress(host_game, room),
+                "answer_attempts": host_game.answer_attempts + 1,
+                **self._awaiting_host_progress(host_game, room, "answer"),
             }
         game, answer = await self.manager.begin_turtle_soup_interaction(
             room,
@@ -7315,15 +7370,25 @@ class GameCompanionPlugin(Star):
             return qq if qq.isdigit() else ""
         return ""
 
-    def _queue_soup_group_sync(self, room: GameRoom) -> None:
+    def _queue_soup_group_sync(
+        self,
+        room: GameRoom,
+        *,
+        host_verdict: bool = False,
+        entry_seq: int = 0,
+    ) -> None:
         """把刚发生的一条问答攒进队列，过几秒合并成一条群消息。
 
         为什么不在每次提问后立刻发：一个房间里五个人轮流问，一分钟就是十几条，
         群里会被刷屏（这也是之前干脆不发的原因）。这里攒 12 秒，然后用 QQ 的
         **合并聊天记录**发出去——一条折叠消息里是完整的问答流水，不占屏也不会漏。
 
-        网页和群里的条目一起收：只发网页那半段，群里的人看不到自己刚问的内容，
-        对照起来会断片；但一整批里如果全是群里问的，就不发了（他们本来就看到了）。
+        普通模式里，群里自己问的当场就收到判定了，不必再同步一遍；只发网页那
+        半段。但玩家出题模式是例外：群里提问当时只回「问题已提交，等出题人回答」，
+        判定结果是出题人后来裁决才产生的，群里从没见过 —— `host_verdict=True`
+        时无论来源是群还是网页都要发。`entry_seq` 用来精确指向裁决落库那一条：
+        额度用尽的那一局末尾还会追加一条合成「揭晓」条目，只看 `entries[-1]`
+        会把最后一条裁决结果整个漏掉。
         """
         if not getattr(self, "turtle_soup_qq_sync", True):
             return
@@ -7336,7 +7401,25 @@ class GameCompanionPlugin(Star):
         game = room.game
         if not isinstance(game, TurtleSoupGame) or not game.entries:
             return
-        entry = game.entries[-1]
+        # 进度也跟着入队冻结：横条图要显示「已问 N/M · 提示剩 K · 推理剩 J」，
+        # 等 flush 时再读 room.game 会把这 12 秒里新问的几条算进去。
+        try:
+            progress_text = _progress_tail(self._soup_progress(game, room))
+        except Exception:  # 进度只是附加信息，算不出来不能让整条问答同步哑掉
+            progress_text = ""
+        if entry_seq:
+            entry = next(
+                (
+                    item
+                    for item in game.entries
+                    if int(getattr(item, "seq", 0) or 0) == entry_seq
+                ),
+                None,
+            )
+            if entry is None:
+                return
+        else:
+            entry = game.entries[-1]
         if entry.kind not in {"question", "answer", "hint"}:
             return
         # 揭晓 / 放弃生成的合成「结束」条目不是玩家问答：同步成「花火推理」会让人
@@ -7357,6 +7440,8 @@ class GameCompanionPlugin(Star):
         # 以前这里一律写「玩家」，群里会以为是自己人问的。
         who = f"{entry.player_number}号" if entry.player_number else "花火"
         from_qq = entry.source == "qq"
+        # 玩家出题模式下，即便是群里问的，裁决结果也是新信息，必须发到群。
+        send_to_group = (not from_qq) or host_verdict
         if entry.kind == "hint":
             # 提示正文在 response 里（prompt 固定是「申请提示」）：群里贴提示内容
             hint_text = re.sub(r"\s+", " ", str(entry.response or "")).strip()
@@ -7394,7 +7479,8 @@ class GameCompanionPlugin(Star):
                 "room": room,
                 "items": [],
                 "seen": set(),
-                "has_web": False,
+                # 这批里有没有「群里没见过、需要发到群」的内容
+                "has_sendable": False,
                 # 题目标题在入队时定下来：这 12 秒里玩家可能已经点了「再来一道」，
                 # 等到 flush 再读 room.game 就把旧问答配到新题上了。
                 "puzzle": (
@@ -7425,14 +7511,17 @@ class GameCompanionPlugin(Star):
                 "number_value": int(entry.player_number or 0),
                 "avatar_url": avatar_url,
                 "source": "群里" if from_qq else "网页",
+                "send_to_group": send_to_group,
+                "host_verdict": host_verdict,
+                "progress": progress_text,
                 "kind_cn": head,
                 "prompt": display_text,
                 "result": result_text,
                 "tone": tone,
             }
         )
-        if not from_qq:
-            bucket["has_web"] = True
+        if send_to_group:
+            bucket["has_sendable"] = True
 
     def _soup_sync_chain(self, items: list[dict[str, str]], title: str):
         """把一批问答做成 QQ 合并聊天记录；环境不支持时返回 None。
@@ -7483,6 +7572,7 @@ class GameCompanionPlugin(Star):
                     "text": item.get("prompt") or "",
                     "result": item.get("result") or "",
                     "tone": item.get("tone") or "info",
+                    "progress": item.get("progress") or "",
                     # 提问 / 推理 / 提示走三套不同配色，横条不再张张一样
                     "strip_class": {
                         "hint": "hint",
@@ -7750,8 +7840,11 @@ class GameCompanionPlugin(Star):
         """汤底揭晓时通知到群。
 
         群内有人附议（`source=qq`）才算「群里参与了揭晓」，这时才把完整汤底发到群；
-        只有网页玩家揭晓时不主动给汤底，只说明「已揭晓、进网页看」，避免剧透没参与的
-        群友。网页玩家的推理额度用完自动揭晓（answer_limit）也走后者。
+        只有网页玩家揭晓时不主动给汤底，避免剧透没参与的群友。
+
+        局末战报本身就会写结果并附房间链接。自动播报开着时，网页揭晓不再补一条
+        「已揭晓 + 链接」——否则群里会连着收到两条几乎一样的揭晓通知。播报关掉时
+        才由这条兜底，保证群友仍知道去哪看汤底。
         """
         if not getattr(self, "turtle_soup_qq_bridge", True):
             return
@@ -7761,13 +7854,20 @@ class GameCompanionPlugin(Star):
         game = room.game
         if not isinstance(game, TurtleSoupGame) or game.puzzle is None:
             return
+        report_on = bool(
+            getattr(self, "turtle_soup_group_announce_enabled", False)
+            and getattr(self, "turtle_soup_group_announce_auto", False)
+        )
+        if not with_solution and report_on:
+            return
         if with_solution:
+            # 答案都直接给了，不必再挂一条「进网页看完整汤底」的链接引导
             text = f"🥣 汤底揭晓：\n{game.puzzle.solution}"
         else:
             text = "🥣 本局汤底已揭晓。"
-        tail = self._soup_room_link_tail(room)
-        if tail:
-            text += "\n" + tail
+            tail = self._soup_room_link_tail(room)
+            if tail:
+                text += "\n" + tail
         await self._send_to_origin(room, text)
 
     async def _announce_soup_turn(self, room: GameRoom, payload: dict[str, Any]) -> None:
@@ -7815,8 +7915,8 @@ class GameCompanionPlugin(Star):
         bucket = state.pop(room_id, None)
         if not bucket or not bucket["items"]:
             return
-        if not bucket["has_web"]:
-            # 全是群里自己问的，群里本来就看到了，不再折叠发一遍
+        if not bucket["has_sendable"]:
+            # 全是群里自己问、且当场就收到判定的，群里本来就看得到，不再发一遍
             return
         room = bucket["room"]
         # 房间已经关掉/销毁就别再往那个群发了：队列是延迟 12 秒的，
@@ -7824,38 +7924,46 @@ class GameCompanionPlugin(Star):
         if str(getattr(room, "status", "")) == "closed":
             return
         items: list[dict[str, str]] = list(bucket["items"])
-        # 只同步网页那边问的：群里自己问的，群里本来就看得到
-        web_items = [it for it in items if it.get("source") == "网页"]
-        if not web_items:
+        # 网页那边问的、以及玩家出题模式下出题人裁决出来的结果，群里都没见过
+        sendable = [it for it in items if it.get("send_to_group")]
+        if not sendable:
             return
 
         style = (getattr(self, "turtle_soup_qq_sync_style", "text") or "text").lower()
         if style == "image":
             # 用入队时冻结的标题：这 12 秒里玩家可能已经点了「再来一道」
             puzzle = str(bucket.get("puzzle") or "")
-            if await self._flush_soup_sync_image(room, web_items, puzzle):
+            if await self._flush_soup_sync_image(room, sendable, puzzle):
                 return
             # 横条图失败退回纯文字
-        text = self._soup_sync_text(web_items)
+        text = self._soup_sync_text(sendable)
         await self._send_to_origin(room, text)
 
     def _soup_sync_text(self, items: list[dict[str, Any]]) -> str:
-        """把一批网页问答拼成纯文字：一句一条，最省事也不刷屏。"""
+        """把一批问答拼成纯文字：一句一条，最省事也不刷屏。"""
         lines: list[str] = []
         for item in items:
             number = item.get("number") or "花火"
+            # 玩家出题模式下，群里问的问题经出题人裁决后也会同步过来，
+            # 这时不能再写成「网页玩家」，否则来源就认错了。
+            origin = "群里玩家" if item.get("source") == "群里" else "网页玩家"
             if item.get("kind") == "hint":
-                lines.append(f"网页玩家{number} 申请了提示：{item.get('prompt') or ''}")
+                lines.append(f"{origin}{number} 申请了提示：{item.get('prompt') or ''}")
             else:
                 action = "提问" if item.get("kind") == "question" else "推理"
+                result = item.get("result") or "已记录"
+                if item.get("host_verdict"):
+                    result = f"出题人裁决：{result}"
                 lines.append(
-                    f"网页玩家{number}{action}：{item.get('prompt') or ''} "
-                    f"→ {item.get('result') or '已记录'}"
+                    f"{origin}{number}{action}：{item.get('prompt') or ''} → {result}"
                 )
         if len(lines) == 1:
             return lines[0]
         kinds = {item["kind"] for item in items}
-        if kinds == {"question"}:
+        all_web = all(it.get("source") != "群里" for it in items)
+        if not all_web:
+            head = f"本局刚有 {len(items)} 条动态："
+        elif kinds == {"question"}:
             head = f"网页那边刚问了 {len(items)} 条："
         elif kinds == {"answer"}:
             head = f"网页那边刚交了 {len(items)} 份推理："

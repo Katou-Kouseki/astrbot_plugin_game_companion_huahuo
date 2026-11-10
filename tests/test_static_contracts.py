@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.05"
+    assert metadata["version"] == "0.6.06"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2075,3 +2075,65 @@ def test_soup_sync_strip_has_three_distinct_styles() -> None:
     assert "viewport_width=400" in main
     assert 'content="width=400"' in main
 
+
+
+def test_host_verdict_sync_and_awaiting_host_progress() -> None:
+    """裁决结果精确入队；等出题人回答时的进度把挂起的一条算进去。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert '"entry_seq": judged_seq' in rm
+    assert "host_verdict=True" in main
+    assert "entry_seq=int(payload.get(\"entry_seq\") or 0)" in main
+    assert '"send_to_group": send_to_group' in main
+    assert "it.get(\"send_to_group\")" in main
+    assert "def _awaiting_host_progress" in main
+    assert '_awaiting_host_progress(host_game, room, "question")' in main
+    assert '_awaiting_host_progress(host_game, room, "answer")' in main
+    # 群里来源的裁决条目不能写成「网页玩家」，判定要标明是出题人裁决
+    assert "群里玩家" in main
+    assert "出题人裁决" in main
+
+
+def test_soup_sync_strip_shows_frozen_progress() -> None:
+    """横条图渲染入队时冻结的进度，不读 flush 时的新状态。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert '"progress": progress_text' in main
+    assert '"progress": item.get("progress") or ""' in main
+    assert '{% if item.progress %}<div class="progress">' in main
+    assert ".strip.question .progress" in main
+    assert "_progress_tail(self._soup_progress(game, room))" in main
+
+
+def test_reveal_notice_does_not_duplicate_auto_report() -> None:
+    """局末自动战报会带结果与链接，网页揭晓不再补一条重复的揭晓通知。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "if not with_solution and report_on:" in main
+    assert '"turtle_soup_group_announce_auto", False' in main
+    # 群里附议直接给汤底时不再挂链接引导
+    assert "答案都直接给了" in main
+
+
+def test_soup_longform_strip_for_answers() -> None:
+    """推理单独用「窄而竖长」的卡片，正文独占整块宽度。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert '{% if item.strip_class == "answer" %}' in main
+    assert "strip answer longform" in main
+    assert ".strip.longform" in main
+    assert "lf-head" in main and "lf-foot" in main
+    assert "min-height: 78px" in main
+    assert "line-height: 1.65" in main
+
+
+def test_soup_history_allows_page_scroll_chaining() -> None:
+    """时间线不能切断滚动链：鼠标停在区域内也要能滚整页。"""
+    css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    block = css.split(".soup-history {", 1)[1].split("}", 1)[0]
+    assert "overscroll-behavior: contain" not in block
+    assert "overscroll-behavior-y: auto" in block
+    # 全屏弹层仍然锁住背景滚动，别把两处一起放开
+    sheet = css.split(".soup-sheet-list {", 1)[1].split("}", 1)[0]
+    assert "overscroll-behavior: contain" in sheet
