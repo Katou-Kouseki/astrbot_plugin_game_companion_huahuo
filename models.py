@@ -164,12 +164,16 @@ class MultiplayerState:
         )
 
 
-def _qq_avatar_url(qq: str) -> str:
-    """由 QQ 号拼出官方头像地址；空/非法 QQ 号返回空串。"""
+def _qq_avatar_url(qq: str, *, size: int = 640) -> str:
+    """由 QQ 号拼出官方头像地址；空/非法 QQ 号返回空串。
+
+    `size` 按用途取：战报海报要清晰（默认 640），速报图里只有 34px 的小圆，
+    拉 100 就够——内联进 HTML 的 data URI 越小，t2i 渲染越快。
+    """
     qq = str(qq or "").strip()
     if not qq.isdigit() or len(qq) < 5:
         return ""
-    return f"https://q1.qlogo.cn/g?b=qq&nk={qq}&s=640"
+    return f"https://q1.qlogo.cn/g?b=qq&nk={qq}&s={int(size)}"
 
 
 def _undercover_identity_key(seat: "PlayerSeat") -> tuple[str, str]:

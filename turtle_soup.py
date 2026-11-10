@@ -202,6 +202,8 @@ class TurtleSoupGame:
     # `note` 存投稿人或出题人的名字，网页上显示「题目来源：玩家 123 的投稿」。
     puzzle_source: str = ""
     puzzle_source_note: str = ""
+    # 开局卡（汤面 + 难度 + 次数）是否已经发到群里：同一局只发一次
+    opening_announced: bool = False
 
     @property
     def puzzle_source_label(self) -> str:

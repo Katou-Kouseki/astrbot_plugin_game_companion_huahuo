@@ -31,13 +31,14 @@ from .turtle_soup_deck import redact_spoiler
 
 HELP_TEXT = (
     "🥣 海龟汤群内指令\n"
-    "• 汤 开局 —— 直接在群里开一局并发出房间链接\n"
-    "• 汤 提问 你的问题 —— 问一个是/否问题\n"
+    "• 汤 开局 —— 直接在群里开一局并发出房间链接（也可 @我 说「来局海龟汤」）\n"
+    "• 汤 开局 困难 —— 指定难度开局（娱乐 / 简单 / 普通 / 困难）\n"
+    "• 汤 提问 你的问题 —— 问一个是/否问题（直接 @我 问一句也行）\n"
     "• 汤 推理 你的推理 —— 提交对汤底的完整推断\n"
-    "• 汤 提示 —— 要一条提示（消耗一次机会）\n"
+    "• 汤 提示 —— 要一条提示（消耗一次机会，也可以直接 @我 说「提示」）\n"
     "• 汤 揭晓 —— 发起揭晓汤底（多人房需其他人同意）\n"
     "• 汤 附议 / 汤 反对 —— 对揭晓表决表态\n"
-    "• 汤 状态 —— 看当前进度\n"
+    "• 汤 状态 —— 看当前进度（难度、已问次数、提示与推理剩余）\n"
     "• 汤 查看 —— 看最近几条问答\n"
     "• 汤 复盘 —— 结束后看完整回顾（汤面 + 汤底 + 关键问答）\n"
     "（也支持 汤提问 / 海龟汤 提问 等写法；需先把 QQ 绑定到玩家席）"
@@ -143,7 +144,11 @@ def soup_latest_room_for_session(plugin: Any, session_id: str) -> GameRoom | Non
 
 
 def _mark_active(room: GameRoom, qq: str) -> None:
-    """群里说话说明人在，更新活跃时间，免得被「在线人数」节奏算成缺席。"""
+    """群里说话说明人在，更新活跃时间，免得被「在线人数」节奏算成缺席。
+
+    同时清掉 `left_at`：群里玩的人可能刚才顺手关了网页，人其实还在群里，
+    不清这个标记就会被当成「关页面走人」移出玩家席。
+    """
     if not qq or not room.multiplayer.enabled:
         return
     seat = room.multiplayer.seat_for_qq(qq)
@@ -154,6 +159,7 @@ def _mark_active(room: GameRoom, qq: str) -> None:
         return
     visitor.last_seen_at = time.time()
     visitor.connected = True
+    visitor.left_at = None
 
 
 def _progress_tail(result: dict[str, Any]) -> str:
@@ -619,6 +625,69 @@ def _strip_at_prefix(text: str) -> str:
     return _AT_PREFIX_RE.sub("", str(text or "")).strip()
 
 
+# 「@我 提示」这类**整句就是要个动作**的短句：以前它们会被当成一句提问，
+# 既白扣一次问答额度，群里还会收到「提示 → 无关」这种莫名其妙的判定。
+# 只认整句完全匹配（去掉标点空白后），避免把「提示是什么意思」也吃掉。
+_AT_INTENTS: dict[str, str] = {
+    "提示": "hint",
+    "给个提示": "hint",
+    "给点提示": "hint",
+    "提示一下": "hint",
+    "来点提示": "hint",
+    "来个提示": "hint",
+    "要个提示": "hint",
+    "求提示": "hint",
+    "下一条提示": "hint",
+    "再来个提示": "hint",
+    "换个提示": "hint",
+    "hint": "hint",
+    "状态": "status",
+    "进度": "status",
+    "看进度": "status",
+    "还有几次": "status",
+    "还剩几次": "status",
+    "剩下几次": "status",
+    "查看": "history",
+    "历史": "history",
+    "问答记录": "history",
+    "复盘": "recap",
+    "回顾": "recap",
+    "揭晓": "reveal",
+    "看答案": "reveal",
+    "公布答案": "reveal",
+    "答案": "reveal",
+    "帮助": "help",
+    "菜单": "help",
+    "怎么玩": "help",
+    "玩法": "help",
+    "开局": "start",
+    "开一局": "start",
+    "来一局": "start",
+    "来局": "start",
+    "开房": "start",
+    "再来一局": "start",
+}
+_AT_PUNCT_RE = re.compile(
+    r"[\s，。！？!?、,.~～…·:：;；\"'“”‘’()（）\[\]【】<>《》]"
+)
+
+
+def classify_at_intent(text: str) -> tuple[str, str] | None:
+    """把「@我 的整句话」判成一个动作；不是纯动作就返回 None。
+
+    只做整句匹配：`@我 提示` → hint；`@我 提示是什么意思` 仍然走正常提问/闲聊。
+    这是为了修「群里 @bot 说『提示』，bot 把它当问题判了一次」。
+    """
+    normalized = str(text or "").strip()
+    if not normalized:
+        return None
+    bare = _AT_PUNCT_RE.sub("", normalized).lower()
+    action = _AT_INTENTS.get(bare)
+    if action is None:
+        return None
+    return (action, "")
+
+
 def classify_at_message(text: str) -> str | None:
     """把「@花火 说的一句话」判成 question / answer；不值得处理时返回 None。
 
@@ -716,21 +785,40 @@ async def handle_soup_at_message(plugin: Any, event: Any) -> str:
 
     只在「有进行中的海龟汤 + 发送者已在玩家席」时接管。其他群友 @ 花火仍然是
     正常聊天——不能因为群里开了一局，就把所有人的搭话都吃掉。
+
+    例外是几个**纯动作短句**（`@我 提示` / `@我 状态` / `@我 开局`）：
+    它们本来就是指令，不该被当成一次提问判掉。
     """
     session_id = str(getattr(event, "unified_msg_origin", "") or "")
-    room = soup_room_for_session(plugin, session_id)
-    if room is None:
-        return ""
     qq = str(getattr(event, "get_sender_id", lambda: "")() or "").strip()
     text = _strip_at_prefix(str(getattr(event, "message_str", "") or ""))
     # 已经写成指令的交给指令入口，避免两个入口各回一条
     if parse_soup_command(text) is not None:
         return ""
+    actor_name = str(getattr(event, "get_sender_name", lambda: "")() or "").strip()
+    intent = classify_at_intent(text)
+    if intent is not None:
+        action, body = intent
+        room = soup_room_for_session(plugin, session_id)
+        if action == "start":
+            if room is not None:
+                return "这一局已经在进行中了。发「汤 状态」看进度；想换一局就先把它结束。"
+            return await start_soup_room(plugin, event, body)
+        if room is None:
+            # 没开局时的「提示 / 状态」不接管：让正常聊天（或模型）去回答
+            if action == "help":
+                return HELP_TEXT
+            return ""
+        return await run_soup_action(
+            plugin, room, action, body, qq, actor_name=actor_name
+        )
+    room = soup_room_for_session(plugin, session_id)
+    if room is None:
+        return ""
     action = classify_at_message(text)
     if action is None:
         return ""
     # 没绑座位的人在这里自动入座（座位满了才回退成绑定引导）
-    actor_name = str(getattr(event, "get_sender_name", lambda: "")() or "").strip()
     return await run_soup_action(
         plugin, room, action, text, qq, actor_name=actor_name
     )

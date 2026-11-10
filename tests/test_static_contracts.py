@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.92"
+    assert metadata["version"] == "0.5.93"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1503,6 +1503,44 @@ def test_turtle_soup_rematch_returns_to_setup() -> None:
 
     assert "prepare_soup_next_round" in server
     assert "async def prepare_soup_next_round" in manager
+
+
+def test_soup_opening_card_reaches_the_group() -> None:
+    """群里开的局要能直接看到题目：开局卡（t2i，失败回退文字）。
+
+    以前题目就绪只发一条房间链接，群里的人不点进去就不知道在玩什么。
+    """
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+    assert "_SOUP_OPEN_TMPL" in main
+    assert "async def _announce_soup_opening" in main
+    assert "_announce_soup_opening(room)" in main
+    assert schema["turtle_soup"]["items"]["qq_opening_card"]["default"] is True
+
+
+def test_soup_sync_report_has_no_truncation_and_shows_real_avatars() -> None:
+    """速报图：问句不许截断，头像用玩家真实 QQ 头像。
+
+    以前问句按 60 字砍断，图上一大半问题只剩半句；头像只有号码牌。
+    """
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "prompt[:60]" not in main
+    assert "async def _soup_sync_avatars" in main
+    assert "number_value" in main
+    assert "qlogo" not in main  # 头像 URL 统一走 models._qq_avatar_url
+    assert "群里 @花火 直接问一句" in main
+
+
+def test_soup_at_message_handles_pure_action_phrases() -> None:
+    """`@我 提示` 是动作而不是提问；群里也要能直接开局。"""
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+
+    assert "def classify_at_intent" in bridge
+    assert "classify_at_intent(text)" in bridge
+    assert "start_soup_room" in bridge
+    assert "@我 说「来局海龟汤」" in bridge
 
 
 def test_soup_announce_requires_a_target_group() -> None:

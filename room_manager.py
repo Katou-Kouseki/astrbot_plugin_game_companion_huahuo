@@ -191,6 +191,10 @@ class RoomManager:
     # 心跳超时阈值放宽到 90s，容忍浏览器后台标签节流（否则切后台的玩家会被误踢）
     DEPARTED_LEAVE_GRACE_SECONDS = 8
     DEPARTED_HEARTBEAT_TIMEOUT_SECONDS = 90
+    # 只在群里玩的玩家没有网页心跳：话说完安静想几分钟很正常，
+    # 90 秒就把人移出玩家席等于「想想就被踢」。群内玩家统一给 30 分钟，
+    # 期间在群里说一句、提问、要提示都会刷新活跃时间。
+    QQ_SEAT_OFFLINE_SECONDS = 1800
     # 棋类对弈：心跳超过该秒数没更新就认为掉线，先暂停等重连而不是直接判负
     DUEL_OFFLINE_SECONDS = 15
     IDENTITY_TOKEN_TTL_SECONDS = 300
@@ -4376,7 +4380,8 @@ class RoomManager:
                 continue
             if (
                 visitor.connected
-                and now - visitor.last_seen_at < self.DEPARTED_HEARTBEAT_TIMEOUT_SECONDS
+                and now - visitor.last_seen_at
+                < self._visitor_offline_seconds(room, visitor)
             ):
                 return True
         return False
@@ -4475,7 +4480,7 @@ class RoomManager:
                 >= self.FINISHED_PLAYER_LEAVE_GRACE_SECONDS
             )
             or current - visitor.last_seen_at
-            >= self.FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS
+            >= self._finished_offline_seconds(room, visitor)
             for visitor in seated_visitors
         )
         # 玩家都离开了，但房间里还有观众（或其他真人访客）在线时，
@@ -5295,6 +5300,25 @@ class RoomManager:
         if self.event_callback is not None:
             await self.event_callback(event, room, payload)
 
+    def _visitor_offline_seconds(self, room: GameRoom, visitor: Any) -> float:
+        """这个访客多久没动静才算「走了」。
+
+        群房里绑定过 QQ 的玩家可能全程只在群里说话，浏览器心跳根本不存在；
+        对他们用群内阈值（30 分钟），否则安静想一会儿就被移出玩家席。
+        """
+        qq = str(getattr(visitor, "qq", "") or "").strip()
+        if qq and str(getattr(room, "source", "")) == "group":
+            return float(self.QQ_SEAT_OFFLINE_SECONDS)
+        return float(self.DEPARTED_HEARTBEAT_TIMEOUT_SECONDS)
+
+    def _finished_offline_seconds(self, room: GameRoom, visitor: Any) -> float:
+        """本局结束后多久算人走了（群内玩家给更宽的窗口，别打断群里聊复盘）。"""
+        base = float(self.FINISHED_PLAYER_HEARTBEAT_TIMEOUT_SECONDS)
+        qq = str(getattr(visitor, "qq", "") or "").strip()
+        if qq and str(getattr(room, "source", "")) == "group":
+            return max(base, float(self.QQ_SEAT_OFFLINE_SECONDS))
+        return base
+
     def _vacate_departed_seats(self, room: GameRoom, now: float) -> None:
         """把「已经不在」的玩家移出玩家席，任何阶段都清。
 
@@ -5312,6 +5336,10 @@ class RoomManager:
         按座位找人——结果整局永远差一张票、卡死在投票轮。保留座位后，托管由
         LLM 代发言/代投票，重连还能自动解除。
 
+        **海龟汤对局中同样不摘座位**：这是个「想到了再问」的玩法，群里玩家可能
+        几分钟不说话、网页玩家可能关掉标签页再回来（链接还在）。中途摘座位会让人
+        回来时变成观众，还得重新入座；座位本身没有任何轮次依赖，留着没有副作用。
+
         为什么不能只清 waiting/setup：以前结算阶段不清，棋类掉线判负后输家一直
         占着座位，玩家席永久停在 2/2；对局中（人数型玩法）不清，关掉网页的人
         也会一直占着位置，别人进不来。
@@ -5325,7 +5353,12 @@ class RoomManager:
             and isinstance(game, BOARD_GAME_CLASSES)
             and not game.finished
         )
-        if duel_in_progress:
+        soup_in_progress = bool(
+            room.status in ("active", "paused")
+            and isinstance(game, TurtleSoupGame)
+            and not game.finished
+        )
+        if duel_in_progress or soup_in_progress:
             return
         undercover_live = bool(
             room.status == "active"
@@ -5344,7 +5377,7 @@ class RoomManager:
                 and now - left_at >= self.DEPARTED_LEAVE_GRACE_SECONDS
             ) or (
                 now - visitor.last_seen_at
-                >= self.DEPARTED_HEARTBEAT_TIMEOUT_SECONDS
+                >= self._visitor_offline_seconds(room, visitor)
             )
             if not departed:
                 continue
