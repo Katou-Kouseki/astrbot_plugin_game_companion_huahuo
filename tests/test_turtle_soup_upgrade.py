@@ -283,9 +283,9 @@ async def test_announce_text_shows_surface_and_questions_but_never_solution(
 
     assert "窗边那块蛋糕" in text
     assert "糕点店每天下午四点" in text
-    # 提问形状保留，但贴着汤底的片段被遮成「……」
-    assert "有关吗" in text
-    assert "幼儿园" not in text
+    # 问答原文完整列出（群里的人得知道别人问了啥），但汤底依旧不进群通知
+    assert "和幼儿园有关吗？" in text
+    assert "……" not in text
     assert "壮胆" not in text
     assert "路标" not in text
     assert "想知道答案" in text
@@ -461,3 +461,32 @@ def test_soup_poster_embeds_avatar_and_falls_back_on_broken_image(tmp_path: Path
 
     raw = base64.b64decode(plugin._soup_poster_pillow(room, avatars))
     assert raw.startswith(b"\x89PNG\r\n\x1a\n"), "坏图应回退首字圆牌，而不是抛错"
+
+
+@pytest.mark.asyncio
+async def test_soup_snapshot_keeps_full_question_and_response() -> None:
+    """战报快照里的问答不再被脱敏或按 220/80 字截断。"""
+    from astrbot_plugin_game_companion_huahuo.turtle_soup import SoupEntry
+
+    manager = RoomManager(turtle_soup_max_players=4, turtle_soup_free_questioning=True)
+    room, _visitors, game = await make_soup_room(manager, seats=1)
+    long_q = "是不是因为那块蛋糕是给幼儿园孩子的路标，他看不到就不肯回家？" * 5
+    long_reply = "这条推理已经很接近真相了，但还差最关键的那层因果关系没有说清。" * 5
+    game.entries.append(
+        SoupEntry(
+            kind="question",
+            prompt=long_q,
+            response=long_reply,
+            source="web",
+            player_number=1,
+        )
+    )
+
+    manager._snapshot_soup_result(room)  # noqa: SLF001
+    snap = room.last_soup_result
+    assert snap is not None
+    entry = next(e for e in snap["entries"] if e["kind"] == "question")
+    assert entry["prompt"] == long_q
+    assert entry["response"] == long_reply
+    assert "……" not in str(entry["prompt"])
+

@@ -67,7 +67,6 @@ from .turtle_soup_deck import (
     SoupDeck,
     fetch_online_puzzles,
     normalize_text,
-    redact_spoiler,
 )
 from .trusted_identity import TrustedIdentityStore
 from .tunnel import QuickTunnel
@@ -1047,37 +1046,53 @@ _SOUP_SYNC_TMPL = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<!-- 横条图按 440 视口渲染（保持紧凑不拉长），meta 必须与实际视口一致 -->
-<meta name="viewport" content="width=440">
+<!-- 横条图按 400 视口渲染（保持紧凑不拉长），meta 必须与实际视口一致 -->
+<meta name="viewport" content="width=400">
 <style>
   @page { margin: 0; }
   html, body { margin: 0; padding: 0; background: #1b100b; }
   .wrap { display: flex; flex-direction: column; gap: 5px; padding: 5px; }
-  .strip { display: flex; align-items: center; gap: 9px; box-sizing: border-box;
-    padding: 8px 11px; border-radius: 9px; background: #2a1c12;
+  .strip { display: flex; align-items: center; gap: 7px; box-sizing: border-box;
+    padding: 8px 9px; border-radius: 9px; background: #2a1c12;
     border: 1px solid rgba(255,215,154,.16); }
+  /* 三类横条各自独立配色 + 左侧色条：以前所有条目都长一个样，分不出是提问还是推理 */
+  .strip.question { background: #1c2534;
+    border-color: rgba(111,168,255,.3); border-left: 3px solid #6fa8ff; }
+  .strip.answer { background: #241b33;
+    border-color: rgba(185,140,255,.36); border-left: 3px solid #b98cff; }
+  .strip.hint { background: #2b2415;
+    border-color: rgba(255,200,97,.36); border-left: 3px solid #ffc861; }
+  .strip.question .avatar { background: rgba(111,168,255,.22); color: #cfe1ff; }
+  .strip.answer .avatar { background: rgba(185,140,255,.25); color: #e6d2ff; }
+  .strip.hint .avatar { background: rgba(255,200,97,.22); color: #ffe1a3; }
   .avatar { flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; overflow: hidden;
     background: rgba(232,163,61,.22); color: #ffd79a; font-size: 12px; font-weight: 800;
     text-align: center; line-height: 30px; }
   .avatar img { width: 30px; height: 30px; object-fit: cover; }
   .body { flex: 1 1 auto; min-width: 0; }
-  .meta { font-size: 11.5px; color: rgba(246,231,211,.55); margin-bottom: 1px; }
+  .meta { font-size: 11.5px; color: rgba(246,231,211,.55); margin-bottom: 2px; }
+  /* 类型做成小徽章，不用凑近看那行灰字也能一眼分出提问/推理/提示 */
+  .kind { display: inline-block; padding: 1px 6px; border-radius: 4px; font-weight: 800; }
+  .strip.question .kind { background: rgba(111,168,255,.2); color: #b3d1ff; }
+  .strip.answer .kind { background: rgba(185,140,255,.24); color: #e3ccff; }
+  .strip.hint .kind { background: rgba(255,200,97,.2); color: #ffe1a3; }
   .text { font-size: 15px; line-height: 1.4; color: #fdf3e6; word-break: break-word; }
-  .chip { flex: 0 0 auto; max-width: 130px; padding: 3px 10px; border-radius: 999px;
+  .chip { flex: 0 0 auto; max-width: 112px; padding: 3px 9px; border-radius: 999px;
     font-size: 12.5px; font-weight: 700; line-height: 1.3; word-break: break-word; }
   .chip.yes { background: rgba(125,220,154,.2); color: #a8f0c0; }
   .chip.no { background: rgba(255,255,255,.1); color: rgba(246,231,211,.8); }
   .chip.near { background: rgba(232,163,61,.22); color: #ffd79a; }
   .chip.info { background: rgba(150,190,255,.18); color: #bcd6ff; }
+  .chip.hint { background: rgba(255,200,97,.2); color: #ffe1a3; }
 </style>
 </head>
 <body>
 <div class="wrap">
   {% for item in items %}
-  <div class="strip">
+  <div class="strip {{ item.strip_class }}">
     <div class="avatar">{% if item.avatar %}<img src="{{ item.avatar }}" alt="">{% else %}{{ item.number }}{% endif %}</div>
     <div class="body">
-      <div class="meta">{{ item.source }} · {{ item.number }} · {{ item.kind }}</div>
+      <div class="meta">{{ item.source }} · {{ item.number }} · <span class="kind">{{ item.kind }}</span></div>
       <div class="text">{{ item.text }}</div>
     </div>
     <div class="chip {{ item.tone }}">{{ item.result }}</div>
@@ -7284,7 +7299,6 @@ class GameCompanionPlugin(Star):
     # 网页问答同步到群：单条发会刷屏，攒一小段再合并成一条
     SOUP_SYNC_WINDOW = 12.0
     SOUP_SYNC_MAX_LINES = 4
-    SOUP_SYNC_MAX_NODES = 12
 
     def _seat_qq_for_number(self, room: GameRoom, number: int) -> str:
         """按座位号找这个玩家的 QQ（没绑定 / 观众席返回空串）。"""
@@ -7333,13 +7347,10 @@ class GameCompanionPlugin(Star):
             and entry.player_number is None
         ):
             return
-        # 群里展示要防剧透：贴着汤底的片段先遮掉
-        prompt = entry.prompt
-        if game.puzzle is not None:
-            prompt = redact_spoiler(prompt, game.puzzle)
-        prompt = re.sub(r"\s+", " ", str(prompt or "")).strip()
-        # 不按字数截断：以前砍到 60 字，长问题在群里只剩半句、图上也被省略，
-        # 读的人根本不知道问的是什么。图片会自己换行，合并记录也不怕长。
+        # 群里的人全靠这条同步才知道网页玩家问了什么：原文照发，不脱敏也不截断。
+        # 以前会把贴着汤底的片段遮成「……」，群里只看到半句，等于没同步；
+        # 更早还按 60 字砍过，长问题同样只剩半句。折行交给图片自己处理。
+        prompt = re.sub(r"\s+", " ", str(entry.prompt or "")).strip()
         seat_qq = self._seat_qq_for_number(room, int(entry.player_number or 0))
         avatar_url = _qq_avatar_url(seat_qq, size=100) if seat_qq.isdigit() else ""
         # 没有座位号的就是花火自己——玩家出题模式下它也是参与者，
@@ -7354,7 +7365,8 @@ class GameCompanionPlugin(Star):
             line = f"· {who}申请了提示：{hint_text or '（无内容）'}"
             display_text = hint_text or "（无内容）"
             result_text = "💡"
-            tone = "near"
+            # 提示专用色调：以前和「部分正确」共用 near 橙，群里看混了
+            tone = "hint"
         else:
             head = "提问" if entry.kind == "question" else "推理"
             label = f"{who}{head}·{'群' if from_qq else '网页'}"
@@ -7434,14 +7446,11 @@ class GameCompanionPlugin(Star):
         except ImportError:
             return None
         nodes = [Node(content=[Plain(title)], name="花火·海龟汤", uin="0")]
-        for item in items[: self.SOUP_SYNC_MAX_NODES]:
+        # 每一条都列出来：以前超过 12 条只补一句「还有 N 条没列出来」，
+        # 群里就永远看不到那些问题。
+        for item in items:
             nodes.append(
                 Node(content=[Plain(item["text"])], name=item["label"], uin="0")
-            )
-        extra = len(items) - self.SOUP_SYNC_MAX_NODES
-        if extra > 0:
-            nodes.append(
-                Node(content=[Plain(f"还有 {extra} 条没列出来")], name="……", uin="0")
             )
         try:
             return MessageChain([Nodes(nodes)])
@@ -7474,6 +7483,11 @@ class GameCompanionPlugin(Star):
                     "text": item.get("prompt") or "",
                     "result": item.get("result") or "",
                     "tone": item.get("tone") or "info",
+                    # 提问 / 推理 / 提示走三套不同配色，横条不再张张一样
+                    "strip_class": {
+                        "hint": "hint",
+                        "answer": "answer",
+                    }.get(str(item.get("kind") or ""), "question"),
                     "avatar": avatar_map.get(
                         int(item.get("number_value") or 0), ""
                     ),
@@ -7543,13 +7557,13 @@ class GameCompanionPlugin(Star):
     async def _soup_sync_t2i(self, data: dict[str, Any]) -> str:
         """把问答速报渲染成横条图片：压扁、缩短、不塞标题和脚注，消除底部空白。
 
-        宽度保持 440（群里不希望横条拉得太长），但清晰度与其它战报海报统一
-        用最高档 ultra；模板 meta 也对齐到 440，避免声明 720 实际 440 的缩放偏差。
+        宽度收到 400（群里不希望横条拉得太长），但清晰度与其它战报海报统一
+        用最高档 ultra；模板 meta 也对齐到 400，避免声明 720 实际 400 的缩放偏差。
         """
         return await self._soup_t2i(
             _SOUP_SYNC_TMPL,
             data,
-            viewport_width=440,
+            viewport_width=400,
             viewport_height=60,
             scale="ultra",
         )

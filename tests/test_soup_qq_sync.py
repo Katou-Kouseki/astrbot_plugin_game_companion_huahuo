@@ -199,7 +199,7 @@ async def test_bridge_master_switch_disables_sync() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spoiler_fragments_are_redacted() -> None:
+async def test_question_text_is_never_redacted() -> None:
     puzzle = SoupPuzzle(
         title="灯塔",
         surface="一个男人每天两副碗筷，最后自杀了，为什么？",
@@ -225,9 +225,11 @@ async def test_spoiler_fragments_are_redacted() -> None:
     plugin._queue_soup_group_sync(room)  # noqa: SLF001
     await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
 
+    # 群里的人全靠这条同步才知道网页玩家问了什么：原文照发，不遮关键词
     _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
-    assert "……" in text
-    assert "忘了点灯导致船只失事" not in text
+    assert "是不是因为他忘了点灯导致船只失事？" in text
+    assert "……" not in text
+    assert "→ 是" in text
 
 
 @pytest.mark.asyncio
@@ -367,3 +369,109 @@ async def test_synthetic_reveal_entry_is_not_synced() -> None:
 
     await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
     plugin._send_to_origin.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_long_question_is_sent_in_full() -> None:
+    """长问题整句发到群，不按字数砍成半句。"""
+    plugin = make_plugin()
+    room = make_room()
+    long_prompt = (
+        "如果他当时其实已经知道灯塔那天会出事，"
+        + "却还是照着原来的时刻表去点了灯，" * 6
+        + "这到底算不算故意的？"
+    )
+    add_entry(room.game, kind="question", prompt=long_prompt, response="是", number=3)
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+
+    await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    assert long_prompt in text
+    assert "…" not in text
+
+
+@pytest.mark.asyncio
+async def test_large_batch_lists_every_single_question() -> None:
+    """一批 15 条逐条列出，不再补一句「还有 N 条没列出来」。"""
+    plugin = make_plugin()
+    room = make_room()
+    for index in range(15):
+        add_entry(
+            room.game,
+            kind="question",
+            prompt=f"第{index}条独立问题？",
+            response="不是",
+            number=index + 1,
+        )
+        plugin._queue_soup_group_sync(room)  # noqa: SLF001
+
+    await plugin._flush_soup_group_sync(room.room_id)  # noqa: SLF001
+    _room, text = plugin._send_to_origin.await_args.args  # noqa: SLF001
+    for index in range(15):
+        assert f"第{index}条独立问题？" in text
+    assert "没列出来" not in text
+    assert text.startswith("🥣 网页那边刚问了 15 条：")
+
+
+@pytest.mark.asyncio
+async def test_hint_entry_uses_its_own_tone_and_keeps_bulb() -> None:
+    """提示保留灯泡，但配色独立，不再和「部分正确」共用橙色。"""
+    plugin = make_plugin()
+    room = make_room()
+    add_entry(
+        room.game, kind="hint", prompt="申请提示", response="和职业有关", number=3
+    )
+    plugin._queue_soup_group_sync(room)  # noqa: SLF001
+
+    item = plugin.__dict__["_soup_sync_state"][room.room_id]["items"][0]
+    assert item["tone"] == "hint"
+    assert item["result"] == "💡"
+    assert item["kind"] == "hint"
+
+
+def test_three_kinds_get_distinct_strip_styles() -> None:
+    """横条图：提问 / 推理 / 提示各用一套 strip 配色。"""
+    plugin = make_plugin()
+
+    def item(kind: str, tone: str) -> dict:
+        return {
+            "kind": kind,
+            "kind_cn": {"question": "提问", "answer": "推理", "hint": "提示"}[kind],
+            "tone": tone,
+            "prompt": "内容",
+            "result": "是",
+            "number": "1号",
+            "number_value": 1,
+            "source": "网页",
+        }
+
+    pairs = [
+        (plugin._soup_sync_image_data([item("question", "yes")], "题")["items"][0], "question", "yes"),
+        (plugin._soup_sync_image_data([item("answer", "near")], "题")["items"][0], "answer", "near"),
+        (plugin._soup_sync_image_data([item("hint", "hint")], "题")["items"][0], "hint", "hint"),
+    ]
+    assert [(p["strip_class"], p["tone"]) for p, _, _ in pairs] == [
+        (cls, tone) for _, cls, tone in pairs
+    ]
+    assert len({p["strip_class"] for p, _, _ in pairs}) == 3
+
+
+def test_history_text_lists_every_question_without_redaction() -> None:
+    """群里 /汤查看 列出全部问答原文，不遮关键词、不只给最近 5 条。"""
+    from astrbot_plugin_game_companion_huahuo.qq_bridge import _history_text
+
+    game = make_game()
+    game.puzzle = SimpleNamespace(title="灯塔", surface="汤面")
+    for index in range(8):
+        add_entry(
+            game,
+            kind="question",
+            prompt=f"第{index}问：是不是因为他忘了点灯导致船只失事？",
+            response="是",
+            number=index + 1,
+        )
+    text = _history_text(SimpleNamespace(), game)
+
+    assert "本局全部问答（8 条）" in text
+    assert text.count("忘了点灯导致船只失事") == 8
+    assert "……" not in text

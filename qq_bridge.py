@@ -27,7 +27,6 @@ from typing import Any
 
 from .models import GameRoom
 from .turtle_soup import VERDICT_LABELS, TurtleSoupGame
-from .turtle_soup_deck import redact_spoiler
 
 HELP_TEXT = (
     "🥣 海龟汤群内指令（/ 是 AstrBot 的指令前缀，带不带都行）\n"
@@ -279,16 +278,16 @@ def _recap_text(room: GameRoom, game: TurtleSoupGame | None) -> str:
 
     entries = [
         entry for entry in game.entries if entry.kind in {"question", "answer"}
-    ][-5:]
+    ]
     if entries:
-        lines.append("关键问答：")
+        # 群里回看问答就是为了知道别人问了啥：原文完整列出，不脱敏也不按字数砍
+        lines.append(f"本局问答（{len(entries)} 条）：")
         for entry in entries:
             who = f"{entry.player_number} 号" if entry.player_number else "玩家"
             mark = "问" if entry.kind == "question" else "推理"
-            prompt = entry.prompt if ended else redact_spoiler(entry.prompt, puzzle)
-            prompt = str(prompt or "")[:40]
-            reply = str(entry.response or "")[:20]
-            lines.append(f"· {who}{mark}：{prompt} → {reply}")
+            prompt = re.sub(r"\s+", " ", str(entry.prompt or "")).strip()
+            reply = re.sub(r"\s+", " ", str(entry.response or "")).strip()
+            lines.append(f"· {who}{mark}：{prompt} → {reply or '已记录'}")
     if not ended:
         lines.append("（本局结束后再发一次「汤 复盘」可以看完整汤底）")
     return "\n".join(lines)
@@ -301,14 +300,18 @@ def _history_text(room: GameRoom, game: TurtleSoupGame | None) -> str:
         entry
         for entry in game.entries
         if entry.kind in {"question", "answer"} and entry.response
-    ][-5:]
+    ]
     if not items:
         return "还没有人提问。"
-    lines = ["🥣 最近几条问答："]
+    # 全部列出、原文照发：以前只给最近 5 条还把贴着汤底的片段遮成「……」，
+    # 群里根本拼不出网页玩家到底问了什么。
+    lines = [f"🥣 本局全部问答（{len(items)} 条）："]
     for entry in items:
-        # 群里展示要防剧透：贴着汤底的片段先遮掉
-        prompt = redact_spoiler(entry.prompt, game.puzzle)
-        lines.append(f"· {prompt} —— {entry.response}")
+        prompt = re.sub(r"\s+", " ", str(entry.prompt or "")).strip()
+        reply = re.sub(r"\s+", " ", str(entry.response or "")).strip()
+        who = f"{entry.player_number} 号" if entry.player_number else "玩家"
+        mark = "问" if entry.kind == "question" else "推理"
+        lines.append(f"· {who}{mark}：{prompt} —— {reply}")
     return "\n".join(lines)
 
 

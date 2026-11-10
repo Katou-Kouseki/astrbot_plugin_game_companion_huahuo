@@ -49,7 +49,6 @@ from .turtle_soup import (
     clean_player_text,
     soup_limits_for_difficulty,
 )
-from .turtle_soup_deck import redact_spoiler
 from .undercover import UndercoverGame, UCPlayer
 from .undercover_words import UndercoverWordStore
 from .xiangqi import BLACK as XIANGQI_BLACK
@@ -4234,12 +4233,13 @@ class RoomManager:
         for entry in game.entries[-24:]:
             if entry.kind not in {"question", "answer", "hint"}:
                 continue
-            # 提问会出现在群通知里：把贴着汤底的片段遮掉，避免「一句话剧透」
+            # 群通知和分享战报里的「他们问过」就靠这份数据：问答原文完整保留，
+            # 不脱敏、不按字数砍。汤底（solution）仍不进快照，避免直接贴答案。
             entries.append(
                 {
                     "kind": entry.kind,
-                    "prompt": redact_spoiler(entry.prompt, puzzle)[:220],
-                    "response": entry.response[:80],
+                    "prompt": entry.prompt,
+                    "response": entry.response,
                     "verdict": entry.verdict,
                     "player_number": entry.player_number,
                 }

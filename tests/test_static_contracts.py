@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.04"
+    assert metadata["version"] == "0.6.05"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1400,8 +1400,10 @@ def test_qq_bridge_contracts() -> None:
         assert word in bridge
     # 群消息必须带 source="qq"：轮次与身份校验靠它分流
     assert 'source="qq"' in bridge
-    # 群内回显历史要防剧透
-    assert "redact_spoiler" in bridge
+    # 群里回看问答必须看到原文：不脱敏、不按字数截断、不省略条数
+    assert "redact_spoiler" not in bridge
+    assert "本局全部问答" in bridge
+    assert "本局问答" in bridge
 
     assert "soup-qq-badge" in script
     assert ".soup-qq-badge" in style
@@ -1745,7 +1747,7 @@ def test_soup_sync_strip_and_result_link() -> None:
     css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
 
     # 横条图：压扁、缩短、更清晰，用 viewport_width/viewport_height 消除大片空白
-    assert "viewport_width=440" in main
+    assert "viewport_width=400" in main
     assert "viewport_height=60" in main
     assert 'scale="ultra"' in main
     # 判定简写：提问只给「是 / 否 / 无关」
@@ -2020,11 +2022,11 @@ def test_soup_zombie_seats_and_room_recycling() -> None:
 
 
 def test_render_quality_is_uniformly_highest() -> None:
-    """所有 t2i 用 ultra；横条模板 meta 对齐 440；Pillow 海报统一 2x。"""
+    """所有 t2i 用 ultra；横条模板 meta 对齐 400；Pillow 海报统一 2x。"""
     main = (ROOT / "main.py").read_text(encoding="utf-8")
     assert "scale=\"high\"" not in main
     assert main.count('"device_scale_factor_level": "ultra"') == 5
-    assert 'content="width=440"' in main
+    assert 'content="width=400"' in main
     assert "S = 1.5" not in main
     assert main.count("S = 2.0") == 5
 
@@ -2036,3 +2038,40 @@ def test_fullwidth_slash_and_soup_chatter_are_handled() -> None:
     assert r"[/／!！]" in bridge
     assert 'r"／?\\s*"' in main
     assert 'rest = text[len("海龟汤") :]' in bridge
+
+
+def test_group_sync_never_redacts_or_truncates_questions() -> None:
+    """群同步 / 群内查看 / 战报快照都发问答原文，不脱敏、不截断、不省略条数。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert "redact_spoiler" not in main
+    assert "redact_spoiler" not in bridge
+    assert "redact_spoiler" not in rm
+    assert '"prompt": entry.prompt' in rm
+    assert '"response": entry.response' in rm
+    assert "本局全部问答" in bridge
+    assert "SOUP_SYNC_MAX_NODES" not in main
+    assert '还有 {extra} 条没列出来' not in main
+
+
+def test_soup_sync_strip_has_three_distinct_styles() -> None:
+    """横条图：提问 / 推理 / 提示各一套配色，提示保留灯泡但不再撞色。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    for selector in (
+        ".strip.question",
+        ".strip.answer",
+        ".strip.hint",
+        ".chip.hint",
+        ".kind",
+        "item.strip_class",
+    ):
+        assert selector in main
+    assert '"strip_class"' in main
+    assert 'result_text = "💡"' in main
+    assert 'tone = "hint"' in main
+    assert "viewport_width=400" in main
+    assert 'content="width=400"' in main
+
