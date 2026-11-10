@@ -908,6 +908,22 @@ class GameRoom:
                 and self.last_announced_uid
                 == f"board:{int(self.completed_games or 0)}"
             ),
+            # 棋类本局结果快照（胜者/败者/执方，不含盘面）。前端结算弹窗与状态栏
+            # 在玩家都退席后靠座位查不到胜者，会误判成「花火获胜」；带上这份
+            # 终局冻结的胜负双方，观众也能看到真实胜者是谁。
+            "board_result": (
+                {
+                    "game_type": self.last_board_result.get("game_type"),
+                    "winner_name": self.last_board_result.get("winner_name") or "",
+                    "winner_side": self.last_board_result.get("winner_side") or "",
+                    "loser_name": self.last_board_result.get("loser_name") or "",
+                    "loser_side": self.last_board_result.get("loser_side") or "",
+                    "draw": bool(self.last_board_result.get("draw")),
+                    "moves": int(self.last_board_result.get("moves") or 0),
+                }
+                if isinstance(self.last_board_result, dict)
+                else None
+            ),
             # 海龟汤本局结果快照（不含汤底）：分享战报 / 花火复盘 / 通知到群都读它，
             # 这样玩家点「再来一道」后仍能取到上一局的汤面与提问。
             "soup_result": self.last_soup_result,

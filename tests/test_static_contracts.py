@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.98"
+    assert metadata["version"] == "0.6.00"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -399,7 +399,9 @@ def test_natural_language_rematch_is_routed_to_the_existing_room() -> None:
 
     assert 'action == "rematch"' in source
     assert "request_rematch" in source
-    assert "全部由用户进入 WebUI 后完成" in source
+    # 再来一局等局内操作仍留在 WebUI；但「切换游戏」在旧房间空闲时由建房工具自动完成
+    assert "由用户进入 WebUI 后完成" in source
+    assert "自动把旧房间切换成新玩法" in source
 
 
 def test_room_creation_tool_exposes_explicit_admin_room_mode() -> None:
@@ -1779,3 +1781,70 @@ def test_board_series_single_game_not_labelled_streak() -> None:
 
     assert "def _board_entry_result" in main
     assert "len(entries) == 1" in main
+
+
+def test_board_result_snapshot_survives_seat_vacation() -> None:
+    """玩家都退席后，新观众要靠终局快照看到真实胜者，不能再误判成「花火获胜」。"""
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert '"board_result"' in models
+    assert '"winner_name"' in models
+    assert '"loser_name"' in models
+    # 前端结算与状态栏在查不到座位时读快照胜者
+    assert "boardResult && boardResult.winner_name" in app
+    assert "room.board_result?.winner_name" in app
+
+
+def test_board_share_poster_shows_winner_and_loser() -> None:
+    """前端分享战报要写出胜者与败者，不能再只有「你赢了」三个字。"""
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "loser_name" in app
+    assert "loser_side" in app
+    assert "败方：" in app
+    assert "result.winner_name ? `${result.winner_name} 获胜`" in app
+
+
+def test_turtle_soup_emoji_uses_bowl_not_turtle() -> None:
+    """海龟汤战报用 🥣，不再用乌龟 🐢。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "🥣 海龟汤" in main
+    assert "🥣 海龟汤" in app
+    assert "🐢" not in main
+    assert "🐢" not in app
+
+
+def test_soup_report_dedupes_identical_questions() -> None:
+    """战报「他们问过」按去空格去标点的正文去重，同一问题不重复出现。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert "seen" in main
+    assert 'str.maketrans("", "", "？?！!，,。.、：:")' in main
+    assert "seen.has(key)" in app
+
+
+def test_board_series_flushes_old_game_on_switch() -> None:
+    """换游戏时旧玩法连战先发出，新玩法从第一局重新起算。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    assert "def _flush_board_series_on_game_switch" in main
+    assert "await self._flush_board_series_on_game_switch" in main
+    # 连战文案的玩法名取条目自带的 game_type（换游戏后 room.game_type 已是新玩法）
+    assert 'entries[0].get("game_type")' in main
+    # 换玩法清掉旧终局快照
+    assert "room.last_board_result = None" in rm
+    assert "room.last_soup_result = None" in rm
+
+
+def test_game_switch_resets_frontend_residual_state() -> None:
+    """换玩法后前端清掉上一款游戏的结算弹窗与结果快照，不残留。"""
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    assert 'boardResultShownKey = ""' in app
+    assert "boardLastResult = null" in app
+    assert 'soupResultShownKey = ""' in app

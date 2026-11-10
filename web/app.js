@@ -1711,6 +1711,12 @@
       drawStrokes = [];
       drawDirty = false;
       drawRevision = -1;
+      // 换玩法后清掉上一款游戏的结算弹窗与结果快照，避免残留「五子棋谁赢」这类内容
+      boardResultShownKey = "";
+      boardLastResult = null;
+      soupResultShownKey = "";
+      const overlay = document.getElementById("boardResultOverlay");
+      if (overlay) overlay.hidden = true;
       syncGameUi();
     }
     syncDrawState();
@@ -4832,6 +4838,7 @@
   }
 
   // 只挑问出过关键事实的提问（其次取最近的）：这些最能勾起「到底怎么回事」
+  // 同一问题不同玩家可能各问一遍，战报「他们问过」里去重，只保留最早一条
   function pickSoupQuestions(result, limit = 4) {
     const all = (result?.entries || []).filter(
       (entry) => entry && entry.kind === "question" && entry.prompt,
@@ -4840,7 +4847,20 @@
     const strong = all.filter((entry) =>
       ["yes", "partial", "compound"].includes(String(entry.verdict || "")),
     );
-    return (strong.length ? strong : all).slice(-limit);
+    const source = (strong.length ? strong : all).slice();
+    source.reverse();
+    const picked = [];
+    const seen = new Set();
+    for (const entry of source) {
+      if (picked.length >= limit) break;
+      const key = String(entry.prompt || "")
+        .replace(/\s+/g, "")
+        .replace(/[？?！!，,。.、：:]/g, "");
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      picked.push(entry);
+    }
+    return picked.reverse();
   }
 
   let soupResultShownKey = "";
@@ -5162,7 +5182,7 @@
     c.fillStyle = "#ffd166"; c.fillRect(0, 148, W, 4);
     c.textAlign = "left";
     c.fillStyle = "#e5c99a"; c.font = fontOf(false, 19);
-    c.fillText("🐢 海龟汤 · 单局战报", M, 44);
+    c.fillText("🥣 海龟汤 · 单局战报", M, 44);
     let titlePx = 42;
     const titleText = result.title || "海龟汤";
     c.font = fontOf(true, titlePx);
@@ -5421,8 +5441,13 @@
     if (pendingMove) {
       label.textContent = `${opponentLabel} 思考中`;
     } else {
+      // 玩家都退席后，座位里查不到胜者，单靠执色会把真人胜者误判成「花火获胜」；
+      // 观众（未落座）优先读终局快照里的真实胜者名。
+      const frozenWinner = room.board_result?.winner_name || "";
       label.textContent = room.game.winner
-        ? (room.game.winner === humanSide ? iWinText : `${opponentLabel}获胜`)
+        ? (!room.is_player && frozenWinner
+          ? `${frozenWinner} 获胜`
+          : (room.game.winner === humanSide ? iWinText : `${opponentLabel}获胜`))
         : (room.game.draw
           ? "平局"
           : (isViewerSeated
@@ -5989,6 +6014,11 @@
     let badge = "🤝";
     let winnerName = "";
     let winnerSideText = "";
+    let loserName = "";
+    let loserSideText = "";
+    // 终局快照（服务端 _finish_game 冻结的胜负双方）：玩家都退席后，座位里已经
+    // 查不到胜者，单靠 human_color 兜底会把真人胜者误判成「花火」，所以优先读它。
+    const boardResult = target?.board_result || null;
     if (!draw && winner !== null && winner !== undefined && winner !== 0 && winner !== "") {
       let winnerSide = "";
       if (gt === "xiangqi") winnerSide = winner;
@@ -6003,6 +6033,9 @@
         title = winnerSeat.is_ai
           ? "花火 获胜"
           : (isMySeat(winnerSeat) ? "你赢了" : `${winnerName} 获胜`);
+      } else if (boardResult && boardResult.winner_name) {
+        winnerName = boardResult.winner_name;
+        title = `${winnerName} 获胜`;
       } else {
         // 单人历史房间兜底：human_color / human_side 判胜负
         let humanWon;
@@ -6010,6 +6043,19 @@
         else humanWon = Number(winner) === Number(game.human_color);
         winnerName = humanWon ? "玩家" : "花火";
         title = humanWon ? "玩家获胜" : "花火 获胜";
+      }
+      // 败者：优先终局快照，否则从对家座位反推
+      if (boardResult && boardResult.loser_name) {
+        loserName = boardResult.loser_name;
+        loserSideText = sideTextOf(boardResult.loser_side || "");
+      } else if (winnerSeat) {
+        const loserSeat = seats.find((s) => s !== winnerSeat) || null;
+        if (loserSeat) {
+          loserName = loserSeat.is_ai
+            ? "花火"
+            : ((loserSeat.display_name || "").trim() || `${loserSeat.number}号`);
+          loserSideText = sideTextOf(loserSeat.side || "");
+        }
       }
     }
     const mySideText = target?.is_player ? sideTextOf(mySide(target)) : "";
@@ -6023,6 +6069,8 @@
       badge,
       winner_name: winnerName,
       winner_side: winnerSideText,
+      loser_name: loserName,
+      loser_side: loserSideText,
       draw,
       move_count: moveCount,
       my_side: mySideText,
@@ -6252,7 +6300,11 @@
     c.fillStyle = "#9fd6bc"; c.font = font(false, 20);
     c.fillText(`${result.icon || "♟️"} ${result.label} · 单局战报`, 26, 52);
     c.fillStyle = "#ffffff";
-    const titleText = result.title || "本局结束";
+    // 分享出去的图要给「胜者 vs 败者」：结算弹窗里「你赢了」对转发出去的人毫无意义，
+    // 这里用真实昵称当大标题（平局除外）。
+    const titleText = result.draw
+      ? "平局"
+      : (result.winner_name ? `${result.winner_name} 获胜` : (result.title || "本局结束"));
     const titleMaxW = W - 26 * 2;
     let titlePx = 44;
     c.font = font(true, titlePx);
@@ -6269,6 +6321,12 @@
     if (result.opponent) sub.push(`对手：${result.opponent}`);
     sub.push(`共 ${result.move_count} 手`);
     c.fillText(sub.join(" · "), 26, 196);
+    // 败者单独一行：分享出去时谁赢谁输一眼看清
+    if (result.loser_name && !result.draw) {
+      c.fillStyle = "#e8b58a";
+      const loserText = `败方：${result.loser_name}` + (result.loser_side ? ` · 执${result.loser_side}` : "");
+      c.fillText(truncatePosterText(c, loserText, titleMaxW), 26, 221);
+    }
     // 终局棋盘缩略图（居中，圆角卡片）
     const boardSize = 460;
     const bx = (W - boardSize) / 2;

@@ -2989,6 +2989,10 @@ class RoomManager:
             room.game = None
             room.status = "setup" if room.player_token else "waiting"
             room.player_empty_since = None if room.player_token else time.time()
+            # 换玩法后旧终局快照作废：不清理的话，前端结算弹窗/分享战报会拿到上一款
+            # 游戏的胜负结果（比如五子棋的胜者被当成你画我猜的胜者），残留不清。
+            room.last_board_result = None
+            room.last_soup_result = None
             room.touch()
             room.add_message(
                 "system",

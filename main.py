@@ -1226,7 +1226,7 @@ _SOUP_POSTER_TMPL = """<!DOCTYPE html>
 </head>
 <body>
 <div class="poster">
-  <div class="head"><span class="t">🐢 海龟汤 · 单局战报</span><span class="r">{{ date }}</span></div>
+  <div class="head"><span class="t">🥣 海龟汤 · 单局战报</span><span class="r">{{ date }}</span></div>
   <div class="title">{{ title }}</div>
   {% if surface %}<div class="surface">{{ surface }}</div>{% endif %}
   <div class="stats">{{ stats }}</div>
@@ -2408,8 +2408,16 @@ class GameCompanionPlugin(Star):
         turtle_soup（海龟汤）、pig_dice（贪心骰子）、draw_guess（你画我猜）、
         blackjack（二十一点，Bot 当庄家）和 undercover（谁是卧底，多人社交推理）。
         不要因为普通聊天中偶然提到游戏名称就调用本工具。
-        当前 QQ 会话已有房间时只返回原房间入口；切换游戏、再来一局和其他局内操作
-        全部由用户进入 WebUI 后完成，不能在 QQ 中代替用户执行。
+
+        当前会话已有房间时的规则：
+        - 用户要的是同一种游戏 → 复用原房间，只返回原入口；
+        - 用户要的是**另一种**游戏，且旧房间已空闲（没有进行中的对局、无人占座）→
+          本工具会**自动把旧房间切换成新玩法**，沿用原链接，你照常告知即可；
+        - 用户要的是另一种游戏，但旧房间还有人在用 → 工具会另开一个新房间。
+        所以「开个你画我猜的房间」这种请求，只要旧房间空着，直接按 draw_guess 调用即可，
+        不要擅自改成旧玩法，也不要说「还是原来的五子棋房间、没换」。
+
+        悔棋、再来一局等局内操作仍由用户进入 WebUI 后完成，不能在 QQ 中代替用户执行。
 
         Args:
             game_type(string): 游戏类型，只能是 gomoku、xiangqi、weiqi、tictactoe、othello、turtle_soup、pig_dice、draw_guess、blackjack 或 undercover。
@@ -2457,7 +2465,7 @@ class GameCompanionPlugin(Star):
         )
         turtle_soup_mode = self._turtle_soup_mode(kwargs.get("turtle_soup_mode"))
         try:
-            room, reused, restarted = await self._create_or_reuse_room_from_event(
+            room, reused, restarted, switched = await self._create_or_reuse_room_from_event(
                 event,
                 difficulty,
                 game_type,
@@ -2475,6 +2483,7 @@ class GameCompanionPlugin(Star):
                 url,
                 reused=reused,
                 restarted=restarted,
+                switched=switched,
             )
         except (ValueError, RuntimeError, PermissionError, OSError) as exc:
             return self._json_error(str(exc))
@@ -2492,11 +2501,15 @@ class GameCompanionPlugin(Star):
                 "turtle_soup_mode": room.turtle_soup_mode,
                 "reused_room": reused,
                 "restarted_game": restarted,
+                "switched_game": switched,
                 "entry_timeout_seconds": self.manager.empty_player_timeout,
                 "instruction": (
                     "房间链接已由插件作为独立纯文字消息发送；正常延续人格聊天，"
                     "不要复述、改写或重新生成链接，也不要提起内部房间编号 room_id。"
                     if link_delivered
+                    else "已把空闲的旧房间切换成新玩法并复用原链接，不得关闭它或创建新房间；"
+                    "完整保留 room_url。"
+                    if switched
                     else "已复用当前会话的原房间，不得关闭它或创建新房间；完整保留 room_url。"
                     if reused
                     else self._room_link_instruction(room)
@@ -3728,7 +3741,7 @@ class GameCompanionPlugin(Star):
         turtle_soup_mode: TurtleSoupMode = "bot_host",
         requested_admin_room: bool = False,
         confirm_abandon: bool,
-    ) -> tuple[GameRoom, bool, bool]:
+    ) -> tuple[GameRoom, bool, bool, bool]:
         rooms = self.manager.for_session(event.unified_msg_origin)
         if len(rooms) > 1:
             raise ValueError("当前会话已有多个活动房间，请先说明要使用的房间编号")
@@ -3742,12 +3755,12 @@ class GameCompanionPlugin(Star):
                 turtle_soup_mode,
                 requested_admin_room=requested_admin_room,
             )
-            return room, False, False
+            return room, False, False, False
         room = rooms[0]
         # 同一种游戏：直接复用原房间，避免同一群重复开房
         if room.game_type == game_type:
             await self._ensure_public_access()
-            return room, True, False
+            return room, True, False, False
         # 不同游戏：先看旧房间是否还有人占用
         if self._room_in_use(room):
             # 还有人在玩 → 不抢原房间链接，另起一个新房间（受「全部群聊合计最大房间数」约束）
@@ -3760,7 +3773,7 @@ class GameCompanionPlugin(Star):
                 turtle_soup_mode,
                 requested_admin_room=requested_admin_room,
             )
-            return new_room, False, False
+            return new_room, False, False, False
         # 旧房间空闲（没销毁也没人玩）→ 直接切换游戏类型，沿用原链接
         _ = confirm_abandon
         await self.manager.switch_game(room, game_type, force=True)
@@ -3768,7 +3781,7 @@ class GameCompanionPlugin(Star):
             room.turtle_soup_mode = turtle_soup_mode
         room.difficulty = difficulty
         await self._ensure_public_access()
-        return room, True, False
+        return room, True, False, True
 
     @staticmethod
     def _room_in_use(room: GameRoom) -> bool:
@@ -4230,6 +4243,10 @@ class GameCompanionPlugin(Star):
             self._spawn(self._decide_rematch(room, visitor=visitor))
             return
         if event_name == "game_switched":
+            # 换游戏时旧玩法的连战先发出去，新玩法连战重新起算（第一局按单局通报）
+            old_game = str(payload.get("from") or "")
+            if old_game:
+                await self._flush_board_series_on_game_switch(room, old_game)
             self._notify_companion_activity(room, "updated")
             return
         if event_name == "room_destroyed":
@@ -7984,7 +8001,11 @@ class GameCompanionPlugin(Star):
     def _soup_pick_questions(
         payload: dict[str, Any], limit: int = 4
     ) -> list[dict[str, Any]]:
-        """挑几条「有信息量」的提问：优先问出关键事实的，其次按时间取最近的。"""
+        """挑几条「有信息量」的提问：优先问出关键事实的，其次按时间取最近的。
+
+        同一问题可能被不同玩家各问一遍（或同一人换个措辞再问），战报「他们问过」
+        里重复出现会很啰嗦——按去空格去标点的正文去重，只保留最早那条。
+        """
         entries = [
             entry
             for entry in (payload.get("entries") or [])
@@ -7998,9 +8019,16 @@ class GameCompanionPlugin(Star):
             if str(entry.get("verdict") or "") in {"yes", "partial", "compound"}
         ]
         picked: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for entry in reversed(strong or entries):
             if len(picked) >= limit:
                 break
+            prompt = re.sub(r"\s+", "", str(entry.get("prompt") or ""))
+            # 去掉常见标点，让「和灯塔有关吗？」与「和灯塔有关吗」算同一问
+            key = prompt.translate(str.maketrans("", "", "？?！!，,。.、：:"))
+            if not key or key in seen:
+                continue
+            seen.add(key)
             picked.append(entry)
         return list(reversed(picked))
 
@@ -8036,7 +8064,7 @@ class GameCompanionPlugin(Star):
         attempts = int(payload.get("answer_attempts") or 0)
         solved = bool(payload.get("solved"))
         end_reason = str(payload.get("end_reason") or "")
-        lines = ["🐢 海龟汤 ·《" + title + "》"]
+        lines = ["🥣 海龟汤 ·《" + title + "》"]
         if surface:
             lines.append(surface)
         lines.append(
@@ -8332,7 +8360,7 @@ class GameCompanionPlugin(Star):
         # 顶部横幅（题头 + 日期 + 金色分隔线）
         ef_h = _pillow_emoji_font(int(20 * S))
         _pillow_draw_text(
-            d, pad, int(46 * S), "🐢 海龟汤 · 单局战报",
+            d, pad, int(46 * S), "🥣 海龟汤 · 单局战报",
             _pillow_font(False, int(20 * S)), (229, 201, 154, 255), efont=ef_h,
         )
         _pillow_draw_text(
@@ -9690,6 +9718,46 @@ class GameCompanionPlugin(Star):
                 task.cancel()
         self._spawn(self._flush_board_announces(room, 0.0))
 
+    async def _flush_board_series_on_game_switch(
+        self, room: GameRoom, old_game_type: str
+    ) -> None:
+        """换游戏时先把旧玩法的连战发出去，新玩法从第一局重新起算。
+
+        旧玩法的 pending 条目带自己的 game_type，若不在这里清掉，下一轮
+        `_take_board_pending` 会按「新 game_type」过滤把它们直接丢掉，群里
+        永远看不到那几局的结果；而且新旧玩法挤进一条「连战 N 局」会张冠李戴。
+        """
+        pending = list(getattr(room, "pending_board_announces", None) or [])
+        if not pending:
+            return
+        old_entries = [
+            entry
+            for entry in pending
+            if str(entry.get("game_type") or "") == old_game_type
+        ]
+        room.pending_board_announces = [
+            entry
+            for entry in pending
+            if str(entry.get("game_type") or "") != old_game_type
+        ]
+        # 取消还在等的 flush 任务，避免它读到切换后的状态重复发
+        tasks = getattr(self, "_board_flush_tasks", None)
+        if isinstance(tasks, dict):
+            task = tasks.get(room.room_id)
+            if task is not None and not task.done():
+                task.cancel()
+        if not old_entries:
+            return
+        try:
+            await self._send_board_series(room, old_entries)
+        except Exception as exc:
+            logger.warning(
+                "[GameCompanion] 换游戏时旧玩法连战播报失败: %s", exc
+            )
+        # 新玩法第一局要按「单局」正常通报，不能接上旧玩法的冷却窗口
+        room.last_board_announce_at = 0.0
+        room.last_announced_uid = ""
+
     async def _flush_board_announces(
         self, room: GameRoom, delay: float = 0.0
     ) -> None:
@@ -9767,7 +9835,11 @@ class GameCompanionPlugin(Star):
         """
         if not entries:
             return ""
-        label = self.manager._game_label(room.game_type)
+        # 玩法名取条目自带的 game_type：换游戏时旧玩法的连战要赶在新玩法之前
+        # 发出去，此时 room.game_type 已经是新玩法，直接读会把旧战报标成新玩法。
+        label = self.manager._game_label(
+            str(entries[0].get("game_type") or room.game_type)
+        )
         if len(entries) == 1:
             entry = entries[0]
             moves = int(entry.get("moves") or 0)
@@ -10845,9 +10917,12 @@ class GameCompanionPlugin(Star):
         *,
         reused: bool,
         restarted: bool,
+        switched: bool = False,
     ) -> bool:
         if restarted:
             title = "新一局已在原游戏房间开始："
+        elif switched:
+            title = f"游戏已切换为{self._game_label(room.game_type)}房间："
         elif reused:
             title = "继续使用当前游戏房间："
         else:
