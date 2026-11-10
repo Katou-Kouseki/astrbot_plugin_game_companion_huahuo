@@ -322,6 +322,25 @@ h1 { margin: 1px 0 0; font-size: 22px; line-height: 1.1; color: var(--text-stron
 body.dark .soup-entry-avatar .soup-avatar-bot { color: #ffd79a; }
 .soup-entry-body { display: grid; gap: 4px; min-width: 0; }
 .soup-entry .prompt { margin: 0; color: #56615a; font-size: 13px; line-height: 1.5; word-break: break-word; }
+/* 推理条目整体偏紫：和提问（默认绿色系）一眼分开，不再是「只差一个字」 */
+.soup-entry.answer {
+  border-left: 3px solid #8a5fb0;
+  padding-left: 9px;
+  border-radius: 0 8px 8px 0;
+  background: color-mix(in srgb, #8a5fb0 6%, transparent);
+}
+.soup-kind-badge {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 16px;
+  vertical-align: 1px;
+  font-weight: 650;
+}
+.soup-kind-answer { background: #ece1f5; color: #6b3f86; }
+body.dark .soup-kind-answer { background: #3a2a4a; color: #c9a8e0; }
+body.dark .soup-entry.answer { border-left-color: #9a6fc0; background: color-mix(in srgb, #9a6fc0 10%, transparent); }
 .soup-entry .response {
   width: fit-content;
   max-width: 100%;
@@ -471,14 +490,14 @@ body.soup-sheet-open { overflow: hidden; }
   border: 0;
   border-radius: 9px;
   background: var(--gold);
-  color: #241a08;
+  color: #ffffff;
   font-size: 13.5px;
   font-weight: 750;
 }
 .soup-composer-send svg { width: 15px; }
 .soup-composer-send:disabled { opacity: .55; }
 .soup-composer.is-answer .soup-composer-send { background: #9b4b37; color: #fff; }
-body.dark .soup-composer-send { color: #20180a; }
+body.dark .soup-composer-send { color: #ffffff; }
 body.dark .soup-composer.is-answer .soup-composer-send { color: #fff; }
 .soup-hint-row { gap: 8px; }
 .soup-hint-row #soupRevealButton {

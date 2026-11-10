@@ -31,7 +31,7 @@ from .turtle_soup_deck import redact_spoiler
 
 HELP_TEXT = (
     "🥣 海龟汤群内指令\n"
-    "• 汤 开局 —— 直接在群里开一局并发出房间链接（也可 @我 说「来局海龟汤」）\n"
+    "• 汤 —— 一句「汤」直接开局（也可 @我 说「来局海龟汤」）\n"
     "• 汤 开局 困难 —— 指定难度开局（娱乐 / 简单 / 普通 / 困难）\n"
     "• 汤 提问 你的问题 —— 问一个是/否问题（直接 @我 问一句也行）\n"
     "• 汤 推理 你的推理 —— 提交对汤底的完整推断\n"
@@ -107,7 +107,8 @@ def parse_soup_command(message: str) -> tuple[str, str] | None:
         return None
     rest = rest.lstrip(" ：:，,")
     if not rest:
-        return ("help", "")
+        # 一句「汤」直接开局，不再让玩家先背「汤 开局」这个写法
+        return ("start", "")
     for word in _ACTION_WORDS:
         if rest.startswith(word):
             return (_ACTIONS[word], rest[len(word) :].lstrip(" ：:，,"))

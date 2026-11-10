@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.5.94"
+    assert metadata["version"] == "0.5.95"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1690,3 +1690,40 @@ def test_soup_composer_inline_input() -> None:
     assert "function submitSoupComposer" in app
     assert "soup/question" in app
     assert "soup/answer" in app
+
+
+def test_soup_direct_command_and_sync_style() -> None:
+    """一句「汤」直接开局，同步到群默认纯文字、可切横条图。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+    schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+
+    # AstrBot 指令页可见「汤」指令，解析层把单独「汤」当开局
+    assert '@filter.command("汤"' in main
+    assert 'return ("start", "")' in bridge
+    # 同步形态：默认纯文字，可选横条图
+    style = schema["turtle_soup"]["items"]["qq_sync_style"]
+    assert style["default"] == "text"
+    assert "image" in style["options"]
+    assert "def _soup_sync_text" in main
+    assert "def _flush_soup_sync_image" in main
+
+
+def test_soup_sync_strip_and_result_link() -> None:
+    """速报改成横条图消除底部空白；战报附房间链接；推理条目有独立样式。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    # 横条图：压扁，用 viewport_height + normal 缩放消除大片空白
+    assert "viewport_height=60" in main
+    assert 'scale="normal"' in main
+    # 判定简写：提问只给「是 / 否 / 无关」
+    assert "verdict_label" in main
+    # 战报末尾附房间链接 + 网页查看引导
+    assert "房间链接：{room_url}" in main
+    assert "想看完整汤底？点上面的链接进网页房间查看" in main
+    # 前端：推理条目给独立样式（徽章 + 紫色左边框），发送按钮白字
+    assert "soup-kind-badge" in app
+    assert ".soup-entry.answer" in css
+    assert "color: #ffffff" in css

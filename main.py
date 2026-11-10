@@ -1046,79 +1046,37 @@ _SOUP_SYNC_TMPL = """<!DOCTYPE html>
 <style>
   @page { margin: 0; }
   html, body { margin: 0; padding: 0; background: #1b100b; }
-  .card {
-    width: 720px; box-sizing: border-box; padding: 28px 38px 22px;
-    background: linear-gradient(150deg, #3a2418 0%, #1b100b 100%);
-    font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
-    color: #f6e7d3; position: relative; overflow: hidden;
-  }
-  .glow { position: absolute; top: -70px; right: -50px; width: 240px; height: 240px;
-    background: radial-gradient(circle, rgba(232,163,61,.38), transparent 70%); }
-  .head { display: flex; align-items: center; gap: 12px; position: relative; }
-  .head .icon { font-size: 30px; }
-  .head .title { font-size: 26px; font-weight: 800; letter-spacing: .5px; color: #ffd79a; }
-  .head .count { margin-left: auto; font-size: 15px; color: rgba(246,231,211,.6); }
-  .puzzle { margin-top: 10px; font-size: 15px; line-height: 1.5; color: rgba(246,231,211,.7);
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden; position: relative; }
-  .rows { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; position: relative; }
-  .row { display: flex; align-items: flex-start; gap: 12px;
-    background: rgba(255,255,255,.055); border: 1px solid rgba(255,215,154,.14);
-    border-radius: 14px; padding: 12px 14px; }
-  .who { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 3px; }
-  .num { position: relative; width: 34px; height: 34px; border-radius: 50%;
+  .wrap { display: flex; flex-direction: column; gap: 6px; padding: 6px; }
+  .strip { display: flex; align-items: center; gap: 11px; width: 708px; box-sizing: border-box;
+    padding: 9px 13px; border-radius: 10px; background: #2a1c12;
+    border: 1px solid rgba(255,215,154,.16); }
+  .avatar { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; overflow: hidden;
     background: rgba(232,163,61,.22); color: #ffd79a; font-size: 13px; font-weight: 800;
-    line-height: 34px; text-align: center; overflow: hidden; }
-  .num img { position: absolute; inset: 0; width: 34px; height: 34px; border-radius: 50%;
-    object-fit: cover; }
-  .from { font-size: 11px; color: rgba(246,231,211,.5); }
+    text-align: center; line-height: 34px; }
+  .avatar img { width: 34px; height: 34px; object-fit: cover; }
   .body { flex: 1 1 auto; min-width: 0; }
-  .kind { font-size: 12px; color: rgba(246,231,211,.5); margin-bottom: 2px; }
-  .text { font-size: 17px; line-height: 1.5; color: #fdf3e6; word-break: break-word;
-    white-space: normal; }
-  .chip { flex: 0 0 auto; align-self: center; max-width: 168px; padding: 5px 12px;
-    border-radius: 999px; font-size: 14px; font-weight: 700; line-height: 1.35;
-    word-break: break-word; }
-  .chip.yes { background: rgba(125,220,154,.18); color: #a8f0c0; }
-  .chip.no { background: rgba(255,255,255,.09); color: rgba(246,231,211,.75); }
-  .chip.near { background: rgba(232,163,61,.2); color: #ffd79a; }
-  .chip.info { background: rgba(150,190,255,.16); color: #bcd6ff; }
-  .more { margin-top: 12px; font-size: 14px; color: rgba(246,231,211,.55); position: relative; }
-  .foot { margin-top: 18px; padding-top: 13px; border-top: 1px dashed rgba(246,231,211,.16);
-    display: flex; justify-content: space-between; gap: 14px; font-size: 13px;
-    color: rgba(246,231,211,.45); position: relative; }
-  .foot .hint { color: rgba(255,215,154,.62); text-align: right; }
+  .meta { font-size: 12px; color: rgba(246,231,211,.55); margin-bottom: 1px; }
+  .text { font-size: 16px; line-height: 1.45; color: #fdf3e6; word-break: break-word; }
+  .chip { flex: 0 0 auto; max-width: 160px; padding: 4px 11px; border-radius: 999px;
+    font-size: 13px; font-weight: 700; line-height: 1.3; word-break: break-word; }
+  .chip.yes { background: rgba(125,220,154,.2); color: #a8f0c0; }
+  .chip.no { background: rgba(255,255,255,.1); color: rgba(246,231,211,.8); }
+  .chip.near { background: rgba(232,163,61,.22); color: #ffd79a; }
+  .chip.info { background: rgba(150,190,255,.18); color: #bcd6ff; }
 </style>
 </head>
 <body>
-<div class="card">
-  <div class="glow"></div>
-  <div class="head">
-    <span class="icon">🥣</span>
-    <span class="title">海龟汤 · 问答速报</span>
-    <span class="count">{{ count }} 条</span>
-  </div>
-  {% if puzzle %}<div class="puzzle">题目：{{ puzzle }}</div>{% endif %}
-  <div class="rows">
-    {% for item in items %}
-    <div class="row">
-      <div class="who">
-        <div class="num">{{ item.number }}{% if item.avatar %}<img src="{{ item.avatar }}" alt="">{% endif %}</div>
-        <div class="from">{{ item.source }}</div>
-      </div>
-      <div class="body">
-        <div class="kind">{{ item.kind }}</div>
-        <div class="text">{{ item.text }}</div>
-      </div>
-      <div class="chip {{ item.tone }}">{{ item.result }}</div>
+<div class="wrap">
+  {% for item in items %}
+  <div class="strip">
+    <div class="avatar">{% if item.avatar %}<img src="{{ item.avatar }}" alt="">{% else %}{{ item.number }}{% endif %}</div>
+    <div class="body">
+      <div class="meta">{{ item.source }} · {{ item.number }} · {{ item.kind }}</div>
+      <div class="text">{{ item.text }}</div>
     </div>
-    {% endfor %}
+    <div class="chip {{ item.tone }}">{{ item.result }}</div>
   </div>
-  {% if overflow %}<div class="more">…还有 {{ overflow }} 条没列出来</div>{% endif %}
-  <div class="foot">
-    <span>花火整理 · 网页房间里的问答</span>
-    <span class="hint">群里 @花火 直接问一句 · 「汤 提示」要提示</span>
-  </div>
+  {% endfor %}
 </div>
 </body>
 </html>"""
@@ -1894,6 +1852,10 @@ class GameCompanionPlugin(Star):
         self.turtle_soup_qq_sync = self._cfg_bool(
             "turtle_soup.qq_sync_questions", True
         )
+        # 同步到群里的形态：text=纯文字（默认，最简单），image=一条横条图片
+        self.turtle_soup_qq_sync_style = self._cfg_str(
+            "turtle_soup.qq_sync_style", "text"
+        ) or "text"
         # 严格轮次（关掉 free_questioning）时，轮次换人到群里播报并 @ 下一位。
         # 默认开：群里看不到网页上的「轮到 X 号」，不说话就没人知道该谁问。
         self.turtle_soup_qq_turn_announce = self._cfg_bool(
@@ -2634,6 +2596,26 @@ class GameCompanionPlugin(Star):
             for room in rooms
         ]
         yield event.plain_result("当前游戏房间：\n" + "\n".join(labels))
+
+    @filter.command("汤", alias={"海龟汤"})
+    async def turtle_soup_command(self, event: AstrMessageEvent):
+        """海龟汤显式指令：单独一句「汤」直接开局，汤+内容触发提问/推理/提示等。
+
+        AstrBot 标准指令带 wake 前缀（`/` 或 @Bot）时走这里，会显示在指令列表；
+        群里不 @ 直接发「汤 xx」仍由下面的正则兜底，两条路共用同一套解析。
+        """
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return
+        reply = await handle_soup_command(self, event)
+        if not reply:
+            return
+        stop = getattr(event, "stop_event", None)
+        if callable(stop):
+            try:
+                stop()
+            except Exception:
+                pass
+        yield event.plain_result(reply)
 
     @filter.command_group("game")
     def game_commands(self):
@@ -7250,6 +7232,13 @@ class GameCompanionPlugin(Star):
             "partial": "near",
             "compound": "near",
         }.get(str(entry.verdict or ""), "info")
+        # 判定结果简写：提问只给「是 / 否 / 无关 / 部分正确」，推理保留完整判定
+        # 原文（「沾到边了，但还差致命机制」），群里一眼看懂又不啰嗦。
+        verdict_label = VERDICT_LABELS.get(str(entry.verdict or ""), "")
+        if entry.kind == "question":
+            result_text = verdict_label or (entry.response or "已记录")
+        else:
+            result_text = entry.response or "已记录"
         bucket["items"].append(
             {
                 "label": label,
@@ -7264,7 +7253,7 @@ class GameCompanionPlugin(Star):
                 "source": "群里" if from_qq else "网页",
                 "kind_cn": head,
                 "prompt": prompt or "（内容为空）",
-                "result": entry.response or "已记录",
+                "result": result_text,
                 "tone": tone,
             }
         )
@@ -7355,8 +7344,20 @@ class GameCompanionPlugin(Star):
                 )
         return avatars
 
-    async def _soup_t2i(self, template: str, data: dict[str, Any]) -> str:
-        """用 AstrBot 的 t2i 把一份 HTML 模板渲染成图片，返回 base64。"""
+    async def _soup_t2i(
+        self,
+        template: str,
+        data: dict[str, Any],
+        *,
+        viewport_height: int | None = None,
+        scale: str = "ultra",
+    ) -> str:
+        """用 AstrBot 的 t2i 把一份 HTML 模板渲染成图片，返回 base64。
+
+        `viewport_height` 用来「压扁」横条图：视口默认 720 高，内容只有几十像素时，
+        full_page 会按 `max(视口高, 内容高)` 截出一整屏，底部全是空白。把视口高设得
+        比内容还小，full_page 就按内容高度截，正好一条横条。
+        """
         render = getattr(self, "html_render", None)
         if not callable(render):
             raise RuntimeError("当前 AstrBot 未提供 html_render（t2i）能力")
@@ -7364,9 +7365,11 @@ class GameCompanionPlugin(Star):
             "type": "png",
             "full_page": True,
             "viewport_width": 720,
-            "device_scale_factor_level": "ultra",
+            "device_scale_factor_level": scale,
             "timeout": 20000,
         }
+        if viewport_height:
+            options["viewport_height"] = viewport_height
         url = await asyncio.wait_for(
             render(template, data, options=options), timeout=10
         )
@@ -7375,8 +7378,10 @@ class GameCompanionPlugin(Star):
         return await self._download_image_base64(url)
 
     async def _soup_sync_t2i(self, data: dict[str, Any]) -> str:
-        """用 AstrBot 的 t2i 把问答速报渲染成图片，返回 base64。"""
-        return await self._soup_t2i(_SOUP_SYNC_TMPL, data)
+        """把问答速报渲染成横条图片：压扁、不塞标题和脚注，消除底部大片空白。"""
+        return await self._soup_t2i(
+            _SOUP_SYNC_TMPL, data, viewport_height=60, scale="normal"
+        )
 
     # ---------------- 海龟汤：开局卡（群里也能看见题目） ----------------
 
@@ -7499,7 +7504,7 @@ class GameCompanionPlugin(Star):
         await self._deliver(target, MessageChain(parts), what="轮次播报")
 
     async def _flush_soup_group_sync(self, room_id: str) -> None:
-        """窗口到期后把攒下的问答合并成一条（优先合并聊天记录）发到群里。"""
+        """窗口到期后把攒下的网页问答同步到群里（默认纯文字，可切横条图）。"""
         await asyncio.sleep(self.SOUP_SYNC_WINDOW)
         state = self.__dict__.get("_soup_sync_state") or {}
         bucket = state.pop(room_id, None)
@@ -7514,64 +7519,68 @@ class GameCompanionPlugin(Star):
         if str(getattr(room, "status", "")) == "closed":
             return
         items: list[dict[str, str]] = list(bucket["items"])
+        # 只同步网页那边问的：群里自己问的，群里本来就看得到
+        web_items = [it for it in items if it.get("source") == "网页"]
+        if not web_items:
+            return
+
+        style = (getattr(self, "turtle_soup_qq_sync_style", "text") or "text").lower()
+        if style == "image":
+            if await self._flush_soup_sync_image(room, web_items):
+                return
+            # 横条图失败退回纯文字
+        text = self._soup_sync_text(web_items)
+        await self._send_to_origin(room, text)
+
+    def _soup_sync_text(self, items: list[dict[str, Any]]) -> str:
+        """把一批网页问答拼成纯文字：一句一条，最省事也不刷屏。"""
+        lines = [
+            (
+                f"网页玩家{item.get('number') or '花火'}"
+                f"{'提问' if item.get('kind') == 'question' else '推理'}："
+                f"{item.get('prompt') or ''} → {item.get('result') or '已记录'}"
+            )
+            for item in items
+        ]
+        if len(lines) == 1:
+            return lines[0]
         kinds = {item["kind"] for item in items}
         if kinds == {"question"}:
-            title = f"🥣 网页那边刚问了 {len(items)} 条："
+            head = f"网页那边刚问了 {len(items)} 条："
         elif kinds == {"answer"}:
-            title = f"🥣 网页那边刚交了 {len(items)} 份推理："
+            head = f"网页那边刚交了 {len(items)} 份推理："
         else:
-            title = f"🥣 网页那边刚有 {len(items)} 条动态："
-        shown = items[: self.SOUP_SYNC_MAX_LINES]
-        text = "\n".join([title, *[item["text"] for item in shown]])
-        extra = len(items) - len(shown)
-        if extra > 0:
-            text += f"\n…还有 {extra} 条"
+            head = f"网页那边刚有 {len(items)} 条动态："
+        return f"🥣 {head}\n" + "\n".join(lines)
 
-        puzzle_title = str(bucket.get("puzzle") or "")
+    async def _flush_soup_sync_image(
+        self, room: GameRoom, items: list[dict[str, Any]]
+    ) -> bool:
+        """把每条网页问答渲染成一条压扁的横条图，逐条发到群里。
 
-        async def send_image() -> bool:
-            """t2i 图片：好看、群里显眼，适合条数不多的时候。"""
+        不再发「一张大卡片塞一堆问答」：那种图又高、底部又空，还容易刷屏。
+        横条只留头像 + 网页玩家信息 + 提问 + 判定结果，宽 720、高几十像素。
+        """
+        sent_any = False
+        for item in items[: self.SOUP_SYNC_MAX_LINES]:
             try:
-                # 头像先拉成 data URI 内联进去：渲染器在无网/超时的情况下也能画出来
-                avatars = await self._soup_sync_avatars(items)
+                avatars = await self._soup_sync_avatars([item])
             except Exception as exc:
                 logger.info("[GameCompanion] 问答速报头像拉取失败（用号码牌）：%s", exc)
                 avatars = {}
             try:
                 b64 = await self._soup_sync_t2i(
-                    self._soup_sync_image_data(items, puzzle_title, avatars)
+                    self._soup_sync_image_data([item], "", avatars)
                 )
             except Exception as exc:
-                logger.info("[GameCompanion] 问答速报 t2i 渲染失败：%s", exc)
-                return False
+                logger.info("[GameCompanion] 问答速报横条渲染失败：%s", exc)
+                continue
             try:
-                return await self._send_to_origin_image(room, "", b64)
+                if await self._send_to_origin_image(room, "", b64):
+                    sent_any = True
             except Exception as exc:
-                logger.info("[GameCompanion] 问答速报图片发送失败：%s", exc)
-                return False
-
-        async def send_chain() -> bool:
-            """合并聊天记录：完整、可展开，适合条数多的时候。"""
-            chain = self._soup_sync_chain(items, title)
-            if chain is None:
-                return False
-            target = self.announce_target(room)
-            if not target:
-                return False
-            # 平台不支持合并转发时这里会失败，交给调用方换图片/纯文字兜底
-            return await self._deliver(target, chain, what="问答速报")
-
-        # 条数少 → 图片更能吸引人；条数多 → 合并记录更完整。两种互相兜底，
-        # 都失败才退回纯文本（至少让群里知道网页那边在问什么）。
-        order = (
-            (send_image, send_chain)
-            if len(items) <= self.SOUP_SYNC_IMAGE_ROWS
-            else (send_chain, send_image)
-        )
-        for send in order:
-            if await send():
-                return
-        await self._send_to_origin(room, text)
+                logger.info("[GameCompanion] 问答速报横条发送失败：%s", exc)
+        return sent_any
 
     @staticmethod
     def _normalize_session(session: str) -> str:
@@ -7956,6 +7965,14 @@ class GameCompanionPlugin(Star):
         else:
             lines.append("🌫 这题最终没人解开，汤底已经揭晓。")
         lines.append("想知道答案？开一局，或者去问玩过的人。")
+        # 战报里附上房间链接：群友点进去就能在网页里看完整汤底（战报本身为防剧透不露汤底）
+        try:
+            room_url = self._room_url(room)
+        except Exception:
+            room_url = ""
+        if room_url:
+            lines.append(f"🔗 房间链接：{room_url}")
+            lines.append("想看完整汤底？点上面的链接进网页房间查看。")
         return "\n".join(lines)
 
     def _soup_game_summary(self, room: GameRoom) -> str:

@@ -2967,12 +2967,24 @@
 
     const prompt = document.createElement("p");
     prompt.className = "prompt";
-    const promptText = entry.kind === "reverse"
-      ? `${soupSeatLabel(entry.player_number)} 线索/回答：${entry.prompt || ""}`
-      : entry.kind === "hint"
-      ? "玩家申请了提示"
-      : `${soupSeatLabel(entry.player_number)}${entry.kind === "answer" ? "猜测" : "问题"}：${entry.prompt || ""}`;
+    let promptText;
+    if (entry.kind === "reverse") {
+      promptText = `${soupSeatLabel(entry.player_number)} 线索/回答：${entry.prompt || ""}`;
+    } else if (entry.kind === "hint") {
+      promptText = "玩家申请了提示";
+    } else if (entry.kind === "answer") {
+      promptText = `${soupSeatLabel(entry.player_number)}${entry.prompt || ""}`;
+    } else {
+      promptText = `${soupSeatLabel(entry.player_number)}提问：${entry.prompt || ""}`;
+    }
     prompt.textContent = promptText;
+    // 推理给个醒目徽章：和提问一样是「N 号 + 一句话」，不标出来很容易看混
+    if (entry.kind === "answer") {
+      const kindBadge = document.createElement("span");
+      kindBadge.className = "soup-kind-badge soup-kind-answer";
+      kindBadge.textContent = "推理";
+      prompt.prepend(kindBadge, " ");
+    }
     // 群里问的和网页问的混在一起时，得能分清来源，否则会以为是自己问过
     if (entry.source === "qq") {
       const badge = document.createElement("span");

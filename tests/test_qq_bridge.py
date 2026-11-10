@@ -40,8 +40,8 @@ from astrbot_plugin_game_companion_huahuo.turtle_soup import TurtleSoupGame
         ("汤复盘", ("recap", "")),
         ("汤 回顾", ("recap", "")),
         ("汤 战报", ("recap", "")),
-        ("汤", ("help", "")),
-        ("海龟汤", ("help", "")),
+        ("汤", ("start", "")),
+        ("海龟汤", ("start", "")),
         # 没说动作词的整句按提问处理——群里最常用的就是直接问
         ("汤 是不是和灯塔有关", ("question", "是不是和灯塔有关")),
     ],
@@ -141,7 +141,34 @@ def make_plugin(room: SimpleNamespace | None = None) -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_help_works_without_a_room() -> None:
     plugin = make_plugin()
-    assert await handle_soup_command(plugin, make_event("汤")) == HELP_TEXT
+    assert await handle_soup_command(plugin, make_event("汤 帮助")) == HELP_TEXT
+
+
+@pytest.mark.asyncio
+async def test_bare_soup_command_starts_a_room() -> None:
+    """单独一句「汤」直接开局，不用先背「汤 开局」这个写法。"""
+    plugin = make_plugin(None)
+    plugin.manager.start_game = AsyncMock(return_value=True)
+    plugin._soup_difficulty = lambda _text: "normal"
+    created = SimpleNamespace(
+        status="setup",
+        player_qq="",
+        player_token="pt",
+        multiplayer=SimpleNamespace(
+            enabled=False, seat_for_qq=lambda _qq: None, seats=[], capacity=0
+        ),
+        visitors={},
+        add_message=lambda *_args, **_kwargs: None,
+    )
+    plugin._create_or_reuse_room_from_event = AsyncMock(
+        return_value=(created, False, False)
+    )
+    plugin._room_url = lambda _room: "https://example.com/room/x"
+
+    reply = await handle_soup_command(plugin, make_event("汤"))
+
+    assert "海龟汤开好了" in reply
+    plugin._create_or_reuse_room_from_event.assert_awaited_once()
 
 
 @pytest.mark.asyncio
