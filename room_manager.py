@@ -3892,6 +3892,7 @@ class RoomManager:
         reply: str = "",
         coverage: float = 0.0,
         missing: str = "",
+        announce: bool = True,
     ) -> bool:
         auto_reveal = False
         async with room.lock:
@@ -3935,6 +3936,8 @@ class RoomManager:
                     "qq_participated": bool(
                         source == "qq" or getattr(game, "qq_reveal_interest", False)
                     ),
+                    # 群内指令的回执里已经写明了结果，主程序别再播一遍同样的内容
+                    "announce_in_group": bool(announce),
                 },
             )
         # 收尾那一次推理同样要进群同步队列：本局结束时也别把它漏掉。
@@ -4109,11 +4112,15 @@ class RoomManager:
         source: Literal["web", "qq"],
         visitor_token: str = "",
         actor_qq: str = "",
+        announce: bool = True,
     ) -> dict[str, object]:
         """发起「揭晓汤底」。
 
         与「投降」的区别：海龟汤是多人在玩的，一个人不能替全队认输，
         所以这里只是发起表决——单人房（或已过半）立刻揭晓，多人房等其他人同意。
+
+        `announce=False` 表示调用方（群内指令）自己已经把结果回给了群里，
+        主程序不必再往群里播一条一样的。
         """
         revealed = False
         async with room.lock:
@@ -4190,6 +4197,7 @@ class RoomManager:
                 if revealed
                 else f"已发起揭晓，还需要 {required - votes} 位玩家同意。"
             ),
+            "announce_in_group": bool(announce),
         }
         if revealed:
             await self._finish_game(room)
@@ -4202,6 +4210,7 @@ class RoomManager:
                     "qq_participated": bool(
                         source == "qq" or getattr(game, "qq_reveal_interest", False)
                     ),
+                    "announce_in_group": bool(announce),
                     # 达成揭晓的这一票不再发 requested/voted；把表决结果随揭晓事件
                     # 带出去，群里才知道是谁把票凑够的。
                     "votes": int(payload.get("votes") or 0),
@@ -4221,6 +4230,7 @@ class RoomManager:
         source: Literal["web", "qq"],
         visitor_token: str = "",
         actor_qq: str = "",
+        announce: bool = True,
     ) -> dict[str, object]:
         revealed = False
         async with room.lock:
@@ -4262,6 +4272,7 @@ class RoomManager:
                 if revealed
                 else f"已记录你的意见（{votes}/{required}）。"
             ),
+            "announce_in_group": bool(announce),
         }
         if revealed:
             await self._finish_game(room)
@@ -4274,6 +4285,7 @@ class RoomManager:
                     "qq_participated": bool(
                         source == "qq" or getattr(game, "qq_reveal_interest", False)
                     ),
+                    "announce_in_group": bool(announce),
                     # 同上：最后一票附议不再单独发 voted，结果随揭晓事件一起播
                     "votes": int(payload.get("votes") or 0),
                     "required": int(payload.get("required") or 0),

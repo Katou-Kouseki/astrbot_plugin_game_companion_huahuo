@@ -569,8 +569,19 @@ async def judge_soup_from_group(
 
 
 async def _dispatch(
-    plugin: Any, room: GameRoom, action: str, body: str, qq: str
+    plugin: Any,
+    room: GameRoom,
+    action: str,
+    body: str,
+    qq: str,
+    *,
+    announce: bool = True,
 ) -> str:
+    """执行一次动作并返回给发指令的人。
+
+    `announce=False` 表示这份回执不会被原样发到群里（比如只交给模型转述），
+    这时要由主程序的事件广播补一条，否则群里完全看不到结果。
+    """
     game = plugin.manager._turtle_soup_game(room)
     if action == "help":
         return HELP_TEXT
@@ -592,7 +603,7 @@ async def _dispatch(
         return f"💡 {hint}"
     if action == "reveal":
         result = await plugin.manager.request_soup_reveal(
-            room, source="qq", actor_qq=qq
+            room, source="qq", actor_qq=qq, announce=announce
         )
         if result.get("revealed"):
             solution = (game.puzzle.solution if game and game.puzzle else "").strip()
@@ -605,7 +616,7 @@ async def _dispatch(
         )
     if action in {"agree", "disagree"}:
         result = await plugin.manager.vote_soup_reveal(
-            room, agree=action == "agree", source="qq", actor_qq=qq
+            room, agree=action == "agree", source="qq", actor_qq=qq, announce=announce
         )
         if result.get("revealed"):
             solution = (game.puzzle.solution if game and game.puzzle else "").strip()
@@ -624,18 +635,25 @@ async def _dispatch(
                 )
                 return f"🥣 {turn.get('reply') or '花火还在想…'}"
             result = await plugin.submit_turtle_soup_question(
-                room, body, source="qq", actor_qq=qq
+                room, body, source="qq", actor_qq=qq, announce=announce
             )
             return _question_reply(game, body, result)
         result = await plugin.submit_turtle_soup_answer(
-            room, body, source="qq", actor_qq=qq
+            room, body, source="qq", actor_qq=qq, announce=announce
         )
         return _answer_reply(result)
     return HELP_TEXT
 
 
 async def run_soup_action(
-    plugin: Any, room: GameRoom, action: str, body: str, qq: str, *, actor_name: str = ""
+    plugin: Any,
+    room: GameRoom,
+    action: str,
+    body: str,
+    qq: str,
+    *,
+    actor_name: str = "",
+    announce: bool = True,
 ) -> str:
     """按动作执行一次群聊操作（指令入口、@ 入口与 LLM 工具共用）。
 
@@ -654,7 +672,7 @@ async def run_soup_action(
         prefix = note
     _mark_active(room, qq)
     try:
-        text = await _dispatch(plugin, room, action, body, qq)
+        text = await _dispatch(plugin, room, action, body, qq, announce=announce)
     except PermissionError as exc:
         return (
             f"{exc}\n"

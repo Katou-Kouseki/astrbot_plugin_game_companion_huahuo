@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.16"
+    assert metadata["version"] == "0.6.17"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2080,6 +2080,32 @@ def test_soup_sync_dedupe_and_reveal_decision() -> None:
     assert "token = seq if seq > 0 else id(entry)" in main
     assert "async def _announce_soup_decision" in main
     assert 'kind="passed"' in main
+
+
+def test_soup_reveal_is_not_announced_twice() -> None:
+    """群内指令的回执已经带了汤底，事件广播不能再播一遍。
+
+    截图里的重复是「🥣 汤底揭晓：…」+「🥣 票数够了，汤底揭晓：…」两条，
+    前者是主程序广播、后者是「汤 附议」的回执。
+    """
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+
+    # 动作入口把「回执是否已发到群」一路传下去
+    assert "announce: bool = True," in bridge
+    assert "announce: bool = True," in rm
+    assert "announce=announce" in bridge
+    assert '"announce_in_group": bool(announce)' in rm
+    # 三条会触发揭晓的路径都要带这个标记
+    assert rm.count('"announce_in_group": bool(announce)') >= 3
+
+    # 主程序据此跳过重复广播，但默认（无标记）仍然要播
+    assert 'if payload.get("announce_in_group") is False:' in main
+    assert main.count('payload.get("announce_in_group") is False') >= 3
+
+    # 只交给模型转述的路径必须让广播兜底，别静默
+    assert "announce=False," in main
 
 
 def test_undercover_and_board_posters_never_truncate_names() -> None:

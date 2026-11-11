@@ -2786,6 +2786,8 @@ class GameCompanionPlugin(Star):
             text,
             qq,
             actor_name=str(getattr(event, "get_sender_name", lambda: "")() or "").strip(),
+            # 这条回执只交给模型转述，不会原样发到群里：结果得由事件广播补上
+            announce=False,
         )
         return json.dumps({"ok": True, "reply": reply}, ensure_ascii=False)
 
@@ -4536,14 +4538,26 @@ class GameCompanionPlugin(Star):
                 )
             return
         if event_name == "soup_reveal_requested":
+            # 群内指令的回执（「已发起揭晓（1/2），还需要 1 人同意」）已经在群里了，
+            # 再广播一条一模一样的话只会刷屏。
+            if payload.get("announce_in_group") is False:
+                return
             self._spawn(self._announce_soup_reveal_vote(room, payload, kind="requested"))
             return
         if event_name == "soup_reveal_voted":
+            if payload.get("announce_in_group") is False:
+                return
             self._spawn(self._announce_soup_reveal_vote(room, payload, kind="voted"))
             return
         if event_name == "soup_revealed":
             # 超时、猜中、投票、额度用尽都会走这里，任何一条路径都不能让群里没声音。
             # 完整汤底只在本局群里有人发起/附议/推理揭晓时才发，其余只提示「已揭晓」。
+            #
+            # 群内指令（汤 揭晓 / 汤 附议 / 汤 推理）的回执本身就把汤底写全了，
+            # 这里再播一份就成了群里两条一样的「汤底揭晓」。网页、超时、Bot 自玩
+            # 这些没有回执的路径仍然要靠这条广播。
+            if payload.get("announce_in_group") is False:
+                return
             qq_participated = bool(payload.get("qq_participated")) or (
                 str(payload.get("source") or "") == "qq"
             )
@@ -6562,6 +6576,7 @@ class GameCompanionPlugin(Star):
         source: Literal["web", "qq"],
         visitor_token: str = "",
         actor_qq: str = "",
+        announce: bool = True,
     ) -> dict[str, Any]:
         # 玩家出题人：不经过 LLM，直接把问题挂到他面前等裁决
         host_game = (
@@ -6654,6 +6669,7 @@ class GameCompanionPlugin(Star):
                     solved=True,
                     source=source,
                     matched_facts=matched_facts,
+                    announce=announce,
                 )
                 if not applied:
                     raise RuntimeError("房间状态已经变化，请重新查看当前题目")
@@ -6812,6 +6828,7 @@ class GameCompanionPlugin(Star):
         source: Literal["web", "qq"],
         visitor_token: str = "",
         actor_qq: str = "",
+        announce: bool = True,
     ) -> dict[str, Any]:
         host_game = (
             self.manager._turtle_soup_game(room)
@@ -6890,6 +6907,7 @@ class GameCompanionPlugin(Star):
                 reply=reply,
                 coverage=judgment.coverage,
                 missing=judgment.missing,
+                announce=announce,
             )
             if not applied:
                 raise RuntimeError("房间状态已经变化，请重新查看当前题目")
