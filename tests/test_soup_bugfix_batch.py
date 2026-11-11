@@ -39,7 +39,12 @@ def test_console_library_endpoints_are_registered() -> None:
     GameCompanionPlugin._register_page_api(plugin)  # noqa: SLF001
 
     paths = {args[0] for args in registered}
-    for name in ("soup_library", "soup_library_reset", "soup_custom_delete"):
+    for name in (
+        "soup_library",
+        "soup_generate",
+        "soup_library_reset",
+        "soup_custom_delete",
+    ):
         assert any(path.endswith(f"/{name}") for path in paths), f"{name} 没有注册"
 
 
@@ -58,6 +63,7 @@ def test_console_library_methods_get_the_right_http_verbs() -> None:
         return next(value for key, value in registered.items() if key.endswith(f"/{name}"))
 
     assert verbs("soup_library") == ["GET"]
+    assert verbs("soup_generate") == ["POST"]
     assert verbs("soup_library_reset") == ["POST"]
     assert verbs("soup_custom_delete") == ["POST"]
 

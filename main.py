@@ -13,6 +13,7 @@ import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Literal
 from urllib.parse import quote, urlsplit
 
@@ -133,6 +134,80 @@ PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 # 管理台手动开的房间没有 QQ 会话，用这个假 session 占位：
 # 版本/人格/解说回退到默认 Provider，主动发消息会被 _send_to_origin 静默吞掉。
 ADMIN_CONSOLE_SESSION = "admin:console"
+
+
+def _provider_names(provider: Any) -> tuple[str, str]:
+    """从 Provider 里读出 (ID, 模型名)，读不到的字段给空串。
+
+    AstrBot 通常是 `provider.meta().id` / `provider.meta().model`，不同版本和
+    第三方适配器也可能直接把 `id` / `model_name` 挂在实例上。管理台只是要展示
+    和记一笔出处，所以鸭子类型逐个试，不要因为某个字段缺失就整页报错。
+    """
+    if provider is None:
+        return "", ""
+    meta = None
+    getter = getattr(provider, "meta", None)
+    if callable(getter):
+        try:
+            meta = getter()
+        except Exception as exc:  # noqa: BLE001 - 第三方 Provider 的 meta 可能抛错
+            logger.debug("[GameCompanion] 读取模型信息失败: %s", exc)
+            meta = None
+    sources = (meta, provider)
+
+    def read(names: tuple[str, ...]) -> str:
+        for obj in sources:
+            if obj is None:
+                continue
+            for name in names:
+                value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+                if callable(value):
+                    try:
+                        value = value()
+                    except Exception:  # noqa: BLE001
+                        value = None
+                if value:
+                    return str(value).strip()
+        return ""
+
+    return (
+        read(("id", "provider_id")),
+        read(("model", "model_name", "default_model", "get_model_name")),
+    )
+
+
+def _provider_label(provider: Any) -> str:
+    """题库里记的「哪个模型出的题」：ID · 模型名，缺哪个就用哪个。"""
+    provider_id, model = _provider_names(provider)
+    if provider_id and model and model != provider_id:
+        return f"{provider_id} · {model}"[:120]
+    return (model or provider_id)[:120]
+
+
+def _text_provider_options(context: Any) -> list[dict[str, str]]:
+    """管理台「选模型出题」下拉：列出框架已载入的对话模型。"""
+    getter = getattr(context, "get_all_providers", None)
+    try:
+        providers = getter() if callable(getter) else ()
+    except Exception as exc:  # noqa: BLE001 - 枚举失败只影响下拉，不该拖垮题库页
+        logger.debug("[GameCompanion] 枚举对话模型失败: %s", exc)
+        providers = ()
+    if isinstance(providers, dict):
+        providers = list(providers.values())
+    options: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for provider in providers or ():
+        if not callable(getattr(provider, "text_chat", None)):
+            continue
+        provider_id, _model = _provider_names(provider)
+        if not provider_id or provider_id in seen:
+            continue
+        seen.add(provider_id)
+        options.append(
+            {"id": provider_id, "label": _provider_label(provider) or provider_id}
+        )
+    return options
+
 
 # 棋盘执方的中文写法：象棋红/黑，棋类黑/白
 COMMENTARY_SIDE_LABELS = {"red": "红", "black": "黑", "white": "白"}
@@ -5812,7 +5887,10 @@ class GameCompanionPlugin(Star):
                 deck.remember(puzzle, source="llm")
                 # 存下来：管理台能看能改，以后也能直接复用，不必每局都现编
                 try:
-                    self._soup_generated().add(puzzle)
+                    self._soup_generated().add(
+                        puzzle,
+                        model=_provider_label(self._soup_generation_provider(room)),
+                    )
                 except (OSError, ValueError):
                     pass
             return
@@ -5868,13 +5946,17 @@ class GameCompanionPlugin(Star):
         excluded: set[str],
         deck: Any,
         attempts: int = 3,
+        provider: Any | None = None,
+        use_persona: bool = True,
     ) -> Any:
         """让模型现编一道题并通过独立自检；失败抛最后一次的错误。
 
         只负责「编 + 校验 + 去重」，不落库：正常出题要交给房间开局，
-        预生成只要存进存档，两者共用这一段。
+        预生成只要存进存档，管理台手动出题也复用这一段。`provider` 用来指定
+        模型，`use_persona=False` 时不出人格（管理台批量出题应该是中性的）。
         """
-        persona = await self._persona_prompt(room)
+        chosen = provider or self._soup_generation_provider(room)
+        persona = await self._persona_prompt(room) if use_persona else ""
         last_error = ""
         for attempt in range(1, max(1, int(attempts)) + 1):
             try:
@@ -5895,7 +5977,7 @@ class GameCompanionPlugin(Star):
                     system_prompt=system_prompt,
                     prompt=prompt,
                     timeout=35,
-                    provider=self._soup_generation_provider(room),
+                    provider=chosen,
                 )
                 data = extract_json_object(raw)
                 if data is None:
@@ -5912,7 +5994,7 @@ class GameCompanionPlugin(Star):
                     system_prompt=check_system,
                     prompt=check_prompt,
                     timeout=30,
-                    provider=self._soup_generation_provider(room),
+                    provider=chosen,
                 )
                 if not validation_passed(check):
                     raise ValueError("题目未通过独立自洽性校验")
@@ -5999,7 +6081,10 @@ class GameCompanionPlugin(Star):
                         "[GameCompanion] 预生成海龟汤没成功（不影响当前对局）：%s", exc
                     )
                     return
-                if store.add(puzzle):
+                if store.add(
+                    puzzle,
+                    model=_provider_label(self._soup_generation_provider(room)),
+                ):
                     excluded.add(puzzle.signature)
                     logger.info(
                         "[GameCompanion] 已预生成一道海龟汤备用：《%s》", puzzle.title
@@ -11807,6 +11892,12 @@ class GameCompanionPlugin(Star):
             "Read turtle soup library stats",
         )
         register_api(
+            f"{PAGE_API_PREFIX}/soup_generate",
+            self.page_soup_generate,
+            ["POST"],
+            "Generate turtle soup puzzles with a chosen model",
+        )
+        register_api(
             f"{PAGE_API_PREFIX}/soup_library_reset",
             self.page_soup_library_reset,
             ["POST"],
@@ -12362,6 +12453,11 @@ class GameCompanionPlugin(Star):
         return {
             "builtin": {**library.stats(), "items": builtin_items},
             "used": deck.stats(),
+            # 管理台「立即出题」的模型下拉：拿不到框架列表时给空数组，前端只留默认项
+            "models": _text_provider_options(getattr(self, "context", None)),
+            "default_model": str(
+                getattr(self, "turtle_soup_generation_provider_id", "") or ""
+            ),
             "custom": {
                 "total": len(custom),
                 "limit": custom.limit,
@@ -12373,6 +12469,7 @@ class GameCompanionPlugin(Star):
                         "created_at": entry.created_at,
                         "owner": entry.owner,
                         "solution_preview": SoupLibrary.mask_solution(entry.solution),
+                        "used": normalize_text(entry.surface) in recent,
                     }
                     for index, entry in enumerate(custom.entries, start=1)
                 ],
@@ -12388,6 +12485,7 @@ class GameCompanionPlugin(Star):
                         "created_at": row["created_at"],
                         "last_used_at": row["last_used_at"],
                         "disabled": row["disabled"],
+                        "model": row.get("model") or "",
                         "solution_preview": SoupLibrary.mask_solution(row["solution"]),
                     }
                     for row in self._soup_generated().listing()
@@ -12399,6 +12497,104 @@ class GameCompanionPlugin(Star):
         """题库概况：内置题量、出题账本、玩家投稿（管理台「题库管理」用）。"""
         return {"status": "ok", "data": self._soup_library_snapshot()}
 
+    async def page_soup_generate(self) -> dict[str, Any]:
+        """管理台点「立即出题」：选好的模型现编一道，校验通过就存进「模型出题」。
+
+        和开局出题共用 `generation_prompt` / 独立自检 / 账本判重，只是不注入
+        人格、不占用任何房间；出题人和模型名一起记进存档，方便对比质量。
+        """
+        payload = await request.json(default={}) or {}
+        provider_id = str(payload.get("provider_id") or "").strip()
+        content_level = normalize_content_level(
+            payload.get("content_level") or "normal"
+        )
+        difficulty = str(payload.get("difficulty") or "normal").strip() or "normal"
+        try:
+            # 一次最多 3 道：每道都要「生成 + 自检」两次模型调用，点太多会把
+            # 页面请求拖到超时；想多出几道多点几次即可。
+            count = max(1, min(int(payload.get("count") or 1), 3))
+        except (TypeError, ValueError):
+            count = 1
+        if getattr(self, "_soup_admin_generating", False):
+            return {
+                "status": "error",
+                "message": "已经有一批题在生成，等它出完再点",
+                "data": {},
+            }
+        if provider_id:
+            getter = getattr(getattr(self, "context", None), "get_provider_by_id", None)
+            provider = getter(provider_id) if callable(getter) else None
+            if provider is None:
+                return {
+                    "status": "error",
+                    "message": f"找不到模型「{provider_id}」，刷新页面重试",
+                    "data": {},
+                }
+        else:
+            provider = self._soup_generation_provider(
+                SimpleNamespace(session_id=ADMIN_CONSOLE_SESSION)
+            )
+        if provider is None or not callable(getattr(provider, "text_chat", None)):
+            return {
+                "status": "error",
+                "message": "当前没有可用的出题模型，请先在 AstrBot 配置对话模型",
+                "data": {},
+            }
+        label = _provider_label(provider) or provider_id or "默认模型"
+        room = SimpleNamespace(
+            session_id=ADMIN_CONSOLE_SESSION,
+            difficulty=difficulty,
+            turtle_soup_recent_signatures=[],
+        )
+        self._soup_admin_generating = True
+        try:
+            deck = self._soup_deck()
+            store = self._soup_generated()
+            excluded = set(deck.recent_signatures(12)) | store.signatures()
+            titles: list[str] = []
+            last_error = ""
+            for _ in range(count):
+                try:
+                    puzzle = await self._generate_soup_puzzle(
+                        room,
+                        content_level=content_level,
+                        difficulty=difficulty,
+                        excluded=excluded,
+                        deck=deck,
+                        attempts=2,
+                        provider=provider,
+                        use_persona=False,
+                    )
+                except (RuntimeError, ValueError, OSError) as exc:
+                    last_error = str(exc)
+                    break
+                if store.add(puzzle, model=label):
+                    titles.append(puzzle.title)
+                    excluded.add(puzzle.signature)
+            if not titles:
+                return {
+                    "status": "error",
+                    "message": last_error or "模型没出出可用的题，换个模型或稍后再试",
+                    "data": self._soup_library_snapshot(),
+                }
+            recorder = getattr(self.manager, "record_operation", None)
+            if callable(recorder):
+                recorder(
+                    "soup_generated",
+                    f"管理台用 {label} 生成 {len(titles)} 道题",
+                    operator="游戏管理台",
+                )
+            return {
+                "status": "ok",
+                "message": (
+                    f"{label} 出题成功，入库 {len(titles)} 道："
+                    + "、".join(titles[:3])
+                ),
+                "data": self._soup_library_snapshot(),
+            }
+        finally:
+            self._soup_admin_generating = False
+
     async def page_soup_library_action(self) -> dict[str, Any]:
         """内置题的停用 / 恢复 / 删除 / 改回 / 编辑，全部只写覆盖层。"""
         payload = await request.json(default={}) or {}
@@ -12406,7 +12602,45 @@ class GameCompanionPlugin(Star):
         kind = str(payload.get("kind") or "builtin").strip().lower()
         library = self._soup_library()
         try:
-            if kind == "generated":
+            if action == "reset_used":
+                # 单独重置：只把这一道从「出过」里放出来，别的题不动
+                index = int(payload.get("index") or 0)
+                if index <= 0:
+                    raise ValueError("缺少题目序号")
+                surface = ""
+                puzzle = None
+                if kind == "generated":
+                    generated = self._soup_generated()
+                    row = generated.get(index)
+                    if row is None:
+                        raise ValueError("没有这个序号")
+                    mapping = row.get("puzzle") or {}
+                    surface = str(mapping.get("surface") or "")
+                    try:
+                        puzzle = puzzle_from_mapping(
+                            mapping,
+                            content_level=normalize_content_level(
+                                mapping.get("content_level")
+                            ),
+                        )
+                    except (ValueError, TypeError):
+                        puzzle = None
+                    generated.reset_used(index)
+                elif kind == "custom":
+                    custom = self._soup_custom()
+                    if not 1 <= index <= len(custom.entries):
+                        raise ValueError("没有这个序号")
+                    surface = custom.entries[index - 1].surface
+                else:
+                    entry = library.find(index)
+                    if entry is None:
+                        raise ValueError("没有这个序号")
+                    surface = entry.surface
+                removed = self._soup_deck().forget(surface, puzzle=puzzle)
+                message = (
+                    f"已单独重置这道题（清掉 {removed} 条出题记录），现在可以再被抽到"
+                )
+            elif kind == "generated":
                 store = self._soup_generated()
                 if action == "restore_all":
                     raise ValueError("生成题没有「恢复」，删掉的无法找回")
@@ -12495,6 +12729,7 @@ class GameCompanionPlugin(Star):
                     "content_level": normalize_content_level(
                         mapping.get("content_level")
                     ),
+                    "model": str(row.get("model") or ""),
                 },
             }
         if kind == "custom":

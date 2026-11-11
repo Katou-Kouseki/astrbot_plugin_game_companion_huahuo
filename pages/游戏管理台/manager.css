@@ -282,3 +282,20 @@ dialog textarea[readonly] { background: var(--surface-alt, #f4f6f4); }
   font-size: 12px;
 }
 .library-pane-head > span:first-child { flex: 1 1 220px; min-width: 0; }
+
+/* 手动出题：模型 / 等级 / 数量一条，窄屏自动折行 */
+.library-generate {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-bottom: 10px; padding: 10px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-alt, #f4f6f4);
+}
+.library-generate .game-select { min-width: 108px; }
+.library-generate #soupGenerateModel { flex: 1 1 200px; max-width: 320px; }
+.library-generate .library-count { margin-left: 0; }
+.library-generate .primary-button:disabled { opacity: .6; cursor: progress; }
+.library-model {
+  display: block; max-width: 180px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font-size: 12px;
+}

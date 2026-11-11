@@ -373,6 +373,25 @@
           <div class="library-pane-head">
             <span id="generatedSummary">模型出过并通过校验的题会自动存进这里，下一局优先复用，不必每次重编</span>
           </div>
+          <div class="library-generate" role="group" aria-label="手动出题">
+            <select id="soupGenerateModel" class="game-select" aria-label="选择出题模型">
+              <option value="">默认（跟随配置）</option>
+            </select>
+            <select id="soupGenerateLevel" class="game-select" aria-label="出题内容等级">
+              <option value="normal">普通</option>
+              <option value="all_ages">全年龄</option>
+              <option value="unrestricted">不限制</option>
+            </select>
+            <select id="soupGenerateCount" class="game-select" aria-label="出题数量">
+              <option value="1">1 道</option>
+              <option value="2">2 道</option>
+              <option value="3">3 道</option>
+            </select>
+            <button id="soupGenerateBtn" class="primary-button" type="button" title="让选中的模型立即出一道题并入库">
+              <i data-lucide="sparkles"></i><span>立即出题</span>
+            </button>
+            <span id="soupGenerateStatus" class="library-count" aria-live="polite"></span>
+          </div>
           <div class="library-toolbar">
             <input
               id="generatedSearch"
@@ -396,6 +415,7 @@
                   <th>#</th>
                   <th>题目</th>
                   <th>等级</th>
+                  <th>出题模型</th>
                   <th>入库时间</th>
                   <th>状态</th>
                   <th class="actions-column">操作</th>

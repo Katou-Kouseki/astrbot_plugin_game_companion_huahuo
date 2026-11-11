@@ -74,6 +74,8 @@ class GeneratedSoupStore:
                     "created_at": float(row.get("created_at") or 0.0),
                     "last_used_at": float(row.get("last_used_at") or 0.0),
                     "disabled": bool(row.get("disabled")),
+                    # 老存档没有这个字段，读成空串即可，不要求迁移
+                    "model": str(row.get("model") or "")[:120],
                 }
             )
         self.items = items[-self.limit :]
@@ -170,17 +172,21 @@ class GeneratedSoupStore:
                     "created_at": float(row.get("created_at") or 0.0),
                     "last_used_at": float(row.get("last_used_at") or 0.0),
                     "disabled": bool(row.get("disabled")),
+                    "model": str(row.get("model") or "")[:120],
                 }
             )
         return rows
 
     def stats(self) -> dict[str, Any]:
         counts = {"all_ages": 0, "normal": 0, "unrestricted": 0}
+        by_model: dict[str, int] = {}
         disabled = 0
         unused = 0
         for row in self.items:
             level = normalize_content_level((row.get("puzzle") or {}).get("content_level"))
             counts[level] = counts.get(level, 0) + 1
+            model = str(row.get("model") or "").strip() or "未记录"
+            by_model[model] = by_model.get(model, 0) + 1
             if row.get("disabled"):
                 disabled += 1
             elif float(row.get("last_used_at") or 0.0) <= 0:
@@ -191,13 +197,18 @@ class GeneratedSoupStore:
             "disabled": disabled,
             "unused": unused,
             "by_level": counts,
+            "by_model": by_model,
             "limit": self.limit,
         }
 
     # ---------------- 增删改 ----------------
 
-    def add(self, puzzle: SoupPuzzle) -> bool:
-        """存一道模型出的题；同一道题（主题+诡计）只留一份。"""
+    def add(self, puzzle: SoupPuzzle, *, model: str = "") -> bool:
+        """存一道模型出的题；同一道题（主题+诡计）只留一份。
+
+        `model` 记下到底是哪家哪个模型出的，管理台按模型展示，方便对比质量。
+        旧调用不传也能用（老题显示「未记录」）。
+        """
         if puzzle.signature in self.signatures():
             return False
         self.items.append(
@@ -206,6 +217,7 @@ class GeneratedSoupStore:
                 "created_at": time.time(),
                 "last_used_at": 0.0,
                 "disabled": False,
+                "model": str(model or "").strip()[:120],
             }
         )
         # 超上限时丢最旧的：新题更值得留
@@ -220,6 +232,15 @@ class GeneratedSoupStore:
                 row["last_used_at"] = time.time()
                 self.save()
                 return
+
+    def reset_used(self, index: int) -> bool:
+        """单独把一道题恢复成「待用」：只清这一条的出场标记，不动别的题。"""
+        row = self.get(index)
+        if row is None:
+            raise ValueError("没有这个序号")
+        row["last_used_at"] = 0.0
+        self.save()
+        return True
 
     def set_disabled(self, index: int, disabled: bool) -> bool:
         row = self.get(index)

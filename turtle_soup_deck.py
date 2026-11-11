@@ -286,6 +286,30 @@ class SoupDeck:
         self._records = self._records[-self.limit :]
         self.save()
 
+    def forget(self, surface: str, *, puzzle: SoupPuzzle | None = None) -> int:
+        """把一道题从账本里抹掉（管理台「单独重置出题」），返回删掉的条数。
+
+        按汤面为主键，另外允许带上题目对象补指纹 / 签名。只认精确命中，
+        不做相似度扩散：管理员点的是「这一道」，不该把同题材的其它题也放出来。
+        """
+        target = normalize_text(str(surface or "")[:_TEXT_STORE_LIMIT])
+        fingerprint = puzzle_fingerprint(puzzle) if puzzle is not None else ""
+        signature = puzzle.signature if puzzle is not None else ""
+        before = len(self._records)
+
+        def matches(entry: dict[str, Any]) -> bool:
+            if fingerprint and entry.get("fp") == fingerprint:
+                return True
+            if signature and entry.get("sig") == signature:
+                return True
+            return bool(target) and normalize_text(entry.get("surface")) == target
+
+        self._records = [entry for entry in self._records if not matches(entry)]
+        removed = before - len(self._records)
+        if removed:
+            self.save()
+        return removed
+
     # ---------------- 查询 ----------------
 
     def known_surfaces(self) -> set[str]:

@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.10"
+    assert metadata["version"] == "0.6.11"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1679,6 +1679,40 @@ def test_soup_source_and_generated_library_are_wired() -> None:
     assert (ROOT / "soup_generated.py").exists()
     assert "def _soup_generated" in main
     assert 'source="generated"' in main
+
+
+def test_soup_admin_generate_and_single_reset_are_wired() -> None:
+    """管理台「选模型立即出题」+「单条重置」：路由、存档、按钮缺一不可。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    deck = (ROOT / "turtle_soup_deck.py").read_text(encoding="utf-8")
+    store = (ROOT / "soup_generated.py").read_text(encoding="utf-8")
+    page = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+
+    # 手动出题：可选模型、指定 Provider、无房间也能出、入库记录模型
+    assert "def _text_provider_options" in main
+    assert "def _provider_label" in main
+    assert "async def page_soup_generate" in main
+    assert 'f"{PAGE_API_PREFIX}/soup_generate"' in main
+    assert "use_persona: bool = True" in main
+    assert 'store.add(puzzle, model=label)' in main
+    assert '"models": _text_provider_options' in main
+    assert "def add(self, puzzle: SoupPuzzle, *, model: str" in store
+    assert "def reset_used(self, index: int)" in store
+    assert 'id="soupGenerateModel"' in page
+    assert 'id="soupGenerateBtn"' in page
+    assert "出题模型" in page
+    assert "function renderGenerateBar" in script
+    assert "function generateSoupFromModel" in script
+    assert '"page/soup_generate"' in script
+
+    # 单条重置：只清这一道的账本记录，三类题库都能点
+    assert "def forget(self, surface: str" in deck
+    assert 'if action == "reset_used":' in main
+    assert "generated.reset_used(index)" in main
+    for kind in ("builtin", "custom", "generated"):
+        assert f'soupLibraryAction("{kind}", "reset_used"' in script
+    assert "reset_used" in script
 
 
 def test_soup_timeline_preview_and_full_sheet() -> None:

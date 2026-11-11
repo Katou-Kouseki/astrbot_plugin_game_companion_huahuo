@@ -1563,13 +1563,39 @@
     const generatedSummary = document.getElementById("generatedSummary");
     if (generatedSummary) {
       generatedSummary.textContent = generated.total
-        ? `共 ${generated.total} 道 · 下一局优先复用 · 汤底默认打码`
+        ? `共 ${generated.total} 道 · ${Object.keys(generated.by_model || {}).length} 个模型出的题 · 下一局优先复用 · 汤底默认打码`
         : "模型出过并通过校验的题会自动存进这里，下一局优先复用，不必每次重编";
     }
 
     renderBuiltinTable();
     renderCustomTable(custom);
     renderGeneratedTable(generated);
+    renderGenerateBar(data);
+  }
+
+  function renderGenerateBar(data) {
+    const select = document.getElementById("soupGenerateModel");
+    if (!select) return;
+    const previous = select.value;
+    const models = Array.isArray(data?.models) ? data.models : [];
+    select.replaceChildren();
+    const fallback = document.createElement("option");
+    fallback.value = "";
+    fallback.textContent = data?.default_model
+      ? `默认（跟随配置：${data.default_model}）`
+      : "默认（跟随配置）";
+    select.appendChild(fallback);
+    models.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = String(item.id || "");
+      option.textContent = String(item.label || item.id || "模型");
+      select.appendChild(option);
+    });
+    select.value = models.some((item) => String(item.id) === previous) ? previous : "";
+    const status = document.getElementById("soupGenerateStatus");
+    if (status && !status.dataset.busy) {
+      status.textContent = models.length ? `已载入 ${models.length} 个模型` : "";
+    }
   }
 
   // ---------------- 内置题库 ----------------
@@ -1599,6 +1625,12 @@
       item.disabled ? "恢复参与抽题" : "停用（不删除）",
       () => soupLibraryAction("builtin", item.disabled ? "enable" : "disable", item.index),
     ));
+    if (item.used) {
+      actions.appendChild(rowIcon(
+        "rotate-ccw", "单独重置这道题的出题记录（只重置这一条）",
+        () => soupLibraryAction("builtin", "reset_used", item.index),
+      ));
+    }
     actions.appendChild(rowIcon(
       "trash-2", "删除这道题", () => deleteBuiltinSoup(item.index, item.surface), true,
     ));
@@ -1658,6 +1690,7 @@
       span.textContent = surface.length > 60 ? `${surface.slice(0, 60)}…` : surface;
       span.title = surface;
       cell.appendChild(span);
+      if (item.used) cell.appendChild(createText("span", "出过", "library-tag muted"));
       row.appendChild(cell);
       row.appendChild(createText(
         "td", CONTENT_LEVEL_LABELS[item.content_level] || item.content_level || "普通",
@@ -1668,6 +1701,12 @@
       actions.className = "actions-column";
       actions.appendChild(rowIcon("eye", "查看答案", () => openSoupEditor("custom", item.index, "view")));
       actions.appendChild(rowIcon("pencil", "编辑这条投稿", () => openSoupEditor("custom", item.index, "edit")));
+      if (item.used) {
+        actions.appendChild(rowIcon(
+          "rotate-ccw", "单独重置这道投稿的出题记录",
+          () => soupLibraryAction("custom", "reset_used", item.index),
+        ));
+      }
       actions.appendChild(rowIcon("trash-2", "删除这条投稿", () => deleteCustomSoup(item.index, surface), true));
       row.appendChild(actions);
       body.appendChild(row);
@@ -1713,6 +1752,13 @@
       if (item.disabled) cell.appendChild(createText("span", "已停用", "library-tag muted"));
       row.appendChild(cell);
       row.appendChild(createText("td", CONTENT_LEVEL_LABELS[item.content_level] || "普通"));
+      const modelCell = document.createElement("td");
+      const modelText = document.createElement("span");
+      modelText.className = "library-model";
+      modelText.textContent = String(item.model || "未记录");
+      modelText.title = String(item.model || "未记录");
+      modelCell.appendChild(modelText);
+      row.appendChild(modelCell);
       row.appendChild(createText("td", formatStamp(item.created_at)));
       row.appendChild(createText(
         "td",
@@ -1722,6 +1768,12 @@
       actions.className = "actions-column";
       actions.appendChild(rowIcon("eye", "查看答案", () => openSoupEditor("generated", item.index, "view")));
       actions.appendChild(rowIcon("pencil", "编辑这道题", () => openSoupEditor("generated", item.index, "edit")));
+      if (item.last_used_at) {
+        actions.appendChild(rowIcon(
+          "rotate-ccw", "单独重置这道题：恢复成待用",
+          () => soupLibraryAction("generated", "reset_used", item.index),
+        ));
+      }
       actions.appendChild(rowIcon(
         item.disabled ? "power" : "power-off",
         item.disabled ? "恢复复用" : "停用（保留存档）",
@@ -1817,7 +1869,9 @@
     document.getElementById("soupEditorKind").value = kind;
     document.getElementById("soupEditorIndex").value = String(index);
     document.getElementById("soupEditorEyebrow").textContent =
-      kind === "custom" ? "玩家投稿" : kind === "generated" ? "模型出题" : "内置题库";
+      kind === "custom" ? "玩家投稿"
+        : kind === "generated" ? (item?.model ? `模型出题 · ${item.model}` : "模型出题")
+          : "内置题库";
     document.getElementById("soupEditorTitle").textContent =
       kind === "generated" && item?.title ? `#${index} ${item.title}` : `#${index}`;
     const surfaceBox = document.getElementById("soupEditorSurface");
@@ -1898,7 +1952,7 @@
   async function resetSoupLibrary() {
     const proceed = await confirmAction({
       title: "重置出题记录",
-      message: "清空「哪些题已经出过」的记录，让所有题重新参与抽题。题库本身不会改动。",
+      message: "清空「哪些题已经出过」的记录，让所有题重新参与抽题。题库本身不会改动。只想重置某一道题的话，用列表里那一行的 ↺ 按钮。",
       label: "重置",
       danger: true,
     });
@@ -1909,6 +1963,42 @@
       loadLibrary();
     } catch (error) {
       showToast(error?.message || "重置失败");
+    }
+  }
+
+  async function generateSoupFromModel() {
+    const button = document.getElementById("soupGenerateBtn");
+    const status = document.getElementById("soupGenerateStatus");
+    if (!button || button.disabled) return;
+    const label = button.querySelector("span");
+    const payload = {
+      provider_id: document.getElementById("soupGenerateModel").value,
+      content_level: document.getElementById("soupGenerateLevel").value,
+      count: Number(document.getElementById("soupGenerateCount").value || 1),
+    };
+    button.disabled = true;
+    if (label) label.textContent = "出题中…";
+    if (status) {
+      status.dataset.busy = "1";
+      status.textContent = "模型正在出题 + 自检，可能要等几十秒…";
+    }
+    icons();
+    try {
+      const api = await bridge();
+      const result = await api.apiPost("page/soup_generate", payload);
+      if (result?.status === "error") throw new Error(result.message || "出题失败");
+      if (result?.message) showToast(result.message);
+      if (status) status.textContent = "已入库到「模型出题」";
+      if (result?.data?.builtin) renderLibrary(result.data);
+      else loadLibrary();
+    } catch (error) {
+      showToast(error?.message || "出题失败");
+      if (status) status.textContent = "出题失败，可换个模型再试";
+    } finally {
+      button.disabled = false;
+      if (label) label.textContent = "立即出题";
+      if (status) delete status.dataset.busy;
+      icons();
     }
   }
   // ===== 题库管理 END =====
@@ -1990,6 +2080,7 @@
     libraryState.generated.page += 1;
     renderGeneratedTable(libraryState.data?.generated || {});
   });
+  document.getElementById("soupGenerateBtn").addEventListener("click", generateSoupFromModel);
   document.getElementById("soupEditorReveal").addEventListener("click", revealSoupAnswer);
   document.getElementById("soupEditorSave").addEventListener("click", saveSoupEditor);
   document.getElementById("statsGameSelect").addEventListener("change", (e) => {
