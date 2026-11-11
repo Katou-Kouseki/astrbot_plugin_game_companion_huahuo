@@ -4471,13 +4471,15 @@ class GameCompanionPlugin(Star):
             # 指令入座的人已经收到回执，不用再播一遍。
             if payload.get("late") and str(payload.get("source") or "") != "qq":
                 self._spawn(self._announce_soup_late_join(room, payload))
+            # 玩家席换人：上一段连战属于原来那批人，先结账再重新计数
+            self._handle_board_lineup_change(room)
             return
         if event_name == "seats_changed":
             self._capture_round_participants(room)
             if payload.get("late"):
                 self._spawn(self._announce_soup_late_join(room, payload))
-            # 连战汇总：真人全走了就别再等空闲计时，立刻把攒下的几局合并播报掉
-            self._flush_board_series_when_seats_empty(room)
+            # 连战归属跟着玩家席走：换人 / 退席去当观众 / 又坐回来都算一次结账
+            self._handle_board_lineup_change(room)
             return
         if event_name == "board_changed" and room.game is not None:
             if room.game_type == "gomoku":
@@ -10604,7 +10606,10 @@ class GameCompanionPlugin(Star):
             ]
             entries.append(entry)
             if len(entries) > 1:
-                await self._send_board_series(room, entries)
+                # 按阵容分组：积压里可能有上一批玩家的连战，不能和本局混成一条
+                failed = await self._send_board_series_groups(room, entries)
+                if failed:
+                    self._requeue_board_pending(room, failed)
                 return
             style = (getattr(self, "board_group_announce_style", "text") or "text").lower()
             image_data = ""
@@ -10656,6 +10661,8 @@ class GameCompanionPlugin(Star):
             # 连战/单局文案也要写得出「谁跟谁下平」「单人局里谁输了」
             "human_name": str(payload.get("human_name") or ""),
             "draw_names": str(payload.get("draw_names") or ""),
+            # 这一局属于哪批玩家的连战：合并播报时按它分组，不把别人的局算进来
+            "lineup": self._board_series_lineup(room),
         }
 
     @staticmethod
@@ -10780,6 +10787,100 @@ class GameCompanionPlugin(Star):
                 task.cancel()
         self._spawn(self._flush_board_announces(room, 0.0))
 
+    def _board_series_lineup(self, room: GameRoom) -> tuple[str, ...]:
+        """当前玩家席上的真人阵容——「连战」只对同一批人成立。
+
+        用稳定身份而不是昵称（有 QQ 用 QQ，没绑定退化成访客 token）：改昵称、
+        刷新页面都不会被误判成换人；单人对局（未启用玩家席）退化成「主玩家是谁」。
+        """
+        try:
+            seats = self.manager._human_seats(room)
+        except Exception:
+            seats = []
+        if seats:
+            lineup: list[str] = []
+            for seat in seats:
+                qq = (getattr(seat, "qq", "") or "").strip()
+                token = str(getattr(seat, "visitor_token", "") or "")
+                lineup.append(f"qq:{qq}" if qq else f"tk:{token}")
+            return tuple(lineup)
+        token = str(getattr(room, "player_token", "") or "").strip()
+        return (f"tk:{token}",) if token else ()
+
+    def _sync_board_series_lineup(self, room: GameRoom) -> bool:
+        """刷新「这串连战属于谁」，返回阵容是否发生了变化。"""
+        lineup = self._board_series_lineup(room)
+        previous = tuple(getattr(room, "board_series_lineup", ()) or ())
+        if lineup == previous:
+            return False
+        room.board_series_lineup = lineup
+        return True
+
+    def _handle_board_lineup_change(self, room: GameRoom) -> None:
+        """玩家席阵容变了就把上一段连战结账。
+
+        以前待播队列只按玩法分组：换人之后的对局会接在同一串「连战 N 局」里，
+        读起来像是同一位玩家连打了 N 局。现在「阵容」也是连战的边界——换人、
+        有人退回观众席、过一会又坐回来，都会先把手上的连战发掉再重新计数。
+        """
+        if self._sync_board_series_lineup(room):
+            # 手上没有待发的连战、也没有冷却窗口时不用起任务（开局首次入座常见）
+            if getattr(room, "pending_board_announces", None) or float(
+                getattr(room, "last_board_announce_at", 0.0) or 0.0
+            ):
+                self._spawn(self._flush_board_series_on_lineup_change(room))
+            return
+        # 阵容没变但人已经全走了（例如插件重载后收到的第一条事件）：仍然立刻结账
+        self._flush_board_series_when_seats_empty(room)
+
+    async def _flush_board_series_on_lineup_change(self, room: GameRoom) -> None:
+        """阵容变化时把这一段连战发掉，让新阵容的第一局按单局重新通报。"""
+        tasks = getattr(self, "_board_flush_tasks", None)
+        if isinstance(tasks, dict):
+            task = tasks.get(room.room_id)
+            if task is not None and not task.done():
+                task.cancel()
+        entries = self._take_board_pending(room)
+        if entries:
+            failed = await self._send_board_series_groups(room, entries)
+            if failed:
+                self._requeue_board_pending(room, failed)
+        # 新阵容的第一局不能继承上一批人的冷却窗口，否则会被当成「还在连战」继续攒
+        room.last_board_announce_at = 0.0
+
+    @staticmethod
+    def _board_series_groups(
+        entries: list[dict[str, object]],
+    ) -> list[list[dict[str, object]]]:
+        """按玩家席阵容分组：一条「连战 N 局」只能属于同一批玩家。
+
+        正常路径上阵容一变就会结账，这里只是兜底——例如上次群发失败把旧条目
+        放回了队列，混进来的对局不该被算进别人的连战。
+        """
+        groups: list[list[dict[str, object]]] = []
+        for entry in entries:
+            key = tuple(entry.get("lineup") or ())
+            if groups and tuple(groups[-1][0].get("lineup") or ()) == key:
+                groups[-1].append(entry)
+            else:
+                groups.append([entry])
+        return groups
+
+    async def _send_board_series_groups(
+        self, room: GameRoom, entries: list[dict[str, object]]
+    ) -> list[dict[str, object]]:
+        """逐组发送，返回没发出去的条目（由调用方决定是否放回队列）。"""
+        failed: list[dict[str, object]] = []
+        for group in self._board_series_groups(entries):
+            try:
+                ok = await self._send_board_series(room, group)
+            except Exception as exc:
+                logger.warning("[GameCompanion] 连战播报失败: %s", exc)
+                ok = False
+            if not ok:
+                failed.extend(group)
+        return failed
+
     async def _flush_board_series_on_game_switch(
         self, room: GameRoom, old_game_type: str
     ) -> None:
@@ -10814,18 +10915,12 @@ class GameCompanionPlugin(Star):
                 task.cancel()
         if not old_entries:
             return
-        sent = False
-        try:
-            sent = await self._send_board_series(room, old_entries)
-        except Exception as exc:
-            logger.warning(
-                "[GameCompanion] 换游戏时旧玩法连战播报失败: %s", exc
-            )
-        if not sent:
+        failed = await self._send_board_series_groups(room, old_entries)
+        if failed:
             # 群发失败只返回 False 不抛异常；条目已经出队，得放回去等下一轮补发。
             # 打上跨玩法标记，否则 _take_board_pending 会按新 game_type 把它们丢掉。
             kept = []
-            for entry in old_entries:
+            for entry in failed:
                 item = dict(entry)
                 item["cross_game_pending"] = True
                 kept.append(item)
@@ -10852,12 +10947,12 @@ class GameCompanionPlugin(Star):
             entries = self._take_board_pending(room)
             if not entries:
                 return
-            if await self._send_board_series(room, entries):
-                entries = []
-            else:
+            # 按阵容分组发：漏进队列的「别人的局」不会被算进这一串连战
+            failed = await self._send_board_series_groups(room, entries)
+            if failed:
                 # 群发失败（被踢/禁言/网络）不能吞掉这几局的战报：放回队里等下一轮
-                self._requeue_board_pending(room, entries)
-                entries = []
+                self._requeue_board_pending(room, failed)
+            entries = []
         except asyncio.CancelledError:
             # 睡着了被防抖重排取消：还没出队，entries 为空，无需回填
             if entries:

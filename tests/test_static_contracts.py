@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.20"
+    assert metadata["version"] == "0.6.21"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2080,6 +2080,27 @@ def test_soup_sync_dedupe_and_reveal_decision() -> None:
     assert "token = seq if seq > 0 else id(entry)" in main
     assert "async def _announce_soup_decision" in main
     assert 'kind="passed"' in main
+
+
+def test_board_series_is_bound_to_the_seat_lineup() -> None:
+    """连战要对应同一批玩家：玩家席换人、退席去观众、再坐回来都得切断。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    models = (ROOT / "models.py").read_text(encoding="utf-8")
+
+    # 房间记住「这一串连战属于谁」
+    assert "board_series_lineup: tuple[str, ...] = ()" in models
+    assert "def _board_series_lineup" in main
+    assert "def _sync_board_series_lineup" in main
+    assert "def _handle_board_lineup_change" in main
+    assert "async def _flush_board_series_on_lineup_change" in main
+    # 待播条目带阵容，播报前按阵容分组，绝不把别人的局算进同一条连战
+    assert '"lineup": self._board_series_lineup(room)' in main
+    assert "def _board_series_groups" in main
+    assert "async def _send_board_series_groups" in main
+    # 两个座位事件入口（入座确认 / 座位变化）都要走这条边界
+    assert main.count("self._handle_board_lineup_change(room)") >= 2
+    # 切阵容后第一局必须能按单局通报：冷却窗口要清掉
+    assert "room.last_board_announce_at = 0.0" in main
 
 
 def test_board_share_poster_matches_server_size() -> None:

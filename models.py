@@ -467,6 +467,9 @@ class GameRoom:
     pending_board_flush_at: float = 0.0
     # 换先序列：记录上次开局时的座位成员；成员一变就重新起序列（按座位号定色）
     duel_seat_signature: tuple[str, ...] = ()
+    # 连战归属：当前这一串「连战 N 局」属于哪批玩家。玩家席换人、有人离席去当
+    # 观众再回来，阵容都会变，连战就此结账，新一轮从第一局重新计数。
+    board_series_lineup: tuple[str, ...] = ()
     # 房间内「再来一局换边」：None = 跟随插件配置；True/False = 玩家在房间页里自己选的。
     # 只对「一位真人 + 花火」的人机对局生效，两位真人对局一律按插件配置，避免改到别人。
     ai_side_rotation: bool | None = None
