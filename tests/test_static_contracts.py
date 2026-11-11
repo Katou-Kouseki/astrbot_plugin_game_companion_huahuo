@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.13"
+    assert metadata["version"] == "0.6.14"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1739,6 +1739,34 @@ def test_soup_admin_generate_and_single_reset_are_wired() -> None:
     for kind in ("builtin", "custom", "generated"):
         assert f'soupLibraryAction("{kind}", "reset_used"' in script
     assert "reset_used" in script
+
+
+def test_soup_generation_is_resilient_to_limits_and_strict_checks() -> None:
+    """出题失败率靠三件事压下来：长退避、不浪费重出次数、打回先修再重出。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    ai = (ROOT / "turtle_soup_ai.py").read_text(encoding="utf-8")
+
+    # 长输出调用的退避窗口比判定宽；房间内另有更短的档位
+    assert "SOUP_RETRY_DELAYS = (3.0, 8.0, 20.0)" in main
+    assert "SOUP_QUICK_RETRY_DELAYS" in main
+    assert "SOUP_DRAFT_TIMEOUT" in main and "SOUP_CHECK_TIMEOUT" in main
+    assert "SOUP_BATCH_GAP" in main
+    # 限流后的全局冷却只作用于后台出题，别拖慢群里的实时判定
+    assert "def _set_llm_cooldown" in main
+    assert "def _await_llm_cooldown" in main
+    assert "respect_cooldown: bool = False" in main
+    # 出题超时允许重试（判定类仍然不重试，避免玩家陪着等）
+    assert "retry_timeout: bool = False" in main
+    # 自检打回先修再重出，修复/复审各一次
+    assert "async def _soup_draft" in main
+    assert "async def _soup_validate" in main
+    assert "async def _soup_repair" in main
+    assert "VALIDATION_RETRY_SUFFIX" in main
+    assert "自检没有按格式回答，本题按通过处理" in main
+    # 审查口径收窄并给出可执行的修改要求
+    assert "def validation_detail" in ai
+    assert "def repair_prompt" in ai
+    assert "不够精巧" in ai and '"fix"' in ai
 
 
 def test_soup_timeline_preview_and_full_sheet() -> None:

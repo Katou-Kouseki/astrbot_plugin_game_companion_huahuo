@@ -139,7 +139,10 @@ def make_console_plugin(
 def patch_prompts(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(main_module, "generation_prompt", lambda **_kw: ("sys", "出一道题"))
     monkeypatch.setattr(main_module, "validation_prompt", lambda _p: ("sys", "自检"))
-    monkeypatch.setattr(main_module, "validation_passed", lambda _text: True)
+    monkeypatch.setattr(main_module, "repair_prompt", lambda _p, **_kw: ("sys", "修一版"))
+    monkeypatch.setattr(
+        main_module, "validation_detail", lambda _text: (True, "", "")
+    )
 
 
 # ---------------- 存档：模型名与单条重置 ----------------

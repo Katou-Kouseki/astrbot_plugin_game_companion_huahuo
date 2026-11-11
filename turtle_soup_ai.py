@@ -70,14 +70,66 @@ JSON 必须包含：
 
 def validation_prompt(puzzle: SoupPuzzle) -> tuple[str, str]:
     system = (
-        "你是独立的海龟汤质量审查员。检查谜题是否自洽、公平、可通过是非问题解开，"
-        "并检查汤面和提示是否意外泄露答案。只输出 JSON。"
+        "你是独立的海龟汤质量审查员。只在能指出具体逻辑矛盾时才判不通过；"
+        "文笔、难度、题材口味、反转是否惊艳都不算问题。只输出 JSON。"
     )
     prompt = (
-        "审查以下固定题目。若存在逻辑矛盾、多组同样合理却无法裁决的答案、依赖未说明的冷门知识、"
-        "内容等级不符或汤面直接泄底，valid 必须为 false。\n\n"
+        "审查以下固定题目，判断玩家能否依据汤面、通过是/否提问逐步还原汤底。\n\n"
+        "只有命中下列情况之一时 valid 才能是 false：\n"
+        "1. 汤底内部自相矛盾，或与汤面直接冲突；\n"
+        "2. 汤面条件不足以收敛到唯一解释，存在多组同样合理、又无法用是/否区分的情形；\n"
+        "3. 必须依赖题面未给出的冷门专业知识、谐音或文字双关才能解开；\n"
+        "4. 汤面或提示直接泄露了汤底的关键事实；\n"
+        "5. 内容等级与实际内容不符。\n"
+        "其余情况（不够精巧、反转普通、描述朴素、题材常见）一律判 valid=true。\n\n"
         + json.dumps(_private_puzzle_payload(puzzle), ensure_ascii=False)
-        + '\n\n只输出：{"valid":true或false,"reason":"一句原因"}'
+        + '\n\n只输出：{"valid":true或false,"reason":"一句话原因","fix":"valid=false 时给作者一句可执行的修改要求，valid=true 时留空"}'
+    )
+    return system, prompt
+
+
+# 审查员偶尔会输出解释文字而不是 JSON：重试时把格式要求说到死
+VALIDATION_RETRY_SUFFIX = (
+    "\n\n（重要）上一次回复不符合格式要求。这一次只允许输出一行 JSON："
+    "不要分析、不要解释、不要 Markdown 代码块，第一个字符必须是 {。"
+)
+
+
+def validation_detail(text: str) -> tuple[bool, str, str] | None:
+    """解析自检结果；模型没按格式回答时返回 None。
+
+    返回 None 表示「这次审查没跑成」，调用方应当重试审查，而不是把题目判成
+    不通过——把审查员的格式抖动算成题目有问题，会白白丢掉一道能用的题。
+    """
+    data = extract_json_object(text)
+    if not isinstance(data, dict) or "valid" not in data:
+        return None
+    valid = data.get("valid") is True
+    reason = " ".join(str(data.get("reason") or "").split())[:120]
+    fix = " ".join(str(data.get("fix") or "").split())[:200]
+    return valid, reason, fix
+
+
+def repair_prompt(
+    puzzle: SoupPuzzle, *, reason: str = "", fix: str = ""
+) -> tuple[str, str]:
+    """让模型按审查意见修同一道题：保题材、保反转，只改被指出的问题。"""
+    system = (
+        "你是海龟汤谜题作者。按审查意见修复同一道题，保留原有题材与核心反转，"
+        "只改有问题的部分，不要换一道新题。只输出一个 JSON 对象，不要输出 Markdown。"
+    )
+    advice = reason or "题目存在逻辑问题"
+    if fix:
+        advice = f"{advice}；修改要求：{fix}"
+    prompt = (
+        "审查意见：\n"
+        + advice
+        + "\n\n原题：\n"
+        + json.dumps(_private_puzzle_payload(puzzle), ensure_ascii=False)
+        + "\n\n请输出修复后的完整 JSON，字段与原题一致："
+        "title、surface、solution、key_facts、acceptable_variants、hints、theme、trick。\n"
+        "要求：汤底自洽且与汤面一致；汤面不泄露汤底；key_facts 与 hints 随改动同步更新；"
+        "除必要改动外不要改题。"
     )
     return system, prompt
 

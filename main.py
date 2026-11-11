@@ -89,6 +89,7 @@ from .turtle_soup import (
 )
 from .turtle_soup_ai import (
     JUDGE_RETRY_SUFFIX,
+    VALIDATION_RETRY_SUFFIX,
     answer_judge_prompt,
     answer_judgment_usable,
     coverage_reply,
@@ -100,9 +101,10 @@ from .turtle_soup_ai import (
     public_judge_history,
     question_judge_prompt,
     question_judgment_usable,
+    repair_prompt,
     reverse_public_history,
     reverse_turn_prompt,
-    validation_passed,
+    validation_detail,
     validation_prompt,
 )
 from .undercover import UndercoverGame
@@ -1786,6 +1788,19 @@ class GameCompanionPlugin(Star):
     LLM_QUEUE_TIMEOUT = 25.0
     # 限流退避：重试比重开一次请求便宜，也避免把上游越打越限
     LLM_RETRY_DELAYS = (0.8, 2.0)
+    # 出题 / 自检这类长输出比判定更吃 token 限额，退避窗口要留够：
+    # 后台任务多等半分钟也远好过整批失败（管理台出题、预生成用它）。
+    SOUP_RETRY_DELAYS = (3.0, 8.0, 20.0)
+    # 房间内现编是玩家在等，退避短一些，失败还有内置兜底题
+    SOUP_QUICK_RETRY_DELAYS = (1.5, 5.0)
+    # 出题/修复要生成完整 JSON，判定类模型常要几十秒
+    SOUP_DRAFT_TIMEOUT = 75
+    SOUP_CHECK_TIMEOUT = 45
+    SOUP_QUEUE_TIMEOUT = 60.0
+    # 同一批多道题之间留个缝，别把上游 token 限额一次打穿
+    SOUP_BATCH_GAP = 2.0
+    # 命中限流后给全局冷却：同批/并发的后续调用先等着，别立刻再撞一次
+    LLM_COOLDOWN_CAP = 30.0
     # 判定为「临时性限流」的线索（各家 SDK 的报错措辞不一样）
     LLM_RATE_LIMIT_HINTS = (
         "429",
@@ -1795,9 +1810,29 @@ class GameCompanionPlugin(Star):
         "too many requests",
         "quota",
         "overloaded",
+        "overload",
+        "capacity",
+        "temporarily",
+        "try again",
         "503",
         "限流",
         "频率",
+        "饱和",
+        "负载",
+    )
+    # 网络抖动类：重试一次通常就好了，和「参数错误」区分开
+    LLM_TRANSIENT_HINTS = (
+        "timeout",
+        "timed out",
+        "connection",
+        "connect error",
+        "reset by peer",
+        "broken pipe",
+        "unavailable",
+        "502",
+        "504",
+        "超时",
+        "连接",
     )
 
     def __init__(
@@ -5866,7 +5901,7 @@ class GameCompanionPlugin(Star):
             if await self._generated_soup_puzzle(room, game, deck, excluded):
                 return
 
-        # ⑤ LLM 生成（最多 3 次）+ 独立校验
+        # ⑤ LLM 生成（最多 2 轮：每轮自带「校验不过就修一版」）+ 独立校验
         try:
             puzzle = await self._generate_soup_puzzle(
                 room,
@@ -5874,7 +5909,9 @@ class GameCompanionPlugin(Star):
                 difficulty=room.difficulty,
                 excluded=excluded,
                 deck=deck,
-                attempts=3,
+                attempts=2,
+                # 房间内是玩家在等：退避短一些，实在不行还有内置兜底题
+                patient=False,
             )
         except (RuntimeError, ValueError, OSError) as exc:
             last_error = str(exc)
@@ -5948,57 +5985,83 @@ class GameCompanionPlugin(Star):
         attempts: int = 3,
         provider: Any | None = None,
         use_persona: bool = True,
+        patient: bool = True,
     ) -> Any:
         """让模型现编一道题并通过独立自检；失败抛最后一次的错误。
 
         只负责「编 + 校验 + 去重」，不落库：正常出题要交给房间开局，
         预生成只要存进存档，管理台手动出题也复用这一段。`provider` 用来指定
         模型，`use_persona=False` 时不出人格（管理台批量出题应该是中性的）。
+
+        失败率高曾经有两个来源，这里分别处理：
+
+        * **上游限流**：出题要吐几百字 JSON，比判定更吃 token 限额。退避窗口
+          按 `patient` 放宽（后台可以等半分钟），并且限流时只等不消耗「重出」
+          次数——之前一撞限流就整道重来，反而把额度和时间一起烧掉。
+        * **自检打回**：不再整道重出，而是带着审查意见让模型改一版（改比重编
+          便宜，也不会白丢一个好题材），改完只再审一次；审查员自己没按格式
+          回答时算「没跑成」，重问一次，而不是判题目不合格。
         """
         chosen = provider or self._soup_generation_provider(room)
         persona = await self._persona_prompt(room) if use_persona else ""
+        retry_delays = self.SOUP_RETRY_DELAYS if patient else self.SOUP_QUICK_RETRY_DELAYS
+        queue_timeout = self.SOUP_QUEUE_TIMEOUT if patient else self.LLM_QUEUE_TIMEOUT
+        call_style = {
+            "retry_delays": retry_delays,
+            "queue_timeout": queue_timeout,
+        }
         last_error = ""
         for attempt in range(1, max(1, int(attempts)) + 1):
             try:
-                system_prompt, prompt = generation_prompt(
-                    difficulty=difficulty,
+                puzzle = await self._soup_draft(
+                    room,
+                    chosen,
+                    persona=persona,
                     content_level=content_level,
-                    recent_signatures=sorted(excluded),
-                    recent_titles=deck.recent_titles(5),
-                    recent_surfaces=deck.recent_surfaces(3),
+                    difficulty=difficulty,
+                    excluded=excluded,
+                    deck=deck,
+                    **call_style,
                 )
-                if persona:
-                    system_prompt = (
-                        f"{persona}\n\n{system_prompt}\n"
-                        "人格只影响叙事气质，不得把真实用户、私人记忆或生活场景写进题目。"
+                passed, reason, fix = await self._soup_validate(
+                    room, chosen, puzzle, **call_style
+                )
+                if passed:
+                    return puzzle
+                # 先修再重出：修复调用更短，成功率高，也不会丢掉题材
+                repaired = await self._soup_repair(
+                    room,
+                    chosen,
+                    puzzle,
+                    reason=reason,
+                    fix=fix,
+                    **call_style,
+                )
+                if repaired is not None:
+                    if deck.find_duplicate(repaired) is not None or (
+                        repaired.signature in excluded
+                    ):
+                        repaired = None
+                if repaired is not None:
+                    passed, reason, fix = await self._soup_validate(
+                        room, chosen, repaired, **call_style
                     )
-                raw = await self._call_room_model(
-                    room,
-                    system_prompt=system_prompt,
-                    prompt=prompt,
-                    timeout=35,
-                    provider=chosen,
+                    if passed:
+                        logger.info(
+                            "[GameCompanion] 海龟汤按审查意见修复后通过：《%s》",
+                            repaired.title,
+                        )
+                        return repaired
+                last_error = (
+                    f"题目未通过独立自洽性校验：{reason}"
+                    if reason
+                    else "题目未通过独立自洽性校验"
                 )
-                data = extract_json_object(raw)
-                if data is None:
-                    raise ValueError("出题结果不是有效 JSON")
-                puzzle = puzzle_from_mapping(data, content_level=content_level)
-                duplicate = deck.find_duplicate(puzzle)
-                if duplicate is not None or puzzle.signature in excluded:
-                    title = (duplicate or {}).get("title") or puzzle.title
-                    raise ValueError(f"题目与已出过的《{title}》重复")
-                check_system, check_prompt = validation_prompt(puzzle)
-                # 自检与出题用同一个模型：判断模型可能更轻，未必查得出题目自洽问题
-                check = await self._call_room_model(
-                    room,
-                    system_prompt=check_system,
-                    prompt=check_prompt,
-                    timeout=30,
-                    provider=chosen,
+                logger.info(
+                    "[GameCompanion] 海龟汤第 %s 次出题未采用: %s",
+                    attempt,
+                    last_error,
                 )
-                if not validation_passed(check):
-                    raise ValueError("题目未通过独立自洽性校验")
-                return puzzle
             except (RuntimeError, ValueError, OSError) as exc:
                 last_error = str(exc)
                 logger.info(
@@ -6007,6 +6070,140 @@ class GameCompanionPlugin(Star):
                     exc,
                 )
         raise ValueError(last_error or "模型没有出出可用的题")
+
+    async def _soup_draft(
+        self,
+        room: GameRoom,
+        provider: Any,
+        *,
+        persona: str,
+        content_level: str,
+        difficulty: str,
+        excluded: set[str],
+        deck: Any,
+        retry_delays: tuple[float, ...],
+        queue_timeout: float,
+    ) -> Any:
+        """出一道新题并做去重；返回的题还没有过自检。"""
+        system_prompt, prompt = generation_prompt(
+            difficulty=difficulty,
+            content_level=content_level,
+            recent_signatures=sorted(excluded),
+            recent_titles=deck.recent_titles(5),
+            recent_surfaces=deck.recent_surfaces(3),
+        )
+        if persona:
+            system_prompt = (
+                f"{persona}\n\n{system_prompt}\n"
+                "人格只影响叙事气质，不得把真实用户、私人记忆或生活场景写进题目。"
+            )
+        raw = await self._call_room_model(
+            room,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            timeout=self.SOUP_DRAFT_TIMEOUT,
+            provider=provider,
+            retry_delays=retry_delays,
+            queue_timeout=queue_timeout,
+            retry_timeout=True,
+            respect_cooldown=True,
+        )
+        data = extract_json_object(raw)
+        if data is None:
+            raise ValueError("出题结果不是有效 JSON")
+        puzzle = puzzle_from_mapping(data, content_level=content_level)
+        duplicate = deck.find_duplicate(puzzle)
+        if duplicate is not None or puzzle.signature in excluded:
+            title = (duplicate or {}).get("title") or puzzle.title
+            raise ValueError(f"题目与已出过的《{title}》重复")
+        return puzzle
+
+    async def _soup_validate(
+        self,
+        room: GameRoom,
+        provider: Any,
+        puzzle: Any,
+        *,
+        retry_delays: tuple[float, ...],
+        queue_timeout: float,
+    ) -> tuple[bool, str, str]:
+        """独立自检：返回 (是否通过, 原因, 修改要求)。
+
+        审查员输出格式跑偏（吐了解释而不是 JSON）时重问一次；仍然跑偏就按
+        「没跑成」放行——把审查员的抖动当成题目不合格，代价是整道题作废。
+        """
+        system_prompt, prompt = validation_prompt(puzzle)
+        raw = await self._call_room_model(
+            room,
+            system_prompt=system_prompt,
+            prompt=prompt,
+            timeout=self.SOUP_CHECK_TIMEOUT,
+            provider=provider,
+            retry_delays=retry_delays,
+            queue_timeout=queue_timeout,
+            retry_timeout=True,
+            respect_cooldown=True,
+        )
+        detail = validation_detail(raw)
+        if detail is None:
+            raw = await self._call_room_model(
+                room,
+                system_prompt=system_prompt,
+                prompt=prompt + VALIDATION_RETRY_SUFFIX,
+                timeout=self.SOUP_CHECK_TIMEOUT,
+                provider=provider,
+                retry_delays=retry_delays,
+                queue_timeout=queue_timeout,
+                retry_timeout=True,
+                respect_cooldown=True,
+            )
+            detail = validation_detail(raw)
+        if detail is None:
+            logger.warning(
+                "[GameCompanion] 自检没有按格式回答，本题按通过处理：《%s》", puzzle.title
+            )
+            return True, "", ""
+        return detail
+
+    async def _soup_repair(
+        self,
+        room: GameRoom,
+        provider: Any,
+        puzzle: Any,
+        *,
+        reason: str,
+        fix: str,
+        retry_delays: tuple[float, ...],
+        queue_timeout: float,
+    ) -> Any | None:
+        """按审查意见修一版；修不出来就返回 None，交给上层重出一道。"""
+        system_prompt, prompt = repair_prompt(puzzle, reason=reason, fix=fix)
+        try:
+            raw = await self._call_room_model(
+                room,
+                system_prompt=system_prompt,
+                prompt=prompt,
+                timeout=self.SOUP_DRAFT_TIMEOUT,
+                provider=provider,
+                retry_delays=retry_delays,
+                queue_timeout=queue_timeout,
+                retry_timeout=True,
+                respect_cooldown=True,
+            )
+        except (RuntimeError, OSError) as exc:
+            logger.info("[GameCompanion] 修复调用失败，改为重出一版：%s", exc)
+            return None
+        data = extract_json_object(raw)
+        if data is None:
+            logger.info("[GameCompanion] 修复结果不是有效 JSON，改为重出一版")
+            return None
+        try:
+            return puzzle_from_mapping(
+                data, content_level=getattr(puzzle, "content_level", "normal")
+            )
+        except (ValueError, TypeError) as exc:
+            logger.info("[GameCompanion] 修复结果不合规，改为重出一版：%s", exc)
+            return None
 
     def _soup_prefetch_enabled(self) -> bool:
         """备用题目标数为 0 即关闭预生成（不再单独放一个开关）。"""
@@ -6694,6 +6891,27 @@ class GameCompanionPlugin(Star):
         text = f"{exc}".lower()
         return any(hint in text for hint in cls.LLM_RATE_LIMIT_HINTS)
 
+    @classmethod
+    def _is_transient_error(cls, exc: BaseException) -> bool:
+        """连接断开 / 网关 5xx 这类抖动，重试一次通常就好。"""
+        text = f"{exc}".lower()
+        return any(hint in text for hint in cls.LLM_TRANSIENT_HINTS)
+
+    def _llm_cooldown_until(self) -> float:
+        return float(getattr(self, "_llm_cooldown_ts", 0.0) or 0.0)
+
+    def _set_llm_cooldown(self, seconds: float) -> None:
+        """撞到限流后让所有调用一起歇一会儿，别把上游越打越限。"""
+        if seconds <= 0:
+            return
+        until = time.monotonic() + min(float(seconds), self.LLM_COOLDOWN_CAP)
+        self._llm_cooldown_ts = max(self._llm_cooldown_until(), until)
+
+    async def _await_llm_cooldown(self) -> None:
+        remaining = self._llm_cooldown_until() - time.monotonic()
+        if remaining > 0:
+            await asyncio.sleep(min(remaining, self.LLM_COOLDOWN_CAP))
+
     async def _call_room_model(
         self,
         room: GameRoom,
@@ -6702,18 +6920,27 @@ class GameCompanionPlugin(Star):
         prompt: str,
         timeout: int,
         provider: Any | None = None,
+        retry_delays: tuple[float, ...] | None = None,
+        queue_timeout: float | None = None,
+        retry_timeout: bool = False,
+        respect_cooldown: bool = False,
     ) -> str:
         provider = provider or self._configured_provider(room, "", label="")
         if provider is None or not callable(getattr(provider, "text_chat", None)):
             raise RuntimeError("当前会话没有可用的大语言模型")
         gate = self._llm_gate()
-        delays = (0.0, *self.LLM_RETRY_DELAYS)
+        delays = (0.0, *(retry_delays if retry_delays is not None else self.LLM_RETRY_DELAYS))
+        queue_wait = self.LLM_QUEUE_TIMEOUT if queue_timeout is None else queue_timeout
         last_error: BaseException | None = None
         for attempt, delay in enumerate(delays):
             if delay:
                 await asyncio.sleep(delay)
+            # 刚有别的调用撞到限流时先等一下，别上来再撞一次。只给后台出题类
+            # 调用开这个开关：群里的判定不能让玩家陪着一起等冷却。
+            if respect_cooldown:
+                await self._await_llm_cooldown()
             try:
-                await asyncio.wait_for(gate.acquire(), timeout=self.LLM_QUEUE_TIMEOUT)
+                await asyncio.wait_for(gate.acquire(), timeout=queue_wait)
             except asyncio.TimeoutError as exc:
                 # 排队等太久：这时玩家已经等了 25 秒，再等下去只会更烦
                 raise RuntimeError(
@@ -6725,20 +6952,39 @@ class GameCompanionPlugin(Star):
                     timeout=timeout,
                 )
             except asyncio.TimeoutError as exc:
-                # 超时不重试：上游已经卡住了，再等一轮只是让玩家多等一个超时
+                last_error = exc
+                # 判定类默认不重试（再等一轮只是让玩家多等一个超时）；
+                # 出题走 retry_timeout=True——长输出本来就慢，值得再给一次机会
+                if retry_timeout and attempt + 1 < len(delays):
+                    logger.info(
+                        "[GameCompanion] 模型响应超时，%.1fs 后重试（第 %d 次）",
+                        delays[attempt + 1],
+                        attempt + 1,
+                    )
+                    continue
                 raise RuntimeError("模型响应超时") from exc
             except Exception as exc:
                 last_error = exc
                 if self._is_rate_limited(exc):
                     if attempt + 1 < len(delays):
+                        wait = delays[attempt + 1]
+                        self._set_llm_cooldown(wait)
                         logger.info(
                             "[GameCompanion] 模型限流，%.1fs 后重试（第 %d 次）：%s",
-                            delays[attempt + 1],
+                            wait,
                             attempt + 1,
                             exc,
                         )
                         continue
-                    raise RuntimeError("模型正在限流，等十几秒再试") from exc
+                    raise RuntimeError("上游限流（已自动退避重试仍未恢复），稍后再试") from exc
+                if self._is_transient_error(exc) and attempt + 1 < len(delays):
+                    logger.info(
+                        "[GameCompanion] 模型连接抖动，%.1fs 后重试（第 %d 次）：%s",
+                        delays[attempt + 1],
+                        attempt + 1,
+                        exc,
+                    )
+                    continue
                 raise RuntimeError("模型调用失败") from exc
             finally:
                 gate.release()
@@ -12641,7 +12887,10 @@ class GameCompanionPlugin(Star):
             deck = self._soup_deck()
             store = self._soup_generated()
             excluded = set(deck.recent_signatures(12)) | store.signatures()
-            for _ in range(count):
+            for index in range(count):
+                # 连续几道长输出很容易把上游 token 限额打穿，中间留个缝
+                if index:
+                    await asyncio.sleep(self.SOUP_BATCH_GAP)
                 try:
                     puzzle = await self._generate_soup_puzzle(
                         room,

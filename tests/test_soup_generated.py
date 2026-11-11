@@ -248,17 +248,17 @@ async def test_disabled_generated_puzzle_falls_through_to_llm(tmp_path: Path) ->
     plugin._soup_generation_provider = lambda _room: None  # noqa: SLF001
     original_generation_prompt = main_module.generation_prompt
     original_validation_prompt = main_module.validation_prompt
-    original_validation_passed = main_module.validation_passed
+    original_validation_detail = main_module.validation_detail
     main_module.generation_prompt = lambda **_kwargs: ("sys", "prompt")
     main_module.validation_prompt = lambda _puzzle: ("sys", "check")
-    main_module.validation_passed = lambda _text: True
+    main_module.validation_detail = lambda _text: (True, "", "")
     try:
         game = TurtleSoupGame(difficulty="normal", max_hints=3, content_level="normal")
         await plugin._prepare_turtle_soup(make_room(), game)
     finally:
         main_module.generation_prompt = original_generation_prompt
         main_module.validation_prompt = original_validation_prompt
-        main_module.validation_passed = original_validation_passed
+        main_module.validation_detail = original_validation_detail
 
     assert game.puzzle_source == "llm"
     assert game.puzzle is not None and game.puzzle.title == "模型新出的题"
@@ -283,17 +283,17 @@ async def test_llm_puzzle_is_saved_for_later_reuse(tmp_path: Path) -> None:
     )
     original_generation_prompt = main_module.generation_prompt
     original_validation_prompt = main_module.validation_prompt
-    original_validation_passed = main_module.validation_passed
+    original_validation_detail = main_module.validation_detail
     main_module.generation_prompt = lambda **_kwargs: ("sys", "prompt")
     main_module.validation_prompt = lambda _puzzle: ("sys", "check")
-    main_module.validation_passed = lambda _text: True
+    main_module.validation_detail = lambda _text: (True, "", "")
     try:
         game = TurtleSoupGame(difficulty="normal", max_hints=3, content_level="normal")
         await plugin._prepare_turtle_soup(make_room(), game)
     finally:
         main_module.generation_prompt = original_generation_prompt
         main_module.validation_prompt = original_validation_prompt
-        main_module.validation_passed = original_validation_passed
+        main_module.validation_detail = original_validation_detail
 
     store = GeneratedSoupStore(tmp_path / "generated.json")
     assert len(store) == 1
@@ -307,7 +307,8 @@ def patch_prompts(monkeypatch: pytest.MonkeyPatch) -> None:
     """出题/自检提示词固定成两句话，专心测预生成的调度逻辑。"""
     monkeypatch.setattr(main_module, "generation_prompt", lambda **_kw: ("sys", "prompt"))
     monkeypatch.setattr(main_module, "validation_prompt", lambda _p: ("sys", "check"))
-    monkeypatch.setattr(main_module, "validation_passed", lambda _text: True)
+    monkeypatch.setattr(main_module, "repair_prompt", lambda _p, **_kw: ("sys", "fix"))
+    monkeypatch.setattr(main_module, "validation_detail", lambda _text: (True, "", ""))
 
 
 def generated_payload(title: str, theme: str) -> str:
