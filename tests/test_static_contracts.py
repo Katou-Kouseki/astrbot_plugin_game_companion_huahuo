@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.12"
+    assert metadata["version"] == "0.6.13"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1717,6 +1717,20 @@ def test_soup_admin_generate_and_single_reset_are_wired() -> None:
     assert "function renderGenerateJob" in script
     assert '"page/soup_generate_status"' in script
     assert "visibilitychange" in script
+    # 反馈必须明确：点击先锁按钮、状态条常驻、后台全程有日志、重进页面能恢复
+    assert '"generate_job": self._soup_generate_job_snapshot()' in main
+    assert "管理台开始出题" in main
+    assert "管理台出题已入库" in main
+    assert "管理台出题结束" in main
+    assert "function jobFromPayload" in script
+    assert "function setGenerateBarBusy" in script
+    assert 'button.classList.toggle("is-running", running)' in script
+    assert "后台生成中：已入库" in script
+    # 点击后先本地锁按钮再发请求：接口慢/超时也不会出现「又能一直点」
+    assert script.index("renderGenerateJob({") < script.index('"page/soup_generate"')
+    style = (ROOT / "pages" / "游戏管理台" / "manager.css").read_text(encoding="utf-8")
+    assert ".library-generate.is-busy" in style
+    assert "soup-generate-spin" in style
 
     # 单条重置：只清这一道的账本记录，三类题库都能点
     assert "def forget(self, surface: str" in deck

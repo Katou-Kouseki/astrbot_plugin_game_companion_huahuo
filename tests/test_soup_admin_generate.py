@@ -272,6 +272,28 @@ def capture_spawn(plugin: GameCompanionPlugin) -> list:
     return spawned
 
 
+class LogCapture:
+    """替掉插件 logger，验证后台出题真的写进了 AstrBot 日志。"""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def _record(self, message: object, args: tuple) -> None:
+        self.lines.append(str(message) % args if args else str(message))
+
+    def info(self, message: object, *args: object) -> None:
+        self._record(message, args)
+
+    def warning(self, message: object, *args: object) -> None:
+        self._record(message, args)
+
+    def debug(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def text(self) -> str:
+        return "\n".join(self.lines)
+
+
 @pytest.mark.asyncio
 async def test_generate_status_starts_idle(tmp_path: Path) -> None:
     plugin = make_console_plugin(tmp_path)
@@ -449,6 +471,88 @@ async def test_admin_generate_can_make_several_puzzles(
     assert job["state"] == "completed" and job["done"] == 2
     titles = {row["title"] for row in plugin._soup_generated().listing()}  # noqa: SLF001
     assert titles == {"第一道", "第二道"}
+
+
+@pytest.mark.asyncio
+async def test_library_snapshot_carries_generate_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """重进管理台时靠题库快照恢复「还在生成」：按钮不会先闪回可点。"""
+    patch_prompts(monkeypatch)
+    provider = FakeProvider(
+        "chosen",
+        "strong-model",
+        [generated_payload("快照里的题", "快照主题"), json.dumps({"ok": True})],
+    )
+    monkeypatch.setattr(
+        main_module, "request", FakeRequest({"provider_id": "chosen", "count": 1})
+    )
+    plugin = make_console_plugin(tmp_path, context=FakeContext([provider]))
+    spawned = capture_spawn(plugin)
+
+    await plugin.page_soup_generate()
+    running = (await plugin.page_soup_library())["data"]["generate_job"]
+    assert running["running"] is True
+    assert running["model"] == "chosen · strong-model"
+    assert running["total"] == 1
+
+    await spawned[0]
+    done = (await plugin.page_soup_library())["data"]["generate_job"]
+    assert done["running"] is False
+    assert done["state"] == "completed" and done["done"] == 1
+    assert done["titles"] == ["快照里的题"]
+
+
+@pytest.mark.asyncio
+async def test_admin_generate_writes_progress_to_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """后台任务不能只在内存里跑：开始 / 入库 / 结束都要进 AstrBot 日志。"""
+    patch_prompts(monkeypatch)
+    logs = LogCapture()
+    monkeypatch.setattr(main_module, "logger", logs)
+    provider = FakeProvider(
+        "logger",
+        "log-model",
+        [generated_payload("有日志的题", "日志主题"), json.dumps({"ok": True})],
+    )
+    monkeypatch.setattr(
+        main_module,
+        "request",
+        FakeRequest({"provider_id": "logger", "count": 1}),
+    )
+    plugin = make_console_plugin(tmp_path, context=FakeContext([provider]))
+    spawned = capture_spawn(plugin)
+
+    await plugin.page_soup_generate()
+    await spawned[0]
+
+    emitted = logs.text()
+    assert "管理台开始出题" in emitted
+    assert "logger · log-model" in emitted
+    assert "管理台出题已入库《有日志的题》" in emitted
+    assert "管理台出题结束" in emitted
+
+
+@pytest.mark.asyncio
+async def test_admin_generate_failure_is_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    patch_prompts(monkeypatch)
+    logs = LogCapture()
+    monkeypatch.setattr(main_module, "logger", logs)
+    broken = FakeProvider("broken", "b-model")
+    broken.text_chat = AsyncMock(side_effect=RuntimeError("上游返回了错误"))
+    monkeypatch.setattr(main_module, "request", FakeRequest({"provider_id": "broken"}))
+    plugin = make_console_plugin(tmp_path, context=FakeContext([broken]))
+    spawned = capture_spawn(plugin)
+
+    await plugin.page_soup_generate()
+    await spawned[0]
+
+    emitted = logs.text()
+    assert "管理台出题失败" in emitted
+    assert "没有结果" in emitted
 
 
 # ---------------- 单条重置出题记录 ----------------

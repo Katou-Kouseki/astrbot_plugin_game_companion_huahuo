@@ -12497,6 +12497,9 @@ class GameCompanionPlugin(Star):
                     for row in self._soup_generated().listing()
                 ],
             },
+            # 跟着题库快照一起回：重进页面 / 换设备时也能立刻知道后台是否还在出题，
+            # 不用等轮询那一次请求，按钮状态和进度条不会闪一下恢复正常。
+            "generate_job": self._soup_generate_job_snapshot(),
         }
 
     async def page_soup_library(self) -> dict[str, Any]:
@@ -12552,6 +12555,10 @@ class GameCompanionPlugin(Star):
             count = 1
         current = self._soup_generate_job_snapshot()
         if current["running"]:
+            logger.info(
+                "[GameCompanion] 管理台重复点了出题：上一批还在生成（模型=%s）",
+                current.get("model") or "默认模型",
+            )
             return {
                 "status": "ok",
                 "message": "已经有一批题在生成，等它出完再点",
@@ -12588,6 +12595,12 @@ class GameCompanionPlugin(Star):
             "finished_at": 0.0,
         }
         self._soup_generate_job = job
+        logger.info(
+            "[GameCompanion] 管理台开始出题：模型=%s，等级=%s，数量=%d（后台执行）",
+            label,
+            content_level,
+            count,
+        )
         self._spawn(
             self._run_soup_generate_job(
                 job,
@@ -12642,27 +12655,61 @@ class GameCompanionPlugin(Star):
                     )
                 except (RuntimeError, ValueError, OSError) as exc:
                     job["error"] = str(exc)
+                    logger.warning(
+                        "[GameCompanion] 管理台出题失败（模型=%s，已完成 %d/%d）：%s",
+                        label,
+                        job.get("done") or 0,
+                        count,
+                        exc,
+                    )
                     break
                 if store.add(puzzle, model=label):
                     titles = job.setdefault("titles", [])
                     titles.append(puzzle.title)
                     job["done"] = len(titles)
                     excluded.add(puzzle.signature)
+                    logger.info(
+                        "[GameCompanion] 管理台出题已入库《%s》（%d/%d，模型=%s）",
+                        puzzle.title,
+                        job["done"],
+                        count,
+                        label,
+                    )
                 else:
                     job["error"] = f"《{puzzle.title}》和已有题目重复了"
+                    logger.info(
+                        "[GameCompanion] 管理台出题与已有题目重复，已丢弃：《%s》",
+                        puzzle.title,
+                    )
         except asyncio.CancelledError:
             job["state"] = "failed"
             job["error"] = "生成任务被取消（插件重载或退出）"
+            logger.warning("[GameCompanion] 管理台出题被取消：模型=%s", label)
             raise
         except Exception as exc:  # noqa: BLE001 - 后台任务失败要落到状态里，别只写日志
             job["state"] = "failed"
             job["error"] = f"出题失败：{exc}"
+            logger.warning("[GameCompanion] 管理台出题异常（模型=%s）：%s", label, exc)
         finally:
             if job.get("state") == "running":
                 job["state"] = "completed" if job.get("titles") else "failed"
                 if job["state"] == "failed" and not job.get("error"):
                     job["error"] = "模型没出出可用的题，换个模型或稍后再试"
             job["finished_at"] = time.time()
+            if job["state"] == "completed":
+                logger.info(
+                    "[GameCompanion] 管理台出题结束：入库 %d/%d 道，模型=%s，耗时 %.0f 秒",
+                    len(job.get("titles") or []),
+                    count,
+                    label,
+                    job["finished_at"] - float(job.get("started_at") or job["finished_at"]),
+                )
+            else:
+                logger.warning(
+                    "[GameCompanion] 管理台出题没有结果：模型=%s，原因=%s",
+                    label,
+                    job.get("error") or "未知",
+                )
             try:
                 recorder = getattr(self.manager, "record_operation", None)
                 if callable(recorder):

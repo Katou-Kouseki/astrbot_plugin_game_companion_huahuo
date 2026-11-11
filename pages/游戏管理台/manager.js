@@ -1596,7 +1596,10 @@
     select.value = models.some((item) => String(item.id) === previous) ? previous : "";
     const status = document.getElementById("soupGenerateStatus");
     if (!status) return;
-    if (soupGenerateJob) renderGenerateJob(soupGenerateJob);
+    // 服务端状态优先：重进页面时本地还没有 job，靠快照把「生成中」恢复回来，
+    // 否则按钮会先闪一下可点，让人以为任务没派出去。
+    const restored = jobFromPayload({ job: data?.generate_job });
+    if (restored || soupGenerateJob) renderGenerateJob(restored || soupGenerateJob);
     else status.textContent = models.length ? `已载入 ${models.length} 个模型` : "";
   }
 
@@ -1604,27 +1607,76 @@
   let soupGenerateJob = null;
   let soupGeneratePolling = false;
 
+  // 页面接口有时给整包 {status,message,data}，有时只给 data，这里都认
+  function jobFromPayload(payload) {
+    if (!payload) return null;
+    if (payload.job) return payload.job;
+    if (payload.data?.job) return payload.data.job;
+    return payload.state ? payload : null;
+  }
+
+  function soupJobRunning(job) {
+    return !!job && (job.running === true || job.state === "running");
+  }
+
+  function setGenerateBarBusy(running) {
+    const bar = document.querySelector(".library-generate");
+    if (bar) bar.classList.toggle("is-busy", running);
+    ["soupGenerateModel", "soupGenerateLevel", "soupGenerateCount"].forEach((id) => {
+      const node = document.getElementById(id);
+      // 生成中锁住参数，避免看着像是「改一下就能换一批」
+      if (node) node.disabled = running;
+    });
+  }
+
+  function secondsSince(stamp) {
+    const started = Number(stamp || 0);
+    if (!started) return 0;
+    return Math.max(0, Math.round(Date.now() / 1000 - started));
+  }
+
   function renderGenerateJob(job) {
     soupGenerateJob = job && job.state && job.state !== "idle" ? job : null;
     const button = document.getElementById("soupGenerateBtn");
     const status = document.getElementById("soupGenerateStatus");
-    const running = !!job?.running;
+    const running = soupJobRunning(job);
+    const model = job?.model || "模型";
     if (button) {
       button.disabled = running;
+      button.title = running
+        ? `${model} 正在后台出题，出完会提示`
+        : "让选中的模型立即出一道题并入库";
       const label = button.querySelector("span");
       if (label) label.textContent = running ? "出题中…" : "立即出题";
+      button.classList.toggle("is-running", running);
     }
+    setGenerateBarBusy(running);
     if (!status) return;
     if (!job || job.state === "idle") {
       status.textContent = "";
-    } else if (running) {
+      status.classList.remove("is-running", "is-done", "is-failed");
+      return;
+    }
+    status.classList.toggle("is-running", running);
+    status.classList.toggle("is-done", !running && job.state === "completed");
+    status.classList.toggle("is-failed", !running && job.state === "failed");
+    if (running) {
       const total = Math.max(1, Number(job.total || 1));
       const done = Number(job.done || 0);
-      status.textContent = `正在出题 ${Math.min(done + 1, total)}/${total} · ${job.model || "模型"}`;
+      const elapsed = secondsSince(job.started_at);
+      status.textContent =
+        `后台生成中：已入库 ${done}/${total} · ${model}` +
+        (elapsed ? ` · 已用 ${elapsed} 秒` : "");
     } else if (job.state === "completed") {
-      status.textContent = `上次完成：入库 ${job.done || 0} 道${job.error ? `（${job.error}）` : ""}`;
+      const elapsed = Math.round(
+        Math.max(0, Number(job.finished_at || 0) - Number(job.started_at || 0)),
+      );
+      status.textContent =
+        `上次完成：入库 ${job.done || 0} 道 · ${model}` +
+        (elapsed ? ` · 用时 ${elapsed} 秒` : "") +
+        (job.error ? `（${job.error}）` : "");
     } else {
-      status.textContent = `上次失败：${job.error || "未知原因"}`;
+      status.textContent = `上次失败：${job.error || "未知原因"} · ${model}`;
     }
   }
 
@@ -1632,7 +1684,7 @@
     try {
       const api = await bridge();
       const result = await api.apiGet("page/soup_generate_status");
-      return result?.data?.job || null;
+      return jobFromPayload(result);
     } catch (_error) {
       // 网络抖一下不该把页面卡住：下次进页面/切回来再查
       return null;
@@ -1642,20 +1694,35 @@
   async function pollSoupGenerate() {
     if (soupGeneratePolling) return;
     soupGeneratePolling = true;
+    let misses = 0;
     try {
       for (;;) {
         const job = await fetchSoupGenerateJob();
-        if (!job) break;
-        const wasRunning = !!soupGenerateJob?.running;
+        // 偶发网络抖动别把「生成中」误判成结束：本地还认为在跑就一直重试，
+        // 只是把间隔拉长；拿到 idle 状态后按钮才会解锁。
+        if (!job) {
+          misses += 1;
+          if (soupJobRunning(soupGenerateJob)) {
+            await new Promise((resolve) =>
+              window.setTimeout(resolve, misses < 3 ? 2500 : 10000),
+            );
+            continue;
+          }
+          break;
+        }
+        misses = 0;
+        const wasRunning = soupJobRunning(soupGenerateJob);
         renderGenerateJob(job);
-        if (job.running) {
+        if (soupJobRunning(job)) {
           await new Promise((resolve) => window.setTimeout(resolve, 2500));
           continue;
         }
         if (wasRunning) {
           if (job.state === "completed") {
-            showToast(`出题完成，入库 ${job.done || 0} 道`);
-          } else if (job.state === "failed") {
+            showToast(
+              `出题完成，入库 ${job.done || 0} 道${job.error ? `（${job.error}）` : ""}`,
+            );
+          } else {
             showToast(job.error || "出题失败");
           }
           loadLibrary();
@@ -2039,26 +2106,52 @@
     const button = document.getElementById("soupGenerateBtn");
     const status = document.getElementById("soupGenerateStatus");
     if (!button || button.disabled) return;
+    const modelSelect = document.getElementById("soupGenerateModel");
+    const count = Number(document.getElementById("soupGenerateCount").value || 1);
     const payload = {
-      provider_id: document.getElementById("soupGenerateModel").value,
+      provider_id: modelSelect.value,
       content_level: document.getElementById("soupGenerateLevel").value,
-      count: Number(document.getElementById("soupGenerateCount").value || 1),
+      count,
     };
-    button.disabled = true;
-    if (status) status.textContent = "正在提交出题任务…";
+    // 先按「已经在后台跑了」渲染：按钮立刻锁死，不等接口回来，免得连点派多批
+    const picked = modelSelect.selectedOptions?.[0]?.textContent || "模型";
+    renderGenerateJob({
+      state: "running",
+      running: true,
+      model: picked,
+      total: count,
+      done: 0,
+      titles: [],
+      error: "",
+      started_at: Date.now() / 1000,
+      finished_at: 0,
+    });
+    if (status) status.textContent = `正在把任务交给后台…（${picked}）`;
     icons();
     try {
       const api = await bridge();
       const result = await api.apiPost("page/soup_generate", payload);
       if (result?.status === "error") throw new Error(result.message || "出题失败");
-      if (result?.message) showToast(result.message);
-      renderGenerateJob(result?.data?.job || null);
-      pollSoupGenerate();
+      const job = jobFromPayload(result);
+      if (job) renderGenerateJob(job);
+      showToast(
+        job?.running === false
+          ? result?.message || "出题结束"
+          : `${job?.model || picked} 已在后台出题，可以离开这个页面，回来看进度即可`,
+      );
     } catch (error) {
-      showToast(error?.message || "出题失败");
-      button.disabled = false;
-      if (status) status.textContent = "";
+      // 网关超时（504）不代表没派出去：先查一次真实状态，别让按钮白解锁
+      const job = await fetchSoupGenerateJob();
+      if (soupJobRunning(job)) {
+        renderGenerateJob(job);
+        showToast("后台已经在出题了，出完会提示");
+      } else {
+        renderGenerateJob(null);
+        showToast(error?.message || "出题失败");
+      }
+    } finally {
       icons();
+      pollSoupGenerate();
     }
   }
   // ===== 题库管理 END =====

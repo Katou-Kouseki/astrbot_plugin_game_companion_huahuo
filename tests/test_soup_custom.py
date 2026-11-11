@@ -136,6 +136,10 @@ def make_console_plugin(tmp_path: Path) -> SimpleNamespace:
     plugin._soup_library_snapshot = lambda: (
         GameCompanionPlugin._soup_library_snapshot(plugin)
     )
+    # 快照里还带着后台出题任务状态（没有任务时应是 idle）
+    plugin._soup_generate_job_snapshot = lambda: (
+        GameCompanionPlugin._soup_generate_job_snapshot(plugin)
+    )
     return plugin
 
 

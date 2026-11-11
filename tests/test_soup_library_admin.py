@@ -143,6 +143,10 @@ def test_console_snapshot_masks_solutions(tmp_path: Path) -> None:
         _soup_deck=lambda: SoupDeck(tmp_path / "deck.json"),
         _soup_custom=lambda: custom,
         _soup_generated=lambda: GeneratedSoupStore(tmp_path / "generated.json"),
+        # 题库快照会带上后台出题任务状态，桩对象也要能算出来
+        _soup_generate_job_snapshot=lambda: GameCompanionPlugin._soup_generate_job_snapshot(
+            plugin
+        ),
     )
 
     data = GameCompanionPlugin._soup_library_snapshot(plugin)
@@ -153,6 +157,7 @@ def test_console_snapshot_masks_solutions(tmp_path: Path) -> None:
         assert "solution_preview" in item
         assert item["solution_preview"].endswith("字）")
     assert data["custom"]["items"][0]["solution_preview"].endswith("字）")
+    assert data["generate_job"]["state"] == "idle"
 
 
 def test_used_flag_marks_puzzles_already_drawn(tmp_path: Path) -> None:
@@ -164,6 +169,9 @@ def test_used_flag_marks_puzzles_already_drawn(tmp_path: Path) -> None:
         _soup_deck=lambda: deck,
         _soup_custom=lambda: CustomSoupStore(tmp_path / "custom.json"),
         _soup_generated=lambda: GeneratedSoupStore(tmp_path / "generated.json"),
+        _soup_generate_job_snapshot=lambda: GameCompanionPlugin._soup_generate_job_snapshot(
+            plugin
+        ),
     )
 
     data = GameCompanionPlugin._soup_library_snapshot(plugin)

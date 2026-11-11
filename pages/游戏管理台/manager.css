@@ -294,6 +294,23 @@ dialog textarea[readonly] { background: var(--surface-alt, #f4f6f4); }
 .library-generate #soupGenerateModel { flex: 1 1 200px; max-width: 320px; }
 .library-generate .library-count { margin-left: 0; }
 .library-generate .primary-button:disabled { opacity: .6; cursor: progress; }
+/* 后台生成中：整条工具栏给个明确的「正在跑」状态，别让人以为没点上 */
+.library-generate.is-busy { border-color: var(--accent, #2f6f4f); background: rgba(47, 111, 79, .06); }
+.library-generate.is-busy .game-select:disabled { opacity: .55; cursor: not-allowed; }
+.library-generate .primary-button.is-running { position: relative; padding-left: 30px; }
+.library-generate .primary-button.is-running::before {
+  content: ""; position: absolute; left: 11px; top: 50%;
+  width: 12px; height: 12px; margin-top: -6px; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent;
+  animation: soup-generate-spin .8s linear infinite;
+}
+@keyframes soup-generate-spin { to { transform: rotate(360deg); } }
+#soupGenerateStatus.is-running { color: var(--accent, #2f6f4f); font-weight: 600; }
+#soupGenerateStatus.is-done { color: var(--muted); }
+#soupGenerateStatus.is-failed { color: #b23b3b; }
+@media (prefers-reduced-motion: reduce) {
+  .library-generate .primary-button.is-running::before { animation: none; }
+}
 .library-model {
   display: block; max-width: 180px; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
