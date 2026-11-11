@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.15"
+    assert metadata["version"] == "0.6.16"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2343,3 +2343,34 @@ def test_pending_receipts_show_what_is_being_judged() -> None:
     assert '"show_judge_hint":' in main
     assert 'result.get("show_judge_hint")' in bridge
     assert 'claim = getattr(getattr(room, "game", None), "claim_judge_hint", None)' in main
+
+
+def test_soup_late_join_is_allowed_and_synced_to_group() -> None:
+    """海龟汤局中也能进人，而且网页加入的人要让群里看得见。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    manager = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    bridge = (ROOT / "qq_bridge.py").read_text(encoding="utf-8")
+
+    # 前端：只有海龟汤在局中放行，其它玩法仍然挡住
+    assert 'const lateJoinable = inPlay && room.game_type === "turtle_soup";' in script
+    assert 'action.innerHTML = \'<i data-lucide="log-in"></i><span>中途加入</span>\';' in script
+    assert "本局已开始，也能随时加入玩家席" in script
+    assert 'if (inPlay && !lateJoinable) {' in script
+
+    # 房管：claim/assign 都带「局中加入」标记，供群里播报
+    assert 'late_join = room.status in {"active", "paused"}' in manager
+    assert '"late": late_join' in manager
+    assert 'source: str = "admin"' in manager
+
+    # 主程序：局中加入往群里播一条
+    assert "async def _announce_soup_late_join" in main
+    assert "加入了玩家席，这一局继续" in main
+    assert 'payload.get("late")' in main
+
+    # 群内自动入座复用已绑定的访客，不再新建一个撞「已绑定其他访客」
+    assert "existing.token if existing else" in bridge
+
+    # 建房走「开好了」完整卡片，而不是一条裸链接
+    assert "async def _deliver_soup_room_ready" in main
+    assert '"🥣 海龟汤开好了\\n\\n🔗 {url}\\n\\n{note}"' in main

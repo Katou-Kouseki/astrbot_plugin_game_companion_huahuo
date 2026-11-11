@@ -48,6 +48,7 @@ from .qq_bridge import (
     _pending_label,
     _pending_verdict_hint,
     _progress_tail,
+    _seat_and_start,
     handle_soup_at_message,
     handle_soup_command,
     judge_soup_from_group,
@@ -2683,6 +2684,10 @@ class GameCompanionPlugin(Star):
                 reused=reused,
                 restarted=restarted,
                 switched=switched,
+                requester_qq=str(getattr(event, "get_sender_id", lambda: "")() or ""),
+                requester_name=str(
+                    getattr(event, "get_sender_name", lambda: "")() or ""
+                ),
             )
         except (ValueError, RuntimeError, PermissionError, OSError) as exc:
             return self._json_error(str(exc))
@@ -4319,6 +4324,34 @@ class GameCompanionPlugin(Star):
             body += f"\n{_pending_verdict_hint(described)}"
         return await self._send_to_origin(room, body)
 
+    async def _announce_soup_late_join(
+        self, room: GameRoom, payload: dict[str, Any]
+    ) -> bool:
+        """局中加入玩家席时同步到群。
+
+        群里只有提问的人能看到回执，网页那边点「中途加入」的人对群里是隐形的：
+        别人只会发现席位上多了个号码，不知道是谁、也不知道能拉他一起查案。
+        """
+        if room.game_type != "turtle_soup":
+            return False
+        if not getattr(self, "turtle_soup_qq_bridge", True):
+            return False
+        if not self.announce_target(room):
+            return False
+        number = int(payload.get("visitor") or payload.get("joined") or 0)
+        name = str(payload.get("name") or "").strip()
+        if name and number:
+            label = f"{name}（{number} 号）"
+        elif name:
+            label = name
+        else:
+            label = f"{number} 号玩家" if number else "一位新玩家"
+        body = (
+            f"🙋 {label} 加入了玩家席，这一局继续。\n"
+            "想一起查案：发「汤 提问 你的问题」，或 @我 问一句 / 交一段推理都行。"
+        )
+        return await self._send_to_origin(room, body)
+
     async def _on_room_event(
         self, event_name: str, room: GameRoom, payload: dict[str, Any]
     ) -> None:
@@ -4432,9 +4465,15 @@ class GameCompanionPlugin(Star):
         if event_name == "player_confirmed":
             self._capture_round_participants(room)
             self._notify_companion_activity(room, "started")
+            # 局中加入：网页 / 管理台那边加的人，群里要能看见；群里自己发
+            # 指令入座的人已经收到回执，不用再播一遍。
+            if payload.get("late") and str(payload.get("source") or "") != "qq":
+                self._spawn(self._announce_soup_late_join(room, payload))
             return
         if event_name == "seats_changed":
             self._capture_round_participants(room)
+            if payload.get("late"):
+                self._spawn(self._announce_soup_late_join(room, payload))
             # 连战汇总：真人全走了就别再等空闲计时，立刻把攒下的几局合并播报掉
             self._flush_board_series_when_seats_empty(room)
             return
@@ -11954,7 +11993,21 @@ class GameCompanionPlugin(Star):
         reused: bool,
         restarted: bool,
         switched: bool = False,
+        requester_qq: str = "",
+        requester_name: str = "",
     ) -> bool:
+        # 新建的海龟汤房：直接按「汤 开局」的样式发，顺手把发起人排进玩家席。
+        # 以前这里只回一句「海龟汤房间已准备好：<链接>」，玩家还得点进去找按钮，
+        # 回群里再问一句怎么玩；同一条链路上「汤 开局」却是完整开局卡。
+        if (
+            room.game_type == "turtle_soup"
+            and not room.admin_room
+            and not (reused or restarted or switched)
+            and str(requester_qq or "").strip()
+        ):
+            return await self._deliver_soup_room_ready(
+                room, url, str(requester_qq).strip(), requester_name
+            )
         if restarted:
             title = "新一局已在原游戏房间开始："
         elif switched:
@@ -11981,6 +12034,38 @@ class GameCompanionPlugin(Star):
             return False
         logger.info(
             "[GameCompanion] 房间链接已作为独立纯文字消息发送: room=%s session=%s",
+            room.room_id,
+            room.session_id,
+        )
+        return True
+
+    async def _deliver_soup_room_ready(
+        self, room: GameRoom, url: str, qq: str, name: str = ""
+    ) -> bool:
+        """海龟汤建房后的群消息：开好了 + 链接 + 已入席 + 怎么玩。"""
+        try:
+            note = await _seat_and_start(
+                self,
+                room,
+                SimpleNamespace(
+                    get_sender_id=lambda: qq,
+                    get_sender_name=lambda: name,
+                ),
+            )
+        except (ValueError, RuntimeError, OSError) as exc:
+            logger.info("[GameCompanion] 海龟汤自动入席失败，只发链接：%s", exc)
+            note = f"房间已经建好，点开链接就能玩（自动入席没成功：{exc}）。"
+        body = f"🥣 海龟汤开好了\n\n🔗 {url}\n\n{note}"
+        if not await self._deliver(
+            room.session_id, MessageChain([Plain(body)]), what="海龟汤开局"
+        ):
+            logger.warning(
+                "[GameCompanion] 海龟汤开局消息没发出去，交给模型回复回退: session=%s",
+                room.session_id,
+            )
+            return False
+        logger.info(
+            "[GameCompanion] 海龟汤开局消息已发送: room=%s session=%s",
             room.room_id,
             room.session_id,
         )

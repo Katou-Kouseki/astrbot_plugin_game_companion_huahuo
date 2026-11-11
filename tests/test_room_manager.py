@@ -5,7 +5,7 @@ import time
 
 import pytest
 from astrbot_plugin_game_companion_huahuo.blackjack import BlackjackCard, BlackjackGame
-from astrbot_plugin_game_companion_huahuo.models import _visitor_uid
+from astrbot_plugin_game_companion_huahuo.models import PlayerSeat, _visitor_uid
 from astrbot_plugin_game_companion_huahuo.room_manager import RoomManager
 from astrbot_plugin_game_companion_huahuo.undercover import UndercoverGame
 
@@ -1330,3 +1330,81 @@ def test_gomoku_winning_line_empty_without_five() -> None:
     for col in range(5, 9):
         board[7][col] = 1
     assert RoomManager._gomoku_winning_line(board, 1) == []
+
+
+async def create_soup_room(manager: RoomManager):
+    return await manager.create_room(
+        source="group",
+        session_id="aiocqhttp:group:20001",
+        platform="aiocqhttp",
+        group_id="20001",
+        creator_qq="10001",
+        creator_name="创建者",
+        admin_room=False,
+        game_type="turtle_soup",
+        difficulty="normal",
+    )
+
+
+def capture_events(manager: RoomManager) -> list[tuple[str, dict]]:
+    events: list[tuple[str, dict]] = []
+
+    async def emit(name, room, payload):
+        events.append((name, dict(payload or {})))
+
+    manager._emit = emit  # noqa: SLF001
+    return events
+
+
+@pytest.mark.asyncio
+async def test_turtle_soup_allows_late_join_while_the_game_is_running() -> None:
+    """海龟汤局中也能随时进玩家席：不会把进行中的房间打回 setup。"""
+    manager = RoomManager(turtle_soup_max_players=6)
+    room = await create_soup_room(manager)
+    first = await manager.join(room)
+    room.multiplayer.seats.append(
+        PlayerSeat(
+            visitor_token=first.token,
+            qq="10001",
+            display_name="创建者",
+            identity_confirmed=True,
+        )
+    )
+    room.status = "active"
+    events = capture_events(manager)
+
+    latecomer = await manager.join(room)
+    await manager.claim_and_start(room, latecomer.token, "")
+
+    assert room.status == "active", "局中加入不该把对局打回 setup"
+    assert len(room.multiplayer.seats) == 2
+    assert room.multiplayer.seat_for_token(latecomer.token) is not None
+    name, payload = events[-1]
+    assert name == "seats_changed"
+    assert payload["late"] is True, "要标记成局中加入，主程序才知道往群里播报"
+    assert payload["source"] == "web"
+
+
+@pytest.mark.asyncio
+async def test_assign_player_marks_late_join_and_source() -> None:
+    """群内 / 管理台安排的座位同样带上「局中加入」标记。"""
+    manager = RoomManager(turtle_soup_max_players=6)
+    room = await create_soup_room(manager)
+    first = await manager.join(room)
+    room.multiplayer.seats.append(
+        PlayerSeat(visitor_token=first.token, qq="10001", identity_confirmed=True)
+    )
+    room.status = "active"
+    events = capture_events(manager)
+
+    latecomer = await manager.join(room)
+    await manager.assign_player(
+        room, latecomer.number, "10002", allow_non_numeric=True, source="qq"
+    )
+
+    name, payload = events[-1]
+    assert name == "player_confirmed"
+    assert payload["late"] is True
+    assert payload["source"] == "qq"
+    assert payload["visitor"] == latecomer.number
+    assert payload["qq"] == "10002"

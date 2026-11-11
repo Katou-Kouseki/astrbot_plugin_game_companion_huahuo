@@ -1010,12 +1010,28 @@ async def ensure_qq_seat(
         return False, "这是单人房间，已经有玩家在玩了。"
 
     status_before = room.status
+    # 同一个 QQ 可能早就通过网页拿过访客身份（只是还没坐进席位）：直接复用
+    # 那个访客的令牌。以前这里总是新建访客，接着 assign_player 就会撞上
+    # 「这个 QQ 已经绑定了本房间的其他访客」，玩家看到的就是莫名其妙的失败。
+    existing = next(
+        (
+            item
+            for item in room.visitors.values()
+            if getattr(item, "identity_confirmed", False)
+            and str(getattr(item, "qq", "")) == qq
+        ),
+        None,
+    )
     try:
-        visitor = await plugin.manager.join(room)
+        visitor = await plugin.manager.join(room, existing.token if existing else "")
         if display_name:
             visitor.display_name = display_name
         await plugin.manager.assign_player(
-            room, visitor.number, qq, allow_non_numeric=True
+            room,
+            visitor.number,
+            qq,
+            allow_non_numeric=True,
+            source="qq",
         )
     except (ValueError, PermissionError, RuntimeError) as exc:
         return False, f"自动加入玩家席失败：{exc}"

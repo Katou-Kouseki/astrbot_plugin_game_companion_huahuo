@@ -2216,8 +2216,6 @@
       action.disabled = true;
       note.textContent = "管理员将在游戏管理台为你绑定玩家序号与 QQ；若你的浏览器已登录 AstrBot，刷新页面即可自动识别身份。";
     } else if (!room.is_player) {
-      // 局中一律不给「加入对局」入口：哪怕席位看着没满（对局里坐着花火时
-      // 快照的座位数也可能对不上），也不能让人点进来把棋局打断。
       const inPlay = room.status === "active" || room.status === "paused";
       const capacity = playerCapacity(room, 1);
       const seated = Math.max(
@@ -2228,10 +2226,21 @@
       // （后端 claim 会先把花火请下座位、再把这位观众安进去，随后立即开局）。
       const vacatableAi = isDuelGame(room) && hasAiOpponent(room) && !inPlay;
       const full = capacity > 0 && seated >= capacity && !vacatableAi;
-      if (inPlay) {
+      // 海龟汤是多人合力解谜：局中加入只是多一个能提问的人，不会打乱棋局/记账，
+      // 所以允许随时进；棋类、21 点、卧底中途塞人会让座位号与局内号错位，仍然拦住。
+      const lateJoinable = inPlay && room.game_type === "turtle_soup";
+      if (inPlay && !lateJoinable) {
         action.innerHTML = '<i data-lucide="eye"></i><span>本局进行中</span>';
         action.disabled = true;
         note.textContent = "这一局已经开始了，等这局结束后再加入玩家席。";
+      } else if (lateJoinable) {
+        action.innerHTML = '<i data-lucide="log-in"></i><span>中途加入</span>';
+        action.disabled = busy || full || identityRequired;
+        note.textContent = full
+          ? "玩家席已满，可以先在网页看问答时间线。"
+          : identityRequired
+          ? "请先用页面令牌在 QQ 中绑定身份。"
+          : `本局已开始，也能随时加入玩家席（${seated} / ${capacity || "不限"} 人），进来就能提问或交推理。`;
       } else {
         action.innerHTML = vacatableAi
           ? '<i data-lucide="log-in"></i><span>我来对弈</span>'

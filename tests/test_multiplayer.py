@@ -108,7 +108,12 @@ async def test_browser_identity_token_binds_qq_and_nickname_before_seating() -> 
 
 
 @pytest.mark.asyncio
-async def test_same_qq_cannot_bind_two_browser_visitors_in_one_room() -> None:
+async def test_same_qq_can_move_binding_to_a_new_browser_visitor() -> None:
+    """同一个 QQ 换设备/换页面重新绑定：旧访客没在席上就把身份挪过来。
+
+    以前这里直接报「已经绑定了本房间的其他访客」，用户看到的就是莫名其妙
+    的失败——明明只是换了个浏览器。
+    """
     manager = RoomManager()
     room = await make_room(manager)
     first = await manager.join(room)
@@ -121,7 +126,37 @@ async def test_same_qq_cannot_bind_two_browser_visitors_in_one_room() -> None:
         qq="10002",
         display_name="小明",
     )
-    with pytest.raises(ValueError, match="其他访客"):
+    moved = await manager.bind_visitor_identity(
+        session_id=room.session_id,
+        identity_token=str(second_token),
+        qq="10002",
+        display_name="小明",
+    )
+    _moved_room, moved_visitor = moved
+
+    assert moved_visitor.token == second.token
+    assert room.visitors[first.token].identity_confirmed is False
+    assert room.visitors[first.token].qq == ""
+
+
+@pytest.mark.asyncio
+async def test_same_qq_cannot_bind_two_visitors_when_one_is_seated() -> None:
+    """旧访客已经坐进玩家席时才拦：两边都在席上才是真的冲突。"""
+    manager = RoomManager(turtle_soup_max_players=4)
+    room = await make_room(manager)
+    first = await manager.join(room)
+    first_token = room.public_snapshot(first.token)["identity_token"]
+    await manager.bind_visitor_identity(
+        session_id=room.session_id,
+        identity_token=str(first_token),
+        qq="10002",
+        display_name="小明",
+    )
+    await manager.assign_player(room, first.number, "10002", allow_non_numeric=True)
+    second = await manager.join(room)
+    second_token = room.public_snapshot(second.token)["identity_token"]
+
+    with pytest.raises(ValueError, match="已经坐进本房间的玩家席"):
         await manager.bind_visitor_identity(
             session_id=room.session_id,
             identity_token=str(second_token),

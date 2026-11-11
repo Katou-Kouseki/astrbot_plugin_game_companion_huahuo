@@ -892,7 +892,19 @@ class RoomManager:
                     None,
                 )
                 if existing is not None:
-                    raise ValueError("这个 QQ 已经绑定了本房间的其他访客")
+                    # 同一个 QQ 换个浏览器又拿了一次令牌：只要旧访客没在席上，
+                    # 就把身份挪到这次绑定的访客，别让「换设备」变成硬错误。
+                    seated = (
+                        room.multiplayer.seat_for_token(existing.token) is not None
+                        if room.multiplayer.enabled
+                        else room.player_token == existing.token
+                    )
+                    if seated:
+                        raise ValueError(
+                            "这个 QQ 已经坐进本房间的玩家席了，直接刷新原页面继续玩即可"
+                        )
+                    existing.qq = ""
+                    existing.identity_confirmed = False
                 self._confirm_visitor_identity(
                     room,
                     visitor,
@@ -1027,6 +1039,9 @@ class RoomManager:
         start_required = False
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
+            # 局中加入：海龟汤这类「合力解谜」的游戏随时可以多一个人提问，
+            # 记下来让上层往群里播一条，群里才知道席位上多了谁。
+            late_join = room.status in {"active", "paused"}
             # 管理台开出来的房间没有 QQ 会话，历史设计只能由管理员安排座位；
             # 若访客已经带着身份（受信任浏览器 / 已绑定 QQ），就让他自己入座，
             # 否则管理台每来一个人都要手动点一次「安排玩家」。
@@ -1159,7 +1174,9 @@ class RoomManager:
                             state.turn_deadline = time.time() + duration
                     else:
                         room.add_message(
-                            "system", f"{self._visitor_label(visitor)}加入了玩家席。"
+                            "system",
+                            f"{self._visitor_label(visitor)}加入了玩家席。"
+                            + ("（局中加入）" if late_join else ""),
                         )
                         if room.game_type == "undercover" and room.status == "setup":
                             # 人满时立即触发开局
@@ -1200,7 +1217,16 @@ class RoomManager:
         if start_required:
             await self.start_game(room, visitor_token, side)
         else:
-            await self._emit("seats_changed", room, {"joined": visitor.number})
+            await self._emit(
+                "seats_changed",
+                room,
+                {
+                    "joined": visitor.number,
+                    "late": late_join,
+                    "source": "web",
+                    "name": visitor.display_name,
+                },
+            )
         return {"claimed": True, "seated": True}
 
     async def assign_player(
@@ -1210,22 +1236,47 @@ class RoomManager:
         player_qq: str,
         *,
         allow_non_numeric: bool = False,
+        source: str = "admin",
     ) -> None:
-        """Assign an administrator-reviewed visitor and QQ identity."""
+        """Assign an administrator-reviewed visitor and QQ identity.
+
+        `source` 只用于区分入座来源（admin / web / qq）：局中加入时群里要播
+        一条，但群里自己发指令入座的人不需要再被 @ 一遍。
+        """
         async with room.lock:
             visitor = self._visitor_by_number(room, visitor_number)
+            late_join = room.status in {"active", "paused"}
             player_qq = str(player_qq or "").strip()
             if not player_qq:
                 raise ValueError("玩家身份不能为空")
             if not allow_non_numeric and not player_qq.isdigit():
                 raise ValueError("玩家 QQ 号必须只包含数字")
-            if any(
-                item.identity_confirmed
-                and item.qq == player_qq
-                and item.token != visitor.token
+            others = [
+                item
                 for item in room.visitors.values()
-            ):
-                raise ValueError("这个 QQ 已经绑定了本房间的其他访客")
+                if getattr(item, "identity_confirmed", False)
+                and str(getattr(item, "qq", "")) == player_qq
+                and item.token != visitor.token
+            ]
+            if others:
+                # 同一个 QQ 在另一个浏览器 / 访客里也绑过，是很常见的情况（换设备、
+                # 点开两次链接）。只要那边没坐进玩家席，就把身份收回到这次的访客上，
+                # 别再抛「已经绑定了其他访客」让人一脸懵；只有两边都占着席位才需要
+                # 人工处理——那才是真的冲突。
+                for other in others:
+                    seated_elsewhere = (
+                        room.multiplayer.seat_for_token(other.token) is not None
+                        if room.multiplayer.enabled
+                        else room.player_token == other.token
+                    )
+                    if seated_elsewhere:
+                        raise ValueError(
+                            "这个 QQ 已经坐进本房间的玩家席了（可能开了多个页面），"
+                            "刷新页面继续玩即可"
+                        )
+                for other in others:
+                    other.qq = ""
+                    other.identity_confirmed = False
             if room.multiplayer.enabled:
                 seat = room.multiplayer.seat_for_token(visitor.token)
                 if seat is None:
@@ -1283,7 +1334,18 @@ class RoomManager:
                 room.game = None
                 room.status = "setup"
                 room.touch()
-        await self._emit("player_confirmed", room, {})
+                late_join = False  # 单人房入座必然重开 setup，不算局中加入
+        await self._emit(
+            "player_confirmed",
+            room,
+            {
+                "visitor": visitor.number,
+                "name": visitor.display_name,
+                "qq": player_qq,
+                "late": late_join,
+                "source": str(source or "admin"),
+            },
+        )
 
     async def correct_creator(
         self, room: GameRoom, actor_qq: str, visitor_number: int

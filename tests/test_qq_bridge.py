@@ -512,10 +512,10 @@ def make_start_plugin() -> SimpleNamespace:
         touch=lambda: None,
     )
 
-    async def join(_room):
-        return SimpleNamespace(number=1, token="tk", qq="", display_name="")
+    async def join(_room, token=""):
+        return SimpleNamespace(number=1, token=token or "tk", qq="", display_name="")
 
-    async def assign(_room, _number, qq, allow_non_numeric=True):
+    async def assign(_room, _number, qq, allow_non_numeric=True, source="admin"):
         _room.player_qq = qq
         _room.player_token = "tk"
         return {"seated": True}
@@ -537,8 +537,7 @@ def make_start_plugin() -> SimpleNamespace:
     return plugin
 
 
-def make_group_event(message: str, *, qq: str = "10001") -> SimpleNamespace:
-    return SimpleNamespace(
+def make_group_event(message: str, *, qq: str = "10001") -> SimpleNamespace:    return SimpleNamespace(
         message_str=message,
         unified_msg_origin="aiocqhttp:group:1",
         get_sender_id=lambda: qq,
@@ -802,3 +801,62 @@ def test_help_text_mentions_the_quick_ways_in() -> None:
     assert "@我" in HELP_TEXT
     assert "@花火" in HELP_TEXT or "@我" in HELP_TEXT
     assert "汤 提示" in HELP_TEXT
+
+
+@pytest.mark.asyncio
+async def test_auto_join_reuses_the_visitor_already_bound_to_that_qq() -> None:
+    """截图里的坑：这个 QQ 早就绑过网页访客，只是还没坐进席位。
+
+    以前每次都 `join(room)` 新建一个访客，接着 assign 就撞上
+    「这个 QQ 已经绑定了本房间的其他访客」，玩家看到的是莫名其妙的失败。
+    """
+    from astrbot_plugin_game_companion_huahuo.qq_bridge import ensure_qq_seat
+
+    bound = SimpleNamespace(
+        number=3,
+        token="bound-token",
+        qq="10002",
+        display_name="小明",
+        identity_confirmed=True,
+    )
+    room = SimpleNamespace(
+        game_type="turtle_soup",
+        status="active",
+        source="group",
+        session_id="aiocqhttp:group:1",
+        player_qq="",
+        player_token="",
+        visitors={bound.token: bound},
+        multiplayer=SimpleNamespace(
+            enabled=True,
+            capacity=0,
+            seats=[],
+            seat_for_qq=lambda _qq: None,
+        ),
+        add_message=lambda *args, **kwargs: None,
+        touch=lambda: None,
+    )
+    seen: dict[str, object] = {}
+
+    async def join(_room, token=""):
+        seen["token"] = token
+        return bound
+
+    async def assign(_room, number, qq, allow_non_numeric=True, source="admin"):
+        seen["number"] = number
+        seen["source"] = source
+
+    plugin = SimpleNamespace(
+        turtle_soup_qq_auto_bind=True,
+        manager=SimpleNamespace(
+            join=AsyncMock(side_effect=join),
+            assign_player=AsyncMock(side_effect=assign),
+        ),
+    )
+
+    ok, note = await ensure_qq_seat(plugin, room, "10002", "小明")
+
+    assert ok is True, note
+    assert seen["token"] == "bound-token", "必须复用已绑定的访客，不能新建一个"
+    assert seen["number"] == 3
+    assert seen["source"] == "qq", "群里自己入座不需要再往群里播一遍"
