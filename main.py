@@ -9746,7 +9746,10 @@ class GameCompanionPlugin(Star):
                 payload["loser_name"] = self.manager._seat_display(loser_seat)
                 payload["loser_side"] = self.manager._seat_side(room, loser_seat)
         # 单人历史房间（未启用玩家席）的兜底胜负
-        if not payload["draw"] and not payload["winner_name"]:
+        if payload["draw"]:
+            # 平局没有 winner seat：把「谁跟谁下平的」带上，战报才不会只有一句「平局」
+            payload["draw_names"] = self.manager._board_draw_names(room)
+        elif not payload["winner_name"]:
             if isinstance(game, XiangqiGame):
                 payload["human_won"] = game.winner == getattr(
                     game, "human_side", None
@@ -9756,7 +9759,14 @@ class GameCompanionPlugin(Star):
                 human_color = int(getattr(game, "human_color", 0) or 0)
                 if winner and human_color:
                     payload["human_won"] = winner == human_color
+            if payload.get("human_won") is not None:
+                # 兜底分支也要能写出真人名字，不能只留一句「玩家落败」
+                payload["human_name"] = self._board_player_display_name(room)
         return payload
+
+    def _board_player_display_name(self, room: GameRoom) -> str:
+        """单人房间里的真人称呼：优先访客昵称，取不到再退回「玩家」。"""
+        return self.manager._room_player_name(room)
 
     def _board_game_summary(self, room: GameRoom) -> str:
         """把一局棋类的关键信息拼成可读文本，供复盘使用。"""
@@ -9773,7 +9783,8 @@ class GameCompanionPlugin(Star):
             if name:
                 outcome = f"{name}获胜" + (f"（执{side_text}）" if side_text else "")
             elif payload.get("draw"):
-                outcome = "平局"
+                draw_names = str(payload.get("draw_names") or "")
+                outcome = f"平局（{draw_names}）" if draw_names else "平局"
             else:
                 outcome = "胜负已定"
             return f"{label}，共 {moves} 手，{outcome}"
@@ -9802,11 +9813,15 @@ class GameCompanionPlugin(Star):
                     f"（执{loser_side_text}）" if loser_side_text else ""
                 )
         elif payload.get("draw"):
-            result = "🤝 平局"
+            # 平局也要带双方名字，否则群里只看到一句「平局」，不知道是谁跟谁
+            draw_names = str(payload.get("draw_names") or "")
+            result = f"🤝 平局 · {draw_names}" if draw_names else "🤝 平局"
         elif payload.get("human_won") is True:
-            result = "🏆 玩家获胜 · 花火落败"
+            human = str(payload.get("human_name") or "玩家")
+            result = f"🏆 {human}获胜 · 花火落败"
         elif payload.get("human_won") is False:
-            result = "🏆 花火获胜 · 玩家落败"
+            human = str(payload.get("human_name") or "玩家")
+            result = f"🏆 花火获胜 · {human}落败"
         else:
             result = "🏁 本局结束"
         return f"♟️ {label}战报\n{result}\n⏱️ 共 {moves} 手"
@@ -9905,15 +9920,23 @@ class GameCompanionPlugin(Star):
                     loser_line += f" · 执{loser_side_text}"
             badge, accent = "🏆", "#ffd166"
         elif draw:
+            # 平局也要写清「谁跟谁下平的」：只有一句「平局」，转发出去没人看得懂
+            draw_names = str(payload.get("draw_names") or "")
+            if len(draw_names) > 26:
+                draw_names = draw_names[:26] + "…"
             title, sub, badge, accent = (
                 "平局",
                 f"{label}{diff} · {count_text}",
                 "🤝",
                 "#9ccbff",
             )
+            loser_line = f"双方：{draw_names}" if draw_names else ""
         elif payload.get("human_won") is True:
+            human = str(payload.get("human_name") or "玩家")
+            if len(human) > 10:
+                human = human[:10] + "…"
             title, sub, badge, accent = (
-                "玩家获胜",
+                f"{human} 获胜",
                 f"{label}{diff} · {count_text}",
                 "🏆",
                 "#ffd166",
@@ -9921,13 +9944,16 @@ class GameCompanionPlugin(Star):
             # 单人局（玩家 vs 花火）：负方恒为花火，这里没有座位可查，直接写死
             loser_line = f"败方：{_huahuo_label('花火')}"
         elif payload.get("human_won") is False:
+            human = str(payload.get("human_name") or "玩家")
+            if len(human) > 10:
+                human = human[:10] + "…"
             title, sub, badge, accent = (
                 "花火 获胜",
                 f"{label}{diff} · {count_text}",
                 "🏆",
                 "#ffd166",
             )
-            loser_line = "败方：玩家"
+            loser_line = f"败方：{human}"
         else:
             title, sub, badge, accent = (
                 "本局结束",
@@ -10627,6 +10653,9 @@ class GameCompanionPlugin(Star):
             "loser_side": str(payload.get("loser_side") or ""),
             "winner_is_ai": winner_is_ai,
             "human_won": None if human_won is None else bool(human_won),
+            # 连战/单局文案也要写得出「谁跟谁下平」「单人局里谁输了」
+            "human_name": str(payload.get("human_name") or ""),
+            "draw_names": str(payload.get("draw_names") or ""),
         }
 
     @staticmethod
@@ -10857,7 +10886,8 @@ class GameCompanionPlugin(Star):
             str(entry.get("loser_side") or ""), ""
         )
         if entry.get("draw"):
-            return "🤝 平局"
+            draw_names = str(entry.get("draw_names") or "")
+            return f"🤝 平局（{draw_names}）" if draw_names else "🤝 平局"
         if entry.get("winner_is_ai"):
             winner = f"花火{side_text}"
             loser = str(entry.get("loser_name") or "")
@@ -10865,7 +10895,8 @@ class GameCompanionPlugin(Star):
                 return f"🏆 {winner}胜 {loser}（执{loser_side}）"
             if loser:
                 return f"🏆 {winner}胜 {loser}"
-            return f"🏆 花火获胜{side_text} · 玩家落败"
+            human = str(entry.get("human_name") or "玩家")
+            return f"🏆 花火获胜{side_text} · {human}落败"
         name = str(entry.get("winner_name") or "")
         loser = str(entry.get("loser_name") or "")
         if name and loser:
@@ -10877,9 +10908,11 @@ class GameCompanionPlugin(Star):
         # human_won 缺失时不能再默认写「玩家获胜」——旧快照 / 特殊玩法下这个字段
         # 可能没写，硬猜会把战报结论整个写反。只报能确认的执方，其余中性收尾。
         if entry.get("human_won") is True:
-            return f"🏆 玩家获胜{side_text} · 花火落败"
+            human = str(entry.get("human_name") or "玩家")
+            return f"🏆 {human}获胜{side_text} · 花火落败"
         if entry.get("human_won") is False:
-            return f"🏆 花火获胜{side_text} · 玩家落败"
+            human = str(entry.get("human_name") or "玩家")
+            return f"🏆 花火获胜{side_text} · {human}落败"
         if side:
             return f"🏆 执{side}方获胜"
         return "🏆 本局已结束"

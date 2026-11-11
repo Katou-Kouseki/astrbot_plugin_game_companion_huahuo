@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.18"
+    assert metadata["version"] == "0.6.19"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2080,6 +2080,18 @@ def test_soup_sync_dedupe_and_reveal_decision() -> None:
     assert "token = seq if seq > 0 else id(entry)" in main
     assert "async def _announce_soup_decision" in main
     assert 'kind="passed"' in main
+
+
+def test_board_share_poster_draws_both_sides_and_lower_board() -> None:
+    """前端棋类战报：棋盘略微下移，平局写出双方名字。"""
+    script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    # 棋盘从 236 下移到 250，和上方「败方 / 双方」行留出间距
+    assert "const by = 250;" in script
+    # 平局：优先用服务端快照的 draw_names，退席后座位查不到也不会空着
+    assert "draw_names: drawNames," in script
+    assert "boardResult?.draw_names" in script
+    assert "`双方：${result.draw_names}`" in script
 
 
 def test_leaderboard_winrate_counts_losses() -> None:

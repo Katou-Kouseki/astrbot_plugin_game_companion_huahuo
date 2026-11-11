@@ -5333,6 +5333,9 @@ class RoomManager:
             if loser_seat is not None:
                 payload["loser_name"] = self._seat_display(loser_seat)
                 payload["loser_side"] = self._seat_side(room, loser_seat)
+        elif payload["draw"]:
+            # 平局没有胜负方，至少要留下「谁跟谁下成平局」，否则战报只有一句「平局」
+            payload["draw_names"] = self._board_draw_names(room)
         elif not payload["draw"]:
             # 未启用玩家席的单人房间：按执方判胜负，供播报文案兜底
             if isinstance(game, XiangqiGame):
@@ -5344,6 +5347,9 @@ class RoomManager:
                 human_color = int(getattr(game, "human_color", 0) or 0)
                 if winner and human_color:
                     payload["human_won"] = winner == human_color
+            if payload.get("human_won") is not None:
+                # 兜底分支也一样要能写出真人名字，不能只留一句「玩家落败」
+                payload["human_name"] = self._room_player_name(room)
         # 战报海报的终局高亮信息：五子棋获胜连线 / 象棋最后一手 / 黑白棋落子与子数
         if isinstance(game, GomokuGame) and game.winner:
             line = self._gomoku_winning_line(board, game.winner)
@@ -6699,6 +6705,32 @@ class RoomManager:
     @staticmethod
     def _human_seats(room: GameRoom) -> list[PlayerSeat]:
         return [seat for seat in room.multiplayer.seats if not seat.is_ai]
+
+    def _room_player_name(self, room: GameRoom) -> str:
+        """单人房间里的真人称呼：优先访客昵称，取不到再退回「玩家」。"""
+        visitors = getattr(room, "visitors", None) or {}
+        token = str(getattr(room, "player_token", "") or "")
+        visitor = visitors.get(token) if token else None
+        name = (getattr(visitor, "display_name", "") or "").strip() if visitor else ""
+        return name or "玩家"
+
+    def _board_draw_names(self, room: GameRoom) -> str:
+        """平局时的双方称呼（「甲（执黑） vs 乙（执白）」）。
+
+        平局没有 winner seat 可查，战报里如果只写「平局」，转发出去的人根本不知道
+        是谁跟谁下的。这里按座位顺序取前两位，AI 座位统一叫「花火」。
+        """
+        seats = list(room.multiplayer.seats)[:2]
+        if len(seats) < 2:
+            return ""
+        parts: list[str] = []
+        for seat in seats:
+            side_text = {"red": "红", "black": "黑", "white": "白"}.get(
+                self._seat_side(room, seat), ""
+            )
+            name = self._seat_display(seat)
+            parts.append(f"{name}（执{side_text}）" if side_text else name)
+        return " vs ".join(parts)
 
     @staticmethod
     def _seat_display(seat: PlayerSeat) -> str:

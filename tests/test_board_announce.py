@@ -957,3 +957,111 @@ def test_board_entry_result_does_not_guess_winner_without_human_won() -> None:
     assert "花火获胜" in result({"human_won": False})
     assert result({"human_won": None}) == "🏆 本局已结束"
     assert result({"human_won": None, "winner_side": "black"}) == "🏆 执黑方获胜"
+
+
+@pytest.mark.asyncio
+async def test_board_poster_data_draw_lists_both_sides() -> None:
+    """平局也要写清「谁跟谁下平的」，不能只有一句「平局」。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await manager.create_room(
+        source="private",
+        session_id="UMO:t:PM:7",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="小明",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    first = await manager.join(room)
+    second = await manager.join(room)
+    await manager.assign_player(room, first.number, "10001")
+    await manager.assign_player(room, second.number, "10002")
+    room.multiplayer.seats[0].side = "black"
+    room.multiplayer.seats[1].side = "white"
+    room.multiplayer.seats[0].display_name = "小明"
+    room.multiplayer.seats[1].display_name = "小红"
+    room.game = GomokuGame(human_color=BLACK)
+    room.game.winner = 0
+    room.game.draw = True
+    room.game.history = [(7, 7, BLACK), (7, 8, WHITE)]
+    manager._snapshot_board_result(room)
+
+    snap = room.last_board_result
+    assert snap["draw_names"] == "小明（执黑） vs 小红（执白）"
+
+    data = _plugin(manager)._board_poster_data(room)
+
+    assert data["title"] == "平局"
+    assert data["sub2"] == "双方：小明（执黑） vs 小红（执白）"
+
+
+@pytest.mark.asyncio
+async def test_board_announce_text_draw_lists_both_sides() -> None:
+    """纯文字战报的平局同样带上双方名字。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await _duel_room(manager)
+    room.game.winner = 0
+    room.game.draw = True
+    room.game.history = [(7, 7, BLACK), (7, 8, WHITE)]
+    manager._snapshot_board_result(room)
+
+    text = _plugin(manager)._board_announce_text(room)
+
+    assert "平局" in text
+    assert "小明" in text and "花火" in text
+
+
+def test_board_entry_result_draw_lists_both_sides() -> None:
+    """连战逐局文案的平局也要带双方，避免「1. 🤝 平局」看不出是谁。"""
+    result = GameCompanionPlugin._board_entry_result(
+        {"draw": True, "draw_names": "小明（执黑） vs 小红（执白）"}
+    )
+    assert result == "🤝 平局（小明（执黑） vs 小红（执白））"
+    assert GameCompanionPlugin._board_entry_result({"draw": True}) == "🤝 平局"
+
+
+@pytest.mark.asyncio
+async def test_board_poster_data_falls_back_to_player_name() -> None:
+    """单人历史房间（没有座位可查）也要写真人昵称，而不是笼统的「玩家」。"""
+    manager = RoomManager(max_private_rooms=0)
+    room = await manager.create_room(
+        source="private",
+        session_id="UMO:t:PM:9",
+        platform="aiocqhttp",
+        group_id="",
+        creator_qq="10001",
+        creator_name="阿强",
+        admin_room=False,
+        game_type="gomoku",
+        difficulty="normal",
+    )
+    visitor = await manager.join(room)
+    room.player_token = visitor.token
+    room.player_identity_confirmed = True
+    room.visitors[visitor.token].display_name = "阿强"
+    room.game = GomokuGame(human_color=BLACK)
+    room.game.winner = BLACK
+    room.game.draw = False
+    room.game.history = [(7, 7, BLACK)]
+    manager._snapshot_board_result(room)
+
+    snap = room.last_board_result
+    assert snap["human_won"] is True
+    assert snap["human_name"] == "阿强"
+
+    data = _plugin(manager)._board_poster_data(room)
+    assert data["title"] == "阿强 获胜"
+    # 单人兜底：胜方是真人昵称，败方恒为花火
+    assert "花火" in data["sub2"]
+
+
+def test_board_entry_result_human_won_uses_real_name() -> None:
+    """连战文案的兜底分支也优先写真人昵称。"""
+    assert GameCompanionPlugin._board_entry_result(
+        {"human_won": True, "human_name": "阿强"}
+    ) == "🏆 阿强获胜 · 花火落败"
+    assert GameCompanionPlugin._board_entry_result(
+        {"human_won": False, "human_name": "阿强"}
+    ) == "🏆 花火获胜 · 阿强落败"

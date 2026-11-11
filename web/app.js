@@ -6115,6 +6115,21 @@
     const mySideText = target?.is_player ? sideTextOf(mySide(target)) : "";
     const moveCount = Number(game.move_count || 0);
     const opponent = hasAiOpponent(target) ? "花火" : (hasHumanOpponent(target) ? "对手" : "");
+    // 平局没有胜负方，但战报必须说清「谁跟谁下平的」：优先用服务端快照，
+    // 座位在玩家退席后就查不到了，快照才是可靠来源。
+    let drawNames = "";
+    if (draw) {
+      drawNames = String(boardResult?.draw_names || "").trim();
+      if (!drawNames) {
+        drawNames = seats.slice(0, 2).map((seat) => {
+          const sideText = sideTextOf(seat.side || "");
+          const name = seat.is_ai
+            ? "花火"
+            : ((seat.display_name || "").trim() || `${seat.number}号`);
+          return sideText ? `${name}（执${sideText}）` : name;
+        }).join(" vs ");
+      }
+    }
     return {
       game_type: gt,
       label: gameLabel(),
@@ -6125,6 +6140,7 @@
       winner_side: winnerSideText,
       loser_name: loserName,
       loser_side: loserSideText,
+      draw_names: drawNames,
       draw,
       move_count: moveCount,
       my_side: mySideText,
@@ -6375,16 +6391,25 @@
     if (result.opponent) sub.push(`对手：${result.opponent}`);
     sub.push(`共 ${result.move_count} 手`);
     c.fillText(sub.join(" · "), 26, 196);
-    // 败者单独一行：分享出去时谁赢谁输一眼看清
-    if (result.loser_name && !result.draw) {
+    // 败者单独一行：分享出去时谁赢谁输一眼看清；平局则写双方是谁
+    if (result.draw) {
+      if (result.draw_names) {
+        c.fillStyle = "#e8b58a";
+        c.fillText(
+          truncatePosterText(c, `双方：${result.draw_names}`, titleMaxW),
+          26,
+          221,
+        );
+      }
+    } else if (result.loser_name) {
       c.fillStyle = "#e8b58a";
       const loserText = `败方：${result.loser_name}` + (result.loser_side ? ` · 执${result.loser_side}` : "");
       c.fillText(truncatePosterText(c, loserText, titleMaxW), 26, 221);
     }
-    // 终局棋盘缩略图（居中，圆角卡片）
+    // 终局棋盘缩略图（居中，圆角卡片）。整体略微下移，和上方「败方 / 双方」行留出呼吸感
     const boardSize = 460;
     const bx = (W - boardSize) / 2;
-    const by = 236;
+    const by = 250;
     c.save();
     rr(bx - 10, by - 10, boardSize + 20, boardSize + 20, 18);
     c.fillStyle = "rgba(255,255,255,.06)"; c.fill();
