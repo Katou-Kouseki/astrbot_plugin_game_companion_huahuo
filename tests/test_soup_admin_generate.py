@@ -260,13 +260,33 @@ def test_snapshot_carries_models_used_flags_and_model_column(tmp_path: Path) -> 
     assert "solution" not in generated and "solution_preview" in generated
 
 
-# ---------------- 管理台手动出题 ----------------
+# ---------------- 管理台手动出题（后台任务 + 轮询） ----------------
+
+
+def capture_spawn(plugin: GameCompanionPlugin) -> list:
+    """把后台任务收进列表，测试里手动 await，不依赖真实事件循环调度。"""
+    spawned: list = []
+    plugin._spawn = lambda coro: spawned.append(coro) or SimpleNamespace(  # noqa: SLF001
+        done=lambda: False
+    )
+    return spawned
 
 
 @pytest.mark.asyncio
-async def test_admin_generate_uses_the_selected_model(
+async def test_generate_status_starts_idle(tmp_path: Path) -> None:
+    plugin = make_console_plugin(tmp_path)
+
+    result = await plugin.page_soup_generate_status()
+
+    assert result["data"]["job"]["state"] == "idle"
+    assert result["data"]["job"]["running"] is False
+
+
+@pytest.mark.asyncio
+async def test_admin_generate_returns_before_the_model_finishes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """点一下就立刻返回：请求里不跑模型，网关不会再 504。"""
     patch_prompts(monkeypatch)
     chosen = FakeProvider(
         "chosen",
@@ -279,21 +299,28 @@ async def test_admin_generate_uses_the_selected_model(
         main_module, "request", FakeRequest({"provider_id": "chosen", "count": 1})
     )
     plugin = make_console_plugin(tmp_path, context=context)
+    spawned = capture_spawn(plugin)
 
     result = await plugin.page_soup_generate()
 
     assert result["status"] == "ok", result["message"]
-    assert "chosen · strong-model" in result["message"]
+    assert "可以先去忙别的" in result["message"]
     assert context.looked_up == ["chosen"]
+    job = result["data"]["job"]
+    assert job["running"] is True and job["total"] == 1 and job["done"] == 0
+    # 请求返回时还没开始入库，模型也没被调用
+    assert plugin._soup_generated().listing() == []  # noqa: SLF001
     assert other.text_chat.await_count == 0
+    assert len(spawned) == 1
+
+    await spawned[0]
+
+    job = (await plugin.page_soup_generate_status())["data"]["job"]
+    assert job["state"] == "completed" and job["done"] == 1
     rows = plugin._soup_generated().listing()  # noqa: SLF001
-    assert len(rows) == 1
     assert rows[0]["title"] == "手动出的题"
     assert rows[0]["model"] == "chosen · strong-model"
     assert rows[0]["last_used_at"] == 0
-    assert plugin._soup_admin_generating is False  # noqa: SLF001
-    # 出题结果也回了完整的题库快照，前端能直接重绘
-    assert result["data"]["generated"]["total"] == 1
 
 
 @pytest.mark.asyncio
@@ -310,8 +337,10 @@ async def test_admin_generate_falls_back_to_configured_model(
     monkeypatch.setattr(main_module, "request", FakeRequest({}))
     plugin = make_console_plugin(tmp_path, context=context)
     plugin.turtle_soup_generation_provider_id = "configured"
+    spawned = capture_spawn(plugin)
 
     result = await plugin.page_soup_generate()
+    await spawned[0]
 
     assert result["status"] == "ok", result["message"]
     assert context.looked_up == ["configured"]
@@ -326,6 +355,7 @@ async def test_admin_generate_reports_unknown_and_missing_models(
 ) -> None:
     context = FakeContext([], default=None)
     plugin = make_console_plugin(tmp_path, context=context)
+    spawned = capture_spawn(plugin)
 
     monkeypatch.setattr(
         main_module, "request", FakeRequest({"provider_id": "不存在的模型"})
@@ -337,6 +367,7 @@ async def test_admin_generate_reports_unknown_and_missing_models(
     missing = await plugin.page_soup_generate()
     assert missing["status"] == "error" and "出题模型" in missing["message"]
     assert len(plugin._soup_generated()) == 0  # noqa: SLF001
+    assert spawned == []
 
 
 @pytest.mark.asyncio
@@ -344,13 +375,25 @@ async def test_admin_generate_serializes_clicks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plugin = make_console_plugin(tmp_path)
-    plugin._soup_admin_generating = True  # noqa: SLF001
+    plugin._soup_generate_job = {  # noqa: SLF001
+        "state": "running",
+        "model": "busy-model",
+        "total": 1,
+        "done": 0,
+        "titles": [],
+        "error": "",
+        "started_at": 1.0,
+        "finished_at": 0.0,
+    }
+    spawned = capture_spawn(plugin)
     monkeypatch.setattr(main_module, "request", FakeRequest({}))
 
     result = await plugin.page_soup_generate()
 
-    assert result["status"] == "error" and "已经有一批题在生成" in result["message"]
-    assert plugin._soup_admin_generating is True  # noqa: SLF001
+    assert result["status"] == "ok"
+    assert "已经有一批题在生成" in result["message"]
+    assert result["data"]["job"]["running"] is True
+    assert spawned == []
 
 
 @pytest.mark.asyncio
@@ -363,12 +406,16 @@ async def test_admin_generate_survives_model_failure(
     context = FakeContext([broken], default=broken)
     monkeypatch.setattr(main_module, "request", FakeRequest({"provider_id": "broken"}))
     plugin = make_console_plugin(tmp_path, context=context)
+    spawned = capture_spawn(plugin)
 
     result = await plugin.page_soup_generate()
+    assert result["status"] == "ok", "启动任务本身不该失败，失败要写进任务状态"
 
-    assert result["status"] == "error"
+    await spawned[0]
+
+    job = (await plugin.page_soup_generate_status())["data"]["job"]
+    assert job["state"] == "failed" and job["error"]
     assert len(plugin._soup_generated()) == 0  # noqa: SLF001
-    assert plugin._soup_admin_generating is False  # noqa: SLF001
 
 
 @pytest.mark.asyncio
@@ -392,11 +439,14 @@ async def test_admin_generate_can_make_several_puzzles(
         FakeRequest({"provider_id": "multi", "count": 2}),
     )
     plugin = make_console_plugin(tmp_path, context=FakeContext([provider]))
+    spawned = capture_spawn(plugin)
 
     result = await plugin.page_soup_generate()
+    assert result["data"]["job"]["total"] == 2
+    await spawned[0]
 
-    assert result["status"] == "ok", result["message"]
-    assert "入库 2 道" in result["message"]
+    job = (await plugin.page_soup_generate_status())["data"]["job"]
+    assert job["state"] == "completed" and job["done"] == 2
     titles = {row["title"] for row in plugin._soup_generated().listing()}  # noqa: SLF001
     assert titles == {"第一道", "第二道"}
 

@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.11"
+    assert metadata["version"] == "0.6.12"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1697,6 +1697,13 @@ def test_soup_admin_generate_and_single_reset_are_wired() -> None:
     assert "use_persona: bool = True" in main
     assert 'store.add(puzzle, model=label)' in main
     assert '"models": _text_provider_options' in main
+    # 生成必须在后台跑：页面请求里只启动任务，模型慢也不会把网关拖到 504
+    assert "async def page_soup_generate_status" in main
+    assert "async def _run_soup_generate_job" in main
+    assert "def _soup_generate_job_snapshot" in main
+    assert 'f"{PAGE_API_PREFIX}/soup_generate_status"' in main
+    assert "self._spawn(" in main and "_run_soup_generate_job(" in main
+    assert '"job": self._soup_generate_job_snapshot()' in main
     assert "def add(self, puzzle: SoupPuzzle, *, model: str" in store
     assert "def reset_used(self, index: int)" in store
     assert 'id="soupGenerateModel"' in page
@@ -1705,6 +1712,11 @@ def test_soup_admin_generate_and_single_reset_are_wired() -> None:
     assert "function renderGenerateBar" in script
     assert "function generateSoupFromModel" in script
     assert '"page/soup_generate"' in script
+    # 前端轮询后台进度，并能从「上次完成/失败」恢复状态
+    assert "function pollSoupGenerate" in script
+    assert "function renderGenerateJob" in script
+    assert '"page/soup_generate_status"' in script
+    assert "visibilitychange" in script
 
     # 单条重置：只清这一道的账本记录，三类题库都能点
     assert "def forget(self, surface: str" in deck

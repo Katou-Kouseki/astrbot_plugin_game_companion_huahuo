@@ -11895,7 +11895,13 @@ class GameCompanionPlugin(Star):
             f"{PAGE_API_PREFIX}/soup_generate",
             self.page_soup_generate,
             ["POST"],
-            "Generate turtle soup puzzles with a chosen model",
+            "Start a background turtle soup generation job",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/soup_generate_status",
+            self.page_soup_generate_status,
+            ["GET"],
+            "Read turtle soup generation job status",
         )
         register_api(
             f"{PAGE_API_PREFIX}/soup_library_reset",
@@ -12497,11 +12503,40 @@ class GameCompanionPlugin(Star):
         """题库概况：内置题量、出题账本、玩家投稿（管理台「题库管理」用）。"""
         return {"status": "ok", "data": self._soup_library_snapshot()}
 
-    async def page_soup_generate(self) -> dict[str, Any]:
-        """管理台点「立即出题」：选好的模型现编一道，校验通过就存进「模型出题」。
+    def _soup_generate_job_snapshot(self) -> dict[str, Any]:
+        """后台出题任务的状态快照：页面关掉再回来也能接着看进度。"""
+        job = getattr(self, "_soup_generate_job", None)
+        if not isinstance(job, dict):
+            return {
+                "state": "idle",
+                "model": "",
+                "total": 0,
+                "done": 0,
+                "titles": [],
+                "error": "",
+                "started_at": 0.0,
+                "finished_at": 0.0,
+                "running": False,
+            }
+        state = str(job.get("state") or "idle")
+        return {
+            "state": state,
+            "model": str(job.get("model") or ""),
+            "total": int(job.get("total") or 0),
+            "done": int(job.get("done") or 0),
+            "titles": [str(item) for item in (job.get("titles") or [])][:5],
+            "error": str(job.get("error") or ""),
+            "started_at": float(job.get("started_at") or 0.0),
+            "finished_at": float(job.get("finished_at") or 0.0),
+            "running": state == "running",
+        }
 
-        和开局出题共用 `generation_prompt` / 独立自检 / 账本判重，只是不注入
-        人格、不占用任何房间；出题人和模型名一起记进存档，方便对比质量。
+    async def page_soup_generate(self) -> dict[str, Any]:
+        """管理台点「立即出题」：派一个后台任务，立刻返回，不等模型。
+
+        以前是在页面请求里同步生成，模型慢一点网关就 504；现在只校验参数、
+        把任务丢到后台，进度和结果走 `soup_generate_status` 轮询。关掉页面、
+        切走设备都不影响出题，回来还能看到完成情况和入库了几道。
         """
         payload = await request.json(default={}) or {}
         provider_id = str(payload.get("provider_id") or "").strip()
@@ -12510,16 +12545,17 @@ class GameCompanionPlugin(Star):
         )
         difficulty = str(payload.get("difficulty") or "normal").strip() or "normal"
         try:
-            # 一次最多 3 道：每道都要「生成 + 自检」两次模型调用，点太多会把
-            # 页面请求拖到超时；想多出几道多点几次即可。
+            # 一次最多 3 道：每道都要「生成 + 自检」两次模型调用，点太多只会
+            # 让后台跑很久；想多出几道等这批完了再点一次。
             count = max(1, min(int(payload.get("count") or 1), 3))
         except (TypeError, ValueError):
             count = 1
-        if getattr(self, "_soup_admin_generating", False):
+        current = self._soup_generate_job_snapshot()
+        if current["running"]:
             return {
-                "status": "error",
+                "status": "ok",
                 "message": "已经有一批题在生成，等它出完再点",
-                "data": {},
+                "data": {"job": current},
             }
         if provider_id:
             getter = getattr(getattr(self, "context", None), "get_provider_by_id", None)
@@ -12528,7 +12564,7 @@ class GameCompanionPlugin(Star):
                 return {
                     "status": "error",
                     "message": f"找不到模型「{provider_id}」，刷新页面重试",
-                    "data": {},
+                    "data": {"job": current},
                 }
         else:
             provider = self._soup_generation_provider(
@@ -12538,21 +12574,60 @@ class GameCompanionPlugin(Star):
             return {
                 "status": "error",
                 "message": "当前没有可用的出题模型，请先在 AstrBot 配置对话模型",
-                "data": {},
+                "data": {"job": current},
             }
         label = _provider_label(provider) or provider_id or "默认模型"
+        job: dict[str, Any] = {
+            "state": "running",
+            "model": label,
+            "total": count,
+            "done": 0,
+            "titles": [],
+            "error": "",
+            "started_at": time.time(),
+            "finished_at": 0.0,
+        }
+        self._soup_generate_job = job
+        self._spawn(
+            self._run_soup_generate_job(
+                job,
+                provider,
+                content_level=content_level,
+                difficulty=difficulty,
+                count=count,
+                label=label,
+            )
+        )
+        return {
+            "status": "ok",
+            "message": f"{label} 已开始出题，可以先去忙别的，回来点刷新看结果",
+            "data": {"job": self._soup_generate_job_snapshot()},
+        }
+
+    async def page_soup_generate_status(self) -> dict[str, Any]:
+        """轮询后台出题进度：轻量 GET，不碰题库文件，也不会 504。"""
+        return {"status": "ok", "data": {"job": self._soup_generate_job_snapshot()}}
+
+    async def _run_soup_generate_job(
+        self,
+        job: dict[str, Any],
+        provider: Any,
+        *,
+        content_level: str,
+        difficulty: str,
+        count: int,
+        label: str,
+    ) -> None:
+        """后台把题出完并落库；进度直接写在 job 上，页面关掉也不影响。"""
         room = SimpleNamespace(
             session_id=ADMIN_CONSOLE_SESSION,
             difficulty=difficulty,
             turtle_soup_recent_signatures=[],
         )
-        self._soup_admin_generating = True
         try:
             deck = self._soup_deck()
             store = self._soup_generated()
             excluded = set(deck.recent_signatures(12)) | store.signatures()
-            titles: list[str] = []
-            last_error = ""
             for _ in range(count):
                 try:
                     puzzle = await self._generate_soup_puzzle(
@@ -12566,34 +12641,38 @@ class GameCompanionPlugin(Star):
                         use_persona=False,
                     )
                 except (RuntimeError, ValueError, OSError) as exc:
-                    last_error = str(exc)
+                    job["error"] = str(exc)
                     break
                 if store.add(puzzle, model=label):
+                    titles = job.setdefault("titles", [])
                     titles.append(puzzle.title)
+                    job["done"] = len(titles)
                     excluded.add(puzzle.signature)
-            if not titles:
-                return {
-                    "status": "error",
-                    "message": last_error or "模型没出出可用的题，换个模型或稍后再试",
-                    "data": self._soup_library_snapshot(),
-                }
-            recorder = getattr(self.manager, "record_operation", None)
-            if callable(recorder):
-                recorder(
-                    "soup_generated",
-                    f"管理台用 {label} 生成 {len(titles)} 道题",
-                    operator="游戏管理台",
-                )
-            return {
-                "status": "ok",
-                "message": (
-                    f"{label} 出题成功，入库 {len(titles)} 道："
-                    + "、".join(titles[:3])
-                ),
-                "data": self._soup_library_snapshot(),
-            }
+                else:
+                    job["error"] = f"《{puzzle.title}》和已有题目重复了"
+        except asyncio.CancelledError:
+            job["state"] = "failed"
+            job["error"] = "生成任务被取消（插件重载或退出）"
+            raise
+        except Exception as exc:  # noqa: BLE001 - 后台任务失败要落到状态里，别只写日志
+            job["state"] = "failed"
+            job["error"] = f"出题失败：{exc}"
         finally:
-            self._soup_admin_generating = False
+            if job.get("state") == "running":
+                job["state"] = "completed" if job.get("titles") else "failed"
+                if job["state"] == "failed" and not job.get("error"):
+                    job["error"] = "模型没出出可用的题，换个模型或稍后再试"
+            job["finished_at"] = time.time()
+            try:
+                recorder = getattr(self.manager, "record_operation", None)
+                if callable(recorder):
+                    recorder(
+                        "soup_generated",
+                        f"管理台用 {label} 生成 {len(job.get('titles') or [])} 道题",
+                        operator="游戏管理台",
+                    )
+            except Exception:  # noqa: BLE001 - 审计失败不影响出题结果
+                pass
 
     async def page_soup_library_action(self) -> dict[str, Any]:
         """内置题的停用 / 恢复 / 删除 / 改回 / 编辑，全部只写覆盖层。"""

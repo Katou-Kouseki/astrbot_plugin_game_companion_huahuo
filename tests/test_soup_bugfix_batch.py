@@ -42,6 +42,7 @@ def test_console_library_endpoints_are_registered() -> None:
     for name in (
         "soup_library",
         "soup_generate",
+        "soup_generate_status",
         "soup_library_reset",
         "soup_custom_delete",
     ):
@@ -64,6 +65,7 @@ def test_console_library_methods_get_the_right_http_verbs() -> None:
 
     assert verbs("soup_library") == ["GET"]
     assert verbs("soup_generate") == ["POST"]
+    assert verbs("soup_generate_status") == ["GET"]
     assert verbs("soup_library_reset") == ["POST"]
     assert verbs("soup_custom_delete") == ["POST"]
 
