@@ -72,9 +72,11 @@ from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
 from .tictactoe import X as TICTACTOE_X
 from .turtle_soup_deck import (
+    DEDUP_SIMILARITY_THRESHOLD,
     SoupDeck,
     fetch_online_puzzles,
     normalize_text,
+    text_similarity,
 )
 from .trusted_identity import TrustedIdentityStore
 from .tunnel import QuickTunnel
@@ -211,9 +213,35 @@ def _text_provider_options(context: Any) -> list[dict[str, str]]:
     return options
 
 
+def _soup_looks_alike(left: Any, right: Any) -> bool:
+    """两道题是否「实质是同一道」：汤面/汤底高度相似，或标题几乎一样。
+
+    只比较文本本身，不看 theme/trick 这类短字段——模型换个说法就能让
+    `signature` 完全不同，但玩家一眼就看出「又是这一题」。
+    """
+    pairs = (
+        ("surface", DEDUP_SIMILARITY_THRESHOLD),
+        ("solution", DEDUP_SIMILARITY_THRESHOLD),
+        ("title", 0.82),
+    )
+    for field, threshold in pairs:
+        a = str(getattr(left, field, "") or "").strip()
+        b = str(getattr(right, field, "") or "").strip()
+        if a and b and text_similarity(a, b) >= threshold:
+            return True
+    return False
+
+
+def _soup_preview(item: Any, *, limit: int = 14) -> str:
+    """重复提示里给一段人看得懂的标识：优先标题，没有标题就用汤面开头。"""
+    title = str(getattr(item, "title", "") or "").strip()
+    text = title or str(getattr(item, "surface", "") or "").strip()
+    text = " ".join(text.split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
 # 棋盘执方的中文写法：象棋红/黑，棋类黑/白
-COMMENTARY_SIDE_LABELS = {"red": "红", "black": "黑", "white": "白"}
-# 先手或展示顺序：象棋红先，棋类黑先（white 只作为兜底）
+COMMENTARY_SIDE_LABELS = {"red": "红", "black": "黑", "white": "白"}# 先手或展示顺序：象棋红先，棋类黑先（white 只作为兜底）
 COMMENTARY_SIDE_ORDER = ("red", "black", "white")
 
 # 连战汇总的「离线」判定阈值：真人无心跳超过该秒数视为已离线（用户要求放宽到 3~5 分钟）
@@ -6038,8 +6066,8 @@ class GameCompanionPlugin(Star):
                     **call_style,
                 )
                 if repaired is not None:
-                    if deck.find_duplicate(repaired) is not None or (
-                        repaired.signature in excluded
+                    if repaired.signature in excluded or self._soup_duplicate_note(
+                        repaired, deck
                     ):
                         repaired = None
                 if repaired is not None:
@@ -6112,11 +6140,44 @@ class GameCompanionPlugin(Star):
         if data is None:
             raise ValueError("出题结果不是有效 JSON")
         puzzle = puzzle_from_mapping(data, content_level=content_level)
-        duplicate = deck.find_duplicate(puzzle)
-        if duplicate is not None or puzzle.signature in excluded:
-            title = (duplicate or {}).get("title") or puzzle.title
-            raise ValueError(f"题目与已出过的《{title}》重复")
+        if puzzle.signature in excluded:
+            raise ValueError(f"题目与已出过的《{puzzle.title}》主题与核心诡计相同")
+        note = self._soup_duplicate_note(puzzle, deck)
+        if note:
+            raise ValueError(note)
         return puzzle
+
+    def _soup_duplicate_note(self, puzzle: Any, deck: Any) -> str:
+        """统一判重：出题账本 + 模型出题存档 + 内置题库 + 玩家投稿。
+
+        以前只跟账本比。账本只在题目「上过桌」时才记一笔，所以管理台刚出的
+        题根本不在里面：同一道故事换个主题/标题就能再存一份；内置题库和玩家
+        投稿也完全没参与比对。这里把四处一起比，返回一句人话说明撞了谁。
+        """
+        record = deck.find_duplicate(puzzle)
+        if record is not None:
+            title = str(record.get("title") or "").strip()
+            return f"与已出过的《{title}》重复" if title else "与已出过的题目重复"
+        for label, items in self._soup_duplicate_pools():
+            for other in items:
+                if _soup_looks_alike(puzzle, other):
+                    return f"与{label}里的「{_soup_preview(other)}」高度近似"
+        return ""
+
+    def _soup_duplicate_pools(self) -> list[tuple[str, list[Any]]]:
+        """判重要比对的其它题库；某个题库读不出来就跳过，别影响出题。"""
+        pools: list[tuple[str, list[Any]]] = []
+        getters = (
+            ("模型出题存档", lambda: self._soup_generated().puzzles("unrestricted")),
+            ("内置题库", lambda: list(self._soup_library().entries)),
+            ("玩家投稿", lambda: list(self._soup_custom().entries)),
+        )
+        for label, getter in getters:
+            try:
+                pools.append((label, list(getter())))
+            except (OSError, ValueError, AttributeError):
+                continue
+        return pools
 
     async def _soup_validate(
         self,

@@ -53,12 +53,17 @@ def make_puzzle(suffix: str = "甲") -> SoupPuzzle:
     )
 
 
-def generated_payload(title: str, theme: str) -> str:
+def generated_payload(
+    title: str, theme: str, *, surface: str = "", solution: str = ""
+) -> str:
+    """默认模板；需要「两道德才真是两道」的用例可以覆盖汤面/汤底。"""
     return json.dumps(
         {
             "title": title,
-            "surface": f"{title}：一个人每天都在重复做同一件看起来很蠢的事，为什么？",
-            "solution": (
+            "surface": surface
+            or f"{title}：一个人每天都在重复做同一件看起来很蠢的事，为什么？",
+            "solution": solution
+            or (
                 "他这么做是为了让楼下的家人听见动静，确认彼此都还平安，"
                 "这件事本身并不蠢，只是外人不知道原因。"
             ),
@@ -454,7 +459,13 @@ async def test_admin_generate_can_make_several_puzzles(
         [
             generated_payload("第一道", "主题一"),
             json.dumps({"ok": True}),
-            generated_payload("第二道", "主题二"),
+            # 两道必须是两个不同的故事，否则会被新增的近似判重挡下来
+            generated_payload(
+                "第二道",
+                "主题二",
+                surface="暴雨那天，整条街的人都听见了钟声，可教堂的钟十年前就被拆走了，为什么？",
+                solution="钟声来自新装的消防警报，老居民一直按旧称叫它「钟」，所以听成了教堂的钟。",
+            ),
             json.dumps({"ok": True}),
         ],
     )

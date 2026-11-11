@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.14"
+    assert metadata["version"] == "0.6.15"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -1767,6 +1767,21 @@ def test_soup_generation_is_resilient_to_limits_and_strict_checks() -> None:
     assert "def validation_detail" in ai
     assert "def repair_prompt" in ai
     assert "不够精巧" in ai and '"fix"' in ai
+
+
+def test_soup_dedupe_covers_every_library() -> None:
+    """模型出题要和账本、模型存档、内置题库、玩家投稿四处一起判重。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+
+    assert "def _soup_duplicate_note" in main
+    assert "def _soup_duplicate_pools" in main
+    assert "def _soup_looks_alike" in main
+    assert "DEDUP_SIMILARITY_THRESHOLD" in main and "text_similarity" in main
+    for pool in ("模型出题存档", "内置题库", "玩家投稿"):
+        assert pool in main
+    # 草稿与「修复后的题」都要过同一道判重
+    assert "note = self._soup_duplicate_note(puzzle, deck)" in main
+    assert "self._soup_duplicate_note(\n                        repaired, deck" in main
 
 
 def test_soup_timeline_preview_and_full_sheet() -> None:
