@@ -5148,10 +5148,11 @@ class RoomManager:
                 else:
                     result = "draw"
                 # 房间内获胜次数排行榜：获胜阵营的每位玩家 +1
+                #
+                # 全局榜要遍历**所有人**：赢家阵营记胜 + 记局，输家阵营只记局。
+                # 以前只遍历赢家阵营，输掉的局完全不进账，于是卧底胜率恒为 100%。
                 if camp in {"civilian", "undercover", "whiteboard"}:
                     for uc_player in room.game.players:
-                        if uc_player.camp != camp:
-                            continue
                         seat = next(
                             (
                                 s
@@ -5170,37 +5171,48 @@ class RoomManager:
                         )
                         if seat is None:
                             continue
-                        entry = room.player_win_counts.setdefault(
-                            seat.visitor_token, {"name": "", "wins": 0}
-                        )
-                        entry["wins"] = int(entry.get("wins") or 0) + 1
-                        entry["name"] = (
+                        won = uc_player.camp == camp
+                        name = (
                             seat.display_name.strip()
                             or uc_player.display_name.strip()
                             or f"{uc_player.number}号"
                         )
-                        # 全局胜场榜：按「undercover」分桶累计已绑定 QQ 玩家（含 AI），同名由排行榜合并展示
+                        # 房间内榜只记赢家（0 胜的玩家不该出现在「本房战绩」里）
+                        if won:
+                            entry = room.player_win_counts.setdefault(
+                                seat.visitor_token, {"name": "", "wins": 0}
+                            )
+                            entry["wins"] = int(entry.get("wins") or 0) + 1
+                            entry["name"] = name
+                        # 全局榜：按「undercover」分桶累计已绑定 QQ 玩家（含 AI），同名由排行榜合并展示
                         qq = (seat.qq or "").strip()
                         if seat.identity_confirmed and qq:
                             bucket = self.global_player_wins.setdefault("undercover", {})
                             global_entry = bucket.setdefault(
-                                qq, {"name": "", "wins": 0}
+                                qq, {"name": "", "wins": 0, "games": 0}
                             )
-                            global_entry["wins"] = (
-                                int(global_entry.get("wins") or 0) + 1
+                            global_entry["games"] = (
+                                int(global_entry.get("games") or 0) + 1
                             )
-                            if entry["name"]:
-                                global_entry["name"] = entry["name"]
-                            self._bump_daily(global_entry, wins=1)
-                            # 分阵营胜场：用于解锁「藏品/护身符」徽章；
+                            if won:
+                                global_entry["wins"] = (
+                                    int(global_entry.get("wins") or 0) + 1
+                                )
+                            if name:
+                                global_entry["name"] = name
+                            self._bump_daily(
+                                global_entry, wins=1 if won else 0, games=1
+                            )
+                            # 分阵营胜场：用于解锁「藏品/护身符」徽章（只有赢阵营才算）
                             # 按 QQ 稳定键存储，改昵称后胜场与徽章不丢失
-                            self._credit_undercover_camp_wins(
-                                f"qq:{qq}", entry["name"], camp
-                            )
+                            if won:
+                                self._credit_undercover_camp_wins(
+                                    f"qq:{qq}", name, camp
+                                )
                             seat.undercover_badges = type(self)._undercover_badges(
                                 seat, self.undercover_camp_wins
                             )
-                            self._save_global_stats()
+                    self._save_global_stats()
             elif (
                 room.game_type in DUEL_GAMES
                 and room.multiplayer.enabled
@@ -5241,7 +5253,7 @@ class RoomManager:
                 room.bot_wins += 1
                 result = "bot_win"
             # 非卧底游戏全局战绩：棋类按「局数 + 胜场」统计（花火也有自己的胜率排名），
-            # 其余合作 / 单人玩法沿用「获胜方 +1」的旧逻辑（AI 不记）。
+            # 其余合作 / 单人玩法同样要记局数——只记胜场会让胜率永远是 100%。
             if room.game_type in DIFFICULTY_GAME_TYPES:
                 winner_tokens = (
                     duel_credit
@@ -5253,19 +5265,30 @@ class RoomManager:
                     winner_tokens=winner_tokens or set(),
                     ai_won=(result == "bot_win"),
                 )
-            elif room.game_type in {"blackjack", "pig_dice"}:
-                # 二十一点/贪心骰子：花火是对手/庄家，每局记局数，赢局记胜场
-                self._credit_ai_opponent_game(room, ai_won=(result == "bot_win"))
-                if result == "human_win":
-                    self._credit_human_global_wins(room)
+            elif room.game_type == "undercover":
+                # 阵营玩法：赢家阵营在结算时逐个记胜，输家阵营记局数（见上方结算块）
+                pass
             elif duel_handled:
-                # 两人对弈只给赢家记胜，AI 座位不计入全局榜
-                self._credit_human_global_wins(room, winner_tokens=duel_credit)
-            elif (
-                result in {"human_win", "cooperative_success"}
-                and room.game_type != "undercover"
-            ):
-                self._credit_human_global_wins(room)
+                # 有明确输家的双人玩法：人人记局数，只给赢家记胜，AI 座位不计入全局榜
+                self._credit_human_global_wins(
+                    room,
+                    won=result == "human_win",
+                    winner_tokens=duel_credit or set(),
+                )
+            else:
+                # 海龟汤 / 你画我猜等合作玩法：每局全员记一局，解开或猜中才记胜。
+                # 玩家出题是 PvP，胜负要按「谁猜中 / 出题人是否守住」单独归属。
+                host_tokens = self._soup_host_winner_tokens(room)
+                self._credit_human_global_wins(
+                    room,
+                    won=result in {"human_win", "cooperative_success"},
+                    winner_tokens=(
+                        host_tokens
+                        if isinstance(room.game, TurtleSoupGame)
+                        and room.game.mode == "player_host"
+                        else None
+                    ),
+                )
             # 棋类终局快照：在 room.game 被下一局替换前冻结本局数据，
             # 供异步播报 / 复盘 / 海报使用（否则玩家秒点再战会播成 0 手）。
             if room.game_type in DUEL_GAMES and isinstance(
@@ -5461,10 +5484,11 @@ class RoomManager:
         self._save_global_stats()
 
     def _credit_ai_opponent_game(self, room: GameRoom, *, ai_won: bool) -> None:
-        """二十一点/贪心骰子等「单人 vs 花火」玩法：花火是对手/庄家，每局记局数，赢局记胜场。
+        """二十一点/贪心骰子等「单人 vs 花火」玩法：给花火记局数，赢局记胜场。
 
-        与棋类榜共用 AI_LEADERBOARD_KEY / AI_LEADERBOARD_NAME，让花火在这些玩法里
-        也有自己的胜率排名（而不是只出现在棋类榜里）。
+        注意：这两个玩法本身在 `DIFFICULTY_GAME_TYPES` 里，结算时已由
+        `_credit_board_game_global` 一并记好（含 AI），所以正常结算不会再调这里；
+        保留它是给不在该集合里的单机玩法复用，免得再写一遍 AI 记账。
         """
         if room.game_type not in {"blackjack", "pig_dice"}:
             return
@@ -5479,36 +5503,71 @@ class RoomManager:
         self._bump_daily(entry, wins=1 if ai_won else 0, games=1)
         self._save_global_stats()
 
+    def _soup_host_winner_tokens(self, room: GameRoom) -> set[str]:
+        """玩家出题模式：谁该算这一局的赢家。
+
+        `TurtleSoupGame.winner` 在 player_host 下恒为 "bot"（它描述的是「玩家 vs 出题人」
+        里的挑战方），直接拿来记全局榜会把**守住题目的出题人**也判成输。这里按实际情况
+        归属：有人猜中→猜中者赢；花火猜中→无人赢；都没猜中→出题人赢。
+        """
+        game = room.game
+        if not isinstance(game, TurtleSoupGame) or game.mode != "player_host":
+            return set()
+        if getattr(game, "bot_solved", False):
+            return set()
+        number = int(
+            (game.solver_number if game.solved else game.host_number) or 0
+        )
+        if not number:
+            return set()
+        seat = next(
+            (s for s in room.multiplayer.seats if s.number == number),
+            None,
+        )
+        if seat is None or seat.is_ai:
+            return set()
+        return {seat.visitor_token}
+
     def _credit_human_global_wins(
         self,
         room: GameRoom,
         *,
+        won: bool = True,
         winner_tokens: set[str] | None = None,
     ) -> None:
-        """非卧底游戏获胜时，把当前已绑定玩家按「本局游戏类型」计入全局胜场榜。
+        """把本局参与者按「本局游戏类型」计入全局榜：**每局都记局数**，赢才记胜场。
 
         多人座位玩法累计已入座的绑定玩家；单人对局（无多人座位）则累计已绑定身份的主玩家。
         `winner_tokens` 用于两人对弈等「有输家」的场景：只给指定座位的玩家记胜，
-        避免输家（以及 AI 座位）白拿一胜。
+        但局数仍然人人有份，避免输家白拿一胜。
+
+        以前这里只加 `wins`、从不加 `games`，而排行榜又把局数兜底成「至少等于胜场」，
+        于是海龟汤 / 你画我猜这类玩法不管输多少局，胜率永远显示 100%。
         """
         bucket = self.global_player_wins.setdefault(room.game_type, {})
-        awarded: dict[str, str] = {}
+        # qq -> (显示名, 本局是否算赢)
+        awarded: dict[str, tuple[str, bool]] = {}
         if winner_tokens is not None:
             for seat in room.multiplayer.seats:
-                if seat.visitor_token not in winner_tokens or seat.is_ai:
+                if seat.is_ai:
                     continue
                 qq = (seat.qq or "").strip()
                 if not seat.identity_confirmed or not qq:
                     continue
-                awarded.setdefault(qq, (seat.display_name or "").strip() or qq)
+                name = (seat.display_name or "").strip() or qq
+                awarded.setdefault(qq, (name, seat.visitor_token in winner_tokens))
         else:
-            # 多人座位：已绑定身份的入座玩家
+            # 多人座位：已绑定身份的入座玩家（合作玩法里输赢同享）
             for seat in room.multiplayer.seats:
+                if seat.is_ai:
+                    continue
                 qq = (seat.qq or "").strip()
                 if not seat.identity_confirmed or not qq:
                     continue
-                awarded.setdefault(qq, (seat.display_name or "").strip() or qq)
-            # 单人对局（无多人座位）：给已绑定身份的主玩家 +1
+                awarded.setdefault(
+                    qq, ((seat.display_name or "").strip() or qq, won)
+                )
+            # 单人对局（无多人座位）：给已绑定身份的主玩家记一局
             if not room.multiplayer.enabled:
                 qq = (room.player_qq or "").strip()
                 if qq and room.player_identity_confirmed:
@@ -5516,17 +5575,19 @@ class RoomManager:
                     v = room.visitors.get(room.player_token or "")
                     if v and v.display_name:
                         name = v.display_name.strip()
-                    awarded.setdefault(qq, name or qq)
+                    awarded.setdefault(qq, (name or qq, won))
         if not awarded:
             return
-        for qq, name in awarded.items():
+        for qq, (name, player_won) in awarded.items():
             if not qq:
                 continue
-            global_entry = bucket.setdefault(qq, {"name": "", "wins": 0})
-            global_entry["wins"] = int(global_entry.get("wins") or 0) + 1
+            global_entry = bucket.setdefault(qq, {"name": "", "wins": 0, "games": 0})
+            global_entry["games"] = int(global_entry.get("games") or 0) + 1
+            if player_won:
+                global_entry["wins"] = int(global_entry.get("wins") or 0) + 1
             if name:
                 global_entry["name"] = name
-            self._bump_daily(global_entry, wins=1)
+            self._bump_daily(global_entry, wins=1 if player_won else 0, games=1)
         self._save_global_stats()
 
     @staticmethod

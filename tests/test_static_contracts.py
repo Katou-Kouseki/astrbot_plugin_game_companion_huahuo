@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.17"
+    assert metadata["version"] == "0.6.18"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2080,6 +2080,29 @@ def test_soup_sync_dedupe_and_reveal_decision() -> None:
     assert "token = seq if seq > 0 else id(entry)" in main
     assert "async def _announce_soup_decision" in main
     assert 'kind="passed"' in main
+
+
+def test_leaderboard_winrate_counts_losses() -> None:
+    """胜率的分母是「总局数」：非棋类玩法也必须记局数，否则永远是 100%。"""
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+
+    # 记账入口同时累加 wins / games，并按天分桶
+    assert 'global_entry["games"] = int(global_entry.get("games") or 0) + 1' in rm
+    assert "self._bump_daily(global_entry, wins=1 if player_won else 0, games=1)" in rm
+    # 卧底输家阵营也记局：只给赢家记胜
+    assert "won = uc_player.camp == camp" in rm
+    assert "if won:\n                                global_entry[\"wins\"]" in rm
+    # 合作玩法的结算分支不再要求「赢了才调」
+    assert 'won=result in {"human_win", "cooperative_success"}' in rm
+    # 玩家出题：守住题目的出题人算赢，不被 winner="bot" 连累
+    assert "def _soup_host_winner_tokens" in rm
+
+
+def test_board_report_survives_missing_daily_slots() -> None:
+    """日报/周报按窗口取 daily；局数没记时不能把胜率算成 100%。"""
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    assert 'daily.setdefault(day, {"w": 0, "g": 0})' in rm
+    assert "games = max(games, wins)" in rm
 
 
 def test_soup_reveal_is_not_announced_twice() -> None:
