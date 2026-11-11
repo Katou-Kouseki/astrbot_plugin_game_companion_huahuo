@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.19"
+    assert metadata["version"] == "0.6.20"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2082,12 +2082,21 @@ def test_soup_sync_dedupe_and_reveal_decision() -> None:
     assert 'kind="passed"' in main
 
 
-def test_board_share_poster_draws_both_sides_and_lower_board() -> None:
-    """前端棋类战报：棋盘略微下移，平局写出双方名字。"""
+def test_board_share_poster_matches_server_size() -> None:
+    """前端棋类战报尺寸与服务端 t2i 海报统一（720 方形、棋盘 410）。"""
     script = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
 
-    # 棋盘从 236 下移到 250，和上方「败方 / 双方」行留出间距
-    assert "const by = 250;" in script
+    # 前端画布 720×720，棋盘 410 —— 与 _BOARD_POSTER_TMPL 的 720 视口、410px 棋盘一致，
+    # 群里收到的图不会再出现「前端瘦长 / 服务端方正」两种版式
+    assert "    const W = 720;\n    const H = 720;" in script
+    assert "const boardSize = 410;" in script
+    assert "const by = 222;" in script
+    assert 'const M = 46;' in script
+    # 服务端侧同一套尺寸：viewport 720 + 模板里 410px 棋盘
+    assert '"viewport_width": 720,' in main
+    assert ".boardwrap svg { width: 410px; height: 410px;" in main
+
     # 平局：优先用服务端快照的 draw_names，退席后座位查不到也不会空着
     assert "draw_names: drawNames," in script
     assert "boardResult?.draw_names" in script

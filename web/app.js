@@ -6339,11 +6339,13 @@
   }
 
   // 棋类「分享战报」PNG 卡片：头部战报标题 + 大号胜负 + 终局棋盘缩略图 + 底部落款
+  // 尺寸跟服务端 t2i 海报对齐（720 宽、近方形、棋盘 410）：同一局比赛，前端生成的
+  // 和「通知到群」发出去的那张长得一样，不再是前端瘦长、服务端方正的两种版式。
   async function boardSharePosterUrl(result) {
     if (!result) return "";
     const scale = 2;
-    const W = 640;
-    const H = 820;
+    const W = 720;
+    const H = 720;
     const cv = document.createElement("canvas");
     cv.width = W * scale; cv.height = H * scale;
     const c = cv.getContext("2d");
@@ -6361,55 +6363,57 @@
     const glow = c.createRadialGradient(W / 2, 0, 10, W / 2, 0, 460);
     glow.addColorStop(0, "rgba(125, 211, 158, .16)"); glow.addColorStop(1, "rgba(125, 211, 158, 0)");
     c.fillStyle = glow; c.fillRect(0, 0, W, H);
-    // 顶部横幅
-    const hg = c.createLinearGradient(0, 0, W, 170);
+    // 顶部横幅（高度按 720 方形版式收窄，给棋盘留够呼吸空间）
+    const hg = c.createLinearGradient(0, 0, W, 150);
     hg.addColorStop(0, "#1f5a41"); hg.addColorStop(1, "#143b2c");
-    c.fillStyle = hg; c.fillRect(0, 0, W, 170);
-    c.fillStyle = "#7fd0aa"; c.fillRect(0, 166, W, 4);
+    c.fillStyle = hg; c.fillRect(0, 0, W, 150);
+    c.fillStyle = "#7fd0aa"; c.fillRect(0, 146, W, 4);
+    // 左右边距统一 46，与服务端海报（padding 32px 46px）对齐
+    const M = 46;
     c.textAlign = "left";
     c.fillStyle = "#9fd6bc"; c.font = font(false, 20);
-    c.fillText(`${result.icon || "♟️"} ${result.label} · 单局战报`, 26, 52);
+    c.fillText(`${result.icon || "♟️"} ${result.label} · 单局战报`, M, 46);
     c.fillStyle = "#ffffff";
     // 分享出去的图要给「胜者 vs 败者」：结算弹窗里「你赢了」对转发出去的人毫无意义，
     // 这里用真实昵称当大标题（平局除外）。
     const titleText = result.draw
       ? "平局"
       : (result.winner_name ? `${result.winner_name} 获胜` : (result.title || "本局结束"));
-    const titleMaxW = W - 26 * 2;
-    let titlePx = 44;
+    const titleMaxW = W - M * 2;
+    let titlePx = 48;
     c.font = font(true, titlePx);
     // 玩家昵称过长时逐档缩字号，仍超宽则截断加省略号，避免战报图「显示不全」
     while (titlePx > 24 && c.measureText(titleText).width > titleMaxW) {
       titlePx -= 4;
       c.font = font(true, titlePx);
     }
-    c.fillText(truncatePosterText(c, titleText, titleMaxW), 26, 122);
+    c.fillText(truncatePosterText(c, titleText, titleMaxW), M, 110);
     // 副信息行
     c.fillStyle = "#cfe6d8"; c.font = font(false, 17);
     const sub = [];
     if (result.my_side) sub.push(`你执${result.my_side}`);
     if (result.opponent) sub.push(`对手：${result.opponent}`);
     sub.push(`共 ${result.move_count} 手`);
-    c.fillText(sub.join(" · "), 26, 196);
+    c.fillText(sub.join(" · "), M, 178);
     // 败者单独一行：分享出去时谁赢谁输一眼看清；平局则写双方是谁
     if (result.draw) {
       if (result.draw_names) {
         c.fillStyle = "#e8b58a";
         c.fillText(
           truncatePosterText(c, `双方：${result.draw_names}`, titleMaxW),
-          26,
-          221,
+          M,
+          204,
         );
       }
     } else if (result.loser_name) {
       c.fillStyle = "#e8b58a";
       const loserText = `败方：${result.loser_name}` + (result.loser_side ? ` · 执${result.loser_side}` : "");
-      c.fillText(truncatePosterText(c, loserText, titleMaxW), 26, 221);
+      c.fillText(truncatePosterText(c, loserText, titleMaxW), M, 204);
     }
-    // 终局棋盘缩略图（居中，圆角卡片）。整体略微下移，和上方「败方 / 双方」行留出呼吸感
-    const boardSize = 460;
+    // 终局棋盘缩略图（居中，圆角卡片）。尺寸与服务端 t2i 模板的 410px 棋盘一致
+    const boardSize = 410;
     const bx = (W - boardSize) / 2;
-    const by = 250;
+    const by = 222;
     c.save();
     rr(bx - 10, by - 10, boardSize + 20, boardSize + 20, 18);
     c.fillStyle = "rgba(255,255,255,.06)"; c.fill();
