@@ -144,6 +144,26 @@
     return result?.data ?? result;
   }
 
+  // 管理台是被 AstrBot 放进插件页面 iframe 里打开的，有些部署下同源策略不允许
+  // 访问 localStorage，裸读会抛 SecurityError。这类偏好记忆只是「下次还记得这个
+  // 开关」，不该让它把整页初始化带崩（一旦抛在这里，后面的页签和按钮全都绑不上，
+  // 表现就是进页面啥都没加载、只有更早绑定的「开新房间」能点）。
+  function readPreference(key) {
+    try {
+      const store = window.localStorage;
+      return store ? store.getItem(key) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writePreference(key, value) {
+    try {
+      const store = window.localStorage;
+      if (store) store.setItem(key, value);
+    } catch (_) { /* 存不进去就算了，本次会话里这个开关照样生效 */ }
+  }
+
   function statusLabel(status) {
     return {
       waiting: "等待玩家", setup: "等待开局", active: "对局中", paused: "已暂停",
@@ -2806,11 +2826,11 @@
   const playerShowQQ = document.getElementById("playerShowQQ");
   if (playerShowQQ) {
     // 记住上次选择：常用「完整 QQ」的人不必每次重新勾
-    showFullQQ = localStorage.getItem("huahuo.manager.showFullQQ") === "1";
+    showFullQQ = readPreference("huahuo.manager.showFullQQ") === "1";
     playerShowQQ.checked = showFullQQ;
     playerShowQQ.addEventListener("change", () => {
       showFullQQ = playerShowQQ.checked;
-      localStorage.setItem("huahuo.manager.showFullQQ", showFullQQ ? "1" : "0");
+      writePreference("huahuo.manager.showFullQQ", showFullQQ ? "1" : "0");
       renderPlayers();
       renderStats();
     });
@@ -2877,7 +2897,10 @@
       promptProceed.click();
     }
   });
-  icons();
-  renderNewRoomPicker();
+  // 三段初始化互相隔离：图标库没加载、DOM 被改动、浏览器禁了某个 API，都只
+  // 影响它自己那一块，不能让房间列表和轮询一起停摆——否则整页看起来就是
+  // 「什么都没加载、什么都点不了」，很难从现象反推原因。
+  try { icons(); } catch (error) { console.warn("[管理台] 图标渲染失败", error); }
+  try { renderNewRoomPicker(); } catch (error) { console.warn("[管理台] 玩法下拉渲染失败", error); }
   loadRooms();
 })();

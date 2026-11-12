@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.24"
+    assert metadata["version"] == "0.6.25"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2504,3 +2504,28 @@ def test_soup_late_join_is_allowed_and_synced_to_group() -> None:
     # 建房走「开好了」完整卡片，而不是一条裸链接
     assert "async def _deliver_soup_room_ready" in main
     assert '"🥣 海龟汤开好了\\n\\n🔗 {url}\\n\\n{note}"' in main
+
+
+def test_pages_survive_blocked_localstorage() -> None:
+    """管理台与房间页都不能裸调 localStorage。
+
+    两处页面都可能被放进不允许同源的 iframe，此时读 localStorage 会直接抛
+    SecurityError。管理台的初始化链是一路往下绑事件的，抛在这儿会让后面的
+    页签、按钮全部绑不上，表现成「页面啥都没加载、只有开新房间能点」。
+    所以业务代码一律走带 try 的包装函数，并且初始化三段互不拖累。
+    """
+    manager = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+
+    for name, script in (("manager.js", manager), ("web/app.js", app)):
+        assert "localStorage.getItem(" not in script, f"{name} 仍在裸读 localStorage"
+        assert "localStorage.setItem(" not in script, f"{name} 仍在裸写 localStorage"
+        assert "function readPreference(" in script, f"{name} 缺少 localStorage 读取兜底"
+        assert "function writePreference(" in script, f"{name} 缺少 localStorage 写入兜底"
+
+    # 初始化三段互相隔离：图标/下拉渲染失败也不能让房间列表和轮询一起停摆
+    assert 'try { icons(); } catch (error)' in manager
+    assert 'try { renderNewRoomPicker(); } catch (error)' in manager
+    tail_block = manager.rsplit("})();", 1)[0][-240:]
+    assert "loadRooms();" in tail_block, "初始化末尾必须仍然启动房间轮询"
+

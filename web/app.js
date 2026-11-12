@@ -5,6 +5,26 @@
   const accessToken = match ? match[1] : "";
   const storageKey = `game-companion:${accessToken}:visitor`;
   const rememberIdentityKey = "game-companion:remember-identity";
+
+  // 房间页常被嵌在 iframe 里打开，有些部署下同源策略不允许访问 localStorage，
+  // 裸读会抛 SecurityError 并中断整个脚本（页面直接白屏、什么都点不了）。
+  // 这里统一兜底：读不到就当没有，写不进去就忽略——偏好记不住是小事，
+  // 房间打不开才是大事。
+  function readPreference(key) {
+    try {
+      const store = window.localStorage;
+      return store ? store.getItem(key) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  function writePreference(key, value) {
+    try {
+      const store = window.localStorage;
+      if (store) store.setItem(key, value);
+    } catch (_) { /* 存不进去不影响本次会话 */ }
+  }
+
   let ucPrevMyTurn = false;         // 上一帧本机是否处于发言轮，用于“轮到你了”提醒
   let ucTurnBannerDone = new Set();  // 已弹出“轮到 X号 发言”提示的 `${轮次}:${玩家号}`（按局重置），被“花火选词”遮罩延迟时也能补弹
   const ucSpeechTyping = {};         // key `${gameUid}:${round}:${pn}` -> {text,node,idx,started,done}，发言文字“逐字加速打出”动画
@@ -79,7 +99,7 @@
   const context = board.getContext("2d");
   const toast = document.getElementById("toast");
   let visitorToken = accessToken
-    ? window.localStorage.getItem(storageKey) || mobileVisitorToken
+    ? readPreference(storageKey) || mobileVisitorToken
     : "";
   let room = null;
   let selectedSide = "human_black";
@@ -381,7 +401,7 @@
   let appearance = loadAppearance();
 
   function loadTheme() {
-    const saved = window.localStorage.getItem(THEME_KEY);
+    const saved = readPreference(THEME_KEY);
     if (saved === "light" || saved === "dark") return saved;
     // 首次：跟随系统
     if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
@@ -399,17 +419,17 @@
   }
 
   function saveTheme(theme) {
-    window.localStorage.setItem(THEME_KEY, theme);
+    writePreference(THEME_KEY, theme);
   }
 
   function loadAppearance() {
     try {
-      const raw = window.localStorage.getItem(APPEARANCE_KEY);
+      const raw = readPreference(APPEARANCE_KEY);
       // 首次访问：默认直接启用内置背景图（写入 localStorage，避免后续 load/save 不一致）
       if (!raw) {
         const defaults = { ...DEFAULT_APPEARANCE };
         try {
-          window.localStorage.setItem(APPEARANCE_KEY, JSON.stringify(defaults));
+          writePreference(APPEARANCE_KEY, JSON.stringify(defaults));
         } catch (_) { /* ignore */ }
         return defaults;
       }
@@ -427,7 +447,7 @@
 
   function saveAppearance() {
     try {
-      window.localStorage.setItem(APPEARANCE_KEY, JSON.stringify({
+      writePreference(APPEARANCE_KEY, JSON.stringify({
         enabled: appearance.enabled,
         // 如果图片太大导致 localStorage 溢出，至少其他参数能保住
         dataUrl: null,
@@ -442,13 +462,13 @@
           blur: appearance.blur,
           overlay: appearance.overlay,
         });
-        window.localStorage.setItem(APPEARANCE_KEY, tmp);
+        writePreference(APPEARANCE_KEY, tmp);
       }
     } catch (err) {
       // 配额溢出：清除 dataUrl，至少保留开关和模糊度
       appearance.dataUrl = null;
       try {
-        window.localStorage.setItem(APPEARANCE_KEY, JSON.stringify({
+        writePreference(APPEARANCE_KEY, JSON.stringify({
           enabled: appearance.enabled,
           dataUrl: null,
           blur: appearance.blur,
@@ -1420,7 +1440,7 @@
   }
 
   function rememberIdentity() {
-    return window.localStorage.getItem(rememberIdentityKey) !== "0";
+    return readPreference(rememberIdentityKey) !== "0";
   }
 
   function setRoom(nextRoom) {
@@ -1606,7 +1626,7 @@
       remember_identity: rememberIdentity(),
     });
     visitorToken = String(data.visitor_token || "");
-    window.localStorage.setItem(storageKey, visitorToken);
+    writePreference(storageKey, visitorToken);
     setRoom(data.room);
     lastSeenMessageId = latestMessageId(room);
     syncGameUi();
@@ -2694,7 +2714,7 @@
         unbind: true,
       });
       setRoom(data.room);
-      window.localStorage.setItem(rememberIdentityKey, "0");
+      writePreference(rememberIdentityKey, "0");
       showToast("已解绑玩家，请重新绑定 QQ 身份");
     } catch (error) {
       showToast(error?.message || "解绑失败");
@@ -4443,8 +4463,8 @@
       const revealKey = `uc:revealed:${accessToken}:${snap.game_uid || ""}`;
       let alreadyRevealed = false;
       try {
-        alreadyRevealed = !!window.localStorage.getItem(revealKey);
-        if (!alreadyRevealed) window.localStorage.setItem(revealKey, "1");
+        alreadyRevealed = !!readPreference(revealKey);
+        if (!alreadyRevealed) writePreference(revealKey, "1");
       } catch (_err) {
         alreadyRevealed = false; // localStorage 不可用时退回“总是弹出”
       }
@@ -7402,7 +7422,7 @@
   });
   document.getElementById("seatAction").addEventListener("click", seatAction);
   document.getElementById("rememberIdentity").addEventListener("change", (event) => {
-    window.localStorage.setItem(rememberIdentityKey, event.target.checked ? "1" : "0");
+    writePreference(rememberIdentityKey, event.target.checked ? "1" : "0");
   });
   document.getElementById("forgetIdentity").addEventListener("click", forgetTrustedIdentity);
   document.getElementById("chatComposer").addEventListener("submit", submitChat);
@@ -7665,7 +7685,7 @@
   const peekRememberInput = document.getElementById("peekRemember");
   if (peekRememberInput) {
     peekRememberInput.addEventListener("change", (event) => {
-      window.localStorage.setItem(rememberIdentityKey, event.target.checked ? "1" : "0");
+      writePreference(rememberIdentityKey, event.target.checked ? "1" : "0");
     });
   }
   // 谁是卧底发言字数计数
