@@ -624,11 +624,51 @@ class RoomManager:
         except OSError:
             logger.warning("[GameCompanion] 操作日志写入失败。")
 
-    def operation_log(self, limit: int = 200) -> list[dict[str, object]]:
-        """返回最近的操作日志（倒序 limit 条）；无路径或读取失败返回空列表。"""
+    def operation_log(
+        self,
+        limit: int = 200,
+        *,
+        action: str | None = None,
+        keyword: str | None = None,
+        days: int | None = None,
+        now: float | None = None,
+    ) -> list[dict[str, object]]:
+        """返回最近的操作日志（倒序 limit 条）；无路径或读取失败返回空列表。
+
+        可选按动作、关键词（详情 / 操作者 / 房间）与最近 N 天筛选。日志只追加不
+        清理，玩久了会有几千条，管理台不加筛选就得自己翻。
+        """
+        return self.operation_log_page(
+            limit, action=action, keyword=keyword, days=days, now=now
+        )["rows"]
+
+    def operation_log_page(
+        self,
+        limit: int = 200,
+        *,
+        action: str | None = None,
+        keyword: str | None = None,
+        days: int | None = None,
+        now: float | None = None,
+    ) -> dict[str, object]:
+        """带筛选的操作日志查询：返回 `rows`（已截断）、`total`（命中的总条数）
+        与 `actions`（日志里出现过的全部动作，供前端生成筛选下拉）。"""
+        empty = {"rows": [], "total": 0, "actions": []}
         if self.operation_log_path is None or not self.operation_log_path.is_file():
-            return []
+            return empty
+        action_key = str(action or "").strip()
+        keyword_text = str(keyword or "").strip().lower()
+        cutoff = 0.0
+        if days:
+            try:
+                window = int(days)
+            except (TypeError, ValueError):
+                window = 0
+            if window > 0:
+                cutoff = float(now if now is not None else time.time()) - window * 86400
         rows: list[dict[str, object]] = []
+        actions: set[str] = set()
+        total = 0
         try:
             with self.operation_log_path.open("r", encoding="utf-8") as fh:
                 for line in fh:
@@ -636,13 +676,40 @@ class RoomManager:
                     if not line:
                         continue
                     try:
-                        rows.append(json.loads(line))
+                        entry = json.loads(line)
                     except ValueError:
                         continue
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_action = str(entry.get("action") or "")
+                    if entry_action:
+                        actions.add(entry_action)
+                    if action_key and entry_action != action_key:
+                        continue
+                    if cutoff:
+                        try:
+                            stamp = float(entry.get("ts") or 0.0)
+                        except (TypeError, ValueError):
+                            stamp = 0.0
+                        if stamp < cutoff:
+                            continue
+                    if keyword_text:
+                        haystack = " ".join(
+                            str(entry.get(field) or "")
+                            for field in ("detail", "operator", "room_id", "action")
+                        ).lower()
+                        if keyword_text not in haystack:
+                            continue
+                    rows.append(entry)
+                    total += 1
         except OSError:
-            return []
+            return empty
         rows.reverse()
-        return rows[: max(0, int(limit))]
+        return {
+            "rows": rows[: max(0, int(limit))],
+            "total": total,
+            "actions": sorted(actions),
+        }
 
     def set_global_wins(self, game_type: str, name: str, wins: int) -> int:
         """手动修正某玩家（按名字合并后）的全局胜场数。
@@ -683,15 +750,29 @@ class RoomManager:
 
     # ---------------- 玩家档案（管理台「战绩管理」） ----------------
 
-    def player_profiles(self, *, only_humans: bool = True) -> list[dict[str, object]]:
+    def player_profiles(
+        self,
+        *,
+        only_humans: bool = True,
+        game_type: str | None = None,
+    ) -> list[dict[str, object]]:
         """按 QQ 横向汇总每个玩家：总战绩、各玩法明细、活跃天数与卧底阵营胜场。
 
         存档是「玩法 → QQ → 名称/胜场/局数/按天分桶」，单看任何一个玩法都看不到
         「这个人整体怎么样」。管理台要做玩家档案（改昵称、修战绩、合并小号、
         清理测试号），所以这里先把同一个 QQ 在各玩法的记录汇总成一行。
+
+        传 `game_type` 时只汇总该玩法：档案跟着管理台顶部的玩法下拉联动，
+        否则选了「五子棋」档案里显示的仍是包含海龟汤的总局数，对不上。
         """
+        target = str(game_type or "").strip()
+        buckets = (
+            [(target, self.global_player_wins.get(target) or {})]
+            if target
+            else list(self.global_player_wins.items())
+        )
         profiles: dict[str, dict[str, object]] = {}
-        for gtype, bucket in self.global_player_wins.items():
+        for gtype, bucket in buckets:
             if not isinstance(bucket, dict):
                 continue
             for qq, info in bucket.items():
@@ -748,7 +829,13 @@ class RoomManager:
             games = int(prof["games"])
             wins = int(prof["wins"])
             draws = min(max(0, int(prof["draws"])), games)
-            camps = self.undercover_camp_wins.get(f"qq:{prof['qq']}")
+            # 阵营胜场只属于「谁是卧底」：筛选别的玩法时不展示，
+            # 免得看着像是这个玩法也统计了阵营。
+            camps = (
+                self.undercover_camp_wins.get(f"qq:{prof['qq']}")
+                if not target or target == "undercover"
+                else None
+            )
             prof["draws"] = draws
             prof["losses"] = max(0, games - wins - draws)
             prof["winrate"] = round(wins * 100 / games, 1) if games else 0.0
@@ -785,6 +872,77 @@ class RoomManager:
             )
         )
         return rows
+
+    def activity_series(
+        self,
+        *,
+        game_type: str | None = None,
+        days: int = 7,
+        now: float | None = None,
+    ) -> list[dict[str, object]]:
+        """近 N 天（最多 60）的每日活跃序列，供管理台画小柱状图。
+
+        数据来自每条战绩里的 `daily` 分桶，不需要额外的存储。每天的
+        `players` 是当天真正打过一局的真人 QQ 数（AI 不算），`games` 是总局数。
+        没开过局的日子也会返回 0 值，前端才能画出连续的柱子。
+        """
+        try:
+            window = int(days or 7)
+        except (TypeError, ValueError):
+            window = 7
+        window = max(1, min(window, 60))
+        today = time.localtime(now if now is not None else time.time())
+        day_list = [
+            time.strftime("%Y-%m-%d", time.localtime(time.mktime(today) - offset * 86400))
+            for offset in range(window)
+        ]
+        day_list.reverse()
+        slots: dict[str, dict[str, object]] = {
+            day: {"players": set(), "games": 0, "wins": 0, "draws": 0} for day in day_list
+        }
+        target = str(game_type or "").strip()
+        buckets = (
+            [self.global_player_wins.get(target) or {}]
+            if target
+            else list(self.global_player_wins.values())
+        )
+        for bucket in buckets:
+            if not isinstance(bucket, dict):
+                continue
+            for qq, info in bucket.items():
+                if not isinstance(info, dict):
+                    continue
+                daily = info.get("daily")
+                if not isinstance(daily, dict):
+                    continue
+                for day, slot in daily.items():
+                    if day not in slots or not isinstance(slot, dict):
+                        continue
+                    games = int(slot.get("g") or 0)
+                    if games <= 0:
+                        continue
+                    item = slots[day]
+                    item["games"] = int(item["games"]) + games
+                    item["wins"] = int(item["wins"]) + int(slot.get("w") or 0)
+                    item["draws"] = int(item["draws"]) + int(slot.get("d") or 0)
+                    if str(qq).isdigit():
+                        players = item["players"]
+                        if isinstance(players, set):
+                            players.add(str(qq))
+        series: list[dict[str, object]] = []
+        for day in day_list:
+            item = slots[day]
+            players = item["players"]
+            series.append(
+                {
+                    "date": day,
+                    "players": len(players) if isinstance(players, set) else 0,
+                    "games": int(item["games"]),
+                    "wins": int(item["wins"]),
+                    "draws": int(item["draws"]),
+                }
+            )
+        return series
 
     def rename_player(self, qq: str, name: str) -> int:
         """改玩家显示名：所有玩法与卧底阵营胜场一起改，胜场跟着 QQ 不会丢。

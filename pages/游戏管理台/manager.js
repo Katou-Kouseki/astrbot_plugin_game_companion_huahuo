@@ -1257,6 +1257,12 @@
   let playerSummary = {};      // 玩家概况（人数 / 总局数 / 今日活跃）
   let playerSort = "games";    // 玩家档案排序：games / wins / winrate / recent / name
   let showFullQQ = false;      // QQ 默认打码，需要时再展开
+  let activityDays = 7;        // 活跃趋势展示天数（7 / 30）
+  let activitySeries = [];     // 活跃趋势数据 [{date, players, games, wins}]
+  let logAction = "";          // 操作日志按动作筛选
+  let logWindow = 0;           // 操作日志按时间筛选（天，0 = 全部）
+  let logKeyword = "";         // 操作日志关键词
+  let logSearchTimer = null;   // 关键词输入防抖
 
   const GAME_LABELS = {
     gomoku: "五子棋", xiangqi: "中国象棋", weiqi: "围棋", tictactoe: "井字棋",
@@ -1336,20 +1342,104 @@
     } catch (error) {
       showToast(error?.message || "无法读取战绩排行");
     }
+    await Promise.all([loadPlayers(), loadOperationLog()]);
+  }
+
+  /** 玩家档案 + 活跃趋势：跟着顶部玩法下拉联动，选了玩法就只统计该玩法 */
+  async function loadPlayers() {
     try {
-      const data = await endpoint("POST", "players", {});
+      const payload = { activity_days: activityDays };
+      if (statsFilter) payload.game_type = statsFilter;
+      const data = await endpoint("POST", "players", payload);
       playerProfiles = data?.players || [];
+      activitySeries = data?.activity?.series || [];
       renderPlayers(data?.summary || {});
     } catch (error) {
       showToast(error?.message || "无法读取玩家档案");
     }
+  }
+
+  /** 操作日志：动作 / 时间 / 关键词筛选都在后端做，日志攒多了也不会卡 */
+  async function loadOperationLog() {
     try {
-      document.getElementById("operationLogBody").replaceChildren();
-      const log = await endpoint("POST", "operation_log", { limit: 200 });
-      renderStatsLog(log?.rows || []);
+      const payload = { limit: 500 };
+      if (logAction) payload.action = logAction;
+      if (logWindow) payload.days = logWindow;
+      if (logKeyword.trim()) payload.keyword = logKeyword.trim();
+      const data = await endpoint("POST", "operation_log", payload);
+      renderLogActions(data?.actions || []);
+      renderStatsLog(data?.rows || [], Number(data?.total) || 0);
     } catch (error) {
       showToast(error?.message || "无法读取操作日志");
     }
+  }
+
+  /** 活跃趋势柱状图：柱高按当日对局数归一，悬停看当天人数与局数 */
+  function renderActivity() {
+    const chart = document.getElementById("activityChart");
+    if (!chart) return;
+    chart.replaceChildren();
+    const series = activitySeries || [];
+    const label = document.getElementById("activitySummary");
+    const totalGames = series.reduce((sum, day) => sum + (Number(day.games) || 0), 0);
+    const activeDays = series.filter((day) => (Number(day.games) || 0) > 0).length;
+    if (label) {
+      label.textContent = series.length
+        ? `最近 ${series.length} 天 ${totalGames} 局 · ${activeDays} 天有对局${
+            statsFilter ? ` · 仅《${gameLabel(statsFilter)}》` : ""
+          }`
+        : "正在读取";
+    }
+    if (!series.length) {
+      chart.appendChild(createText("span", "暂无活跃数据", "activity-empty"));
+      return;
+    }
+    const peak = Math.max(1, ...series.map((day) => Number(day.games) || 0));
+    // 30 天时横轴放不下 30 个日期，抽样标注；7 天则每天标
+    const labelStep = series.length > 14 ? Math.ceil(series.length / 7) : 1;
+    series.forEach((day, index) => {
+      const games = Number(day.games) || 0;
+      const players = Number(day.players) || 0;
+      const col = document.createElement("div");
+      col.className = games ? "activity-col" : "activity-col is-empty";
+      col.title = `${day.date || ""} · ${players} 人 · ${games} 局`;
+      const bar = document.createElement("div");
+      bar.className = "activity-bar";
+      bar.style.height = `${Math.round((games / peak) * 100)}%`;
+      col.appendChild(bar);
+      const dayLabel = createText(
+        "span",
+        String(day.date || "").slice(5),
+        "activity-day",
+      );
+      if (index % labelStep !== 0 && index !== series.length - 1) {
+        dayLabel.classList.add("is-hidden");
+      }
+      col.appendChild(dayLabel);
+      chart.appendChild(col);
+    });
+  }
+
+  /** 日志动作下拉：只重建变化过的选项，避免每次刷新都打断选择 */
+  function renderLogActions(actions) {
+    const select = document.getElementById("logActionSelect");
+    if (!select) return;
+    const current = logAction || "";
+    const listed = actions.slice();
+    const existing = Array.from(select.options).slice(1).map((opt) => opt.value);
+    const same =
+      existing.length === listed.length &&
+      existing.every((value, index) => value === listed[index]);
+    if (!same) {
+      select.replaceChildren(new Option("全部动作", ""));
+      listed.forEach((value) => {
+        select.appendChild(new Option(actionLabel(value), value));
+      });
+    }
+    select.value = Array.from(select.options).some((opt) => opt.value === current)
+      ? current
+      : "";
+    if (select.value !== current) logAction = select.value;
   }
 
   function renderPlayers(summary) {
@@ -1372,7 +1462,9 @@
       totalGames ? `平均胜率 ${Math.round((totalWins * 100) / totalGames)}%` : "—",
     );
     setText("playerWinsHint", totalGames ? `共 ${totalGames} 局` : "—");
+    renderActivity();
 
+    const scope = statsFilter ? `《${gameLabel(statsFilter)}》` : "全部玩法";
     const keyword = playerKeyword.trim().toLowerCase();
     const filtered = keyword
       ? playerProfiles.filter(
@@ -1388,8 +1480,8 @@
     const summaryNode = document.getElementById("playerSummary");
     if (summaryNode) {
       summaryNode.textContent = rows.length
-        ? `共 ${rows.length} 位玩家${keyword ? "（已筛选）" : ""} · 点表头可换排序，右侧图标可改名 / 清零 / 合并 / 删除`
-        : "按 QQ 汇总所有玩法的战绩";
+        ? `共 ${rows.length} 位玩家 · ${scope}${keyword ? "（已筛选）" : ""} · 点表头可换排序，右侧图标可改名 / 清零 / 合并 / 删除`
+        : `按 QQ 汇总${scope}的战绩`;
     }
 
     rows.slice(0, 300).forEach((player) => {
@@ -1642,14 +1734,30 @@
     );
   }
 
-  function renderStatsLog(rows) {
+  function renderStatsLog(rows, total = rows.length) {
     const body = document.getElementById("operationLogBody");
     body.replaceChildren();
     document.getElementById("logEmpty").hidden = rows.length > 0;
-    document.getElementById("logSummary").textContent = rows.length ? `最近 ${rows.length} 条` : "暂无操作日志";
+    const summary = document.getElementById("logSummary");
+    if (summary) {
+      const filtering = logAction || logWindow || logKeyword.trim();
+      summary.textContent = total
+        ? `共 ${total} 条${filtering ? "（已筛选）" : ""}${
+            rows.length < total ? ` · 显示最近 ${rows.length} 条` : ""
+          }`
+        : filtering
+          ? "没有符合条件的日志"
+          : "暂无操作日志";
+    }
     rows.forEach((row) => {
       const tr = document.createElement("tr");
-      tr.appendChild(createText("td", row.time || ""));
+      // 时间拆成「日期 / 时分秒」两行：日志表是双栏里的小表，一行放不下 19 个字
+      const timeTd = document.createElement("td");
+      timeTd.className = "log-time";
+      const parts = String(row.time || "").trim().split(/\s+/);
+      timeTd.appendChild(createText("span", parts[0] || "—"));
+      if (parts[1]) timeTd.appendChild(createText("span", parts.slice(1).join(" ")));
+      tr.appendChild(timeTd);
       tr.appendChild(createText("td", actionLabel(row.action || "")));
       tr.appendChild(createText("td", row.operator || "—"));
       tr.appendChild(createText("td", row.room_id || "—"));
@@ -2566,6 +2674,41 @@
     playerSearch.addEventListener("input", (e) => {
       playerKeyword = e.target.value || "";
       renderPlayers();
+    });
+  }
+  // 活跃趋势：7 / 30 天切换，只重读玩家档案（含趋势），不动排行榜
+  document.querySelectorAll("[data-activity-days]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const days = Number(button.dataset.activityDays) || 7;
+      if (days === activityDays) return;
+      activityDays = days;
+      document.querySelectorAll("[data-activity-days]").forEach((node) => {
+        node.classList.toggle("is-active", node === button);
+      });
+      loadPlayers();
+    });
+  });
+  // 操作日志筛选：动作 / 时间 / 关键词都在后端过滤
+  const logActionSelect = document.getElementById("logActionSelect");
+  if (logActionSelect) {
+    logActionSelect.addEventListener("change", (e) => {
+      logAction = e.target.value || "";
+      loadOperationLog();
+    });
+  }
+  const logWindowSelect = document.getElementById("logWindowSelect");
+  if (logWindowSelect) {
+    logWindowSelect.addEventListener("change", (e) => {
+      logWindow = Number(e.target.value) || 0;
+      loadOperationLog();
+    });
+  }
+  const logSearch = document.getElementById("logSearch");
+  if (logSearch) {
+    logSearch.addEventListener("input", (e) => {
+      logKeyword = e.target.value || "";
+      clearTimeout(logSearchTimer);
+      logSearchTimer = setTimeout(loadOperationLog, 260);
     });
   }
   const playerShowQQ = document.getElementById("playerShowQQ");

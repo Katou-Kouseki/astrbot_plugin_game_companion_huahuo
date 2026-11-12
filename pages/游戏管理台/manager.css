@@ -157,6 +157,63 @@ td small { margin-top: 3px; color: var(--muted); }
 .stats-table th.is-sorted { color: var(--green); }
 .stats-table th.is-sorted::after { content: " ↓"; font-size: 10px; }
 
+/* 战绩管理 · 活跃趋势：数据来自每条战绩的按天分桶，纯 DOM 画柱子 */
+.activity-strip {
+  margin-bottom: 12px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-alt, #f4f6f4);
+}
+.activity-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.activity-head strong { font-size: 13px; }
+.activity-head span { color: var(--muted); font-size: 12px; }
+.activity-range {
+  display: inline-flex; gap: 2px; margin-left: auto; padding: 2px;
+  border: 1px solid var(--line); border-radius: 5px; background: var(--surface);
+}
+.activity-range button {
+  padding: 3px 9px; border: 0; border-radius: 4px;
+  background: transparent; color: var(--muted); font-size: 12px;
+}
+.activity-range button.is-active { background: var(--green-soft); color: var(--green); font-weight: 650; }
+.activity-chart {
+  position: relative; display: flex; align-items: flex-end; gap: 3px;
+  height: 92px; padding-bottom: 16px; overflow-x: auto;
+}
+.activity-col {
+  position: relative; flex: 1 1 0; min-width: 6px; height: 100%;
+  display: flex; align-items: flex-end; justify-content: center;
+}
+.activity-bar {
+  width: 100%; max-width: 44px; min-height: 2px;
+  border-radius: 3px 3px 0 0;
+  background: linear-gradient(180deg, var(--green), #7fbf9f);
+  transition: opacity .15s;
+}
+.activity-col:hover .activity-bar { opacity: .72; }
+.activity-col.is-empty .activity-bar { background: var(--line); }
+.activity-day {
+  position: absolute; bottom: -16px; left: 50%; transform: translateX(-50%);
+  color: var(--muted); font-size: 10px; white-space: nowrap;
+}
+.activity-day.is-hidden { display: none; }
+.activity-empty { align-self: center; margin: auto; color: var(--muted); font-size: 12px; }
+
+/* 操作日志：动作 / 时间 / 关键词筛选条 */
+.log-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+.log-toolbar .stats-game-select { max-width: 150px; }
+.log-toolbar .library-search { flex: 1 1 160px; min-width: 0; }
+/* 五列挤在双栏卡片里，自动布局会把「操作者 / 动作」压成两行；
+   固定列宽后时间允许折行，动作与操作者保持一行 */
+table.log-table { min-width: 520px; table-layout: fixed; }
+.log-table th:nth-child(1), .log-table td:nth-child(1) { width: 104px; }
+.log-table th:nth-child(2), .log-table td:nth-child(2) { width: 88px; }
+.log-table th:nth-child(3), .log-table td:nth-child(3) { width: 74px; }
+.log-table th:nth-child(4), .log-table td:nth-child(4) { width: 56px; }
+.log-table td { word-break: break-word; }
+.log-table td:nth-child(2), .log-table td:nth-child(3) { white-space: nowrap; }
+.log-time span { display: block; }
+.log-time span + span { color: var(--muted); font-size: 12px; }
+
 .game-setting-card { position: relative; padding: 17px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); transition: border-color .16s, opacity .16s; }
 .game-setting-card.enabled { border-top: 3px solid var(--green); padding-top: 15px; }
 .game-setting-card.disabled { opacity: .72; }

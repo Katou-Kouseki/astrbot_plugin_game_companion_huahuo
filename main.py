@@ -12942,10 +12942,18 @@ class GameCompanionPlugin(Star):
 
         战绩榜是「某个玩法谁最强」，玩家档案是「这个人整体怎么样」——查 QQ、
         改昵称、修战绩、合并小号、清理测试数据都在这里做。
+
+        payload 可选 {"game_type": "gomoku", "activity_days": 7}：传了玩法就只
+        汇总该玩法（管理台档案跟着顶部下拉联动），activity 是近 N 天的活跃序列。
         """
         payload = await request.json(default={}) or {}
         keyword = str(payload.get("keyword") or "").strip().lower()
-        rows = self.manager.player_profiles()
+        game_type = str(payload.get("game_type") or "").strip()
+        try:
+            activity_days = int(payload.get("activity_days") or 7)
+        except (TypeError, ValueError):
+            activity_days = 7
+        rows = self.manager.player_profiles(game_type=game_type or None)
         if keyword:
             rows = [
                 row
@@ -12960,6 +12968,7 @@ class GameCompanionPlugin(Star):
             "status": "ok",
             "data": {
                 "players": rows,
+                "game_type": game_type,
                 "summary": {
                     "players": len(rows),
                     "games": total_games,
@@ -12968,6 +12977,13 @@ class GameCompanionPlugin(Star):
                         1 for row in rows if str(row.get("last_active") or "") == today
                     ),
                     "today": today,
+                    "game_type": game_type,
+                },
+                "activity": {
+                    "days": activity_days,
+                    "series": self.manager.activity_series(
+                        game_type=game_type or None, days=activity_days
+                    ),
                 },
             },
         }
@@ -13017,10 +13033,31 @@ class GameCompanionPlugin(Star):
         return {"status": "ok", "message": message, "data": {"message": message}}
 
     async def page_operation_log(self) -> dict[str, Any]:
-        """返回最近的操作日志。payload: {"limit": int}。"""
+        """返回最近的操作日志。
+
+        payload: {"limit": int, "action": str, "keyword": str, "days": int}。
+        action / keyword / days 都可选，管理台据此筛选；返回里同时给出
+        `total`（命中总数）与 `actions`（日志中出现过的动作，用于生成下拉）。
+        """
         payload = await request.json(default={}) or {}
         limit = int(payload.get("limit") or 200)
-        return {"status": "ok", "data": {"rows": self.manager.operation_log(limit)}}
+        action = str(payload.get("action") or "").strip() or None
+        keyword = str(payload.get("keyword") or "").strip() or None
+        try:
+            days = int(payload.get("days") or 0)
+        except (TypeError, ValueError):
+            days = 0
+        result = self.manager.operation_log_page(
+            limit, action=action, keyword=keyword, days=days or None
+        )
+        return {
+            "status": "ok",
+            "data": {
+                "rows": result["rows"],
+                "total": result["total"],
+                "actions": result["actions"],
+            },
+        }
 
     async def page_leaderboard(self) -> dict[str, Any]:
         """返回各玩法全局战绩排行（用于管理台导出海报/浏览）。
