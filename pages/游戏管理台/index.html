@@ -166,13 +166,18 @@
     <section id="statsPanel" class="settings-panel" hidden>
       <header class="settings-header">
         <div>
-          <span class="eyebrow">全局战绩与操作审计</span>
+          <span class="eyebrow">玩家档案与全局战绩</span>
           <h2>战绩管理</h2>
-          <p id="statsNotice">选择玩法查看战绩排行，可修正胜场、导出海报，并查看管理台操作日志。</p>
+          <p id="statsNotice">按 QQ 查玩家、改显示名称、修正战绩、合并小号；也可以按玩法与时间范围看排行榜、导出海报，并查看管理台操作日志。</p>
         </div>
         <div class="settings-actions">
           <select id="statsGameSelect" class="stats-game-select" aria-label="选择玩法">
             <option value="" selected>全部玩法</option>
+          </select>
+          <select id="statsWindowSelect" class="stats-game-select" aria-label="统计时间范围">
+            <option value="0" selected>全部时间</option>
+            <option value="7">最近 7 天</option>
+            <option value="30">最近 30 天</option>
           </select>
           <button id="statsClearAction" class="secondary-button danger-button" type="button" title="清空当前所选玩法的战绩排行">
             <i data-lucide="trash-2"></i><span>清空所选玩法</span>
@@ -180,11 +185,67 @@
           <button id="posterAction" class="secondary-button" type="button">
             <i data-lucide="image"></i><span>导出海报</span>
           </button>
+          <button id="playerExportAction" class="secondary-button" type="button" title="把玩家档案导出成 CSV 表格">
+            <i data-lucide="table"></i><span>导出档案</span>
+          </button>
+          <button id="playerPruneAction" class="secondary-button" type="button" title="清理 0 局 0 胜的空档案">
+            <i data-lucide="eraser"></i><span>清理空档案</span>
+          </button>
           <button id="refreshStatsAction" class="secondary-button" type="button">
             <i data-lucide="rotate-ccw"></i><span>刷新</span>
           </button>
         </div>
       </header>
+
+      <section class="metrics" aria-label="玩家概况">
+        <div>
+          <span>玩家档案</span><strong id="playerTotal">0</strong><small>个 QQ</small>
+        </div>
+        <div>
+          <span>总对局</span><strong id="playerGames">0</strong><small id="playerGamesHint">—</small>
+        </div>
+        <div>
+          <span>总胜场</span><strong id="playerWins">0</strong><small id="playerWinsHint">—</small>
+        </div>
+        <div>
+          <span>今日活跃</span><strong id="playerActiveToday">0</strong><small id="playerActiveDay">—</small>
+        </div>
+      </section>
+
+      <section class="stats-card is-wide">
+        <header class="section-header">
+          <div>
+            <h2>玩家档案</h2>
+            <span id="playerSummary">按 QQ 汇总所有玩法的战绩，点操作可改名 / 修正 / 合并 / 删除</span>
+          </div>
+          <div class="settings-actions">
+            <input id="playerSearch" class="library-search" type="search" placeholder="搜索昵称或 QQ" aria-label="搜索玩家" />
+            <label class="checkbox-inline" title="默认对 QQ 打码，方便截图分享">
+              <input id="playerShowQQ" type="checkbox" /><span>显示完整 QQ</span>
+            </label>
+          </div>
+        </header>
+        <div class="table-wrap">
+          <table class="stats-table player-table">
+            <thead>
+              <tr>
+                <th data-player-sort="name">玩家</th>
+                <th>QQ</th>
+                <th data-player-sort="wins">胜 / 负 / 局</th>
+                <th data-player-sort="winrate">胜率</th>
+                <th>玩过</th>
+                <th data-player-sort="recent">最近活跃</th>
+                <th class="actions-column">操作</th>
+              </tr>
+            </thead>
+            <tbody id="playerBody"></tbody>
+          </table>
+          <div id="playerEmpty" class="empty-state" hidden>
+            <i data-lucide="users"></i>
+            <strong>还没有玩家战绩记录</strong>
+          </div>
+        </div>
+      </section>
 
       <div class="stats-grid">
         <section class="stats-card">
@@ -200,8 +261,9 @@
                 <tr>
                   <th>#</th>
                   <th>玩家</th>
+                  <th>QQ</th>
                   <th>玩法</th>
-                  <th>胜场</th>
+                  <th>战绩</th>
                   <th class="actions-column">操作</th>
                 </tr>
               </thead>
@@ -496,7 +558,7 @@
     <form method="dialog" id="promptForm">
       <header>
         <div>
-          <span class="eyebrow">输入数值</span>
+          <span class="eyebrow" id="promptEyebrow">输入数值</span>
           <h2 id="promptTitle">请输入</h2>
         </div>
         <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">

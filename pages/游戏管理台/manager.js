@@ -76,12 +76,27 @@
   }
 
   // 页面内数值输入框（管理台页面运行在沙箱 iframe，window.prompt 会被浏览器拦截）
-  function openPrompt({ title, message, label = "数值", initial = "0" }) {
+  let promptKind = "number";
+  function openPrompt({ title, message, label = "数值", initial = "0", kind = "number" }) {
     if (promptResolver) resolvePromptValue(null);
+    promptKind = kind;
     document.getElementById("promptTitle").textContent = title;
     document.getElementById("promptMessage").textContent = message;
     document.getElementById("promptLabel").textContent = label;
+    const eyebrow = document.getElementById("promptEyebrow");
+    if (eyebrow) eyebrow.textContent = kind === "text" ? "输入文本" : "输入数值";
     const input = document.getElementById("promptInput");
+    if (kind === "text") {
+      input.type = "text";
+      input.removeAttribute("min");
+      input.removeAttribute("step");
+      input.removeAttribute("inputmode");
+    } else {
+      input.type = "number";
+      input.setAttribute("min", "0");
+      input.setAttribute("step", "1");
+      input.setAttribute("inputmode", "numeric");
+    }
     input.value = initial;
     promptDialog.showModal();
     window.setTimeout(() => input.focus(), 0);
@@ -1234,8 +1249,14 @@
   }
 
   // ===== 战绩管理 =====
-  let statsLeaderboard = {};   // game_type -> [{name,wins}]
+  let statsLeaderboard = {};   // game_type -> [{name,qq,wins,games,winrate}]
   let statsFilter = "";        // 当前玩法筛选
+  let statsWindow = 0;         // 统计时间范围（天，0 = 全部时间）
+  let playerProfiles = [];     // 玩家档案（按 QQ 汇总）
+  let playerKeyword = "";      // 玩家搜索词（昵称 / QQ）
+  let playerSummary = {};      // 玩家概况（人数 / 总局数 / 今日活跃）
+  let playerSort = "games";    // 玩家档案排序：games / wins / winrate / recent / name
+  let showFullQQ = false;      // QQ 默认打码，需要时再展开
 
   const GAME_LABELS = {
     gomoku: "五子棋", xiangqi: "中国象棋", weiqi: "围棋", tictactoe: "井字棋",
@@ -1243,6 +1264,53 @@
     draw_guess: "你画我猜", blackjack: "二十一点", undercover: "谁是卧底",
   };
   function gameLabel(gtype) { return GAME_LABELS[gtype] || gtype || "未知玩法"; }
+
+  /** QQ 打码：管理台常出现在录屏/截图里，默认不整串露出来 */
+  function displayQQ(qq) {
+    const value = String(qq || "").trim();
+    if (!value) return "—";
+    if (showFullQQ || value.length <= 4) return value;
+    return `${value.slice(0, 3)}${"*".repeat(Math.max(2, value.length - 5))}${value.slice(-2)}`;
+  }
+
+  /** 「x 胜 / y 负 / z 局」，平局非零时补一句 */
+  function recordText(row) {
+    const wins = Number(row.wins) || 0;
+    const losses = Number(row.losses) || 0;
+    const games = Number(row.games) || 0;
+    const draws = Number(row.draws) || 0;
+    const base = `${wins} 胜 / ${losses} 负 / ${games} 局`;
+    return draws ? `${base}（含 ${draws} 平）` : base;
+  }
+
+  const PLAYER_SORT_KEYS = {
+    games: (player) => Number(player.games) || 0,
+    wins: (player) => Number(player.wins) || 0,
+    winrate: (player) => Number(player.winrate) || 0,
+    recent: (player) => Number(player.last_at) || 0,
+    name: (player) => 0,
+  };
+
+  function sortPlayerRows(rows) {
+    const key = PLAYER_SORT_KEYS[playerSort] || PLAYER_SORT_KEYS.games;
+    if (playerSort === "name") {
+      return rows
+        .slice()
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-CN"));
+    }
+    return rows.slice().sort((a, b) => key(b) - key(a));
+  }
+
+  function campSummary(camps) {
+    if (!camps || typeof camps !== "object") return "";
+    const labels = { civilian: "平民", undercover: "卧底", whiteboard: "白板" };
+    const parts = [];
+    Object.entries(labels).forEach(([key, label]) => {
+      const value = Number(camps[key] || 0);
+      if (value) parts.push(`${label} ${value}`);
+    });
+    return parts.length ? `卧底阵营胜场：${parts.join(" · ")}` : "";
+  }
 
   async function loadStats() {
     const select = document.getElementById("statsGameSelect");
@@ -1256,12 +1324,24 @@
       });
     }
     select.value = statsFilter;
+    const windowSelect = document.getElementById("statsWindowSelect");
+    if (windowSelect) windowSelect.value = String(statsWindow);
     try {
-      const data = await endpoint("POST", "leaderboard", statsFilter ? { game_type: statsFilter } : {});
+      const payload = {};
+      if (statsFilter) payload.game_type = statsFilter;
+      if (statsWindow) payload.days = statsWindow;
+      const data = await endpoint("POST", "leaderboard", payload);
       statsLeaderboard = data?.leaderboard || {};
       renderStats();
     } catch (error) {
       showToast(error?.message || "无法读取战绩排行");
+    }
+    try {
+      const data = await endpoint("POST", "players", {});
+      playerProfiles = data?.players || [];
+      renderPlayers(data?.summary || {});
+    } catch (error) {
+      showToast(error?.message || "无法读取玩家档案");
     }
     try {
       document.getElementById("operationLogBody").replaceChildren();
@@ -1270,6 +1350,204 @@
     } catch (error) {
       showToast(error?.message || "无法读取操作日志");
     }
+  }
+
+  function renderPlayers(summary) {
+    if (summary) playerSummary = summary;
+    const body = document.getElementById("playerBody");
+    body.replaceChildren();
+    const setText = (id, text) => {
+      const node = document.getElementById(id);
+      if (node) node.textContent = text;
+    };
+    const totalGames = Number(playerSummary.games || 0);
+    const totalWins = Number(playerSummary.wins || 0);
+    setText("playerTotal", String(playerSummary.players ?? playerProfiles.length));
+    setText("playerGames", String(totalGames));
+    setText("playerWins", String(totalWins));
+    setText("playerActiveToday", String(playerSummary.active_today ?? 0));
+    setText("playerActiveDay", playerSummary.today ? `截至 ${playerSummary.today}` : "—");
+    setText(
+      "playerGamesHint",
+      totalGames ? `平均胜率 ${Math.round((totalWins * 100) / totalGames)}%` : "—",
+    );
+    setText("playerWinsHint", totalGames ? `共 ${totalGames} 局` : "—");
+
+    const keyword = playerKeyword.trim().toLowerCase();
+    const filtered = keyword
+      ? playerProfiles.filter(
+          (p) =>
+            String(p.qq || "").includes(keyword) ||
+            String(p.name || "").toLowerCase().includes(keyword),
+        )
+      : playerProfiles;
+    const rows = sortPlayerRows(filtered);
+
+    const empty = document.getElementById("playerEmpty");
+    if (empty) empty.hidden = rows.length > 0;
+    const summaryNode = document.getElementById("playerSummary");
+    if (summaryNode) {
+      summaryNode.textContent = rows.length
+        ? `共 ${rows.length} 位玩家${keyword ? "（已筛选）" : ""} · 点表头可换排序，右侧图标可改名 / 清零 / 合并 / 删除`
+        : "按 QQ 汇总所有玩法的战绩";
+    }
+
+    rows.slice(0, 300).forEach((player) => {
+      const tr = document.createElement("tr");
+
+      const nameTd = document.createElement("td");
+      const nameWrap = document.createElement("div");
+      nameWrap.className = "player-name";
+      nameWrap.appendChild(createText("span", player.name || "未命名"));
+      const camp = campSummary(player.camps);
+      if (camp) nameWrap.appendChild(createText("small", camp));
+      nameTd.appendChild(nameWrap);
+
+      const qqTd = createText("td", displayQQ(player.qq), "qq-cell");
+      qqTd.title = showFullQQ ? "" : "已打码，勾选「显示完整 QQ」可查看";
+      const statTd = createText("td", recordText(player), "wins-cell");
+      const rateTd = createText(
+        "td",
+        `${Math.round(Number(player.winrate) || 0)}%`,
+        "rank-cell",
+      );
+      const gamesTd = document.createElement("td");
+      gamesTd.className = "player-games";
+      const played = (player.games_played || []).slice(0, 4);
+      played.forEach((gtype) => gamesTd.appendChild(createText("span", gameLabel(gtype))));
+      if ((player.games_played || []).length > played.length) {
+        gamesTd.appendChild(createText("span", `等 ${player.games_played.length} 种`));
+      }
+      const activeTd = createText(
+        "td",
+        player.last_at_text
+          ? `${player.last_at_text}${player.active_days ? ` · ${player.active_days} 天` : ""}`
+          : player.last_active
+            ? `${player.last_active} · ${Number(player.active_days) || 0} 天`
+            : "—",
+      );
+
+      const actTd = document.createElement("td");
+      actTd.className = "actions-column";
+      actTd.append(
+        rowIcon("pen-line", "修改显示名称", () => renamePlayer(player)),
+        rowIcon("eraser", "清零战绩（保留档案）", () => resetPlayerStats(player)),
+        rowIcon("git-merge", "把另一个 QQ 合并到这位玩家", () => mergePlayerInto(player)),
+        rowIcon("trash-2", "删除这位玩家的战绩记录", () => deletePlayerStats(player), true),
+      );
+      tr.append(nameTd, qqTd, statTd, rateTd, gamesTd, activeTd, actTd);
+      body.appendChild(tr);
+    });
+    icons();
+  }
+
+  async function playerAction(payload, fallback) {
+    try {
+      const data = await endpoint("POST", "player_action", payload);
+      showToast(data?.message || fallback);
+      await loadStats();
+      await loadRooms();
+      return true;
+    } catch (error) {
+      showToast(error?.message || "操作失败");
+      return false;
+    }
+  }
+
+  async function renamePlayer(player) {
+    const name = await openPrompt({
+      title: "修改显示名称",
+      message: `${player.name || "这位玩家"}（${displayQQ(player.qq)}）在所有玩法里都会改成新名字，胜场仍然跟着这个 QQ 走。`,
+      label: "显示名称",
+      initial: player.name || "",
+      kind: "text",
+    });
+    if (name === null) return;
+    await playerAction({ action: "rename", qq: player.qq, name }, "改名成功");
+  }
+
+  async function resetPlayerStats(player) {
+    if (!await confirmAction({
+      title: "清零这位玩家的战绩",
+      message: `把 ${player.name || player.qq} 在所有玩法的胜场与局数清零？档案和昵称会保留，此操作不可撤销。`,
+      label: "确认清零",
+      danger: true,
+    })) return;
+    await playerAction({ action: "reset", qq: player.qq }, "已清零");
+  }
+
+  async function mergePlayerInto(player) {
+    const sourceQQ = await openPrompt({
+      title: "合并玩家档案",
+      message: `把另一个 QQ 的战绩并入「${player.name || player.qq}」，并入后那个 QQ 的记录会被删除（适合同一个人换号的情况）。`,
+      label: "要并入的 QQ",
+      initial: "",
+      kind: "text",
+    });
+    if (!sourceQQ) return;
+    if (!await confirmAction({
+      title: "确认合并",
+      message: `把 QQ ${sourceQQ} 的胜场、局数与活跃记录并入 ${displayQQ(player.qq)}？此操作不可撤销。`,
+      label: "确认合并",
+      danger: true,
+    })) return;
+    await playerAction({ action: "merge", qq: player.qq, source_qq: sourceQQ }, "已合并");
+  }
+
+  async function deletePlayerStats(player) {
+    if (!await confirmAction({
+      title: "删除玩家战绩",
+      message: `彻底删除 ${player.name || player.qq} 的全部战绩记录（含卧底阵营胜场）？档案会从列表里消失，此操作不可撤销。`,
+      label: "确认删除",
+      danger: true,
+    })) return;
+    await playerAction({ action: "delete", qq: player.qq }, "已删除");
+  }
+
+  async function pruneEmptyPlayers() {
+    if (!await confirmAction({
+      title: "清理空档案",
+      message: "删除所有「0 局 0 胜」的玩家档案？只会清掉空记录，有战绩的不受影响。",
+      label: "确认清理",
+    })) return;
+    await playerAction({ action: "prune" }, "已清理");
+  }
+
+  function exportPlayerCsv() {
+    if (!playerProfiles.length) {
+      showToast("暂无玩家档案可导出");
+      return;
+    }
+    const header = ["昵称", "QQ", "胜场", "负场", "平局", "总局数", "胜率(%)", "玩过玩法", "最近活跃", "活跃天数"];
+    const lines = [header.join(",")];
+    playerProfiles.forEach((player) => {
+      const cells = [
+        player.name || "",
+        player.qq || "",
+        Number(player.wins) || 0,
+        Number(player.losses) || 0,
+        Number(player.draws) || 0,
+        Number(player.games) || 0,
+        Number(player.winrate) || 0,
+        (player.games_played || []).map(gameLabel).join(" / "),
+        player.last_at_text || player.last_active || "",
+        Number(player.active_days) || 0,
+      ].map((cell) => {
+        const text = String(cell ?? "");
+        return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+      });
+      lines.push(cells.join(","));
+    });
+    const blob = new Blob([`\ufeff${lines.join("\r\n")}`], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `玩家档案_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast(`已导出 ${playerProfiles.length} 位玩家的档案`);
   }
 
   function renderStats() {
@@ -1281,8 +1559,12 @@
         rows.push({
           game_type: gtype,
           name: row.name,
+          qq: row.qq || "",
+          is_ai: Boolean(row.is_ai),
           wins: Number(row.wins) || 0,
           games: Number(row.games) || 0,
+          draws: Number(row.draws) || 0,
+          losses: Number(row.losses) || 0,
           winrate: Number(row.winrate) || 0,
           rank: idx + 1,
         });
@@ -1290,45 +1572,74 @@
     });
     document.getElementById("leaderboardEmpty").hidden = rows.length > 0;
     document.getElementById("leaderboardSummary").textContent = rows.length
-      ? `${rows.length} 条记录`
+      ? `${rows.length} 条记录${statsWindow ? ` · 最近 ${statsWindow} 天` : ""}`
       : "暂无战绩";
     rows.slice(0, 200).forEach((row) => {
       const tr = document.createElement("tr");
       const rankTd = createText("td", String(row.rank));
       rankTd.className = "rank-cell";
       const nameTd = createText("td", row.name);
+      const qqTd = createText("td", row.is_ai ? "—（花火）" : displayQQ(row.qq), "qq-cell");
       const gameTd = createText("td", gameLabel(row.game_type));
       const winsTd = createText(
         "td",
-        row.games ? `${row.wins} 胜 · ${row.winrate.toFixed(0)}%` : `${row.wins} 胜`,
+        row.games
+          ? `${row.wins} 胜 / ${row.losses} 负 / ${row.games} 局${row.draws ? `（含 ${row.draws} 平）` : ""} · ${row.winrate.toFixed(0)}%`
+          : `${row.wins} 胜`,
       );
       winsTd.className = "wins-cell";
       const actTd = document.createElement("td");
       actTd.className = "actions-column";
-      const editBtn = document.createElement("button");
-      editBtn.type = "button";
-      editBtn.className = "row-button";
-      editBtn.title = "修正胜场";
-      editBtn.innerHTML = '<i data-lucide="pen-line"></i>';
-      editBtn.addEventListener("click", () => editWins(row.game_type, row.name));
-      actTd.appendChild(editBtn);
-      tr.append(rankTd, nameTd, gameTd, winsTd, actTd);
+      if (!row.is_ai) {
+        actTd.appendChild(
+          rowIcon("sliders-horizontal", "修正胜场 / 局数", () => editWins(row.game_type, row)),
+        );
+        actTd.appendChild(
+          rowIcon("eraser", "只清零这个玩法", () => resetGameStats(row.game_type, row), true),
+        );
+      }
+      tr.append(rankTd, nameTd, qqTd, gameTd, winsTd, actTd);
       body.appendChild(tr);
     });
     icons();
   }
 
-  async function editWins(gameType, name) {
-    const value = await promptNumber(`修正「${name}」在《${gameLabel(gameType)}》的胜场数：`);
-    if (value === null) return;
-    try {
-      await endpoint("POST", "leaderboard/set_wins", { game_type: gameType, name, wins: value });
-      showToast("胜场已修正");
-      await loadStats();
-      await loadRooms();
-    } catch (error) {
-      showToast(error?.message || "修正失败");
+  async function editWins(gameType, row) {
+    const games = await openPrompt({
+      title: "修正总局数",
+      message: `${row.name}（${displayQQ(row.qq)}）在《${gameLabel(gameType)}》当前 ${row.wins} 胜 / ${row.games} 局，先填要修正到多少局。`,
+      label: "总局数",
+      initial: String(Number(row.games) || 0),
+    });
+    if (games === null) return;
+    const wins = await openPrompt({
+      title: "修正胜场",
+      message: `总局数按 ${games} 计算，胜场不能超过它。`,
+      label: "胜场",
+      initial: String(Math.min(Number(row.wins) || 0, games)),
+    });
+    if (wins === null) return;
+    if (wins > games) {
+      showToast("胜场不能大于总局数");
+      return;
     }
+    await playerAction(
+      { action: "set_stats", qq: row.qq, game_type: gameType, wins, games },
+      "战绩已修正",
+    );
+  }
+
+  async function resetGameStats(gameType, row) {
+    if (!await confirmAction({
+      title: "清零该玩法的战绩",
+      message: `把 ${row.name}（${displayQQ(row.qq)}）在《${gameLabel(gameType)}》的胜场与局数清零？其它玩法不受影响。`,
+      label: "确认清零",
+      danger: true,
+    })) return;
+    await playerAction(
+      { action: "reset", qq: row.qq, game_type: gameType },
+      "已清零该玩法",
+    );
   }
 
   function renderStatsLog(rows) {
@@ -1354,6 +1665,9 @@
       assign: "安排玩家", demote: "移出玩家", kick: "踢出",
       set_difficulty: "调整棋力", pause_room: "暂停对局", resume_room: "继续对局",
       clear_leaderboard: "清空排行榜", set_wins: "修正胜场",
+      rename_player: "修改玩家昵称", set_player_stats: "修正玩家战绩",
+      reset_player: "清零玩家战绩", delete_player: "删除玩家战绩",
+      merge_player: "合并玩家档案",
       // 房间内动作
       room_claim: "落座", room_start: "开始对局", room_seat_leave: "离席",
       room_leave: "离开房间", room_seat_swap: "交换座位", room_ai_seat: "花火补位",
@@ -1363,10 +1677,6 @@
       room_uc_reveal_identity: "告知身份", room_uc_words: "导入词条",
       room_announce: "通知到群",
     }[action] || action || "未知";
-  }
-
-  async function promptNumber(message) {
-    return openPrompt({ title: "修正胜场", message, label: "胜场数", initial: "0" });
   }
 
   async function clearStatsLeaderboard() {
@@ -2244,6 +2554,51 @@
     statsFilter = e.target.value;
     loadStats();
   });
+  const statsWindowSelect = document.getElementById("statsWindowSelect");
+  if (statsWindowSelect) {
+    statsWindowSelect.addEventListener("change", (e) => {
+      statsWindow = Number(e.target.value) || 0;
+      loadStats();
+    });
+  }
+  const playerSearch = document.getElementById("playerSearch");
+  if (playerSearch) {
+    playerSearch.addEventListener("input", (e) => {
+      playerKeyword = e.target.value || "";
+      renderPlayers();
+    });
+  }
+  const playerShowQQ = document.getElementById("playerShowQQ");
+  if (playerShowQQ) {
+    // 记住上次选择：常用「完整 QQ」的人不必每次重新勾
+    showFullQQ = localStorage.getItem("huahuo.manager.showFullQQ") === "1";
+    playerShowQQ.checked = showFullQQ;
+    playerShowQQ.addEventListener("change", () => {
+      showFullQQ = playerShowQQ.checked;
+      localStorage.setItem("huahuo.manager.showFullQQ", showFullQQ ? "1" : "0");
+      renderPlayers();
+      renderStats();
+    });
+  }
+  const playerExportAction = document.getElementById("playerExportAction");
+  if (playerExportAction) {
+    playerExportAction.addEventListener("click", exportPlayerCsv);
+  }
+  const playerPruneAction = document.getElementById("playerPruneAction");
+  if (playerPruneAction) {
+    playerPruneAction.addEventListener("click", pruneEmptyPlayers);
+  }
+  // 表头点击换排序（局数 / 胜场 / 胜率 / 最近活跃 / 昵称）
+  document.querySelectorAll("[data-player-sort]").forEach((th) => {
+    th.classList.toggle("is-sorted", th.dataset.playerSort === playerSort);
+    th.addEventListener("click", () => {
+      playerSort = th.dataset.playerSort || "games";
+      document.querySelectorAll("[data-player-sort]").forEach((node) => {
+        node.classList.toggle("is-sorted", node === th);
+      });
+      renderPlayers();
+    });
+  });
   document.querySelectorAll(".manager-tab").forEach((tab) => {
     tab.addEventListener("click", () => showPanel(tab.dataset.panel));
   });
@@ -2268,6 +2623,11 @@
   });
   promptProceed.addEventListener("click", () => {
     const raw = String(promptInput.value || "").trim();
+    if (promptKind === "text") {
+      if (!raw) { showToast("请输入内容"); return; }
+      resolvePromptValue(raw);
+      return;
+    }
     if (!raw) { showToast("请输入胜场数"); return; }
     const num = Number(raw);
     if (!Number.isFinite(num) || num < 0) {

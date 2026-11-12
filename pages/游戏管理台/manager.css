@@ -141,6 +141,22 @@ td small { margin-top: 3px; color: var(--muted); }
 .stats-game-select { max-width: 150px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 13px; }
 .rank-cell, .wins-cell { font-weight: 700; }
 .rank-cell { color: var(--muted); }
+/* 战绩管理 · 玩家档案：整行卡片 + 行内搜索与 QQ 打码开关 */
+.stats-card.is-wide { grid-column: 1 / -1; margin-bottom: 14px; }
+.stats-card .settings-actions { flex-wrap: wrap; justify-content: flex-end; }
+.checkbox-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.checkbox-inline input { width: 14px; height: 14px; accent-color: var(--green); }
+.player-table td { vertical-align: middle; }
+.player-name { display: flex; flex-direction: column; gap: 2px; font-weight: 600; }
+.player-name small { color: var(--muted); font-weight: 400; }
+.qq-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); letter-spacing: .02em; }
+.player-games { color: var(--muted); font-size: 12px; }
+.player-games span + span::before { content: " · "; }
+.stats-table th[data-player-sort] { cursor: pointer; user-select: none; }
+.stats-table th[data-player-sort]:hover { color: var(--text); }
+.stats-table th.is-sorted { color: var(--green); }
+.stats-table th.is-sorted::after { content: " ↓"; font-size: 10px; }
+
 .game-setting-card { position: relative; padding: 17px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); transition: border-color .16s, opacity .16s; }
 .game-setting-card.enabled { border-top: 3px solid var(--green); padding-top: 15px; }
 .game-setting-card.disabled { opacity: .72; }

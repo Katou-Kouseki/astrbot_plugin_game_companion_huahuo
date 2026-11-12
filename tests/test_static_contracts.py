@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.21"
+    assert metadata["version"] == "0.6.22"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2124,13 +2124,52 @@ def test_board_share_poster_matches_server_size() -> None:
     assert "`双方：${result.draw_names}`" in script
 
 
+def test_player_profile_admin_surface() -> None:
+    """管理台玩家档案：按 QQ 汇总、能看负场、能改名 / 合并 / 清理。"""
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    html = (ROOT / "pages" / "游戏管理台" / "index.html").read_text(encoding="utf-8")
+    script = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+
+    # 数据层：按 QQ 汇总 + 五个编辑动作
+    for name in (
+        "def player_profiles",
+        "def rename_player",
+        "def set_player_stats",
+        "def reset_player",
+        "def delete_player",
+        "def merge_player",
+        "def prune_empty_players",
+    ):
+        assert name in rm, name
+    # 负场 = 局数 - 胜场 - 平局（平局从 0.6.22 起单独记）
+    assert '"losses": max(0, games - wins - draws)' in rm
+    assert '"draws": draws,' in rm
+
+    # 接口：players 读、player_action 写
+    assert 'f"{PAGE_API_PREFIX}/players"' in main
+    assert 'f"{PAGE_API_PREFIX}/player_action"' in main
+    assert "async def page_players" in main
+    assert "async def page_player_action" in main
+
+    # 页面：档案表 + 负场列 + 表头排序 + 导出 / 清理
+    assert 'id="playerBody"' in html
+    assert 'data-player-sort="wins"' in html
+    assert "胜 / 负 / 局" in html
+    assert 'id="playerExportAction"' in html and 'id="playerPruneAction"' in html
+    assert "function recordText" in script
+    assert "function displayQQ" in script
+    assert "function exportPlayerCsv" in script
+    assert "action: \"rename\"" in script and "action: \"merge\"" in script
+
+
 def test_leaderboard_winrate_counts_losses() -> None:
     """胜率的分母是「总局数」：非棋类玩法也必须记局数，否则永远是 100%。"""
     rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
 
-    # 记账入口同时累加 wins / games，并按天分桶
+    # 记账入口同时累加 wins / games / draws，并按天分桶
     assert 'global_entry["games"] = int(global_entry.get("games") or 0) + 1' in rm
-    assert "self._bump_daily(global_entry, wins=1 if player_won else 0, games=1)" in rm
+    assert "draws=1 if draw else 0" in rm
     # 卧底输家阵营也记局：只给赢家记胜
     assert "won = uc_player.camp == camp" in rm
     assert "if won:\n                                global_entry[\"wins\"]" in rm
@@ -2143,7 +2182,7 @@ def test_leaderboard_winrate_counts_losses() -> None:
 def test_board_report_survives_missing_daily_slots() -> None:
     """日报/周报按窗口取 daily；局数没记时不能把胜率算成 100%。"""
     rm = (ROOT / "room_manager.py").read_text(encoding="utf-8")
-    assert 'daily.setdefault(day, {"w": 0, "g": 0})' in rm
+    assert 'daily.setdefault(day, {"w": 0, "g": 0, "d": 0})' in rm
     assert "games = max(games, wins)" in rm
 
 

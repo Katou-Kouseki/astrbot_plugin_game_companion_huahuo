@@ -93,7 +93,7 @@ def test_human_global_wins_counts_losses_too() -> None:
     assert row["winrate"] == pytest.approx(33.3, abs=0.1)
     # 按天分桶也要记局数，否则日报 / 周报窗口里的胜率同样是 100%
     day = next(iter(entry["daily"].values()))
-    assert day == {"w": 1, "g": 3}
+    assert day == {"w": 1, "g": 3, "d": 0}
 
 
 @pytest.mark.asyncio

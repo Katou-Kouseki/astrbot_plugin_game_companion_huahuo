@@ -387,14 +387,15 @@ class RoomManager:
         *,
         wins: int = 0,
         games: int = 0,
+        draws: int = 0,
         now: float | None = None,
     ) -> None:
-        """维护 entry["daily"] = {YYYY-MM-DD: {"w": 胜, "g": 局}}，供日报/周报按时间窗口统计。
+        """维护 entry["daily"] = {YYYY-MM-DD: {"w": 胜, "g": 局, "d": 平}}，供按时间窗口统计。
 
         以前「日报」和「周报」都读同一份累计榜，两种报表内容完全一样。
         这里按天分桶，只保留最近 60 天，避免统计文件无限增长。
         """
-        if not wins and not games:
+        if not wins and not games and not draws:
             return
         stamp = time.localtime(now if now is not None else time.time())
         day = time.strftime("%Y-%m-%d", stamp)
@@ -402,12 +403,13 @@ class RoomManager:
         if not isinstance(daily, dict):
             daily = {}
             entry["daily"] = daily
-        slot = daily.setdefault(day, {"w": 0, "g": 0})
+        slot = daily.setdefault(day, {"w": 0, "g": 0, "d": 0})
         if not isinstance(slot, dict):
-            slot = {"w": 0, "g": 0}
+            slot = {"w": 0, "g": 0, "d": 0}
             daily[day] = slot
         slot["w"] = int(slot.get("w") or 0) + int(wins)
         slot["g"] = int(slot.get("g") or 0) + int(games)
+        slot["d"] = int(slot.get("d") or 0) + int(draws)
         if len(daily) > 60:
             for key in sorted(daily)[:-60]:
                 daily.pop(key, None)
@@ -439,25 +441,44 @@ class RoomManager:
                     ))
                 )
         merged: dict[str, dict[str, object]] = {}
-        for _qq, info in bucket.items():
+        for qq, info in bucket.items():
             name = str(info.get("name") or "未知玩家").strip() or "未知玩家"
+            qq_text = str(qq or "")
+            # 花火（AI）每次入座都是随机 token，只能按名字合并；
+            # 真人一律按 QQ 区分——同名不同人不能被并成一条，否则改一个人
+            # 的战绩会连带改到另一个人。
+            is_ai = qq_text == AI_LEADERBOARD_KEY or not qq_text.isdigit()
+            key = f"ai:{name}" if is_ai else f"qq:{qq_text}"
             if days_allowed is not None:
                 daily = info.get("daily")
-                wins = games = 0
+                wins = games = draws = 0
                 if isinstance(daily, dict):
                     for day, slot in daily.items():
                         if day not in days_allowed or not isinstance(slot, dict):
                             continue
                         wins += int(slot.get("w") or 0)
                         games += int(slot.get("g") or 0)
+                        draws += int(slot.get("d") or 0)
                 if not wins and not games:
                     continue
             else:
                 wins = int(info.get("wins") or 0)
                 games = int(info.get("games") or 0)
-            merged.setdefault(name, {"name": name, "wins": 0, "games": 0})
-            merged[name]["wins"] = int(merged[name]["wins"] or 0) + wins
-            merged[name]["games"] = int(merged[name]["games"] or 0) + games
+                draws = int(info.get("draws") or 0)
+            merged.setdefault(
+                key,
+                {
+                    "name": name,
+                    "wins": 0,
+                    "games": 0,
+                    "draws": 0,
+                    "qq": AI_LEADERBOARD_KEY if is_ai else qq_text,
+                    "is_ai": is_ai,
+                },
+            )
+            merged[key]["wins"] = int(merged[key]["wins"] or 0) + wins
+            merged[key]["games"] = int(merged[key]["games"] or 0) + games
+            merged[key]["draws"] = int(merged[key]["draws"] or 0) + draws
         rows: list[dict[str, object]] = []
         for info in sorted(
             merged.values(),
@@ -472,11 +493,18 @@ class RoomManager:
             # 历史数据（0.5.20 及更早）只记「胜场」没记「总局数」，升级后 games 会从 0 开始，
             # 导致「12 胜 / 1 局」算成 1200%。这里兜底：局数至少等于胜场（每胜至少对应一局）。
             games = max(games, wins)
+            draws = min(max(0, int(info.get("draws") or 0)), games)
             rows.append(
                 {
                     "name": str(info["name"]),
+                    "qq": str(info.get("qq") or ""),
+                    "is_ai": bool(info.get("is_ai")),
                     "wins": wins,
                     "games": games,
+                    # 平局从 0.6.22 起才开始单独记：老数据这里恒为 0，
+                    # 负场会把当年的平局也算进去（管理台有提示）。
+                    "draws": draws,
+                    "losses": max(0, games - wins - draws),
                     "winrate": round(wins * 100 / games, 1) if games else 0.0,
                 }
             )
@@ -652,6 +680,356 @@ class RoomManager:
     @staticmethod
     def _format_time(stamp: float) -> str:
         return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp))
+
+    # ---------------- 玩家档案（管理台「战绩管理」） ----------------
+
+    def player_profiles(self, *, only_humans: bool = True) -> list[dict[str, object]]:
+        """按 QQ 横向汇总每个玩家：总战绩、各玩法明细、活跃天数与卧底阵营胜场。
+
+        存档是「玩法 → QQ → 名称/胜场/局数/按天分桶」，单看任何一个玩法都看不到
+        「这个人整体怎么样」。管理台要做玩家档案（改昵称、修战绩、合并小号、
+        清理测试号），所以这里先把同一个 QQ 在各玩法的记录汇总成一行。
+        """
+        profiles: dict[str, dict[str, object]] = {}
+        for gtype, bucket in self.global_player_wins.items():
+            if not isinstance(bucket, dict):
+                continue
+            for qq, info in bucket.items():
+                if not isinstance(info, dict):
+                    continue
+                qq_text = str(qq or "").strip()
+                if not qq_text:
+                    continue
+                if only_humans and not qq_text.isdigit():
+                    continue
+                prof = profiles.setdefault(
+                    qq_text,
+                    {
+                        "qq": qq_text,
+                        "name": "",
+                        "name_day": "",
+                        "wins": 0,
+                        "games": 0,
+                        "draws": 0,
+                        "last_at": 0.0,
+                        "by_game": {},
+                        "days": set(),
+                    },
+                )
+                profile_days = prof["days"]
+                by_game = prof["by_game"]
+                if not isinstance(profile_days, set) or not isinstance(by_game, dict):
+                    continue
+                wins = int(info.get("wins") or 0)
+                games = int(info.get("games") or 0)
+                draws = int(info.get("draws") or 0)
+                prof["wins"] = int(prof["wins"]) + wins
+                prof["games"] = int(prof["games"]) + games
+                prof["draws"] = int(prof["draws"]) + draws
+                prof["last_at"] = max(
+                    float(prof.get("last_at") or 0.0),
+                    float(info.get("last_at") or 0.0),
+                )
+                by_game[gtype] = {"wins": wins, "games": games, "draws": draws}
+                daily = info.get("daily")
+                last_day = ""
+                if isinstance(daily, dict) and daily:
+                    profile_days.update(str(day) for day in daily.keys())
+                    last_day = max(str(day) for day in daily.keys())
+                name = str(info.get("name") or "").strip()
+                # 昵称取「最近还在玩的那条记录」：改过名之后，旧玩法里留着的还是旧名字
+                if name and last_day >= str(prof.get("name_day") or ""):
+                    prof["name"] = name
+                    prof["name_day"] = last_day
+        rows: list[dict[str, object]] = []
+        for prof in profiles.values():
+            days = sorted(prof.pop("days", set()) or [])
+            prof.pop("name_day", None)
+            games = int(prof["games"])
+            wins = int(prof["wins"])
+            draws = min(max(0, int(prof["draws"])), games)
+            camps = self.undercover_camp_wins.get(f"qq:{prof['qq']}")
+            prof["draws"] = draws
+            prof["losses"] = max(0, games - wins - draws)
+            prof["winrate"] = round(wins * 100 / games, 1) if games else 0.0
+            last_at = float(prof.get("last_at") or 0.0)
+            prof["last_at"] = last_at
+            prof["last_at_text"] = (
+                time.strftime("%Y-%m-%d %H:%M", time.localtime(last_at))
+                if last_at
+                else ""
+            )
+            prof["active_days"] = len(days)
+            prof["last_active"] = days[-1] if days else ""
+            prof["first_active"] = days[0] if days else ""
+            by_game = prof.get("by_game")
+            prof["games_played"] = (
+                sorted(by_game.keys()) if isinstance(by_game, dict) else []
+            )
+            prof["camps"] = (
+                {
+                    camp: int(camps.get(camp) or 0)
+                    for camp in ("civilian", "undercover", "whiteboard")
+                }
+                if isinstance(camps, dict)
+                else {}
+            )
+            if not str(prof.get("name") or "").strip():
+                prof["name"] = f"玩家{str(prof['qq'])[-4:]}"
+            rows.append(prof)
+        rows.sort(
+            key=lambda item: (
+                -int(item["games"]),
+                -int(item["wins"]),
+                str(item["qq"]),
+            )
+        )
+        return rows
+
+    def rename_player(self, qq: str, name: str) -> int:
+        """改玩家显示名：所有玩法与卧底阵营胜场一起改，胜场跟着 QQ 不会丢。
+
+        返回被改动的玩法条数（0 视为未找到该玩家）。
+        """
+        qq = str(qq or "").strip()
+        name = " ".join(str(name or "").split())
+        if not qq:
+            raise ValueError("请提供玩家 QQ")
+        if not name:
+            raise ValueError("显示名称不能为空")
+        if len(name) > 24:
+            raise ValueError("显示名称最多 24 个字符")
+        changed = 0
+        for bucket in self.global_player_wins.values():
+            info = bucket.get(qq) if isinstance(bucket, dict) else None
+            if isinstance(info, dict):
+                info["name"] = name
+                changed += 1
+        if not changed:
+            raise ValueError("未找到该玩家的战绩记录")
+        camp = self.undercover_camp_wins.get(f"qq:{qq}")
+        if isinstance(camp, dict):
+            camp["name"] = name
+            self._save_undercover_camp_wins()
+        self._save_global_stats()
+        self.record_operation(
+            "rename_player",
+            f"把玩家 {qq} 的显示名改为「{name}」",
+            operator="游戏管理台",
+        )
+        return changed
+
+    def set_player_stats(
+        self,
+        qq: str,
+        game_type: str,
+        *,
+        wins: int | None = None,
+        games: int | None = None,
+    ) -> bool:
+        """按 QQ 精确修正某玩法的胜场 / 局数（同名玩家互不影响）。
+
+        只改总数、不动按天分桶：时间窗口（近 7 / 30 天）看到的是历史真实记录。
+        """
+        qq = str(qq or "").strip()
+        game_type = str(game_type or "").strip()
+        if not qq or not self._is_known_game_type(game_type):
+            raise ValueError("请选择玩法并提供玩家 QQ")
+        bucket = self.global_player_wins.get(game_type)
+        info = bucket.get(qq) if isinstance(bucket, dict) else None
+        if not isinstance(info, dict):
+            raise ValueError("未找到该玩家在这个玩法的记录")
+        current_games = int(info.get("games") or 0)
+        current_wins = int(info.get("wins") or 0)
+        new_games = current_games if games is None else max(0, int(games))
+        new_wins = current_wins if wins is None else max(0, int(wins))
+        # 只改胜场时局数至少跟上；只改局数时胜场不能超过局数
+        if games is None:
+            new_games = max(current_games, new_wins)
+        if wins is None:
+            new_wins = min(current_wins, new_games)
+        if new_wins > new_games:
+            raise ValueError("胜场不能大于总局数")
+        info["wins"] = new_wins
+        info["games"] = new_games
+        # 局数被调小后，平局不能多于总局数
+        info["draws"] = min(int(info.get("draws") or 0), new_games)
+        self._save_global_stats()
+        self.record_operation(
+            "set_player_stats",
+            f"把玩家 {qq} 在《{game_type}》修正为 {new_wins} 胜 / {new_games} 局",
+            operator="游戏管理台",
+            game_type=game_type,
+        )
+        return True
+
+    def reset_player(self, qq: str, game_type: str | None = None) -> int:
+        """把某玩家的战绩清零（默认全部玩法）：保留档案与昵称，只清胜负和按天记录。"""
+        qq = str(qq or "").strip()
+        if not qq:
+            raise ValueError("请提供玩家 QQ")
+        targets = [game_type] if game_type else list(self.global_player_wins)
+        changed = 0
+        for gtype in targets:
+            bucket = self.global_player_wins.get(gtype)
+            info = bucket.get(qq) if isinstance(bucket, dict) else None
+            if not isinstance(info, dict):
+                continue
+            info["wins"] = 0
+            info["games"] = 0
+            info["draws"] = 0
+            info["daily"] = {}
+            changed += 1
+        if not changed:
+            raise ValueError("未找到该玩家的战绩记录")
+        self._save_global_stats()
+        self.record_operation(
+            "reset_player",
+            f"清零玩家 {qq} 的战绩（{game_type or '全部玩法'}）",
+            operator="游戏管理台",
+            game_type=game_type or "",
+        )
+        return changed
+
+    def delete_player(self, qq: str, game_type: str | None = None) -> int:
+        """彻底删除某玩家的战绩记录（默认全部玩法），用于清理测试号 / 小号。"""
+        qq = str(qq or "").strip()
+        if not qq:
+            raise ValueError("请提供玩家 QQ")
+        targets = [game_type] if game_type else list(self.global_player_wins)
+        removed = 0
+        for gtype in targets:
+            bucket = self.global_player_wins.get(gtype)
+            if isinstance(bucket, dict) and bucket.pop(qq, None) is not None:
+                removed += 1
+        if not removed:
+            raise ValueError("未找到该玩家的战绩记录")
+        if not game_type:
+            if self.undercover_camp_wins.pop(f"qq:{qq}", None) is not None:
+                self._save_undercover_camp_wins()
+        self._save_global_stats()
+        self.record_operation(
+            "delete_player",
+            f"删除玩家 {qq} 的战绩记录（{game_type or '全部玩法'}）",
+            operator="游戏管理台",
+            game_type=game_type or "",
+        )
+        return removed
+
+    def prune_empty_players(self) -> int:
+        """清理「0 局 0 胜」的空档案（多为改名/测试留下的残影），返回清掉的 QQ 数。"""
+        empties: list[str] = []
+        for bucket in self.global_player_wins.values():
+            if not isinstance(bucket, dict):
+                continue
+            for qq, info in bucket.items():
+                if not isinstance(info, dict):
+                    continue
+                if int(info.get("wins") or 0) or int(info.get("games") or 0):
+                    continue
+                if isinstance(info.get("daily"), dict) and info["daily"]:
+                    continue
+                empties.append(str(qq))
+        removed = 0
+        for qq in set(empties):
+            for gtype in list(self.global_player_wins):
+                bucket = self.global_player_wins.get(gtype)
+                if isinstance(bucket, dict):
+                    bucket.pop(qq, None)
+            self.undercover_camp_wins.pop(f"qq:{qq}", None)
+            removed += 1
+        if not removed:
+            return 0
+        self._save_global_stats()
+        self._save_undercover_camp_wins()
+        self.record_operation(
+            "prune_players",
+            f"清理了 {removed} 个 0 局 0 胜的空档案",
+            operator="游戏管理台",
+        )
+        return removed
+
+    def merge_player(self, target_qq: str, source_qq: str) -> dict[str, int]:
+        """把 source 的档案并进 target（同一个人换了号），胜场 / 局数 / 按天记录都累加。"""
+        target = str(target_qq or "").strip()
+        source = str(source_qq or "").strip()
+        if not target or not source:
+            raise ValueError("请提供要保留与要并入的 QQ")
+        if target == source:
+            raise ValueError("两个 QQ 相同，无需合并")
+        touched = 0
+        merged_wins = 0
+        merged_games = 0
+        for bucket in self.global_player_wins.values():
+            if not isinstance(bucket, dict) or source not in bucket:
+                continue
+            src = bucket.pop(source)
+            if not isinstance(src, dict):
+                continue
+            tgt = bucket.get(target)
+            if not isinstance(tgt, dict):
+                tgt = {"name": "", "wins": 0, "games": 0}
+                bucket[target] = tgt
+            src_wins = int(src.get("wins") or 0)
+            src_games = int(src.get("games") or 0)
+            tgt["wins"] = int(tgt.get("wins") or 0) + src_wins
+            tgt["games"] = int(tgt.get("games") or 0) + src_games
+            tgt["draws"] = int(tgt.get("draws") or 0) + int(src.get("draws") or 0)
+            last_seen = max(
+                float(tgt.get("last_at") or 0.0), float(src.get("last_at") or 0.0)
+            )
+            if last_seen:
+                tgt["last_at"] = last_seen
+            merged_wins += src_wins
+            merged_games += src_games
+            daily_src = src.get("daily")
+            if isinstance(daily_src, dict) and daily_src:
+                daily_tgt = tgt.get("daily")
+                if not isinstance(daily_tgt, dict):
+                    daily_tgt = {}
+                    tgt["daily"] = daily_tgt
+                for day, slot in daily_src.items():
+                    if not isinstance(slot, dict):
+                        continue
+                    slot_tgt = daily_tgt.setdefault(str(day), {"w": 0, "g": 0})
+                    if not isinstance(slot_tgt, dict):
+                        slot_tgt = {"w": 0, "g": 0}
+                        daily_tgt[str(day)] = slot_tgt
+                    slot_tgt["w"] = int(slot_tgt.get("w") or 0) + int(
+                        slot.get("w") or 0
+                    )
+                    slot_tgt["g"] = int(slot_tgt.get("g") or 0) + int(
+                        slot.get("g") or 0
+                    )
+                if len(daily_tgt) > 60:
+                    for old_day in sorted(daily_tgt)[:-60]:
+                        daily_tgt.pop(old_day, None)
+            if not str(tgt.get("name") or "").strip() and str(
+                src.get("name") or ""
+            ).strip():
+                tgt["name"] = str(src.get("name") or "").strip()
+            touched += 1
+        if not touched:
+            raise ValueError("未找到要并入的 QQ 记录")
+        source_camp = self.undercover_camp_wins.pop(f"qq:{source}", None)
+        if isinstance(source_camp, dict):
+            target_camp = self.undercover_camp_wins.setdefault(
+                f"qq:{target}", {"name": ""}
+            )
+            for camp in ("civilian", "undercover", "whiteboard"):
+                target_camp[camp] = int(target_camp.get(camp) or 0) + int(
+                    source_camp.get(camp) or 0
+                )
+            if not str(target_camp.get("name") or "").strip():
+                target_camp["name"] = str(source_camp.get("name") or "")
+            self._save_undercover_camp_wins()
+        self._save_global_stats()
+        self.record_operation(
+            "merge_player",
+            f"把 QQ {source} 的战绩并入 {target}",
+            operator="游戏管理台",
+        )
+        return {"touched": touched, "wins": merged_wins, "games": merged_games}
 
     def _load_undercover_camp_wins(self) -> dict[str, dict[str, object]]:
         if self.undercover_camp_wins_path is None or not self.undercover_camp_wins_path.is_file():
@@ -5264,6 +5642,7 @@ class RoomManager:
                     room,
                     winner_tokens=winner_tokens or set(),
                     ai_won=(result == "bot_win"),
+                    draw=(result == "draw"),
                 )
             elif room.game_type == "undercover":
                 # 阵营玩法：赢家阵营在结算时逐个记胜，输家阵营记局数（见上方结算块）
@@ -5274,6 +5653,7 @@ class RoomManager:
                     room,
                     won=result == "human_win",
                     winner_tokens=duel_credit or set(),
+                    draw=(result == "draw"),
                 )
             else:
                 # 海龟汤 / 你画我猜等合作玩法：每局全员记一局，解开或猜中才记胜。
@@ -5288,6 +5668,7 @@ class RoomManager:
                         and room.game.mode == "player_host"
                         else None
                     ),
+                    draw=(result == "draw"),
                 )
             # 棋类终局快照：在 room.game 被下一局替换前冻结本局数据，
             # 供异步播报 / 复盘 / 海报使用（否则玩家秒点再战会播成 0 手）。
@@ -5430,12 +5811,13 @@ class RoomManager:
         *,
         winner_tokens: set[str],
         ai_won: bool,
+        draw: bool = False,
     ) -> None:
-        """给棋类全局榜记「局数 + 胜场」，让花火也拥有自己的胜率排名。
+        """给棋类全局榜记「局数 + 胜场 + 平局」，让花火也拥有自己的胜率排名。
 
-        每位真人参与者 +1 局；`winner_tokens` 里的获胜真人 +1 胜。花火在场时同样
-        +1 局，`ai_won` 为真时花火 +1 胜。平局只记局数、不记胜场。
-        谁是卧底等玩法不在这里统计（它们有各自的阵营胜场逻辑）。
+        每位真人参与者 +1 局；`winner_tokens` 里的获胜真人 +1 胜；平局只记局数
+        （同时 +1 平局，管理台的负场 = 局数 - 胜场 - 平局才算得准）。花火在场时
+        同样记一局，`ai_won` 为真时花火 +1 胜。谁是卧底等玩法不在这里统计。
         """
         if room.game_type not in DIFFICULTY_GAME_TYPES:
             return
@@ -5469,24 +5851,38 @@ class RoomManager:
             ai_present = True
         if not humans and not ai_present:
             return
+        now = time.time()
         for qq, name, token in humans:
             entry = bucket.setdefault(qq, {"name": "", "wins": 0, "games": 0})
             entry["games"] = int(entry.get("games") or 0) + 1
-            won = token in winners
+            won = (not draw) and token in winners
             if won:
                 entry["wins"] = int(entry.get("wins") or 0) + 1
+            if draw:
+                entry["draws"] = int(entry.get("draws") or 0) + 1
             if name:
                 entry["name"] = name
-            self._bump_daily(entry, wins=1 if won else 0, games=1)
+            entry["last_at"] = now
+            self._bump_daily(
+                entry, wins=1 if won else 0, games=1, draws=1 if draw else 0
+            )
         if ai_present:
             entry = bucket.setdefault(
                 AI_LEADERBOARD_KEY,
                 {"name": AI_LEADERBOARD_NAME, "wins": 0, "games": 0},
             )
             entry["games"] = int(entry.get("games") or 0) + 1
-            if ai_won:
+            if ai_won and not draw:
                 entry["wins"] = int(entry.get("wins") or 0) + 1
-            self._bump_daily(entry, wins=1 if ai_won else 0, games=1)
+            if draw:
+                entry["draws"] = int(entry.get("draws") or 0) + 1
+            entry["last_at"] = now
+            self._bump_daily(
+                entry,
+                wins=1 if (ai_won and not draw) else 0,
+                games=1,
+                draws=1 if draw else 0,
+            )
         self._save_global_stats()
 
     def _credit_ai_opponent_game(self, room: GameRoom, *, ai_won: bool) -> None:
@@ -5540,12 +5936,14 @@ class RoomManager:
         *,
         won: bool = True,
         winner_tokens: set[str] | None = None,
+        draw: bool = False,
     ) -> None:
         """把本局参与者按「本局游戏类型」计入全局榜：**每局都记局数**，赢才记胜场。
 
         多人座位玩法累计已入座的绑定玩家；单人对局（无多人座位）则累计已绑定身份的主玩家。
         `winner_tokens` 用于两人对弈等「有输家」的场景：只给指定座位的玩家记胜，
-        但局数仍然人人有份，避免输家白拿一胜。
+        但局数仍然人人有份，避免输家白拿一胜。`draw` 为真时额外记一局平局，
+        管理台的负场 = 局数 - 胜场 - 平局才算得准。
 
         以前这里只加 `wins`、从不加 `games`，而排行榜又把局数兜底成「至少等于胜场」，
         于是海龟汤 / 你画我猜这类玩法不管输多少局，胜率永远显示 100%。
@@ -5584,16 +5982,25 @@ class RoomManager:
                     awarded.setdefault(qq, (name or qq, won))
         if not awarded:
             return
+        now = time.time()
         for qq, (name, player_won) in awarded.items():
             if not qq:
                 continue
             global_entry = bucket.setdefault(qq, {"name": "", "wins": 0, "games": 0})
             global_entry["games"] = int(global_entry.get("games") or 0) + 1
-            if player_won:
+            if player_won and not draw:
                 global_entry["wins"] = int(global_entry.get("wins") or 0) + 1
+            if draw:
+                global_entry["draws"] = int(global_entry.get("draws") or 0) + 1
             if name:
                 global_entry["name"] = name
-            self._bump_daily(global_entry, wins=1 if player_won else 0, games=1)
+            global_entry["last_at"] = now
+            self._bump_daily(
+                global_entry,
+                wins=1 if (player_won and not draw) else 0,
+                games=1,
+                draws=1 if draw else 0,
+            )
         self._save_global_stats()
 
     @staticmethod

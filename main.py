@@ -12376,6 +12376,18 @@ class GameCompanionPlugin(Star):
             "Edit a player's win count",
         )
         register_api(
+            f"{PAGE_API_PREFIX}/players",
+            self.page_players,
+            ["POST"],
+            "Read player profiles",
+        )
+        register_api(
+            f"{PAGE_API_PREFIX}/player_action",
+            self.page_player_action,
+            ["POST"],
+            "Edit a player profile",
+        )
+        register_api(
             f"{PAGE_API_PREFIX}/operation_log",
             self.page_operation_log,
             ["POST"],
@@ -12895,19 +12907,114 @@ class GameCompanionPlugin(Star):
         }
 
     async def page_set_wins(self) -> dict[str, Any]:
-        """手动修正某玩家胜场。payload: {"game_type","name","wins"}。"""
+        """手动修正某玩家胜场。payload: {"game_type","qq","name","wins"}。
+
+        带 `qq` 时按 QQ 精确修正（同名玩家互不影响）；只有名字时沿用旧的
+        「按名字合并后整体修正」，兼容老前端与脚本。
+        """
         payload = await request.json(default={}) or {}
+        qq = str(payload.get("qq") or "").strip()
         try:
-            changed = self.manager.set_global_wins(
-                str(payload.get("game_type") or ""),
-                str(payload.get("name") or ""),
-                int(payload.get("wins") or 0),
-            )
+            if qq:
+                changed = (
+                    1
+                    if self.manager.set_player_stats(
+                        qq,
+                        str(payload.get("game_type") or ""),
+                        wins=int(payload.get("wins") or 0),
+                    )
+                    else 0
+                )
+            else:
+                changed = self.manager.set_global_wins(
+                    str(payload.get("game_type") or ""),
+                    str(payload.get("name") or ""),
+                    int(payload.get("wins") or 0),
+                )
         except (ValueError, TypeError) as exc:
             return {"status": "error", "message": str(exc), "data": {}}
         if not changed:
             return {"status": "error", "message": "未找到该玩家在对应玩法的记录", "data": {}}
         return {"status": "ok", "data": {"changed": changed}}
+
+    async def page_players(self) -> dict[str, Any]:
+        """玩家档案：按 QQ 汇总的总战绩、各玩法明细、活跃情况与阵营胜场。
+
+        战绩榜是「某个玩法谁最强」，玩家档案是「这个人整体怎么样」——查 QQ、
+        改昵称、修战绩、合并小号、清理测试数据都在这里做。
+        """
+        payload = await request.json(default={}) or {}
+        keyword = str(payload.get("keyword") or "").strip().lower()
+        rows = self.manager.player_profiles()
+        if keyword:
+            rows = [
+                row
+                for row in rows
+                if keyword in str(row.get("qq") or "").lower()
+                or keyword in str(row.get("name") or "").lower()
+            ]
+        today = time.strftime("%Y-%m-%d")
+        total_games = sum(int(row.get("games") or 0) for row in rows)
+        total_wins = sum(int(row.get("wins") or 0) for row in rows)
+        return {
+            "status": "ok",
+            "data": {
+                "players": rows,
+                "summary": {
+                    "players": len(rows),
+                    "games": total_games,
+                    "wins": total_wins,
+                    "active_today": sum(
+                        1 for row in rows if str(row.get("last_active") or "") == today
+                    ),
+                    "today": today,
+                },
+            },
+        }
+
+    async def page_player_action(self) -> dict[str, Any]:
+        """玩家档案操作：改名 / 修战绩 / 清零 / 删除 / 合并小号。"""
+        payload = await request.json(default={}) or {}
+        action = str(payload.get("action") or "").strip()
+        qq = str(payload.get("qq") or "").strip()
+        game_type = str(payload.get("game_type") or "").strip()
+        try:
+            if action == "rename":
+                changed = self.manager.rename_player(qq, str(payload.get("name") or ""))
+                message = f"改名成功（涉及 {changed} 个玩法的记录）"
+            elif action == "set_stats":
+                wins = payload.get("wins")
+                games = payload.get("games")
+                self.manager.set_player_stats(
+                    qq,
+                    game_type,
+                    wins=None if wins is None else int(wins),
+                    games=None if games is None else int(games),
+                )
+                message = "战绩已修正"
+            elif action == "reset":
+                changed = self.manager.reset_player(qq, game_type or None)
+                message = f"已清零 {changed} 条记录"
+            elif action == "delete":
+                changed = self.manager.delete_player(qq, game_type or None)
+                message = f"已删除 {changed} 条记录"
+            elif action == "merge":
+                result = self.manager.merge_player(
+                    qq, str(payload.get("source_qq") or "")
+                )
+                message = (
+                    f"已合并 {result['touched']} 个玩法"
+                    f"（+{result['wins']} 胜 / +{result['games']} 局）"
+                )
+            elif action == "prune":
+                removed = self.manager.prune_empty_players()
+                message = f"已清理 {removed} 个空档案" if removed else "没有可清理的空档案"
+            else:
+                raise ValueError("不支持的操作")
+        except (ValueError, TypeError) as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
+        # endpoint() 只把 data 交给前端，所以 message 也塞进 data 一份
+        return {"status": "ok", "message": message, "data": {"message": message}}
 
     async def page_operation_log(self) -> dict[str, Any]:
         """返回最近的操作日志。payload: {"limit": int}。"""
@@ -12918,17 +13025,24 @@ class GameCompanionPlugin(Star):
     async def page_leaderboard(self) -> dict[str, Any]:
         """返回各玩法全局战绩排行（用于管理台导出海报/浏览）。
 
-        payload 可选 {"game_type": "undercover"}；不传则返回全部玩法。每个玩法最多 limit 条。
+        payload 可选 {"game_type": "undercover", "days": 7}；不传 game_type 则返回
+        全部玩法，days > 0 时按最近 N 天的按天记录统计。每个玩法最多 limit 条。
         """
         payload = await request.json(default={}) or {}
         target = str(payload.get("game_type") or "").strip() or None
         limit = max(0, int(payload.get("limit") or 100))
+        try:
+            days = int(payload.get("days") or 0)
+        except (TypeError, ValueError):
+            days = 0
         game_types = (
             [target] if target and target in SUPPORTED_GAMES else list(SUPPORTED_GAMES)
         )
         result: dict[str, object] = {}
         for gtype in game_types:
-            rows = self.manager.global_leaderboard(gtype, limit=limit)
+            rows = self.manager.global_leaderboard(
+                gtype, limit=limit, days=days or None
+            )
             if rows:
                 result[gtype] = rows
         return {"status": "ok", "data": {"leaderboard": result}}
