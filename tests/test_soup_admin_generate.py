@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -412,7 +413,7 @@ async def test_admin_generate_serializes_clicks(
         "done": 0,
         "titles": [],
         "error": "",
-        "started_at": 1.0,
+        "started_at": time.time(),
         "finished_at": 0.0,
     }
     spawned = capture_spawn(plugin)
@@ -640,3 +641,84 @@ async def test_reset_used_action_rejects_bad_index(
 
     assert result["status"] == "error"
     assert "没有这个序号" in result["message"]
+
+
+# ---------------- 回归：后台任务派发失败 / 卡死 / 脏状态 ----------------
+
+
+@pytest.mark.asyncio
+async def test_spawn_failure_does_not_lock_generate_forever(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """事件循环关闭时派发失败：job 必须落终态，否则按钮永远禁用、再也出不了题。"""
+    patch_prompts(monkeypatch)
+    provider = FakeProvider("chosen", "model-x", [])
+    context = FakeContext([provider], default=provider)
+    monkeypatch.setattr(
+        main_module, "request", FakeRequest({"provider_id": "chosen", "count": 1})
+    )
+    plugin = make_console_plugin(tmp_path, context=context)
+
+    def closed_loop(coro):
+        coro.close()  # 派发失败时协程不会被 await，手动关掉避免 ResourceWarning
+        raise RuntimeError("Event loop is closed")
+
+    plugin._spawn = closed_loop  # noqa: SLF001
+
+    result = await plugin.page_soup_generate()
+
+    assert result["status"] == "error"
+    job = (await plugin.page_soup_generate_status())["data"]["job"]
+    assert job["state"] == "failed"
+    assert job["running"] is False
+    assert job["error"], "要给用户看得见的失败原因"
+
+    spawned = capture_spawn(plugin)
+    again = await plugin.page_soup_generate()
+
+    assert again["status"] == "ok", "下一次点击必须能重新派任务"
+    assert len(spawned) == 1
+    spawned[0].close()  # 这个测试只验证派发，不跑后台任务，手动关掉协程
+
+
+@pytest.mark.asyncio
+async def test_stale_running_job_is_released(tmp_path: Path) -> None:
+    """任务卡死时状态接口自己兜底，别让页面一直显示「生成中」。"""
+    plugin = make_console_plugin(tmp_path)
+    plugin._soup_generate_job = {  # noqa: SLF001
+        "state": "running",
+        "model": "model-x",
+        "total": 1,
+        "done": 0,
+        "titles": [],
+        "error": "",
+        "started_at": time.time() - 7200,
+        "finished_at": 0.0,
+    }
+
+    job = (await plugin.page_soup_generate_status())["data"]["job"]
+
+    assert job["state"] == "failed"
+    assert job["running"] is False
+
+
+@pytest.mark.asyncio
+async def test_generate_status_tolerates_corrupted_job_fields(tmp_path: Path) -> None:
+    """job 里混进坏字段时状态接口不能 500，否则前端轮询会一直拿不到结果。"""
+    plugin = make_console_plugin(tmp_path)
+    plugin._soup_generate_job = {  # noqa: SLF001
+        "state": "running",
+        "model": "model-x",
+        "total": "abc",
+        "done": None,
+        "titles": None,
+        "error": None,
+        "started_at": "bad",
+        "finished_at": "bad",
+    }
+
+    job = (await plugin.page_soup_generate_status())["data"]["job"]
+
+    assert job["running"] is True
+    assert job["total"] == 0
+    assert job["started_at"] == 0.0

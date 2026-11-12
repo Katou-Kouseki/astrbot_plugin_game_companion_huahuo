@@ -230,6 +230,87 @@ def test_prune_empty_players_keeps_real_records(tmp_path: Path) -> None:
     assert list(manager.global_player_wins["gomoku"]) == ["10002"]
 
 
+# ---------------- 回归：清理 / 清零 / 合并跨玩法的数据完整性 ----------------
+
+
+def test_prune_keeps_player_who_has_games_in_another_mode(tmp_path: Path) -> None:
+    """同一个 QQ 在某个玩法里是空档案，不代表整个人都是空档案。"""
+    manager = make_manager(tmp_path)
+    manager.global_player_wins = {
+        "gomoku": {"10001": {"name": "小明", "wins": 0, "games": 0, "daily": {}}},
+        "xiangqi": {"10001": {"name": "小明", "wins": 12, "games": 20, "draws": 1}},
+    }
+
+    assert manager.prune_empty_players() == 0
+    assert "10001" in manager.global_player_wins["xiangqi"], "不能把活跃玩家一起删掉"
+    assert manager.global_player_wins["xiangqi"]["10001"]["wins"] == 12
+
+
+def test_prune_keeps_player_with_only_camp_wins(tmp_path: Path) -> None:
+    """只有卧底阵营胜场、没有对局记录的老玩家，档案也不是空的。"""
+    manager = make_manager(tmp_path)
+    manager.global_player_wins = {
+        "undercover": {"10002": {"name": "小红", "wins": 0, "games": 0, "daily": {}}}
+    }
+    manager.undercover_camp_wins = {"qq:10002": {"name": "小红", "civilian": 4}}
+
+    assert manager.prune_empty_players() == 0
+    assert "qq:10002" in manager.undercover_camp_wins
+
+
+def test_reset_player_clears_camp_wins_for_undercover_or_full_reset(tmp_path: Path) -> None:
+    """阵营胜场是卧底专属：清该玩法或全清都要一起清，清别的玩法则保留。"""
+    manager = make_manager(tmp_path)
+    seed(manager, "undercover", "10001", name="小明", wins=3, games=5)
+    seed(manager, "gomoku", "10001", name="小明", wins=1, games=2)
+
+    manager.undercover_camp_wins["qq:10001"] = {"name": "小明", "undercover": 2}
+    manager.reset_player("10001", "gomoku")
+    assert "qq:10001" in manager.undercover_camp_wins, "清五子棋不该动卧底徽章"
+
+    manager.reset_player("10001", "undercover")
+    assert "qq:10001" not in manager.undercover_camp_wins, "清卧底玩法要连阵营胜场一起清"
+
+    manager.undercover_camp_wins["qq:10001"] = {"name": "小明", "undercover": 2}
+    manager.reset_player("10001")
+    assert "qq:10001" not in manager.undercover_camp_wins, "全清后档案里不该还留着阵营胜场"
+    assert manager.player_profiles()[0]["camps"] == {}
+
+
+def test_delete_player_clears_camp_wins_for_undercover(tmp_path: Path) -> None:
+    manager = make_manager(tmp_path)
+    seed(manager, "undercover", "10001", name="小明", wins=3, games=5)
+    manager.undercover_camp_wins["qq:10001"] = {"name": "小明", "civilian": 4}
+
+    manager.delete_player("10001", "undercover")
+
+    assert "qq:10001" not in manager.undercover_camp_wins
+
+
+def test_merge_player_keeps_daily_draws(tmp_path: Path) -> None:
+    """合并小号时按天分桶的平局也要累加，否则时间窗口里负场会被多算。"""
+    manager = make_manager(tmp_path)
+    today = time.strftime("%Y-%m-%d")
+    manager.global_player_wins["gomoku"] = {
+        "10001": {
+            "name": "A", "wins": 3, "games": 5, "draws": 0,
+            "daily": {today: {"w": 3, "g": 5, "d": 0}},
+        },
+        "10002": {
+            "name": "B", "wins": 1, "games": 4, "draws": 2,
+            "daily": {today: {"w": 1, "g": 4, "d": 2}},
+        },
+    }
+
+    manager.merge_player("10001", "10002")
+
+    slot = manager.global_player_wins["gomoku"]["10001"]["daily"][today]
+    assert slot["d"] == 2
+    row = manager.global_leaderboard("gomoku", days=7)[0]
+    assert row["draws"] == 2
+    assert row["losses"] == 3, "4 胜 / 9 局 / 2 平 => 3 负，不能把平局算成负场"
+
+
 # ---------------- 管理台接口 ----------------
 
 

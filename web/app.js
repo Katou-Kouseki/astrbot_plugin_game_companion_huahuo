@@ -6183,6 +6183,8 @@
         c.stroke();
       }
       const labels = { K: "帅", A: "仕", B: "相", N: "马", R: "车", C: "炮", P: "兵", k: "将", a: "士", b: "象", n: "马", r: "车", c: "炮", p: "卒" };
+      // 棋子标签临时改用 middle 基线，循环结束后恢复默认值，避免污染后续海报文字
+      const previousBaseline = c.textBaseline;
       cells.forEach((row, r) => row.forEach((piece, col) => {
         if (piece === ".") return;
         const x = px + m + col * gx;
@@ -6197,6 +6199,7 @@
         c.textAlign = "center"; c.textBaseline = "middle";
         c.fillText(labels[piece] || piece, x, y + 1);
       }));
+      c.textBaseline = previousBaseline;
       return;
     }
     if (gt === "othello") {

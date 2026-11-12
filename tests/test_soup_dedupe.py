@@ -13,7 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from astrbot_plugin_game_companion_huahuo.main import GameCompanionPlugin
+from astrbot_plugin_game_companion_huahuo.main import (
+    GameCompanionPlugin,
+    _soup_looks_alike,
+)
 from astrbot_plugin_game_companion_huahuo.soup_custom import CustomSoupStore
 from astrbot_plugin_game_companion_huahuo.soup_generated import GeneratedSoupStore
 from astrbot_plugin_game_companion_huahuo.soup_library import SoupLibrary
@@ -21,6 +24,8 @@ from astrbot_plugin_game_companion_huahuo.turtle_soup import puzzle_from_mapping
 from astrbot_plugin_game_companion_huahuo.turtle_soup_deck import SoupDeck
 
 BUILTIN = Path(__file__).resolve().parent.parent / "soup_library.json"
+STORY_B_SURFACE = "她每天把同一把蓝色雨伞放在公司前台，从不撑开，同事问起也只是笑笑，为什么？"
+STORY_B_SOLUTION = "那把伞是父亲生前落下的，父亲走后她怕家里人看见难过，便寄放在前台；每天看一眼当成来看过他，伞骨早就坏了撑不开。"
 PASS_JSON = '{"valid":true,"reason":"","fix":""}'
 
 STORY_A_SURFACE = "他每天凌晨都要把楼道的灯全部关掉，邻居劝了很多次他也不听，为什么？"
@@ -222,3 +227,53 @@ async def test_duplicate_note_names_the_pool(tmp_path: Path, kind: str) -> None:
     assert {"generated": "模型出题存档", "custom": "玩家投稿", "builtin": "内置题库"}[
         kind
     ] in note
+
+
+# ---------------- 回归：判重误杀 / 漏判 ----------------
+
+
+def _short_title_puzzles() -> tuple:
+    first = puzzle_from_mapping(
+        json.loads(payload("无题", surface=STORY_A_SURFACE, solution=STORY_A_SOLUTION)),
+        content_level="normal",
+    )
+    second = puzzle_from_mapping(
+        json.loads(
+            payload(
+                "无题",
+                surface=STORY_B_SURFACE,
+                solution=STORY_B_SOLUTION,
+                theme="雨伞",
+                trick="寄放遗物",
+            )
+        ),
+        content_level="normal",
+    )
+    return first, second
+
+
+def test_generic_short_title_does_not_kill_a_different_story(tmp_path: Path) -> None:
+    """「无题 / 海龟汤」这类通用短标题相似度恒为 1，不能只凭它判重复。"""
+    plugin = make_plugin(tmp_path)
+    first, second = _short_title_puzzles()
+
+    assert _soup_looks_alike(first, second) is False
+    plugin._test_deck.remember(first)  # noqa: SLF001
+    assert plugin._test_deck.find_duplicate(second) is None  # noqa: SLF001
+    assert plugin._soup_duplicate_note(second, plugin._test_deck) == ""  # noqa: SLF001
+
+
+def test_disabled_generated_puzzle_still_blocks_duplicates(tmp_path: Path) -> None:
+    """停用只是不上桌，不代表同一个故事可以换个说法重新入库。"""
+    plugin = make_plugin(tmp_path)
+    puzzle = puzzle_from_mapping(
+        json.loads(payload("关灯的人", surface=STORY_A_SURFACE, solution=STORY_A_SOLUTION)),
+        content_level="normal",
+    )
+    store = plugin._soup_generated()  # noqa: SLF001
+    assert store.add(puzzle, model="m") is True
+    store.set_disabled(1, True)
+
+    note = plugin._soup_duplicate_note(puzzle, plugin._test_deck)  # noqa: SLF001
+
+    assert "模型出题存档" in note

@@ -579,8 +579,9 @@ async def _dispatch(
 ) -> str:
     """执行一次动作并返回给发指令的人。
 
-    `announce=False` 表示这份回执不会被原样发到群里（比如只交给模型转述），
-    这时要由主程序的事件广播补一条，否则群里完全看不到结果。
+    这里的 `announce` 会原样传给 manager 的 `announce_in_group`，语义是
+    **要不要由事件广播往群里补一条结果**。上层 `run_soup_action` 拿到的是
+    「回执是否已原样发群」，两者相反，所以由它取反后传进来。
     """
     game = plugin.manager._turtle_soup_game(room)
     if action == "help":
@@ -663,6 +664,11 @@ async def run_soup_action(
     * 未绑定座位是原来的最高频失败，现在只剩「座位满了」这类真没法办的情况，
       也要说人话；
     * 其余错误转成一句可读的话，不把异常原文丢给用户。
+
+    参数 `announce` 的语义是「**这份回执是不是已经原样发到群里**」：
+    群指令入口（默认 True）发的是群消息回执，主程序就不该再广播一条一样的；
+    LLM 工具（False）只把结果交给模型转述，必须靠事件广播补上。manager 层的
+    `announce_in_group` 问的是「要不要广播」，正好相反，所以下面取反。
     """
     prefix = ""
     if action not in _NO_SEAT_ACTIONS:
@@ -672,7 +678,7 @@ async def run_soup_action(
         prefix = note
     _mark_active(room, qq)
     try:
-        text = await _dispatch(plugin, room, action, body, qq, announce=announce)
+        text = await _dispatch(plugin, room, action, body, qq, announce=not announce)
     except PermissionError as exc:
         return (
             f"{exc}\n"
@@ -1028,6 +1034,8 @@ async def ensure_qq_seat(
         return False, "这是单人房间，已经有玩家在玩了。"
 
     status_before = room.status
+    game_before = getattr(room, "game", None)
+    visitors_before = set(room.visitors.keys())
     # 同一个 QQ 可能早就通过网页拿过访客身份（只是还没坐进席位）：直接复用
     # 那个访客的令牌。以前这里总是新建访客，接着 assign_player 就会撞上
     # 「这个 QQ 已经绑定了本房间的其他访客」，玩家看到的就是莫名其妙的失败。
@@ -1052,9 +1060,24 @@ async def ensure_qq_seat(
             source="qq",
         )
     except (ValueError, PermissionError, RuntimeError) as exc:
+        # join 已经建了访客但入席失败：把这次新建的匿名访客撤掉，否则每次
+        # 失败都留一个既没身份也没席位的残影，越积越多还会干扰冲突判断。
+        for token in set(room.visitors.keys()) - visitors_before:
+            candidate = room.visitors.get(token)
+            if candidate is not None and not getattr(
+                candidate, "identity_confirmed", False
+            ):
+                room.visitors.pop(token, None)
         return False, f"自动加入玩家席失败：{exc}"
-    # 极端情况下 assign_player 会把进行中的房间打回 setup，这里兜回来
-    if status_before == "active" and room.status != "active":
+    # 单人房的 assign_player 会无条件清 room.game 并把 status 打回 setup：
+    # 局中群里第一次说话时会把正在玩的一局直接毁掉，这里兜回来。
+    if (
+        game_before is not None
+        and hasattr(room, "game")
+        and getattr(room, "game", None) is None
+    ):
+        room.game = game_before
+    if status_before in {"active", "paused"} and room.status != status_before:
         room.status = status_before
     room.add_message(
         "system",

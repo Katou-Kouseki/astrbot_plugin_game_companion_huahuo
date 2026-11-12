@@ -78,6 +78,7 @@ from .turtle_soup_deck import (
     fetch_online_puzzles,
     normalize_text,
     text_similarity,
+    title_supports_duplicate,
 )
 from .trusted_identity import TrustedIdentityStore
 from .tunnel import QuickTunnel
@@ -215,22 +216,25 @@ def _text_provider_options(context: Any) -> list[dict[str, str]]:
 
 
 def _soup_looks_alike(left: Any, right: Any) -> bool:
-    """两道题是否「实质是同一道」：汤面/汤底高度相似，或标题几乎一样。
+    """两道题是否「实质是同一道」：汤面/汤底高度相似，或标题像且故事也沾边。
 
     只比较文本本身，不看 theme/trick 这类短字段——模型换个说法就能让
     `signature` 完全不同，但玩家一眼就看出「又是这一题」。
+    标题单独像不够：「无题」「海龟汤」这类通用短标题会恒等于 1.0。
     """
-    pairs = (
-        ("surface", DEDUP_SIMILARITY_THRESHOLD),
-        ("solution", DEDUP_SIMILARITY_THRESHOLD),
-        ("title", 0.82),
-    )
-    for field, threshold in pairs:
+    for field in ("surface", "solution"):
         a = str(getattr(left, field, "") or "").strip()
         b = str(getattr(right, field, "") or "").strip()
-        if a and b and text_similarity(a, b) >= threshold:
+        if a and b and text_similarity(a, b) >= DEDUP_SIMILARITY_THRESHOLD:
             return True
-    return False
+    return title_supports_duplicate(
+        getattr(left, "title", ""),
+        getattr(right, "title", ""),
+        getattr(left, "surface", ""),
+        getattr(right, "surface", ""),
+        getattr(left, "solution", ""),
+        getattr(right, "solution", ""),
+    )
 
 
 def _soup_preview(item: Any, *, limit: int = 14) -> str:
@@ -1828,6 +1832,9 @@ class GameCompanionPlugin(Star):
     SOUP_QUEUE_TIMEOUT = 60.0
     # 同一批多道题之间留个缝，别把上游 token 限额一次打穿
     SOUP_BATCH_GAP = 2.0
+    # 后台出题任务的硬兜底：超过这个时间还 running，状态接口就当它失败了，
+    # 否则模型无响应时页面会永远锁在「生成中」，按钮再也点不了。
+    SOUP_JOB_TIMEOUT_SECONDS = 1800
     # 命中限流后给全局冷却：同批/并发的后续调用先等着，别立刻再撞一次
     LLM_COOLDOWN_CAP = 30.0
     # 判定为「临时性限流」的线索（各家 SDK 的报错措辞不一样）
@@ -6223,7 +6230,7 @@ class GameCompanionPlugin(Star):
         """判重要比对的其它题库；某个题库读不出来就跳过，别影响出题。"""
         pools: list[tuple[str, list[Any]]] = []
         getters = (
-            ("模型出题存档", lambda: self._soup_generated().puzzles("unrestricted")),
+            ("模型出题存档", lambda: self._soup_generated().all_puzzles()),
             ("内置题库", lambda: list(self._soup_library().entries)),
             ("玩家投稿", lambda: list(self._soup_custom().entries)),
         )
@@ -12893,7 +12900,9 @@ class GameCompanionPlugin(Star):
                 game_type=game_type or "",
             )
         return {
-            "status": "ok" if cleared else "error",
+            # 「该玩法暂无数据」是正常业务结果，不是请求失败：前端 endpoint
+            # 遇 status:error 会直接抛异常，提示分支和后续刷新都走不到。
+            "status": "ok",
             "message": (
                 ""
                 if cleared
@@ -13040,7 +13049,10 @@ class GameCompanionPlugin(Star):
         `total`（命中总数）与 `actions`（日志中出现过的动作，用于生成下拉）。
         """
         payload = await request.json(default={}) or {}
-        limit = int(payload.get("limit") or 200)
+        try:
+            limit = int(payload.get("limit") or 200)
+        except (TypeError, ValueError):
+            limit = 200
         action = str(payload.get("action") or "").strip() or None
         keyword = str(payload.get("keyword") or "").strip() or None
         try:
@@ -13067,7 +13079,10 @@ class GameCompanionPlugin(Star):
         """
         payload = await request.json(default={}) or {}
         target = str(payload.get("game_type") or "").strip() or None
-        limit = max(0, int(payload.get("limit") or 100))
+        try:
+            limit = max(0, int(payload.get("limit") or 100))
+        except (TypeError, ValueError):
+            limit = 100
         try:
             days = int(payload.get("days") or 0)
         except (TypeError, ValueError):
@@ -13210,16 +13225,49 @@ class GameCompanionPlugin(Star):
                 "finished_at": 0.0,
                 "running": False,
             }
+        # 快照只读：下面超时兜底要改状态，必须改副本。写回本体会让还在跑的
+        # 任务在 finally 里因「state 已不是 running」而无法写回真实 completed，
+        # 明明已入库的题会被报成「出题超时」。
+        job = dict(job)
+
+        def number(value: object, *, as_int: bool = False) -> float:
+            # job 是内存状态，正常情况下字段类型没问题；但一处坏字段就能让
+            # status 接口 500，前端轮询随即拿不到任何进度，所以逐字段兜底。
+            try:
+                parsed = float(value or 0)
+            except (TypeError, ValueError):
+                return 0 if as_int else 0.0
+            return max(0.0, parsed)
+
         state = str(job.get("state") or "idle")
+        started_at = number(job.get("started_at"))
+        # 后台任务真卡住（模型无响应、事件循环异常）时，总得有个兜底解锁：
+        # 否则页面永远显示「生成中」，按钮也一直禁用。
+        if (
+            state == "running"
+            and started_at > 0
+            and time.time() - started_at > self.SOUP_JOB_TIMEOUT_SECONDS
+        ):
+            state = "failed"
+            job["state"] = "failed"
+            job["error"] = "出题超时，请重新点击"
+            job["finished_at"] = time.time()
+            logger.warning("[GameCompanion] 后台出题任务超时，已释放按钮状态")
+        raw_titles = job.get("titles")
+        titles = (
+            [str(item) for item in raw_titles][:5]
+            if isinstance(raw_titles, (list, tuple))
+            else []
+        )
         return {
             "state": state,
             "model": str(job.get("model") or ""),
-            "total": int(job.get("total") or 0),
-            "done": int(job.get("done") or 0),
-            "titles": [str(item) for item in (job.get("titles") or [])][:5],
+            "total": int(number(job.get("total"), as_int=True)),
+            "done": int(number(job.get("done"), as_int=True)),
+            "titles": titles,
             "error": str(job.get("error") or ""),
-            "started_at": float(job.get("started_at") or 0.0),
-            "finished_at": float(job.get("finished_at") or 0.0),
+            "started_at": started_at,
+            "finished_at": number(job.get("finished_at")),
             "running": state == "running",
         }
 
@@ -13283,6 +13331,17 @@ class GameCompanionPlugin(Star):
             "started_at": time.time(),
             "finished_at": 0.0,
         }
+        # 旧任务若已超时/卡死还没结束，先取消再覆盖状态，否则它会继续往
+        # 题库里塞「幽灵题」，还会和新任务并发写同一份无锁存档。
+        old_job = getattr(self, "_soup_generate_job", None)
+        old_task = old_job.get("_task") if isinstance(old_job, dict) else None
+        if (
+            callable(getattr(old_task, "cancel", None))
+            and callable(getattr(old_task, "done", None))
+            and not old_task.done()
+        ):
+            old_task.cancel()
+            logger.info("[GameCompanion] 已取消上一批仍在运行的出题任务")
         self._soup_generate_job = job
         logger.info(
             "[GameCompanion] 管理台开始出题：模型=%s，等级=%s，数量=%d（后台执行）",
@@ -13290,16 +13349,33 @@ class GameCompanionPlugin(Star):
             content_level,
             count,
         )
-        self._spawn(
-            self._run_soup_generate_job(
-                job,
-                provider,
-                content_level=content_level,
-                difficulty=difficulty,
-                count=count,
-                label=label,
-            )
+        coro = self._run_soup_generate_job(
+            job,
+            provider,
+            content_level=content_level,
+            difficulty=difficulty,
+            count=count,
+            label=label,
         )
+        try:
+            task = self._spawn(coro)
+            # 留个句柄，下次派任务时可以取消卡死的旧任务；snapshot 用白名单
+            # 构造返回值，这个对象不会被序列化到前端。
+            job["_task"] = task
+        except RuntimeError as exc:
+            # 事件循环正在关闭（插件重载/退出）时 create_task 会抛异常。
+            # job 已经写进去了，不落终态的话按钮会永久显示「生成中」，
+            # 之后再点一律被「已经有一批题在生成」挡回去。
+            coro.close()
+            logger.warning("[GameCompanion] 后台出题任务派发失败：%s", exc)
+            job["state"] = "failed"
+            job["error"] = "后台任务派发失败，请稍后重试"
+            job["finished_at"] = time.time()
+            return {
+                "status": "error",
+                "message": job["error"],
+                "data": {"job": self._soup_generate_job_snapshot()},
+            }
         return {
             "status": "ok",
             "message": f"{label} 已开始出题，可以先去忙别的，回来点刷新看结果",

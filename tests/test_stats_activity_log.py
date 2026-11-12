@@ -225,6 +225,44 @@ def test_operation_log_keeps_backwards_compatible_signature(tmp_path: Path) -> N
     assert len(rows) == 1 and rows[0]["detail"] == "第二条"
 
 
+def test_operation_log_today_means_calendar_day(tmp_path: Path) -> None:
+    """管理台「今天」是自然日：不能把昨天晚上（24 小时内）的记录算进来。"""
+    manager = make_manager(tmp_path)
+    now = time.time()
+    local = time.localtime(now)
+    midnight = time.mktime(
+        (local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, local.tm_isdst)
+    )
+    _write_log(
+        manager,
+        [
+            {"ts": midnight + 3600, "time": "今天 01:00", "action": "assign", "detail": "今天"},
+            {"ts": midnight - 3600, "time": "昨天 23:00", "action": "assign", "detail": "昨天"},
+        ],
+    )
+
+    rows = manager.operation_log_page(10, days=1, now=now)["rows"]
+
+    assert [row["detail"] for row in rows] == ["今天"]
+
+
+def test_activity_series_tolerates_dirty_daily_values(tmp_path: Path) -> None:
+    """存档被写坏时趋势图不该让整个管理台接口报 500。"""
+    manager = make_manager(tmp_path)
+    today = day_text(0)
+    seed(
+        manager,
+        "gomoku",
+        "10001",
+        daily={today: {"w": "坏数据", "g": 2, "d": None}},
+    )
+
+    series = manager.activity_series(days=7)
+
+    assert series[-1]["games"] == 2
+    assert series[-1]["wins"] == 0
+
+
 # ---------------- 管理台接口 ----------------
 
 
@@ -273,6 +311,24 @@ async def test_page_operation_log_passes_filters(
     assert [row["action"] for row in data["rows"]] == ["assign"]
     assert data["total"] == 1
     assert "close_room" in data["actions"]
+
+
+@pytest.mark.asyncio
+async def test_page_operation_log_bad_limit_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """接口参数被改坏时回退到默认值，不要抛 ValueError 变成 500。"""
+    manager = make_manager(tmp_path)
+    manager.record_operation("assign", "一条日志")
+    plugin = make_plugin(manager)
+    monkeypatch.setattr(
+        main_module, "request", FakeRequest({"limit": "abc", "days": "bad"})
+    )
+
+    result = await plugin.page_operation_log()
+
+    assert result["status"] == "ok"
+    assert result["data"]["total"] == 1
 
 
 # ---------------- 前端静态契约 ----------------

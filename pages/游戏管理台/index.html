@@ -168,13 +168,13 @@
         <div>
           <span class="eyebrow">玩家档案与全局战绩</span>
           <h2>战绩管理</h2>
-          <p id="statsNotice">按 QQ 查玩家、改显示名称、修正战绩、合并小号；也可以按玩法与时间范围看排行榜、导出海报，并查看管理台操作日志。</p>
+          <p id="statsNotice">按 QQ 查玩家、改显示名称、修正战绩、合并小号；也可以按玩法与时间范围看排行榜、导出海报，并查看管理台操作日志。时间范围只作用于排行榜；玩家档案按全部时间汇总，活跃趋势按下方 7 / 30 天单独切换。</p>
         </div>
         <div class="settings-actions">
           <select id="statsGameSelect" class="stats-game-select" aria-label="选择玩法">
             <option value="" selected>全部玩法</option>
           </select>
-          <select id="statsWindowSelect" class="stats-game-select" aria-label="统计时间范围">
+          <select id="statsWindowSelect" class="stats-game-select" aria-label="统计时间范围" title="仅作用于排行榜；玩家档案按全部时间汇总，活跃趋势按下方 7 / 30 天单独切换">
             <option value="0" selected>全部时间</option>
             <option value="7">最近 7 天</option>
             <option value="30">最近 30 天</option>
@@ -216,7 +216,7 @@
         <header class="section-header">
           <div>
             <h2>玩家档案</h2>
-            <span id="playerSummary">按 QQ 汇总所有玩法的战绩，点操作可改名 / 修正 / 合并 / 删除</span>
+            <span id="playerSummary">按 QQ 汇总所有玩法的战绩（档案按全部时间汇总），点操作可改名 / 修正 / 合并 / 删除</span>
           </div>
           <div class="settings-actions">
             <input id="playerSearch" class="library-search" type="search" placeholder="搜索昵称或 QQ" aria-label="搜索玩家" />
@@ -243,6 +243,7 @@
                 <th data-player-sort="name">玩家</th>
                 <th>QQ</th>
                 <th data-player-sort="wins">胜 / 负 / 局</th>
+                <th data-player-sort="games">局数</th>
                 <th data-player-sort="winrate">胜率</th>
                 <th>玩过</th>
                 <th data-player-sort="recent">最近活跃</th>

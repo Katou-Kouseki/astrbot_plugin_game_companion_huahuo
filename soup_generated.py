@@ -124,6 +124,19 @@ class GeneratedSoupStore:
                 result.append(puzzle)
         return result
 
+    def all_puzzles(self) -> list[SoupPuzzle]:
+        """判重专用：包含停用题在内的全部生成题。
+
+        `puzzles()` 是「可以上桌的题」，会跳过停用的；但管理员停用一道题
+        往往正因为它重复或质量差，停用不等于允许模型照搬同一个故事再存一份。
+        """
+        result: list[SoupPuzzle] = []
+        for row in self.items:
+            puzzle = self._build(row)
+            if puzzle is not None:
+                result.append(puzzle)
+        return result
+
     def unused(self, max_content_level: str = "unrestricted") -> list[SoupPuzzle]:
         """还没出过的题（预生成的目标就是让这些保持够用）。
 

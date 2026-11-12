@@ -74,6 +74,34 @@ def text_similarity(left: Any, right: Any) -> float:
     return intersection / union if union else 0.0
 
 
+def title_supports_duplicate(
+    title_a: Any,
+    title_b: Any,
+    surface_a: Any,
+    surface_b: Any,
+    solution_a: Any,
+    solution_b: Any,
+    *,
+    title_threshold: float = 0.82,
+    body_threshold: float = 0.25,
+) -> bool:
+    """标题高度相似，能不能据此判成同一道题。
+
+    两三个字的通用标题（「无题」「海龟汤」）归一化后长度小于等于 3，
+    3-gram 相似度恒为 1.0：只凭标题判重会把完全不同的故事一起杀掉，
+    出题失败率反而飙升。所以太短的标题不作数；标题像还得汤面或汤底
+    也沾点边，才认定是同一道题换了个说法。
+    """
+    a = normalize_text(title_a)
+    b = normalize_text(title_b)
+    if len(a) < 4 or len(b) < 4 or text_similarity(a, b) < title_threshold:
+        return False
+    return (
+        text_similarity(surface_a, surface_b) >= body_threshold
+        or text_similarity(solution_a, solution_b) >= body_threshold
+    )
+
+
 def puzzle_fingerprint(puzzle: SoupPuzzle) -> str:
     """题目的强指纹：标题 + 汤面归一化后的哈希。
 
@@ -239,7 +267,14 @@ class SoupDeck:
             )
         for record in reversed(self._records):
             if (
-                text_similarity(puzzle.title, record.get("title")) >= 0.82
+                title_supports_duplicate(
+                    puzzle.title,
+                    record.get("title"),
+                    puzzle.surface,
+                    record.get("surface"),
+                    puzzle.solution,
+                    record.get("solution"),
+                )
                 or text_similarity(puzzle.surface, record.get("surface"))
                 >= self.threshold
                 or text_similarity(puzzle.solution, record.get("solution"))

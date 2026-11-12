@@ -957,6 +957,8 @@ class GameRoom:
                     "loser_name": self.last_board_result.get("loser_name") or "",
                     "loser_side": self.last_board_result.get("loser_side") or "",
                     "draw": bool(self.last_board_result.get("draw")),
+                    "draw_names": self.last_board_result.get("draw_names"),
+                    "human_name": self.last_board_result.get("human_name"),
                     "moves": int(self.last_board_result.get("moves") or 0),
                 }
                 if isinstance(self.last_board_result, dict)

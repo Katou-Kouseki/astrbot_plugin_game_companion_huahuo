@@ -1263,6 +1263,9 @@
   let logWindow = 0;           // 操作日志按时间筛选（天，0 = 全部）
   let logKeyword = "";         // 操作日志关键词
   let logSearchTimer = null;   // 关键词输入防抖
+  let statsSeq = 0;            // 排行榜请求序号：只认最后一批，旧响应不覆盖新筛选
+  let playersSeq = 0;          // 玩家档案请求序号：玩法 / 趋势天数各自成链
+  let logSeq = 0;              // 操作日志请求序号：日志筛选单独成链，避免和玩法筛选互相抵消
 
   const GAME_LABELS = {
     gomoku: "五子棋", xiangqi: "中国象棋", weiqi: "围棋", tictactoe: "井字棋",
@@ -1307,6 +1310,19 @@
     return rows.slice().sort((a, b) => key(b) - key(a));
   }
 
+  /** 当前可见的玩家行：表格与导出 CSV 共用同一套筛选 + 排序，避免导出的和看到的不一致 */
+  function visiblePlayerRows() {
+    const keyword = playerKeyword.trim().toLowerCase();
+    const filtered = keyword
+      ? playerProfiles.filter(
+          (p) =>
+            String(p.qq || "").includes(keyword) ||
+            String(p.name || "").toLowerCase().includes(keyword),
+        )
+      : playerProfiles;
+    return sortPlayerRows(filtered);
+  }
+
   function campSummary(camps) {
     if (!camps || typeof camps !== "object") return "";
     const labels = { civilian: "平民", undercover: "卧底", whiteboard: "白板" };
@@ -1319,6 +1335,8 @@
   }
 
   async function loadStats() {
+    // 每次筛选变化都发一批请求：只让序号最大的那批渲染，快速连切时旧响应不会覆盖新结果
+    const seq = ++statsSeq;
     const select = document.getElementById("statsGameSelect");
     if (select.options.length === 1) {
       // 首次进入：用已知玩法填充筛选下拉
@@ -1337,40 +1355,53 @@
       if (statsFilter) payload.game_type = statsFilter;
       if (statsWindow) payload.days = statsWindow;
       const data = await endpoint("POST", "leaderboard", payload);
+      if (seq !== statsSeq) return;   // 玩法 / 时间窗口已经变了，这份排行榜作废
       statsLeaderboard = data?.leaderboard || {};
       renderStats();
     } catch (error) {
-      showToast(error?.message || "无法读取战绩排行");
+      if (seq === statsSeq) showToast(error?.message || "无法读取战绩排行");
+      return;
     }
     await Promise.all([loadPlayers(), loadOperationLog()]);
   }
 
   /** 玩家档案 + 活跃趋势：跟着顶部玩法下拉联动，选了玩法就只统计该玩法 */
   async function loadPlayers() {
+    // 档案也会被「活跃趋势 7/30 天」单独触发，用自己的序号链，别影响排行榜 / 日志
+    const seq = ++playersSeq;
     try {
       const payload = { activity_days: activityDays };
       if (statsFilter) payload.game_type = statsFilter;
       const data = await endpoint("POST", "players", payload);
+      if (seq !== playersSeq) return;   // 玩法 / 趋势天数已经变了，旧档案作废
       playerProfiles = data?.players || [];
       activitySeries = data?.activity?.series || [];
       renderPlayers(data?.summary || {});
     } catch (error) {
-      showToast(error?.message || "无法读取玩家档案");
+      if (seq === playersSeq) showToast(error?.message || "无法读取玩家档案");
     }
   }
 
   /** 操作日志：动作 / 时间 / 关键词筛选都在后端做，日志攒多了也不会卡 */
   async function loadOperationLog() {
+    // 日志筛选与玩法筛选互不干扰：日志用自己的序号链，只认最后一次日志请求
+    const seq = ++logSeq;
     try {
       const payload = { limit: 500 };
       if (logAction) payload.action = logAction;
       if (logWindow) payload.days = logWindow;
       if (logKeyword.trim()) payload.keyword = logKeyword.trim();
       const data = await endpoint("POST", "operation_log", payload);
-      renderLogActions(data?.actions || []);
+      if (seq !== logSeq) return;   // 动作 / 时间 / 关键词已经变了，旧日志作废
+      // 当前动作不在新列表里时下拉会回到「全部动作」，这次响应仍是按旧动作过滤的，
+      // 直接渲染会出现「下拉全选、表格却没有符合条件的日志」，所以按新条件重查一次
+      if (renderLogActions(data?.actions || [])) {
+        await loadOperationLog();
+        return;
+      }
       renderStatsLog(data?.rows || [], Number(data?.total) || 0);
     } catch (error) {
-      showToast(error?.message || "无法读取操作日志");
+      if (seq === logSeq) showToast(error?.message || "无法读取操作日志");
     }
   }
 
@@ -1420,10 +1451,10 @@
     });
   }
 
-  /** 日志动作下拉：只重建变化过的选项，避免每次刷新都打断选择 */
+  /** 日志动作下拉：只重建变化过的选项，避免每次刷新都打断选择；返回是否把选中项重置了 */
   function renderLogActions(actions) {
     const select = document.getElementById("logActionSelect");
-    if (!select) return;
+    if (!select) return false;
     const current = logAction || "";
     const listed = actions.slice();
     const existing = Array.from(select.options).slice(1).map((opt) => opt.value);
@@ -1439,7 +1470,9 @@
     select.value = Array.from(select.options).some((opt) => opt.value === current)
       ? current
       : "";
-    if (select.value !== current) logAction = select.value;
+    const reset = select.value !== current;
+    if (reset) logAction = select.value;
+    return reset;
   }
 
   function renderPlayers(summary) {
@@ -1466,22 +1499,16 @@
 
     const scope = statsFilter ? `《${gameLabel(statsFilter)}》` : "全部玩法";
     const keyword = playerKeyword.trim().toLowerCase();
-    const filtered = keyword
-      ? playerProfiles.filter(
-          (p) =>
-            String(p.qq || "").includes(keyword) ||
-            String(p.name || "").toLowerCase().includes(keyword),
-        )
-      : playerProfiles;
-    const rows = sortPlayerRows(filtered);
+    const rows = visiblePlayerRows();
 
     const empty = document.getElementById("playerEmpty");
     if (empty) empty.hidden = rows.length > 0;
     const summaryNode = document.getElementById("playerSummary");
     if (summaryNode) {
+      // 顶部时间窗口只作用于排行榜，档案始终按全部时间汇总，写明口径避免用户以为数字矛盾
       summaryNode.textContent = rows.length
-        ? `共 ${rows.length} 位玩家 · ${scope}${keyword ? "（已筛选）" : ""} · 点表头可换排序，右侧图标可改名 / 清零 / 合并 / 删除`
-        : `按 QQ 汇总${scope}的战绩`;
+        ? `共 ${rows.length} 位玩家 · ${scope}${keyword ? "（已筛选）" : ""} · 档案按全部时间汇总 · 点表头可换排序，右侧图标可改名 / 清零 / 合并 / 删除`
+        : `按 QQ 汇总${scope}的战绩（档案按全部时间汇总）`;
     }
 
     rows.slice(0, 300).forEach((player) => {
@@ -1498,6 +1525,8 @@
       const qqTd = createText("td", displayQQ(player.qq), "qq-cell");
       qqTd.title = showFullQQ ? "" : "已打码，勾选「显示完整 QQ」可查看";
       const statTd = createText("td", recordText(player), "wins-cell");
+      // 单独一列「局数」对应 data-player-sort="games"，点其它列后还能回到默认排序
+      const gamesCountTd = createText("td", `${Number(player.games) || 0} 局`, "rank-cell");
       const rateTd = createText(
         "td",
         `${Math.round(Number(player.winrate) || 0)}%`,
@@ -1527,7 +1556,7 @@
         rowIcon("git-merge", "把另一个 QQ 合并到这位玩家", () => mergePlayerInto(player)),
         rowIcon("trash-2", "删除这位玩家的战绩记录", () => deletePlayerStats(player), true),
       );
-      tr.append(nameTd, qqTd, statTd, rateTd, gamesTd, activeTd, actTd);
+      tr.append(nameTd, qqTd, statTd, gamesCountTd, rateTd, gamesTd, activeTd, actTd);
       body.appendChild(tr);
     });
     icons();
@@ -1606,13 +1635,22 @@
   }
 
   function exportPlayerCsv() {
-    if (!playerProfiles.length) {
+    // 只导出当前可见行：玩法（后端已按 game_type 过滤）+ 关键词 + 排序都与表格一致
+    const rows = visiblePlayerRows();
+    if (!rows.length) {
       showToast("暂无玩家档案可导出");
       return;
     }
     const header = ["昵称", "QQ", "胜场", "负场", "平局", "总局数", "胜率(%)", "玩过玩法", "最近活跃", "活跃天数"];
     const lines = [header.join(",")];
-    playerProfiles.forEach((player) => {
+    // Excel / WPS 会把以 = + - @ 以及制表符 / 回车开头的单元格当公式执行，
+    // 前面补一个单引号强制按文本处理；昵称这类自由文本最容易踩到
+    const csvCell = (value) => {
+      let text = String(value ?? "");
+      if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+      return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    rows.forEach((player) => {
       const cells = [
         player.name || "",
         player.qq || "",
@@ -1624,10 +1662,7 @@
         (player.games_played || []).map(gameLabel).join(" / "),
         player.last_at_text || player.last_active || "",
         Number(player.active_days) || 0,
-      ].map((cell) => {
-        const text = String(cell ?? "");
-        return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-      });
+      ].map(csvCell);
       lines.push(cells.join(","));
     });
     const blob = new Blob([`\ufeff${lines.join("\r\n")}`], {
@@ -1636,10 +1671,12 @@
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `玩家档案_${new Date().toISOString().slice(0, 10)}.csv`;
+    // 文件名带上当前玩法：导出的和表格里看到的筛选口径一致，事后也好区分
+    const scope = statsFilter ? gameLabel(statsFilter) : "全部玩法";
+    link.download = `玩家档案_${scope}_${new Date().toISOString().slice(0, 10)}.csv`;
     link.click();
     URL.revokeObjectURL(url);
-    showToast(`已导出 ${playerProfiles.length} 位玩家的档案`);
+    showToast(`已导出 ${rows.length} 位玩家的档案`);
   }
 
   function renderStats() {
@@ -1799,7 +1836,10 @@
     action.disabled = true;
     try {
       const result = await endpoint("POST", "leaderboard/clear", statsFilter ? { game_type: statsFilter } : {});
-      showToast(result?.cleared ? `已清空${scope}战绩` : "没有可清空的排行榜数据");
+      // 后端统一用 status:"ok" + cleared 表示结果（status:"error" 会在 endpoint 里抛异常），
+      // 有 message 时优先展示后端文案，成功清空不能被误报成「没有可清空」
+      const cleared = Number(result?.cleared) || 0;
+      showToast(result?.message || (cleared ? `已清空${scope}战绩` : "没有可清空的排行榜数据"));
       await loadStats();
       await loadRooms();
     } catch (error) {
@@ -2016,8 +2056,11 @@
     if (!status) return;
     // 服务端状态优先：重进页面时本地还没有 job，靠快照把「生成中」恢复回来，
     // 否则按钮会先闪一下可点，让人以为任务没派出去。
-    const restored = jobFromPayload({ job: data?.generate_job });
-    if (restored || soupGenerateJob) renderGenerateJob(restored || soupGenerateJob);
+    // 统一交给 jobFromPayload 剥壳：快照可能是 {status,data} 包装或字段缺失，别再各写一套解析
+    const restored = jobFromPayload(data) || jobFromPayload(data?.generate_job);
+    // 本地 optimistic running 优先：刚点过「立即出题」、接口还没回时，不能被旧快照冲成 idle 把按钮解锁
+    if (soupJobRunning(soupGenerateJob)) renderGenerateJob(soupGenerateJob);
+    else if (restored || soupGenerateJob) renderGenerateJob(restored || soupGenerateJob);
     else status.textContent = models.length ? `已载入 ${models.length} 个模型` : "";
   }
 
@@ -2025,12 +2068,18 @@
   let soupGenerateJob = null;
   let soupGeneratePolling = false;
 
-  // 页面接口有时给整包 {status,message,data}，有时只给 data，这里都认
+  // 页面接口形态不统一：整包 {status,message,data}、只给 data、快照里的 generate_job 字段，
+  // 甚至 generate_job 本身又套了一层包装。统一逐层剥壳，只认带 state 的 job 对象，
+  // 避免某处少写一种解析就把「生成中」误判成结束。
   function jobFromPayload(payload) {
-    if (!payload) return null;
-    if (payload.job) return payload.job;
-    if (payload.data?.job) return payload.data.job;
-    return payload.state ? payload : null;
+    let node = payload;
+    for (let depth = 0; node && depth < 4; depth += 1) {
+      if (node.state) return node;
+      const next = node.job ?? node.generate_job ?? node.data;
+      if (!next || next === node) return null;
+      node = next;
+    }
+    return null;
   }
 
   function soupJobRunning(job) {
@@ -2109,26 +2158,69 @@
     }
   }
 
+  // 把本地任务收成失败终态：renderGenerateJob 会解锁按钮 / 参数，并给用户一句可操作的提示
+  function finishSoupGenerateAsFailed(job, message) {
+    const failed = {
+      state: "failed",
+      running: false,
+      model: job?.model || "模型",
+      total: Number(job?.total || 0),
+      done: Number(job?.done || 0),
+      titles: [],
+      error: message,
+      started_at: Number(job?.started_at || 0),
+      finished_at: Date.now() / 1000,
+    };
+    renderGenerateJob(failed);
+    showToast(message);
+  }
+
   async function pollSoupGenerate() {
     if (soupGeneratePolling) return;
     soupGeneratePolling = true;
+    // 连续读不到进度的上限：网络长期不通时不能让按钮和参数控件永远 disabled
+    const MAX_FETCH_MISSES = 12;
+    // 后端若把 job 永久留在 running（派发失败却没收成终态），状态接口会一直 200 + running，
+    // 这条路径不会进 !job 的失败计数（每轮还被清零）；给「持续 running」也设一道总超时。
+    // 2100s 比后端 SOUP_JOB_TIMEOUT_SECONDS=1800 宽松，只做最后防线，别误伤正常长任务。
+    const SOUP_JOB_MAX_SECONDS = 2100;
+    const SOUP_JOB_MAX_POLLS = 840;   // 840 × 2.5s ≈ 2100s，兜底 started_at 缺失的情形
     let misses = 0;
+    let runningPolls = 0;
     try {
       for (;;) {
         const job = await fetchSoupGenerateJob();
-        // 偶发网络抖动别把「生成中」误判成结束：本地还认为在跑就一直重试，
-        // 只是把间隔拉长；拿到 idle 状态后按钮才会解锁。
+        // 偶发网络抖动别把「生成中」误判成结束：本地还认为在跑就重试几次，
+        // 只是把间隔拉长；超过上限就按失败收尾解锁，别把页面永久锁死。
         if (!job) {
           misses += 1;
-          if (soupJobRunning(soupGenerateJob)) {
+          if (soupJobRunning(soupGenerateJob) && misses <= MAX_FETCH_MISSES) {
             await new Promise((resolve) =>
               window.setTimeout(resolve, misses < 3 ? 2500 : 10000),
             );
             continue;
           }
+          if (soupJobRunning(soupGenerateJob)) {
+            // 收尾成一个 failed job：renderGenerateJob 会把按钮 / 参数解锁并留下失败状态
+            finishSoupGenerateAsFailed(soupGenerateJob, "暂时读不到出题进度，请稍后刷新");
+          }
           break;
         }
         misses = 0;
+        if (soupJobRunning(job)) {
+          runningPolls += 1;
+          const startedAt = Number(job.started_at || 0);
+          const elapsed = startedAt > 0 ? Math.max(0, Date.now() / 1000 - startedAt) : 0;
+          // 假 running 时 200 + running 会一直走这里：按 started_at 算总时长，
+          // started_at 缺失时用轮数上限兜底；两者到顶就收尾，别让 finally 永不执行
+          if ((startedAt > 0 && elapsed > SOUP_JOB_MAX_SECONDS) || runningPolls > SOUP_JOB_MAX_POLLS) {
+            // 同一批已收尾过就不再重复弹提示（切回页面会反复触发轮询）
+            if (!(soupGenerateJob?.state === "failed" && Number(soupGenerateJob?.started_at || 0) === startedAt)) {
+              finishSoupGenerateAsFailed(job, "出题时间过长，请刷新查看结果");
+            }
+            break;   // 不调用 renderGenerateJob(job)，别把按钮又锁回 running
+          }
+        }
         const wasRunning = soupJobRunning(soupGenerateJob);
         renderGenerateJob(job);
         if (soupJobRunning(job)) {
