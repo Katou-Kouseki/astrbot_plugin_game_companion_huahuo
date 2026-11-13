@@ -13010,11 +13010,13 @@ class GameCompanionPlugin(Star):
             elif action == "set_stats":
                 wins = payload.get("wins")
                 games = payload.get("games")
+                draws = payload.get("draws")
                 self.manager.set_player_stats(
                     qq,
                     game_type,
                     wins=None if wins is None else int(wins),
                     games=None if games is None else int(games),
+                    draws=None if draws is None else int(draws),
                 )
                 message = "战绩已修正"
             elif action == "reset":

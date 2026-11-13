@@ -1052,8 +1052,9 @@ class RoomManager:
         *,
         wins: int | None = None,
         games: int | None = None,
+        draws: int | None = None,
     ) -> bool:
-        """按 QQ 精确修正某玩法的胜场 / 局数（同名玩家互不影响）。
+        """按 QQ 精确修正某玩法的胜场 / 负场 / 平局（同名玩家互不影响）。
 
         只改总数、不动按天分桶：时间窗口（近 7 / 30 天）看到的是历史真实记录。
         """
@@ -1078,15 +1079,22 @@ class RoomManager:
             raise ValueError("胜场不能大于总局数")
         info["wins"] = new_wins
         info["games"] = new_games
-        # 平局不能比「局数 - 胜场」还多：5 胜 3 平 5 局这种自相矛盾的数据，
-        # 负场会被 max(0, ...) 掩盖成 0，管理台上完全看不出异常。
-        info["draws"] = min(
-            self._stat_int(info.get("draws")), max(0, new_games - new_wins)
-        )
+        # 平局可以手动改；但「胜 + 平」不能超过总局数——5 胜 3 平 5 局这种
+        # 自相矛盾的数据，负场会被 max(0, ...) 掩盖成 0，管理台上看不出异常。
+        if draws is not None:
+            new_draws = self._stat_int(draws)
+            if new_wins + new_draws > new_games:
+                raise ValueError("胜场 + 平局不能大于总局数")
+        else:
+            new_draws = min(
+                self._stat_int(info.get("draws")), max(0, new_games - new_wins)
+            )
+        info["draws"] = new_draws
         self._save_global_stats()
         self.record_operation(
             "set_player_stats",
-            f"把玩家 {qq} 在《{game_type}》修正为 {new_wins} 胜 / {new_games} 局",
+            f"把玩家 {qq} 在《{game_type}》修正为 "
+            f"{new_wins} 胜 / {max(0, new_games - new_wins - new_draws)} 负 / {new_draws} 平",
             operator="游戏管理台",
             game_type=game_type,
         )

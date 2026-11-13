@@ -168,7 +168,7 @@
         <div>
           <span class="eyebrow">玩家档案与全局战绩</span>
           <h2>战绩管理</h2>
-          <p id="statsNotice">按 QQ 查玩家、改显示名称、修正战绩、合并小号；也可以按玩法与时间范围看排行榜、导出海报，并查看管理台操作日志。时间范围只作用于排行榜；玩家档案按全部时间汇总，活跃趋势按下方 7 / 30 天单独切换。</p>
+          <p id="statsNotice">按 QQ 查玩家、改显示名称、编辑战绩；排行榜按玩法与时间范围查看，档案按全部时间汇总。</p>
         </div>
         <div class="settings-actions">
           <select id="statsGameSelect" class="stats-game-select" aria-label="选择玩法">
@@ -179,23 +179,26 @@
             <option value="7">最近 7 天</option>
             <option value="30">最近 30 天</option>
           </select>
-          <button id="statsClearAction" class="secondary-button danger-button" type="button" title="清空当前所选玩法的战绩排行">
-            <i data-lucide="trash-2"></i><span>清空所选玩法</span>
-          </button>
-          <button id="posterAction" class="secondary-button" type="button">
-            <i data-lucide="image"></i><span>导出海报</span>
-          </button>
-          <button id="playerExportAction" class="secondary-button" type="button" title="把玩家档案导出成 CSV 表格">
-            <i data-lucide="table"></i><span>导出档案</span>
-          </button>
-          <button id="playerPruneAction" class="secondary-button" type="button" title="清理 0 局 0 胜的空档案">
-            <i data-lucide="eraser"></i><span>清理空档案</span>
-          </button>
-          <button id="refreshStatsAction" class="secondary-button" type="button">
-            <i data-lucide="rotate-ccw"></i><span>刷新</span>
-          </button>
         </div>
       </header>
+
+      <div class="stats-toolbar" role="group" aria-label="战绩操作">
+        <button id="statsClearAction" class="secondary-button danger-button" type="button" title="清空当前所选玩法的战绩排行">
+          <i data-lucide="trash-2"></i><span>清空所选玩法</span>
+        </button>
+        <button id="posterAction" class="secondary-button" type="button">
+          <i data-lucide="image"></i><span>导出海报</span>
+        </button>
+        <button id="playerExportAction" class="secondary-button" type="button" title="把玩家档案导出成 CSV 表格">
+          <i data-lucide="table"></i><span>导出档案</span>
+        </button>
+        <button id="playerPruneAction" class="secondary-button" type="button" title="清理 0 局 0 胜的空档案">
+          <i data-lucide="eraser"></i><span>清理空档案</span>
+        </button>
+        <button id="refreshStatsAction" class="secondary-button" type="button">
+          <i data-lucide="rotate-ccw"></i><span>刷新</span>
+        </button>
+      </div>
 
       <section class="metrics" aria-label="玩家概况">
         <div>
@@ -216,15 +219,15 @@
         <header class="section-header">
           <div>
             <h2>玩家档案</h2>
-            <span id="playerSummary">按 QQ 汇总所有玩法的战绩（档案按全部时间汇总），点操作可改名 / 修正 / 合并 / 删除</span>
-          </div>
-          <div class="settings-actions">
-            <input id="playerSearch" class="library-search" type="search" placeholder="搜索昵称或 QQ" aria-label="搜索玩家" />
-            <label class="checkbox-inline" title="默认对 QQ 打码，方便截图分享">
-              <input id="playerShowQQ" type="checkbox" /><span>显示完整 QQ</span>
-            </label>
+            <span id="playerSummary">按 QQ 汇总所有玩法的战绩（档案按全部时间汇总），右侧图标可改名 / 编辑战绩 / 清零 / 删除</span>
           </div>
         </header>
+        <div class="player-toolbar">
+          <input id="playerSearch" class="library-search" type="search" placeholder="搜索昵称或 QQ" aria-label="搜索玩家" />
+          <label class="checkbox-inline" title="默认对 QQ 打码，方便截图分享">
+            <input id="playerShowQQ" type="checkbox" /><span>显示完整 QQ</span>
+          </label>
+        </div>
         <div class="activity-strip" aria-label="近期活跃趋势">
           <div class="activity-head">
             <strong>活跃趋势</strong>
@@ -243,9 +246,8 @@
                 <th data-player-sort="name">玩家</th>
                 <th>QQ</th>
                 <th data-player-sort="wins">胜 / 负 / 局</th>
-                <th data-player-sort="games">局数</th>
                 <th data-player-sort="winrate">胜率</th>
-                <th>玩过</th>
+                <th data-player-sort="games" title="点这里按参与局数排序">玩过</th>
                 <th data-player-sort="recent">最近活跃</th>
                 <th class="actions-column">操作</th>
               </tr>
@@ -591,19 +593,55 @@
           <span class="eyebrow" id="promptEyebrow">输入数值</span>
           <h2 id="promptTitle">请输入</h2>
         </div>
-        <button class="icon-button" value="cancel" type="submit" title="关闭" aria-label="关闭">
+        <button class="icon-button" value="cancel" type="submit" formnovalidate title="关闭" aria-label="关闭">
           <i data-lucide="x"></i>
         </button>
       </header>
       <p id="promptMessage" class="dialog-message"></p>
       <label>
         <span id="promptLabel">数值</span>
-        <input id="promptInput" type="number" min="0" step="1" inputmode="numeric" autocomplete="off" required />
+        <input id="promptInput" type="number" min="0" step="1" inputmode="numeric" autocomplete="off" />
       </label>
       <footer>
-        <button class="secondary-button" value="cancel" type="submit">取消</button>
+        <button class="secondary-button" value="cancel" type="submit" formnovalidate>取消</button>
         <button id="promptProceed" class="primary-button" value="default" type="button">
           <i data-lucide="check"></i><span>确定</span>
+        </button>
+      </footer>
+    </form>
+  </dialog>
+
+  <!-- 手动编辑某个玩法的战绩：胜 / 负 / 平 三个数分开填，比「只改胜场和局数」直观 -->
+  <dialog id="statsEditorDialog">
+    <form method="dialog" id="statsEditorForm">
+      <header>
+        <div>
+          <span class="eyebrow">手动修正</span>
+          <h2 id="statsEditorTitle">编辑战绩</h2>
+        </div>
+        <button class="icon-button" value="cancel" type="submit" formnovalidate title="关闭" aria-label="关闭">
+          <i data-lucide="x"></i>
+        </button>
+      </header>
+      <p id="statsEditorMessage" class="dialog-message"></p>
+      <div class="stats-editor-grid">
+        <label>
+          <span>胜</span>
+          <input id="statsEditorWins" type="number" min="0" step="1" inputmode="numeric" value="0" />
+        </label>
+        <label>
+          <span>负</span>
+          <input id="statsEditorLosses" type="number" min="0" step="1" inputmode="numeric" value="0" />
+        </label>
+        <label>
+          <span>平</span>
+          <input id="statsEditorDraws" type="number" min="0" step="1" inputmode="numeric" value="0" />
+        </label>
+      </div>
+      <footer>
+        <button class="secondary-button" value="cancel" type="submit" formnovalidate>取消</button>
+        <button id="statsEditorSave" class="primary-button" value="default" type="button">
+          <i data-lucide="check"></i><span>保存</span>
         </button>
       </footer>
     </form>

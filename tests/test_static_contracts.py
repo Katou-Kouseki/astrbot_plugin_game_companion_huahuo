@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.25"
+    assert metadata["version"] == "0.6.26"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2160,7 +2160,11 @@ def test_player_profile_admin_surface() -> None:
     assert "function recordText" in script
     assert "function displayQQ" in script
     assert "function exportPlayerCsv" in script
-    assert "action: \"rename\"" in script and "action: \"merge\"" in script
+    assert "action: \"rename\"" in script
+    # 「合并小号」入口已移除：场景少又容易误操作，改成胜 / 负 / 平都能手动编辑
+    assert "action: \"set_stats\"" in script
+    assert "function editPlayerStats" in script
+    assert 'id="statsEditorDialog"' in html
 
 
 def test_leaderboard_winrate_counts_losses() -> None:

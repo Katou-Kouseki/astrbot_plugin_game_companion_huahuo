@@ -57,6 +57,9 @@ def test_reload_preserves_daily_draws_and_last_active(tmp_path: Path) -> None:
 def test_reload_sanitizes_broken_values(tmp_path: Path) -> None:
     """存档被写坏时加载清洗，别让排行榜 / 档案接口一读就崩。"""
     path = tmp_path / "global.json"
+    # 按天分桶必须落在「今天」：活跃趋势的窗口是从今天往回数，
+    # 写死某个日期的话换一天跑就会取不到这条，测试自己会过期。
+    today = time.strftime("%Y-%m-%d")
     path.write_text(
         json.dumps(
             {
@@ -68,7 +71,7 @@ def test_reload_sanitizes_broken_values(tmp_path: Path) -> None:
                         "draws": "99",
                         "last_at": "bad",
                         "daily": {
-                            "2026-11-12": {"w": "x", "g": 4, "d": None},
+                            today: {"w": "x", "g": 4, "d": None},
                             "broken": "not a dict",
                         },
                     }

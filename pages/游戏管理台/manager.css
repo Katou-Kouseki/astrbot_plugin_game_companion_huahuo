@@ -4,6 +4,9 @@
   letter-spacing: 0;
   --bg: #f5f6f4;
   --surface: #ffffff;
+  /* 卡片里再嵌一层时的浅底（活跃趋势条），深色主题要单独覆盖 */
+  --surface-alt: #f4f6f4;
+  --accent: #215c45;
   --text: #202522;
   --muted: #69716c;
   --line: #d6dad7;
@@ -133,9 +136,15 @@ td small { margin-top: 3px; color: var(--muted); }
 .settings-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .settings-actions { gap: 8px; }
 .game-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-/* 战绩管理：排行 + 日志双栏 */
-.stats-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.stats-card { padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+/* 战绩管理：顶部动作按钮单独一条，别和标题、下拉挤在同一行 */
+.stats-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 8px; margin: -4px 0 16px;
+}
+/* 排行榜与操作日志各自占满整行：两张表列都不少（6 列 / 5 列），
+   挤在半屏里会横向滚动、文字频繁折行，上下排开更好读。 */
+.stats-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.stats-card { padding: 18px 20px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .stats-card .section-header { justify-content: space-between; align-items: flex-start; margin-bottom: 12px; }
 .stats-card .section-header span { color: var(--muted); font-size: 12px; }
 .stats-game-select { max-width: 150px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); font-size: 13px; }
@@ -146,7 +155,16 @@ td small { margin-top: 3px; color: var(--muted); }
 .stats-card .settings-actions { flex-wrap: wrap; justify-content: flex-end; }
 .checkbox-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
 .checkbox-inline input { width: 14px; height: 14px; accent-color: var(--green); }
+/* 玩家档案：搜索与 QQ 打码开关单独占一行，别和标题抢宽度 */
+.player-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+.player-toolbar .library-search { flex: 1 1 220px; max-width: 320px; }
+.player-toolbar .checkbox-inline { margin-left: auto; }
 .player-table td { vertical-align: middle; }
+/* 玩家档案列多：QQ / 胜率 / 最近活跃不折行，把宽度让给「玩过」与「操作」 */
+.player-table .qq-cell,
+.player-table td:nth-child(4),
+.player-table td:nth-child(6) { white-space: nowrap; }
+.player-table td:nth-child(6) { color: var(--muted); font-size: 12px; }
 .player-name { display: flex; flex-direction: column; gap: 2px; font-weight: 600; }
 .player-name small { color: var(--muted); font-weight: 400; }
 .qq-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); letter-spacing: .02em; }
@@ -252,15 +270,29 @@ dialog input, dialog select { width: 100%; min-height: 40px; border: 1px solid v
 dialog footer { justify-content: flex-end; gap: 8px; margin-top: 20px; }
 .dialog-message { margin: 0; color: var(--text); font-size: 14px; line-height: 1.65; }
 .dialog-hint { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+/* 编辑战绩：胜 / 负 / 平 三格并排 */
+.stats-editor-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.stats-editor-grid label { margin-top: 0; }
 .primary-button.danger { border-color: var(--red); background: var(--red); }
 .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); max-width: min(440px, calc(100% - 28px)); padding: 10px 14px; border-radius: 6px; background: #202522; color: #fff; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.2); z-index: 20; }
 
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #1e211f; --surface: #282c29; --text: #edf0ed; --muted: #a9b0ab; --line: #414742; --green: #60b58d; --green-soft: #263f34; --red: #e08a80; --red-soft: #442f2d; }
-  th { background: #303531; }
+  :root { --bg: #1e211f; --surface: #282c29; --surface-alt: #2f3430; --accent: #60b58d; --text: #edf0ed; --muted: #a9b0ab; --line: #414742; --green: #60b58d; --green-soft: #263f34; --red: #e08a80; --red-soft: #442f2d; }
+  th { background: #303531; color: #a9b0ab; }
   .service-badge, .visitor, .status { background: #343a35; }
   .icon-button, .secondary-button, .row-button { background: #282c29; }
   .setting-unit { background: #303531; }
+  /* 下面这些原本写死了浅色值，深色下不是刺眼就是对比不足，单独给一套 */
+  .room-code { color: #e59a8f; }
+  .visitor.player, .status.finished { background: #3c3226; color: #e6b98c; }
+  .visitor-kick:hover { background: rgba(255, 255, 255, .1); }
+  .danger-button, .row-button.danger { border-color: #6d4a46; }
+  /* 主按钮底是浅绿，白字对比不够，换成深色字 */
+  .primary-button { background: #60b58d; border-color: #60b58d; }
+  .primary-button, .primary-button span, .primary-button svg { color: #10251b !important; }
+  .title-icon { background: #60b58d; color: #10251b; }
+  .toast { background: #3a413c; }
+  .activity-bar { background: linear-gradient(180deg, #60b58d, #3f8a68); }
 }
 
 @media (max-width: 720px) {

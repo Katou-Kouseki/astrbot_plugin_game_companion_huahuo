@@ -6,6 +6,7 @@
   const assignDialog = document.getElementById("assignDialog");
   const confirmDialog = document.getElementById("confirmDialog");
   const promptDialog = document.getElementById("promptDialog");
+  const statsEditorDialog = document.getElementById("statsEditorDialog");
   const toast = document.getElementById("toast");
   const gameOptions = [
     ["gomoku", "五子棋"],
@@ -108,6 +109,30 @@
     const resolver = promptResolver;
     promptResolver = null;
     if (promptDialog.open) promptDialog.close();
+    if (resolver) resolver(value);
+  }
+
+  // 胜 / 负 / 平分开填：比「只填胜场和总局数」直观，也不容易填出
+  // 「5 胜 3 平 5 局」这种自相矛盾的组合。
+  let statsEditorResolver = null;
+
+  function openStatsEditor({ title, message, wins, losses, draws }) {
+    if (statsEditorResolver) resolveStatsEditor(null);
+    document.getElementById("statsEditorTitle").textContent = title;
+    document.getElementById("statsEditorMessage").textContent = message;
+    document.getElementById("statsEditorWins").value = String(wins);
+    document.getElementById("statsEditorLosses").value = String(losses);
+    document.getElementById("statsEditorDraws").value = String(draws);
+    statsEditorDialog.showModal();
+    window.setTimeout(() => document.getElementById("statsEditorWins").focus(), 0);
+    icons();
+    return new Promise((resolve) => { statsEditorResolver = resolve; });
+  }
+
+  function resolveStatsEditor(value) {
+    const resolver = statsEditorResolver;
+    statsEditorResolver = null;
+    if (statsEditorDialog.open) statsEditorDialog.close();
     if (resolver) resolver(value);
   }
 
@@ -1527,7 +1552,7 @@
     if (summaryNode) {
       // 顶部时间窗口只作用于排行榜，档案始终按全部时间汇总，写明口径避免用户以为数字矛盾
       summaryNode.textContent = rows.length
-        ? `共 ${rows.length} 位玩家 · ${scope}${keyword ? "（已筛选）" : ""} · 档案按全部时间汇总 · 点表头可换排序，右侧图标可改名 / 清零 / 合并 / 删除`
+        ? `共 ${rows.length} 位玩家 · ${scope}${keyword ? "（已筛选）" : ""} · 档案按全部时间汇总 · 点表头可换排序，右侧图标可改名 / 编辑战绩 / 清零 / 删除`
         : `按 QQ 汇总${scope}的战绩（档案按全部时间汇总）`;
     }
 
@@ -1545,8 +1570,6 @@
       const qqTd = createText("td", displayQQ(player.qq), "qq-cell");
       qqTd.title = showFullQQ ? "" : "已打码，勾选「显示完整 QQ」可查看";
       const statTd = createText("td", recordText(player), "wins-cell");
-      // 单独一列「局数」对应 data-player-sort="games"，点其它列后还能回到默认排序
-      const gamesCountTd = createText("td", `${Number(player.games) || 0} 局`, "rank-cell");
       const rateTd = createText(
         "td",
         `${Math.round(Number(player.winrate) || 0)}%`,
@@ -1573,10 +1596,10 @@
       actTd.append(
         rowIcon("pen-line", "修改显示名称", () => renamePlayer(player)),
         rowIcon("eraser", "清零战绩（保留档案）", () => resetPlayerStats(player)),
-        rowIcon("git-merge", "把另一个 QQ 合并到这位玩家", () => mergePlayerInto(player)),
+        rowIcon("pencil-ruler", "编辑战绩（胜 / 负 / 平）", () => editPlayerStats(player)),
         rowIcon("trash-2", "删除这位玩家的战绩记录", () => deletePlayerStats(player), true),
       );
-      tr.append(nameTd, qqTd, statTd, gamesCountTd, rateTd, gamesTd, activeTd, actTd);
+      tr.append(nameTd, qqTd, statTd, rateTd, gamesTd, activeTd, actTd);
       body.appendChild(tr);
     });
     icons();
@@ -1617,22 +1640,31 @@
     await playerAction({ action: "reset", qq: player.qq }, "已清零");
   }
 
-  async function mergePlayerInto(player) {
-    const sourceQQ = await openPrompt({
-      title: "合并玩家档案",
-      message: `把另一个 QQ 的战绩并入「${player.name || player.qq}」，并入后那个 QQ 的记录会被删除（适合同一个人换号的情况）。`,
-      label: "要并入的 QQ",
-      initial: "",
-      kind: "text",
+  async function editPlayerStats(player) {
+    if (!statsFilter) {
+      showToast("先在上方选一个玩法，再编辑战绩");
+      document.getElementById("statsGameSelect")?.focus();
+      return;
+    }
+    const games = Number(player.games) || 0;
+    const wins = Number(player.wins) || 0;
+    const draws = Number(player.draws) || 0;
+    const edited = await openStatsEditor({
+      title: `编辑战绩 · ${gameLabel(statsFilter)}`,
+      message: `修改「${player.name || player.qq}」在《${gameLabel(statsFilter)}》的胜负记录。只改累计总数，按天记录（活跃趋势、近 7 / 30 天排行）保持原样。`,
+      wins,
+      losses: Math.max(0, games - wins - draws),
+      draws,
     });
-    if (!sourceQQ) return;
-    if (!await confirmAction({
-      title: "确认合并",
-      message: `把 QQ ${sourceQQ} 的胜场、局数与活跃记录并入 ${displayQQ(player.qq)}？此操作不可撤销。`,
-      label: "确认合并",
-      danger: true,
-    })) return;
-    await playerAction({ action: "merge", qq: player.qq, source_qq: sourceQQ }, "已合并");
+    if (!edited) return;
+    await playerAction({
+      action: "set_stats",
+      qq: player.qq,
+      game_type: statsFilter,
+      wins: edited.wins,
+      games: edited.wins + edited.losses + edited.draws,
+      draws: edited.draws,
+    }, "战绩已更新");
   }
 
   async function deletePlayerStats(player) {
@@ -2896,6 +2928,29 @@
       event.preventDefault();
       promptProceed.click();
     }
+  });
+  // 编辑战绩：胜 / 负 / 平三个输入，保存前统一校验为非负整数
+  statsEditorDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    resolveStatsEditor(null);
+  });
+  statsEditorDialog.addEventListener("close", () => {
+    if (statsEditorResolver) resolveStatsEditor(null);
+  });
+  document.getElementById("statsEditorSave").addEventListener("click", () => {
+    const read = (id) => {
+      const raw = String(document.getElementById(id).value || "").trim();
+      const num = Number(raw);
+      return raw && Number.isFinite(num) && num >= 0 ? Math.floor(num) : null;
+    };
+    const wins = read("statsEditorWins");
+    const losses = read("statsEditorLosses");
+    const draws = read("statsEditorDraws");
+    if (wins === null || losses === null || draws === null) {
+      showToast("胜 / 负 / 平都要填非负整数");
+      return;
+    }
+    resolveStatsEditor({ wins, losses, draws });
   });
   // 三段初始化互相隔离：图标库没加载、DOM 被改动、浏览器禁了某个 API，都只
   // 影响它自己那一块，不能让房间列表和轮询一起停摆——否则整页看起来就是
