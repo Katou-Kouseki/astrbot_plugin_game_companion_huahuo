@@ -1054,6 +1054,18 @@ body.dark .soup-composer.is-answer .soup-composer-send { background: #6b3a2c; co
   text-overflow: ellipsis;
 }
 .turn-think[hidden] { display: none; }
+/* 思考中的秒表：跟完成后的灰字区分开，一眼看出花火还在算 */
+.turn-think.is-live {
+  color: var(--green);
+  animation: turn-think-breathe 1.2s ease-in-out infinite;
+}
+@keyframes turn-think-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .turn-think.is-live { animation: none; }
+}
 .difficulty { padding: 4px 7px; border-radius: 4px; background: var(--green-soft); color: var(--green); font-size: 12px; }
 
 /* 棋类房间：花火棋力三档（简单/普通/困难）。仅落座玩家、对手非真人时显示 */

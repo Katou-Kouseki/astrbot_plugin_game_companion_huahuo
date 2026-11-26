@@ -1870,7 +1870,10 @@
         room?.game_type === "pig_dice" && room.game?.turn === "bot"
       ) || (
         room?.game_type === "blackjack" && room.game?.phase === "dealer_turn"
-      ) || Boolean(room?.bot_typing) || Boolean(room?.bot_chat_typing);
+      ) || Boolean(room?.bot_typing) || Boolean(room?.bot_chat_typing)
+        // 花火算棋时也提速：秒表要跟上服务端的真实耗时，1 秒的间隔会让
+        // 落子瞬间从 4.2 秒跳回 3.0 秒。思考期间内容指纹不变，多问几次很便宜
+        || Boolean(room?.bot_think?.active);
       const interval = fastPolling ? 300 : 1000;
       pollTimer = window.setTimeout(poll, interval);
     } catch (error) {
@@ -5640,7 +5643,30 @@
     }
   }
 
-  // Bot 最近一手的思考耗时：只在棋盘类房间显示，换玩法后自动隐藏
+  // Bot 最近一手的思考耗时：只在棋盘类房间显示，换玩法后自动隐藏。
+  // 正在思考时换成跳动的秒表：服务端给「已经想了几毫秒」当基准，
+  // 轮询间隔内由本地 ticker 继续往上走，否则 3 秒的引擎思考只看到一帧。
+  let botThinkTicker = 0;
+  let botThinkBaseMs = 0;
+  let botThinkBaseAt = 0;
+
+  function stopBotThinkTicker() {
+    if (botThinkTicker) {
+      window.clearInterval(botThinkTicker);
+      botThinkTicker = 0;
+    }
+  }
+
+  function paintBotThink() {
+    const el = document.getElementById("turnThink");
+    if (!el || el.hidden) {
+      stopBotThinkTicker();
+      return;
+    }
+    const elapsed = Math.max(0, botThinkBaseMs + (Date.now() - botThinkBaseAt));
+    el.textContent = `思考中 ${(elapsed / 1000).toFixed(1)} 秒`;
+  }
+
   function renderBotThink() {
     const el = document.getElementById("turnThink");
     if (!el) return;
@@ -5648,6 +5674,25 @@
     const boardGame = ["gomoku", "weiqi", "xiangqi", "othello", "tictactoe"].includes(kind);
     const info = room?.bot_think || {};
     const ms = Number(info.ms || 0);
+    if (boardGame && info.active) {
+      // 服务端基准只会往前走；比本地推算还小说明拿到的是旧快照，
+      // 这时不能把秒表拽回去，继续用本地那份。
+      const serverMs = Number(info.elapsed_ms || 0);
+      const localMs = botThinkBaseAt ? botThinkBaseMs + (Date.now() - botThinkBaseAt) : 0;
+      if (!botThinkBaseAt || serverMs > localMs) {
+        botThinkBaseMs = serverMs;
+        botThinkBaseAt = Date.now();
+      }
+      el.classList.add("is-live");
+      el.hidden = false;
+      paintBotThink();
+      if (!botThinkTicker) botThinkTicker = window.setInterval(paintBotThink, 100);
+      return;
+    }
+    stopBotThinkTicker();
+    el.classList.remove("is-live");
+    botThinkBaseMs = 0;
+    botThinkBaseAt = 0;
     if (!boardGame || !(ms > 0)) {
       el.hidden = true;
       el.textContent = "";

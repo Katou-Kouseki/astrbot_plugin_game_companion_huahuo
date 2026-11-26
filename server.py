@@ -1366,9 +1366,18 @@ class GameRoomServer:
             }
         snapshot["activity_toast"] = self._activity_toast_snapshot()
         # Bot 最近一手的思考耗时：前端显示「这手想了多久」，0 表示还没走过
+        thinking = bool(getattr(room, "bot_think_active", False))
+        started_at = float(getattr(room, "bot_think_started_at", 0.0) or 0.0)
         snapshot["bot_think"] = {
             "ms": int(getattr(room, "last_bot_think_ms", 0) or 0),
             "engine": str(getattr(room, "last_bot_think_engine", "") or ""),
+            "active": thinking,
+            # 已思考多久：前端拿它当基准，轮询间隙自己往上走秒
+            "elapsed_ms": (
+                max(0, int((time.time() - started_at) * 1000))
+                if thinking and started_at > 0
+                else 0
+            ),
         }
         # 海龟汤自由提问：前端据此把「当前轮到 X 号」换成「谁都可以问」。
         # 自由模式下压根没有轮次概念，再显示倒计时只会让人以为还要等。
@@ -1412,6 +1421,14 @@ class GameRoomServer:
             for key, value in snapshot.items()
             if key not in ("server_time", "rev")
         }
+        # bot_think.elapsed_ms 是「已经想了几毫秒」，每次轮询都在涨。
+        # 它要是进了指纹，「思考中」这几秒里每轮都会被判成内容变了，
+        # 每小时省下的全量包全赔进去；前端本来就自己往上走秒，不需要它。
+        think = stable.get("bot_think")
+        if isinstance(think, dict):
+            stable["bot_think"] = {
+                key: value for key, value in think.items() if key != "elapsed_ms"
+            }
         try:
             raw = json.dumps(
                 stable, ensure_ascii=False, sort_keys=True, separators=(",", ":")

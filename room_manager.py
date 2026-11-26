@@ -5639,6 +5639,14 @@ class RoomManager:
         room.last_bot_think_ms = 0
         room.last_bot_think_engine = ""
         room.last_bot_think_at = 0.0
+        room.bot_think_active = False
+        room.bot_think_started_at = 0.0
+
+    @staticmethod
+    def _mark_bot_thinking(room: GameRoom, active: bool) -> None:
+        """开始/结束「这一手正在算」：房间页的秒表只认这个标记。"""
+        room.bot_think_active = bool(active)
+        room.bot_think_started_at = time.time() if active else 0.0
 
     @staticmethod
     def _bot_plan_marker(game: Any) -> tuple[Any, ...]:
@@ -5671,8 +5679,14 @@ class RoomManager:
                 await self._pig_dice_bot_turn(room)
                 return
             # 第一段（不持锁）：只读棋局，算出「这一手走哪儿」。
+            # 这段可能占住几秒（噩梦档 3 秒、象棋 900ms），房间页要靠
+            # bot_think_active 显示跳动的秒表；finally 保证失败也不会一直亮着。
             think_started = time.monotonic()
-            plan = await self._plan_bot_move(room, game_at_start)
+            self._mark_bot_thinking(room, True)
+            try:
+                plan = await self._plan_bot_move(room, game_at_start)
+            finally:
+                self._mark_bot_thinking(room, False)
             if plan is None:
                 return
             # 只统计算棋本身（不含前面那段拟人延迟），房间页用它显示「这手想了多久」
