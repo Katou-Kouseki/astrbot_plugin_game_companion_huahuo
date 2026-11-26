@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.26"
+    assert metadata["version"] == "0.6.27"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2533,3 +2533,28 @@ def test_pages_survive_blocked_localstorage() -> None:
     tail_block = manager.rsplit("})();", 1)[0][-240:]
     assert "loadRooms();" in tail_block, "初始化末尾必须仍然启动房间轮询"
 
+
+
+def test_soup_queue_patience_and_board_backdrop() -> None:
+    """海龟汤排队要真的排住；棋盘背景自定义不能盖掉网格线。"""
+    manager_src = (ROOT / "room_manager.py").read_text(encoding="utf-8")
+    main_src = (ROOT / "main.py").read_text(encoding="utf-8")
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    html = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+
+    # 排队上限从 15 秒放宽到分钟级：人多时一直排，不再把玩家打发走
+    assert "SOUP_JUDGE_QUEUE_TIMEOUT = 180.0" in manager_src
+    assert "SOUP_JUDGE_QUEUE_BUDGET = 150.0" in main_src
+    assert "queue_budget" in main_src
+    assert "这一局已经换题了" in manager_src
+
+    # 兜底通知只走私聊，且限流/超时/排队才触发
+    notify_block = main_src.split("async def _notify_owner_soup_judge_failure", 1)[1][:1200]
+    assert "send_private_message" in notify_block
+    assert "_soup_failure_needs_owner" in main_src
+
+    # 棋盘底色统一走 paintBoardBackdrop：五子棋/围棋/象棋/黑白棋/井字棋
+    assert app.count("paintBoardBackdrop(context") >= 5
+    assert "game-companion:board-bg" in app
+    assert "boardBgFile" in html
+    assert "boardBgOpacity" in html

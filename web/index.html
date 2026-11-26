@@ -860,6 +860,27 @@
 
         <div class="panel-group">
           <div class="panel-row">
+            <span class="switch-label">自定义棋盘背景</span>
+            <span class="panel-hint">只换底色，线格保留</span>
+          </div>
+          <label class="file-upload">
+            <input id="boardBgFile" type="file" accept="image/*" hidden />
+            <i data-lucide="image-plus"></i>
+            <span id="boardBgFileLabel">上传棋盘背景图（只换底色，线格保留）</span>
+          </label>
+          <div class="panel-actions-row">
+            <button id="boardBgClear" type="button" class="secondary-action compact">恢复默认棋盘</button>
+          </div>
+          <div class="panel-row">
+            <span class="slider-label">棋盘图片浓度</span>
+            <strong id="boardBgOpacityValue">100%</strong>
+          </div>
+          <input id="boardBgOpacity" type="range" min="0" max="100" value="100" class="panel-range" />
+          <p class="panel-hint">浓度调低会让原棋盘底色透出来；网格线与棋子始终画在图片上方。</p>
+        </div>
+
+        <div class="panel-group">
+          <div class="panel-row">
             <span class="slider-label">背景模糊度</span>
             <strong id="blurValue">14 px</strong>
           </div>

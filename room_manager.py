@@ -4423,8 +4423,11 @@ class RoomManager:
         return game
 
     # 排队等待上限：同一条判定还没结束时，后来的人排队等，而不是被丢掉。
+    # 多人同时提问时每人要等前面几条判完外加冷却，15 秒根本不够——以前到点
+    # 就报「排队的人有点多」，玩家得自己重发。现在给足 3 分钟：正常人数下
+    # 一定能轮到；只有这一局本身卡死（换题/暂停/结束）才会提前退出。
     # 前端问答请求的超时必须比它长，否则页面会先报「请求超时」。
-    SOUP_JUDGE_QUEUE_TIMEOUT = 15.0
+    SOUP_JUDGE_QUEUE_TIMEOUT = 180.0
 
     def _soup_judge_wait(self, game: TurtleSoupGame, room: GameRoom) -> float:
         """距离可以开始下一次判定还要等多少秒。
@@ -4454,12 +4457,20 @@ class RoomManager:
 
         拿不到判定位就排队等（上一条判定结束 + 冷却过去），不再直接拒绝：
         人多时每人轮流问，问的那句一定会被判出来。
+
+        排队期间只认「这一局」：换题、暂停、结束都会立刻退出，不让玩家对
+        已经不存在的那一局干等三分钟。
         """
         cleaned = clean_player_text(text, limit=limit)
         deadline = time.monotonic() + self.SOUP_JUDGE_QUEUE_TIMEOUT
+        queued_game: TurtleSoupGame | None = None
         while True:
             async with room.lock:
                 game = self._turtle_soup_game(room)
+                if queued_game is None:
+                    queued_game = game
+                elif room.game is not queued_game:
+                    raise ValueError("这一局已经换题了，在新题目里重新问一次吧")
                 player_number = self._require_turtle_soup_player(
                     room,
                     source=source,
@@ -4478,7 +4489,9 @@ class RoomManager:
                     room.touch()
                     return game, cleaned
             if time.monotonic() >= deadline:
-                raise ValueError("排队的人有点多，等十几秒再问一次吧")
+                raise ValueError(
+                    "排队的人有点多，这条暂时没排上；已经通知房主，稍后再问一次吧"
+                )
             # 判定中：每 0.25 秒回来看一次；只剩一点冷却就直接睡那点时间。
             await asyncio.sleep(min(0.25, max(0.05, wait)))
 

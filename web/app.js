@@ -389,6 +389,8 @@
      ============================================================ */
   const THEME_KEY = "game-companion:theme";
   const APPEARANCE_KEY = "game-companion:appearance";
+  // 棋盘背景：只换棋盘底色（图片垫在网格线下面），棋子和线照旧。
+  const BOARD_BG_KEY = "game-companion:board-bg";
   const DEFAULT_BG_URL = new URL("../../assets/background.webp", window.location.href).href;
 
   const DEFAULT_APPEARANCE = Object.freeze({
@@ -399,6 +401,149 @@
   });
 
   let appearance = loadAppearance();
+
+  // 棋盘背景：{ dataUrl, opacity, image }。image 是加载好的 Image 对象，
+  // 只在 dataUrl 变化时重建，每次画棋盘直接复用。
+  let boardBackdrop = loadBoardBackdrop();
+
+  function loadBoardBackdrop() {
+    try {
+      const raw = readPreference(BOARD_BG_KEY);
+      if (!raw) return { dataUrl: null, opacity: 1, image: null, loadingUrl: "", failedUrl: "" };
+      const parsed = JSON.parse(raw);
+      return {
+        dataUrl: typeof parsed.dataUrl === "string" && parsed.dataUrl ? parsed.dataUrl : null,
+        opacity: Number.isFinite(parsed.opacity)
+          ? Math.max(0, Math.min(1, parsed.opacity))
+          : 1,
+        image: null,
+        loadingUrl: "",
+        failedUrl: "",
+      };
+    } catch (_e) {
+      return { dataUrl: null, opacity: 1, image: null, loadingUrl: "", failedUrl: "" };
+    }
+  }
+
+  function saveBoardBackdrop() {
+    try {
+      writePreference(BOARD_BG_KEY, JSON.stringify({
+        dataUrl: boardBackdrop.dataUrl,
+        opacity: boardBackdrop.opacity,
+      }));
+      return true;
+    } catch (_err) {
+      return false;
+    }
+  }
+
+  // 图片异步加载好后重画一次棋盘；失败就退回默认底色，不阻塞界面。
+  function ensureBoardBackdropImage() {
+    const url = boardBackdrop.dataUrl;
+    if (!url) {
+      boardBackdrop.image = null;
+      boardBackdrop.loadingUrl = "";
+      return;
+    }
+    // 同一张图加载失败过就不再反复重试，否则每次重绘都会新建一个 Image
+    if (boardBackdrop.image || boardBackdrop.loadingUrl === url || boardBackdrop.failedUrl === url) {
+      return;
+    }
+    boardBackdrop.loadingUrl = url;
+    const image = new Image();
+    image.onload = () => {
+      if (boardBackdrop.loadingUrl !== url) return;
+      boardBackdrop.image = image;
+      boardBackdrop.failedUrl = "";
+      drawBoard();
+    };
+    image.onerror = () => {
+      if (boardBackdrop.loadingUrl !== url) return;
+      boardBackdrop.image = null;
+      boardBackdrop.loadingUrl = "";
+      boardBackdrop.failedUrl = url;
+    };
+    image.src = url;
+  }
+
+  /**
+   * 铺棋盘底色：先画原底色，再把用户图片按 cover 裁进画布。
+   * 图片不透明度可调，调低就露出原底色；网格线与棋子由调用方继续画在上面。
+   */
+  function paintBoardBackdrop(ctx, width, height, base) {
+    ctx.fillStyle = base;
+    ctx.fillRect(0, 0, width, height);
+    if (!boardBackdrop.dataUrl) return;
+    ensureBoardBackdropImage();
+    const image = boardBackdrop.image;
+    if (!image || !image.naturalWidth) return;
+    const alpha = Math.max(0, Math.min(1, Number(boardBackdrop.opacity) || 0));
+    if (alpha <= 0) return;
+    const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
+    const drawWidth = image.naturalWidth * scale;
+    const drawHeight = image.naturalHeight * scale;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(
+      image,
+      (width - drawWidth) / 2,
+      (height - drawHeight) / 2,
+      drawWidth,
+      drawHeight,
+    );
+    ctx.restore();
+  }
+
+  function syncBoardBackdropControls() {
+    const opacityRange = document.getElementById("boardBgOpacity");
+    const opacityValue = document.getElementById("boardBgOpacityValue");
+    const fileLabel = document.getElementById("boardBgFileLabel");
+    const percent = Math.round((Number(boardBackdrop.opacity) || 0) * 100);
+    if (opacityRange) opacityRange.value = String(percent);
+    if (opacityValue) opacityValue.textContent = `${percent}%`;
+    if (fileLabel) {
+      fileLabel.textContent = boardBackdrop.dataUrl
+        ? "已使用我的棋盘图（点击可更换）"
+        : "上传棋盘背景图（只换底色，线格保留）";
+    }
+  }
+
+  function applyBoardBackdrop() {
+    ensureBoardBackdropImage();
+    syncBoardBackdropControls();
+    drawBoard();
+  }
+
+  // 上传大图先压到 1200px 以内再存：localStorage 只有 5MB，原图直接塞会溢出。
+  function boardImageDataUrl(file, done) {
+    const reader = new FileReader();
+    reader.onerror = () => done("");
+    reader.onload = () => {
+      const image = new Image();
+      image.onerror = () => done("");
+      image.onload = () => {
+        const maxSide = 1200;
+        const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+        const width = Math.max(1, Math.round(image.naturalWidth * scale));
+        const height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        // 先垫白底：PNG 的透明区域转成 JPEG 时不会发黑
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(image, 0, 0, width, height);
+        try {
+          done(canvas.toDataURL("image/jpeg", 0.85));
+        } catch (_e) {
+          done("");
+        }
+      };
+      image.src = String(reader.result || "");
+    };
+    reader.readAsDataURL(file);
+  }
 
   function loadTheme() {
     const saved = readPreference(THEME_KEY);
@@ -521,6 +666,8 @@
     // 先应用主题，再应用背景（背景需要知道暗色/亮色）
     applyTheme(theme);
     applyAppearance();
+    // 棋盘背景与主题无关，但要在首次绘制前准备好图片
+    applyBoardBackdrop();
   }
 
   function bindAppearanceControls() {
@@ -618,6 +765,60 @@
         applyAppearance();
         showToast("已清除我的背景图，现使用内置默认图");
       });
+    }
+
+    // ---- 棋盘背景 ----
+    const boardBgFile = document.getElementById("boardBgFile");
+    if (boardBgFile) {
+      boardBgFile.addEventListener("change", (event) => {
+        const file = event.target.files && event.target.files[0];
+        event.target.value = ""; // 允许下次选同一张
+        if (!file) return;
+        if (!/^image\//.test(file.type)) {
+          showToast("请选择图片格式文件");
+          return;
+        }
+        boardImageDataUrl(file, (dataUrl) => {
+          if (!dataUrl) {
+            showToast("这张图读不出来，换一张试试");
+            return;
+          }
+          boardBackdrop.dataUrl = dataUrl;
+          boardBackdrop.image = null;
+          boardBackdrop.loadingUrl = "";
+          boardBackdrop.failedUrl = "";
+          if (!saveBoardBackdrop()) {
+            boardBackdrop.dataUrl = null;
+            showToast("图片太大存不下，换张小一点的图");
+            applyBoardBackdrop();
+            return;
+          }
+          applyBoardBackdrop();
+          showToast("棋盘背景已应用（只换底色，线格保留）");
+        });
+      });
+    }
+    const boardBgClear = document.getElementById("boardBgClear");
+    if (boardBgClear) {
+      boardBgClear.addEventListener("click", () => {
+        boardBackdrop.dataUrl = null;
+        boardBackdrop.image = null;
+        boardBackdrop.loadingUrl = "";
+        boardBackdrop.failedUrl = "";
+        saveBoardBackdrop();
+        applyBoardBackdrop();
+        showToast("已恢复默认棋盘底色");
+      });
+    }
+    const boardBgOpacity = document.getElementById("boardBgOpacity");
+    if (boardBgOpacity) {
+      boardBgOpacity.addEventListener("input", (event) => {
+        const value = Math.max(0, Math.min(100, parseInt(event.target.value || "0", 10)));
+        boardBackdrop.opacity = value / 100;
+        syncBoardBackdropControls();
+        drawBoard();
+      });
+      boardBgOpacity.addEventListener("change", () => saveBoardBackdrop());
     }
   }
 
@@ -1581,6 +1782,9 @@
 
   // fetch 默认没有超时：网络半死时请求会一直挂着，界面停在上一帧、busy 永远不释放
   const REQUEST_TIMEOUT_MS = 12000;
+  // 海龟汤问答要排队（上一条还在判、或同时在问的人多），服务端会一直排到
+  // 轮上为止（最多 3 分钟），这里必须比它更长，否则页面先弹「请求超时」。
+  const SOUP_JUDGE_TIMEOUT_MS = 240000;
   // 海龟汤难度对应的「猜中条件」文案；具体次数由服务端快照给出，
   // 前端不再各写一套数字，避免两边对不上。
   const SOUP_DIFFICULTY_TEXT = {
@@ -3185,13 +3389,17 @@
     // 不用等判定返回；按钮变「判断中…」，输入框占位符提示在等 LLM。
     if (input) input.value = "";
     render();
+    // 排队可能要好一会儿：12 秒还没回来就先说一声，别让玩家以为卡死了。
+    const queueHint = window.setTimeout(() => {
+      showToast("前面还有人在问，花火正在排队，这条一定会判，请稍等一下");
+    }, 12000);
     try {
-      // 判定可能要排队（上一条还在判），和聊天入口一样给更长的超时
+      // 判定可能要排队（上一条还在判），服务端会一直排到轮上为止
       const data = await request(
         "POST",
         mode === "answer" ? "soup/answer" : "soup/question",
         { visitor_token: visitorToken, text },
-        45000,
+        SOUP_JUDGE_TIMEOUT_MS,
       );
       if (data?.room) setRoom(data.room);
       const reply = String(data?.reply || "").trim();
@@ -3203,6 +3411,7 @@
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
       showToast(error?.message || "提交失败");
     } finally {
+      window.clearTimeout(queueHint);
       soupComposerBusy = false;
       if (send) send.disabled = false;
       render();
@@ -5402,10 +5611,15 @@
       sender_number: room.visitor_number,
     });
     render();
+    const soupQueue = room?.game_type === "turtle_soup";
+    const queueHint = soupQueue
+      ? window.setTimeout(() => {
+          showToast("前面还有人在问，花火正在排队，这条一定会判，请稍等一下");
+        }, 12000)
+      : 0;
     try {
-      // 海龟汤的判定可能要排队（上一条还在判），给它比普通请求更长的超时，
-      // 否则服务端还在排队，页面先弹「请求超时」。
-      const chatTimeout = room?.game_type === "turtle_soup" ? 45000 : undefined;
+      // 海龟汤的判定可能要排队（上一条还在判），服务端会一直排到轮上为止。
+      const chatTimeout = soupQueue ? SOUP_JUDGE_TIMEOUT_MS : undefined;
       const data = await request("POST", "chat", { visitor_token: visitorToken, text }, chatTimeout);
       setRoom(data.room);
     } catch (error) {
@@ -5417,6 +5631,7 @@
       try { await loadState(); } catch (_syncError) { /* polling will retry */ }
       showToast(error?.message || "消息发送失败");
     } finally {
+      window.clearTimeout(queueHint);
       chatBusy = false;
       render();
     }
@@ -6465,8 +6680,8 @@
     const margin = 34;
     const cell = (size - margin * 2) / 8;
     context.clearRect(0, 0, size, size);
-    context.fillStyle = "#27754f";
-    context.fillRect(0, 0, size, size);
+    // 棋盘底色：用户上传了图就用图（线画在图上，照样看得见）
+    paintBoardBackdrop(context, size, size, "#27754f");
     context.strokeStyle = "rgba(14, 51, 34, .78)";
     context.lineWidth = 2;
     for (let index = 0; index <= 8; index += 1) {
@@ -6552,8 +6767,7 @@
     const playSize = size - inset * 2;
     const cell = playSize / 3;
     context.clearRect(0, 0, size, size);
-    context.fillStyle = palette.bg;
-    context.fillRect(0, 0, size, size);
+    paintBoardBackdrop(context, size, size, palette.bg);
     context.strokeStyle = palette.line;
     context.lineWidth = 8;
     context.lineCap = "round";
@@ -6621,8 +6835,7 @@
     const margin = 48;
     const gap = (size - margin * 2) / 14;
     context.clearRect(0, 0, size, size);
-    context.fillStyle = palette.board;
-    context.fillRect(0, 0, size, size);
+    paintBoardBackdrop(context, size, size, palette.board);
     context.strokeStyle = palette.line;
     context.lineWidth = 1.6;
     for (let index = 0; index < 15; index += 1) {
@@ -6815,8 +7028,7 @@
     const { lines, margin, gap } = weiqiGeometry();
     const game = room?.game || {};
     context.clearRect(0, 0, size, size);
-    context.fillStyle = palette.board;
-    context.fillRect(0, 0, size, size);
+    paintBoardBackdrop(context, size, size, palette.board);
     context.strokeStyle = palette.line;
     context.lineWidth = 1.3;
     for (let index = 0; index < lines; index += 1) {
@@ -6914,8 +7126,7 @@
     const gapX = (width - marginX * 2) / 8;
     const gapY = (height - marginY * 2) / 9;
     context.clearRect(0, 0, width, height);
-    context.fillStyle = palette.board;
-    context.fillRect(0, 0, width, height);
+    paintBoardBackdrop(context, width, height, palette.board);
     context.strokeStyle = palette.line;
     context.lineWidth = 1.7;
     for (let row = 0; row < 10; row += 1) {

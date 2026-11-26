@@ -1819,6 +1819,11 @@ class GameCompanionPlugin(Star):
     LLM_MAX_CONCURRENCY = 3
     # 排队上限：等这么久还没轮到就别让玩家干等，直说「人有点多」
     LLM_QUEUE_TIMEOUT = 25.0
+    # 判定类调用（海龟汤提问/推理）在闸门口的总排队预算：人多时一直排，
+    # 不再 25 秒就打发玩家重问。真排不到才兜底报错，并私聊房主。
+    SOUP_JUDGE_QUEUE_BUDGET = 150.0
+    # 判定退避：撞限流时多给两次机会。判定类输出短，多等几秒比重问便宜。
+    SOUP_JUDGE_RETRY_DELAYS = (1.5, 4.0)
     # 限流退避：重试比重开一次请求便宜，也避免把上游越打越限
     LLM_RETRY_DELAYS = (0.8, 2.0)
     # 出题 / 自检这类长输出比判定更吃 token 限额，退避窗口要留够：
@@ -6707,9 +6712,11 @@ class GameCompanionPlugin(Star):
             }
         except Exception as exc:
             await self.manager.cancel_turtle_soup_interaction(room, game, str(exc))
+            if self._soup_failure_needs_owner(exc):
+                await self._notify_owner_soup_judge_failure(room, exc, what="提问")
             if isinstance(exc, (ValueError, RuntimeError, PermissionError, OSError)):
                 raise
-            raise RuntimeError("Bot 暂时无法判断这个问题，请稍后重试") from exc
+            raise RuntimeError("这条暂时没判出来，不算次数，稍后再问一次吧") from exc
 
     def _soup_limits(self, room: GameRoom | None) -> dict[str, int]:
         """本局的提问/提示/推理次数：按难度档位，或按自定义配置。
@@ -6940,9 +6947,11 @@ class GameCompanionPlugin(Star):
             return result
         except Exception as exc:
             await self.manager.cancel_turtle_soup_interaction(room, game, str(exc))
+            if self._soup_failure_needs_owner(exc):
+                await self._notify_owner_soup_judge_failure(room, exc, what="推理")
             if isinstance(exc, (ValueError, RuntimeError, PermissionError, OSError)):
                 raise
-            raise RuntimeError("Bot 暂时无法判断这份推理，请稍后重试") from exc
+            raise RuntimeError("这条暂时没判出来，不算次数，稍后再试一次吧") from exc
 
     async def submit_reverse_turtle_soup_turn(
         self,
@@ -6990,9 +6999,11 @@ class GameCompanionPlugin(Star):
             }
         except Exception as exc:
             await self.manager.cancel_turtle_soup_interaction(room, game, str(exc))
+            if self._soup_failure_needs_owner(exc):
+                await self._notify_owner_soup_judge_failure(room, exc, what="回合")
             if isinstance(exc, (ValueError, RuntimeError, PermissionError, OSError)):
                 raise
-            raise RuntimeError("Bot 暂时无法继续推理，请稍后重试") from exc
+            raise RuntimeError("花火这一回合没接上，稍后再试一次吧") from exc
 
     def _llm_gate(self) -> asyncio.Semaphore:
         """模型调用的并发闸门，按事件循环缓存。
@@ -7049,6 +7060,7 @@ class GameCompanionPlugin(Star):
         provider: Any | None = None,
         retry_delays: tuple[float, ...] | None = None,
         queue_timeout: float | None = None,
+        queue_budget: float | None = None,
         retry_timeout: bool = False,
         respect_cooldown: bool = False,
     ) -> str:
@@ -7058,21 +7070,33 @@ class GameCompanionPlugin(Star):
         gate = self._llm_gate()
         delays = (0.0, *(retry_delays if retry_delays is not None else self.LLM_RETRY_DELAYS))
         queue_wait = self.LLM_QUEUE_TIMEOUT if queue_timeout is None else queue_timeout
+        # 排队预算跨重试共享：判定类给到 SOUP_JUDGE_QUEUE_BUDGET，人多时一直排，
+        # 不再等 25 秒就把「人有点多」甩给玩家。
+        budget = queue_wait if queue_budget is None else queue_budget
+        queue_deadline = time.monotonic() + max(0.0, float(budget))
         last_error: BaseException | None = None
         for attempt, delay in enumerate(delays):
             if delay:
                 await asyncio.sleep(delay)
-            # 刚有别的调用撞到限流时先等一下，别上来再撞一次。只给后台出题类
-            # 调用开这个开关：群里的判定不能让玩家陪着一起等冷却。
+            # 刚有别的调用撞到限流时先等一下，别上来再撞一次。判定类也开这个
+            # 开关：玩家愿意等，总比反复 429 最后整条判不出来好。
             if respect_cooldown:
                 await self._await_llm_cooldown()
-            try:
-                await asyncio.wait_for(gate.acquire(), timeout=queue_wait)
-            except asyncio.TimeoutError as exc:
-                # 排队等太久：这时玩家已经等了 25 秒，再等下去只会更烦
-                raise RuntimeError(
-                    "问的人有点多，花火忙不过来，等十几秒再问一次吧"
-                ) from exc
+            while True:
+                remaining = queue_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        "排队的人有点多，这条暂时没排上；已经通知房主，稍后再问一次吧"
+                    )
+                try:
+                    # 下限 0.05 秒：防止 queue_timeout 被配成 0 时忙转
+                    await asyncio.wait_for(
+                        gate.acquire(),
+                        timeout=max(0.05, min(float(queue_wait), remaining)),
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    continue
             try:
                 response = await asyncio.wait_for(
                     provider.text_chat(prompt=prompt, system_prompt=system_prompt),
@@ -7150,6 +7174,10 @@ class GameCompanionPlugin(Star):
             prompt=prompt,
             timeout=timeout,
             provider=provider,
+            retry_delays=self.SOUP_JUDGE_RETRY_DELAYS,
+            queue_timeout=self.SOUP_JUDGE_QUEUE_BUDGET,
+            queue_budget=self.SOUP_JUDGE_QUEUE_BUDGET,
+            respect_cooldown=True,
         )
         if usable(raw):
             return raw
@@ -7164,6 +7192,10 @@ class GameCompanionPlugin(Star):
             prompt=prompt + JUDGE_RETRY_SUFFIX,
             timeout=timeout,
             provider=provider,
+            retry_delays=self.SOUP_JUDGE_RETRY_DELAYS,
+            queue_timeout=self.SOUP_JUDGE_QUEUE_BUDGET,
+            queue_budget=self.SOUP_JUDGE_QUEUE_BUDGET,
+            respect_cooldown=True,
         )
         if usable(raw):
             return raw
@@ -7175,6 +7207,59 @@ class GameCompanionPlugin(Star):
         raise RuntimeError(
             f"花火这次没{what}出来（模型把话说跑偏了），这句话不算次数，再说一次试试"
         )
+
+    # 判定彻底失败后提醒房主的间隔：一群人同时问不出结果时，
+    # 私聊只发一条就够，别把房主刷屏。
+    SOUP_OWNER_NOTICE_GAP = 120.0
+
+    # 只有「基础设施真的不行」才去打扰房主：排队排不上、上游限流、
+    # 模型超时/报错。房间状态类错误（换题、暂停、没座位）玩家自己就能处理。
+    SOUP_OWNER_NOTICE_HINTS = (
+        "排队",
+        "限流",
+        "超时",
+        "模型",
+        "上游",
+        "模型调用失败",
+        "没有可用的大语言模型",
+    )
+
+    @classmethod
+    def _soup_failure_needs_owner(cls, exc: BaseException) -> bool:
+        text = str(exc)
+        return any(hint in text for hint in cls.SOUP_OWNER_NOTICE_HINTS)
+
+    async def _notify_owner_soup_judge_failure(
+        self, room: GameRoom, exc: BaseException, *, what: str = "提问"
+    ) -> None:
+        """排队/模型彻底失败时的最后一步：私聊房主。
+
+        玩家侧只得到「稍后再试」，但真正需要处理的是房主（模型额度、网络、
+        适配器）。没有 QQ 房主（纯网页房）或没配私聊通道时跳过，只留日志。
+        """
+        qq = str(getattr(room, "creator_qq", "") or "").strip()
+        if not qq:
+            return
+        # GameRoom 是 slots 类，节流状态放在插件侧，按 room_id 记。
+        notices = getattr(self, "_soup_owner_notices", None)
+        if not isinstance(notices, dict):
+            notices = {}
+            self._soup_owner_notices = notices
+        now = time.time()
+        key = str(getattr(room, "room_id", "") or "")
+        last = float(notices.get(key, 0.0) or 0.0)
+        if now - last < self.SOUP_OWNER_NOTICE_GAP:
+            return
+        notices[key] = now
+        detail = str(exc or "").strip() or "未知原因"
+        text = (
+            f"【花火陪你玩·海龟汤】房间里有一条玩家{what}没能判出来：{detail}。\n"
+            "玩家那边已经提示稍后重试；你可以看看模型额度、网络或适配器状态。"
+        )
+        try:
+            await self.context.send_private_message(qq, Plain(text))
+        except Exception as err:  # noqa: BLE001 - 通知失败不该影响游戏本身
+            logger.warning("[GameCompanion] 海龟汤失败通知房主没发出去：%s", err)
 
     async def _announce_turtle_soup_hint(
         self, room: GameRoom, hint: str, *, visitor: Visitor | None = None
