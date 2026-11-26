@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.32"
+    assert metadata["version"] == "0.6.33"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2597,3 +2597,13 @@ def test_every_manager_route_is_registered() -> None:
         if f'{{PAGE_API_PREFIX}}/{path}"' not in main
     ]
     assert not missing, "这些接口没注册路由：" + "、".join(sorted(missing))
+
+
+def test_turn_panel_does_not_squeeze_think_time() -> None:
+    """回合卡片：空间不够时让棋力按钮换行，不能把标题和思考耗时压成省略号。"""
+    css = (ROOT / "web" / "app.css").read_text(encoding="utf-8")
+
+    assert ".turn-panel > div:nth-child(2) { flex: 1 1 132px; min-width: 132px; }" in css
+    assert "min-width: 0;" not in css.split(".turn-panel > div:nth-child(2)")[1][:120]
+    picker = css.split(".difficulty-picker {", 1)[1][:260]
+    assert "flex-wrap: wrap;" in picker
