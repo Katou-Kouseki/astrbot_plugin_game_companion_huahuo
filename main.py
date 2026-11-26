@@ -12472,6 +12472,14 @@ class GameCompanionPlugin(Star):
             ["POST"],
             "Install Pikafish",
         )
+        # 五子棋噩梦档的引擎安装。漏了这条注册，管理台点「安装 / 更新」
+        # 只会拿到「未找到该路由」。
+        register_api(
+            f"{PAGE_API_PREFIX}/gomoku/install",
+            self.page_gomoku_install,
+            ["POST"],
+            "Install gomoku engine",
+        )
         register_api(
             f"{PAGE_API_PREFIX}/cloudflared/install",
             self.page_cloudflared_install,

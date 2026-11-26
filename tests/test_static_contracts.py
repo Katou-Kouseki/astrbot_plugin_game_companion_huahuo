@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.30"
+    assert metadata["version"] == "0.6.31"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2581,3 +2581,19 @@ def test_engine_name_never_shown_to_players() -> None:
     # 思考耗时照旧显示，只是不带引擎名
     app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
     assert "上一手思考 ${seconds} 秒" in app
+
+
+def test_every_manager_route_is_registered() -> None:
+    """管理台点的每个接口都要在 main.py 注册，否则只得到「未找到该路由」。"""
+    import re
+
+    manager = (ROOT / "pages" / "游戏管理台" / "manager.js").read_text(encoding="utf-8")
+    main = (ROOT / "main.py").read_text(encoding="utf-8")
+    calls = set(re.findall(r'endpoint\(\s*"(GET|POST)"\s*,\s*"([^"`$]+)"', manager))
+    assert calls, "没扫到任何接口调用，正则可能失效了"
+    missing = [
+        f"{method} {path}"
+        for method, path in calls
+        if f'{{PAGE_API_PREFIX}}/{path}"' not in main
+    ]
+    assert not missing, "这些接口没注册路由：" + "、".join(sorted(missing))
