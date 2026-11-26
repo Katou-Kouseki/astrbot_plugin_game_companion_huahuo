@@ -5654,9 +5654,7 @@
       return;
     }
     const seconds = ms >= 1000 ? (ms / 1000).toFixed(1) : (ms / 1000).toFixed(2);
-    el.textContent = info.engine
-      ? `上一手思考 ${seconds} 秒 · ${sanitizeDisplayText(String(info.engine))}`
-      : `上一手思考 ${seconds} 秒`;
+    el.textContent = `上一手思考 ${seconds} 秒`;
     el.hidden = false;
   }
 

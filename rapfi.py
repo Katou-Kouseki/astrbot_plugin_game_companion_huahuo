@@ -1,4 +1,4 @@
-"""Rapfi 五子棋引擎：托管安装 + Piskvork 协议进程。
+"""五子棋引擎：托管安装 + Piskvork 协议进程。
 
 只做「噩梦」档使用引擎，其它档位仍走 gomoku.py 的内置启发式。引擎不可用时
 由上层回退到内置搜索，所以这里的失败必须抛异常而不是静默返回坐标。
@@ -38,7 +38,7 @@ MAX_ARCHIVE_BYTES = 200 * 1024 * 1024
 
 
 class RapfiService:
-    """Install and run one serialized Rapfi process for all rooms."""
+    """Install and run one serialized engine process for all rooms."""
 
     # 引擎读完 DONE 到吐出坐标之间的额外宽限（秒）。引擎自己会按 timeout_turn
     # 控时，这里只是防止进程卡死时把整间房一起拖住。
@@ -123,7 +123,7 @@ class RapfiService:
         binary = self.binary_path()
         if binary is None:
             raise RuntimeError(
-                "五子棋引擎尚未安装，请在游戏管理台安装 Rapfi，或在插件配置中填写引擎路径"
+                "五子棋引擎尚未安装，请在游戏管理台安装，或在插件配置中填写引擎路径"
             )
         async with self._lifecycle_lock:
             if self.running:
@@ -142,7 +142,7 @@ class RapfiService:
         workdir = binary.parent
         for name in (*REQUIRED_MEMBERS, WEIGHT_MEMBER):
             if not (workdir / name).is_file():
-                raise RuntimeError(f"Rapfi 缺少运行文件：{workdir / name}")
+                raise RuntimeError(f"五子棋引擎缺少运行文件：{workdir / name}")
         self.error = ""
         self._lines = asyncio.Queue()
         try:
@@ -154,14 +154,14 @@ class RapfiService:
                 stderr=asyncio.subprocess.STDOUT,
             )
         except OSError as exc:
-            raise RuntimeError(f"无法启动 Rapfi：{exc}") from exc
+            raise RuntimeError(f"无法启动五子棋引擎：{exc}") from exc
         self._reader_task = asyncio.create_task(self._read_output())
         try:
             lines = await self._run_until(
                 f"START {BOARD_SIZE}", lambda line: line.strip() == "OK", timeout=15
             )
             del lines
-            self.version = self.version or "Rapfi"
+            self.version = self.version or "五子棋引擎"
             await self._write(f"INFO max_memory {256 * 1024 * 1024}")
             await self._write("INFO game_type 1")
         except Exception:
@@ -218,9 +218,9 @@ class RapfiService:
             raise
         row, column = move
         if not (0 <= row < BOARD_SIZE and 0 <= column < BOARD_SIZE):
-            raise RuntimeError("Rapfi 返回了棋盘外的坐标")
+            raise RuntimeError("五子棋引擎返回了棋盘外的坐标")
         if (row, column) in occupied:
-            raise RuntimeError("Rapfi 返回了已经有棋子的位置")
+            raise RuntimeError("五子棋引擎返回了已经有棋子的位置")
         return move
 
     async def _read_move(self, *, timeout: float) -> tuple[int, int]:
@@ -231,18 +231,18 @@ class RapfiService:
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise RuntimeError("Rapfi 思考超时")
+                raise RuntimeError("五子棋引擎思考超时")
             try:
                 line = await asyncio.wait_for(self._lines.get(), timeout=remaining)
             except asyncio.TimeoutError as exc:
-                raise RuntimeError("Rapfi 思考超时") from exc
+                raise RuntimeError("五子棋引擎思考超时") from exc
             if line is None:
-                raise RuntimeError(self.error or "Rapfi 进程已退出")
+                raise RuntimeError(self.error or "五子棋引擎进程已退出")
             text = line.strip()
             if not text:
                 continue
             if text.startswith("ERROR"):
-                raise RuntimeError(f"Rapfi 报错：{text}")
+                raise RuntimeError(f"五子棋引擎报错：{text}")
             match = pattern.match(text)
             if match:
                 return int(match.group(1)), int(match.group(2))
@@ -254,24 +254,24 @@ class RapfiService:
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                raise RuntimeError(f"Rapfi 命令超时：{command}")
+                raise RuntimeError(f"五子棋引擎命令超时：{command}")
             try:
                 line = await asyncio.wait_for(self._lines.get(), timeout=remaining)
             except asyncio.TimeoutError as exc:
-                raise RuntimeError(f"Rapfi 命令超时：{command}") from exc
+                raise RuntimeError(f"五子棋引擎命令超时：{command}") from exc
             if line is None:
-                raise RuntimeError(self.error or "Rapfi 进程已退出")
+                raise RuntimeError(self.error or "五子棋引擎进程已退出")
             text = line.strip()
             lines.append(text)
             if done(text):
                 return lines
             if text.startswith("ERROR"):
-                raise RuntimeError(f"Rapfi 报错：{text}")
+                raise RuntimeError(f"五子棋引擎报错：{text}")
 
     async def _write(self, command: str) -> None:
         process = self._process
         if process is None or process.returncode is not None or process.stdin is None:
-            raise RuntimeError(self.error or "Rapfi 尚未运行")
+            raise RuntimeError(self.error or "五子棋引擎尚未运行")
         process.stdin.write((command + "\n").encode("ascii"))
         await process.stdin.drain()
 
@@ -284,12 +284,12 @@ class RapfiService:
                 await self._lines.put(raw.decode("utf-8", errors="replace").strip())
             await process.wait()
             if self._process is process:
-                self.error = f"Rapfi 已退出（代码 {process.returncode}）"
+                self.error = f"五子棋引擎已退出（代码 {process.returncode}）"
                 await self._lines.put(None)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 读失败统一转成引擎不可用
-            self.error = f"读取 Rapfi 输出失败：{exc}"
+            self.error = f"读取五子棋引擎输出失败：{exc}"
             await self._lines.put(None)
 
     # ------------------------------------------------------------------
@@ -300,7 +300,7 @@ class RapfiService:
             raise PermissionError("插件配置已禁止从管理台下载五子棋引擎")
         if self.configured_path and Path(self.configured_path).expanduser().is_file():
             raise ValueError(
-                "当前使用插件配置中指定的 Rapfi；请先清空引擎路径再安装托管版本"
+                "当前使用插件配置中指定的引擎；请先清空引擎路径再安装托管版本"
             )
         async with self._install_lock:
             release = await self._latest_release()
@@ -316,11 +316,11 @@ class RapfiService:
                         asset = item
                         break
             if not version or asset is None:
-                raise RuntimeError("Rapfi 最新发行信息不完整")
+                raise RuntimeError("五子棋引擎最新发行信息不完整")
             url = str(asset.get("browser_download_url") or "")
             digest = str(asset.get("digest") or "")
             if not url or not digest.startswith("sha256:"):
-                raise RuntimeError("Rapfi 发行资产缺少下载地址或 SHA-256 摘要")
+                raise RuntimeError("五子棋引擎发行资产缺少下载地址或 SHA-256 摘要")
             member = self._binary_member()
             install_members = [
                 member,
@@ -338,7 +338,7 @@ class RapfiService:
                 actual = await asyncio.to_thread(self._sha256, archive_path)
                 expected = digest.removeprefix("sha256:").lower()
                 if actual != expected:
-                    raise RuntimeError("Rapfi 下载文件校验失败，已拒绝安装")
+                    raise RuntimeError("五子棋引擎下载文件校验失败，已拒绝安装")
                 extracted = temporary_root / "archive"
                 await asyncio.to_thread(
                     self._extract_archive, archive_path, extracted, install_members
@@ -415,13 +415,13 @@ class RapfiService:
                 async with session.get(RAPFI_RELEASE_API, proxy=proxy) as response:
                     if response.status != 200:
                         raise RuntimeError(
-                            f"读取 Rapfi 发行信息失败：HTTP {response.status}"
+                            f"读取五子棋引擎发行信息失败：HTTP {response.status}"
                         )
                     payload = await response.json()
         except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as exc:
-            raise RuntimeError(f"读取 Rapfi 发行信息失败：{exc}") from exc
+            raise RuntimeError(f"读取五子棋引擎发行信息失败：{exc}") from exc
         if not isinstance(payload, dict):
-            raise RuntimeError("Rapfi 发行信息格式无效")
+            raise RuntimeError("五子棋引擎发行信息格式无效")
         return payload
 
     async def _download(self, url: str, target: Path) -> None:
@@ -433,17 +433,17 @@ class RapfiService:
             async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
                 async with session.get(url, proxy=proxy, allow_redirects=True) as response:
                     if response.status != 200:
-                        raise RuntimeError(f"下载 Rapfi 失败：HTTP {response.status}")
+                        raise RuntimeError(f"下载五子棋引擎失败：HTTP {response.status}")
                     with target.open("wb") as stream:
                         async for chunk in response.content.iter_chunked(1024 * 1024):
                             size += len(chunk)
                             if size > MAX_ARCHIVE_BYTES:
-                                raise RuntimeError("Rapfi 下载文件超过安全大小限制")
+                                raise RuntimeError("五子棋引擎下载文件超过安全大小限制")
                             stream.write(chunk)
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            raise RuntimeError(f"下载 Rapfi 失败：{exc}") from exc
+            raise RuntimeError(f"下载五子棋引擎失败：{exc}") from exc
         if size < 1024 * 1024:
-            raise RuntimeError("Rapfi 下载文件异常过小")
+            raise RuntimeError("五子棋引擎下载文件异常过小")
 
     def _binary_member(self) -> str:
         system = platform.system().lower()
@@ -455,7 +455,7 @@ class RapfiService:
         if system == "darwin" and machine in {"arm64", "aarch64"}:
             return "pbrain-rapfi-macos-apple-silicon"
         raise RuntimeError(
-            f"当前平台暂无 Rapfi 自动安装包：{platform.system()} {platform.machine()}"
+            f"当前平台暂无五子棋引擎自动安装包：{platform.system()} {platform.machine()}"
         )
 
     def _platform_label(self) -> str:
@@ -499,7 +499,7 @@ class RapfiService:
         try:
             import py7zr
         except ImportError as exc:
-            raise RuntimeError("缺少 py7zr，无法解压 Rapfi 安装包") from exc
+            raise RuntimeError("缺少 py7zr，无法解压五子棋引擎安装包") from exc
         target.mkdir(parents=True, exist_ok=True)
         with py7zr.SevenZipFile(archive_path, mode="r") as archive:
             names = set(archive.getnames())
@@ -509,5 +509,5 @@ class RapfiService:
                 if member not in names
             ]
             if missing:
-                raise RuntimeError("Rapfi 安装包缺少必要文件：" + "、".join(missing))
+                raise RuntimeError("五子棋引擎安装包缺少必要文件：" + "、".join(missing))
             archive.extract(path=target, targets=[m for m in members if m in names])

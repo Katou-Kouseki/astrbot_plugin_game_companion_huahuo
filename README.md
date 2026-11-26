@@ -222,19 +222,19 @@ WebUI 的身份区域可以取消当前浏览器信任；在 QQ 中发送 `/game
 
 自动安装支持 Linux x86_64、Windows x86_64 和 macOS Apple Silicon；其他平台可以配置兼容的自备引擎。Pikafish 使用 GPL-3.0，NNUE 文件具有单独许可；官方许可证会随托管安装保存在插件数据目录。插件通过 `py7zr` 解压官方发行包。
 
-### 五子棋：「噩梦」档与 Rapfi
+### 五子棋：「噩梦」档与外部引擎
 
-五子棋的简单 / 普通 / 困难三档始终使用内置搜索，不依赖外部程序；四档中的**噩梦**才会调用 [Rapfi](https://github.com/dhbloo/rapfi)。Rapfi 是 2025 年 Gomocup 五子棋五个组别的冠军引擎，在纯 CPU 环境下也比 AlphaZero 系的 KataGomo 更强。
+五子棋的简单 / 普通 / 困难三档始终使用内置搜索，不依赖外部程序；四档中的**噩梦**才会调用外部引擎（[官方仓库](https://github.com/dhbloo/rapfi)）。该引擎是 2025 年 Gomocup 五子棋五个组别的冠军，在纯 CPU 环境下也比 AlphaZero 系的 KataGomo 更强。
 
-安装同样在游戏管理台完成（`Rapfi-engine.7z`，约 37 MiB）：
+安装同样在游戏管理台完成（引擎包约 37 MiB）：
 
-1. 读取 Rapfi 官方 GitHub Releases 最新发行版，校验 SHA-256。
+1. 读取官方 GitHub Releases 最新发行版，校验 SHA-256。
 2. 只提取当前平台的 `avx2` 可执行文件、`config.toml`、`model210901.bin` 和自由规则权重 `mix9svqfreestyle_bsmix.bin.lz4`（其余规则权重不落盘）。
 3. 在插件数据目录原子替换，并跑一次 `START 15` 启动检查。
 
 安装后每手默认思考 3000 ms（`gomoku.nightmare_think_ms`，建议弱 CPU 调到 1500~2000）。**引擎没装、崩溃或超时都不会让对局卡住**：这一手会自动退回内置困难棋力，并在房间里提示一次原因。
 
-自动安装支持 Windows x86_64、Linux x86_64 和 macOS Apple Silicon；其他平台可用 `gomoku.engine_path` 指定自备引擎（同目录需要上述配置与权重文件）。Rapfi 使用 GPL-3.0，插件不在发行包内捆绑其二进制，只在你自己的机器上按需下载。
+自动安装支持 Windows x86_64、Linux x86_64 和 macOS Apple Silicon；其他平台可用 `gomoku.engine_path` 指定自备引擎（同目录需要上述配置与权重文件）。该引擎使用 GPL-3.0，插件不在发行包内捆绑其二进制，只在你自己的机器上按需下载。
 
 象棋服务端以 Pikafish 返回的合法着法为准，采用 ICCS 坐标保存内存棋谱。无合法着法的一方判负；三次重复局面或连续 120 个半回合无吃子时判和。房间销毁或插件重载后不保存棋谱。
 
@@ -324,7 +324,7 @@ node --check web/app.js
 node --check pages/游戏管理台/manager.js
 ```
 
-最低支持 AstrBot `4.24.2`，当前开发与实机测试版本为 AstrBot `4.27.3`；需要 Python `3.12+`。插件版本为 `0.6.28`。
+最低支持 AstrBot `4.24.2`，当前开发与实机测试版本为 AstrBot `4.27.3`；需要 Python `3.12+`。插件版本为 `0.6.29`。
 
 ## 致谢 / 来源
 

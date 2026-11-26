@@ -381,7 +381,7 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
     {
         "game_type": "gomoku",
         "label": "五子棋",
-        "description": "15×15 棋盘，简单/普通/困难用内置搜索；噩梦档走 Rapfi 引擎，引擎不可用时自动退回困难。棋类通用参数在插件配置「多人席位」里调整。",
+        "description": "15×15 棋盘，简单/普通/困难用内置搜索；噩梦档走外部五子棋引擎，引擎不可用时自动退回困难。棋类通用参数在插件配置「多人席位」里调整。",
         # 棋类时间/掉线/让座是全局配置（multiplayer.*），只放在插件配置项里。
         # 以前这里也放了一份，结果四个棋类面板提交同一组 config_key，
         # 保存时后遍历的玩法会覆盖前面的值——改哪个面板都不生效。
@@ -389,10 +389,10 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
             {
                 "key": "allow_engine_download",
                 "config_key": "gomoku.allow_engine_download",
-                "label": "允许管理台下载 Rapfi 引擎",
+                "label": "允许管理台下载五子棋引擎",
                 "type": "bool",
                 "default": True,
-                "hint": "噩梦档需要 Rapfi（GPL-3.0，约 37MB）。关闭后只能用内置棋力。",
+                "hint": "噩梦档需要额外的五子棋引擎（约 37MB）。关闭后只能用内置棋力。",
             },
             {
                 "key": "auto_download_engine",
@@ -2338,7 +2338,7 @@ class GameCompanionPlugin(Star):
             allow_download=self._cfg_bool("xiangqi.allow_engine_download", True),
             auto_download=self._cfg_bool("xiangqi.auto_download_engine", False),
         )
-        # 五子棋「噩梦」档用的 Rapfi；不装也能玩，只是噩梦会退回内置困难。
+        # 五子棋「噩梦」档用的外部引擎；不装也能玩，只是噩梦会退回内置困难。
         self.gomoku_engine = RapfiService(
             data_dir=self.data_dir,
             configured_path=self._cfg_str("gomoku.engine_path", ""),
@@ -15071,7 +15071,7 @@ class GameCompanionPlugin(Star):
         if str(game_type or "").strip().lower() == "turtle_soup":
             return self._soup_difficulty(value)  # type: ignore[return-value]
         normalized = str(value or "").strip().lower()
-        # 「噩梦」只有五子棋有（Rapfi 引擎档）；别的玩法传进来一律回落到普通
+        # 「噩梦」只有五子棋有（外部引擎档）；别的玩法传进来一律回落到普通
         if normalized == "nightmare" and str(game_type or "").strip().lower() == "gomoku":
             return "nightmare"  # type: ignore[return-value]
         return self._difficulty(value)

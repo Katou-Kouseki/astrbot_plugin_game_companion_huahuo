@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.28"
+    assert metadata["version"] == "0.6.29"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2558,3 +2558,26 @@ def test_soup_queue_patience_and_board_backdrop() -> None:
     assert "game-companion:board-bg" in app
     assert "boardBgFile" in html
     assert "boardBgOpacity" in html
+
+def test_engine_name_never_shown_to_players() -> None:
+    """引擎名不出现在任何玩家可见文案里：前端、管理台、房间消息、错误提示。"""
+    import re
+
+    for rel in (
+        "web/app.js",
+        "web/index.html",
+        "pages/游戏管理台/manager.js",
+        "pages/游戏管理台/index.html",
+    ):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        assert "Rapfi" not in text, f"{rel} 里仍然出现了引擎名"
+
+    # Python 侧只允许类名/模块名这类标识符，不允许出现在文案里
+    for rel in ("main.py", "room_manager.py", "rapfi.py"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        stripped = text.replace("RapfiService", "").replace(".rapfi", "").replace("rapfi.", "")
+        assert not re.search(r"Rapfi", stripped), f"{rel} 的文案里仍然出现了引擎名"
+
+    # 思考耗时照旧显示，只是不带引擎名
+    app = (ROOT / "web" / "app.js").read_text(encoding="utf-8")
+    assert "上一手思考 ${seconds} 秒" in app

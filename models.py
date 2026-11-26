@@ -454,7 +454,7 @@ class GameRoom:
     archived_soup_result: dict[str, object] | None = None
     archived_result_at: float = 0.0
     # Bot 最近一手的思考耗时：房间页用来显示「这手想了多久」。
-    # engine 为空表示走内置启发式，非空时是引擎名（目前只有 Rapfi）。
+    # engine 为空表示走内置启发式，非空时是引擎名（目前只有五子棋外部引擎）。
     last_bot_think_ms: int = 0
     last_bot_think_engine: str = ""
     last_bot_think_at: float = 0.0

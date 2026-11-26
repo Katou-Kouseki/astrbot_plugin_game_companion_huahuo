@@ -464,7 +464,7 @@
           difficultySelect.title = "切换棋力";
           difficultySelect.setAttribute("aria-label", "切换棋力");
           const options = [["easy", "简单"], ["normal", "普通"], ["hard", "困难"]];
-          // 「噩梦」是五子棋专属（Rapfi 引擎），别的玩法不给这个选项
+          // 「噩梦」是五子棋专属（外部引擎档），别的玩法不给这个选项
           if (room.game_type === "gomoku") options.push(["nightmare", "噩梦"]);
           options.forEach(([value, label]) => {
             const option = document.createElement("option");
@@ -670,7 +670,7 @@
     gAction.disabled = !gomokuEngine.allow_download || gomokuEngine.configured;
     gAction.title = gomokuEngine.configured
       ? "当前使用插件配置中指定的引擎"
-      : (gomokuEngine.allow_download ? "从 Rapfi 官方发行版安装或更新（约 37MB）" : "插件配置已禁止下载");
+      : (gomokuEngine.allow_download ? "从官方发行版安装或更新（约 37MB）" : "插件配置已禁止下载");
   }
 
   async function loadRooms() {
@@ -803,7 +803,7 @@
   async function installGomokuEngine() {
     if (!await confirmAction({
       title: "安装五子棋引擎",
-      message: "将通过已配置的代理下载 Rapfi 官方发行包（约 37MB），校验后安装到插件数据目录。只用于「噩梦」棋力。",
+      message: "将通过已配置的代理下载五子棋引擎发行包（约 37MB），校验后安装到插件数据目录。只用于「噩梦」棋力。",
       label: "开始安装",
     })) return;
     const action = document.getElementById("gomokuEngineAction");
@@ -811,7 +811,7 @@
     action.querySelector("span").textContent = "正在安装";
     try {
       await endpoint("POST", "gomoku/install");
-      showToast("Rapfi 已安装并通过启动检查");
+      showToast("五子棋引擎已安装并通过启动检查");
       await loadRooms();
     } catch (error) {
       showToast(error?.message || "引擎安装失败");

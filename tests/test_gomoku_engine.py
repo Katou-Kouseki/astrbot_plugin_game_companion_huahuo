@@ -113,7 +113,7 @@ async def test_engine_timeout_raises_and_resets(tmp_path, monkeypatch) -> None:
 async def test_missing_engine_reports_install_hint(tmp_path) -> None:
     service = RapfiService(data_dir=tmp_path)
     assert service.status()["available"] is False
-    with pytest.raises(RuntimeError, match="游戏管理台安装 Rapfi"):
+    with pytest.raises(RuntimeError, match="游戏管理台安装"):
         await service.ensure_ready()
 
 

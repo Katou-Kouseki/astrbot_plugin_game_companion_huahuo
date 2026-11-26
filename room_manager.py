@@ -5558,7 +5558,7 @@ class RoomManager:
                 return {"kind": "xiangqi_error", "marker": marker, "error": exc}
             return {"kind": "xiangqi", "move": move, "marker": marker}
         if isinstance(game, GomokuGame):
-            # 噩梦档走 Rapfi；其它档保持原启发式（快、可预测、不额外占 CPU）
+            # 噩梦档走外部引擎；其它档保持原启发式（快、可预测、不额外占 CPU）
             if game.difficulty == "nightmare" and self.gomoku_engine is not None:
                 return await self._plan_gomoku_engine_move(room, game, marker)
             return {
@@ -5583,7 +5583,7 @@ class RoomManager:
     async def _plan_gomoku_engine_move(
         self, room: GameRoom, game: GomokuGame, marker: tuple[Any, ...]
     ) -> dict[str, Any]:
-        """噩梦档：Rapfi 拉满思考时间。
+        """噩梦档：外部引擎拉满思考时间。
 
         引擎任何异常（没装、崩溃、超时）都不能让这一手空着——立刻退回内置
         困难档，并在房间提示一次原因，玩家至少还能继续下。
@@ -5610,7 +5610,7 @@ class RoomManager:
             "kind": "gomoku",
             "move": move,
             "marker": marker,
-            "engine": "Rapfi",
+            "engine": "五子棋引擎",
         }
 
     async def _notice_gomoku_engine_fallback(
@@ -5630,7 +5630,7 @@ class RoomManager:
             room.add_message(
                 "system",
                 "五子棋引擎暂时不可用，噩梦档已退回内置困难棋力；"
-                f"可在游戏管理台安装或更新 Rapfi（{str(exc)[:80]}）。",
+                f"可在游戏管理台安装或更新五子棋引擎（{str(exc)[:80]}）。",
             )
 
     @staticmethod
