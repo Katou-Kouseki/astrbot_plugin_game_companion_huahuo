@@ -356,3 +356,33 @@ def test_thinking_flag_and_snapshot_contracts() -> None:
     assert 'if key != "elapsed_ms"' in server
     # 思考时轮询提速，落子那一帧才不会从 4 秒跳回 3 秒
     assert "Boolean(room?.bot_think?.active)" in app
+
+
+@pytest.mark.asyncio
+async def test_engine_move_is_transposed_back_to_row_column(tmp_path, monkeypatch) -> None:
+    """协议回的是「x,y」= 列,行；解析时必须转回 (行, 列)。
+
+    少了这一步，整盘棋子会沿对角线镜像：引擎堵四连算得对，落点却跑到
+    隔壁的错点上，表现就是「噩梦档跟没防守一样」。
+    """
+    binary = _write_fake_engine(tmp_path)
+    _patch_spawn(monkeypatch, tmp_path / "fake_rapfi.py")
+    service = RapfiService(
+        data_dir=tmp_path, configured_path=str(binary), think_ms=300
+    )
+    try:
+        # 占掉 (0,0) 后假引擎按 x 优先扫描，会回 "0,1"（x=0,y=1）
+        move = await service.choose_move([(0, 0, BLACK)], WHITE)
+    finally:
+        await service.close()
+
+    assert move == (0, 1), f"应解析成 (行=1, 列=0) 对应的棋盘坐标，实际 {move}"
+
+
+@pytest.mark.asyncio
+async def test_read_move_swaps_axes() -> None:
+    """直接把引擎输出塞进队列，确认 x/y 被换成 row/column。"""
+    service = RapfiService(data_dir=Path("/tmp"), think_ms=100)
+    service._lines = asyncio.Queue()
+    await service._lines.put("4,7\n")
+    assert await service._read_move(timeout=1) == (7, 4)

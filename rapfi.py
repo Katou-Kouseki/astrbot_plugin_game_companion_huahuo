@@ -245,7 +245,10 @@ class RapfiService:
                 raise RuntimeError(f"五子棋引擎报错：{text}")
             match = pattern.match(text)
             if match:
-                return int(match.group(1)), int(match.group(2))
+                # 协议回的是「x,y」= 列,行（0 基），而内部一切按 (row, column)。
+                # 这里必须转回 (行, 列)：少了这一步，整盘棋子会沿对角线镜像，
+                # 引擎算得再对也会落到隔壁的错点上。
+                return int(match.group(2)), int(match.group(1))
 
     async def _run_until(self, command: str, done: Any, *, timeout: float) -> list[str]:
         await self._write(command)

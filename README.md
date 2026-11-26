@@ -324,7 +324,7 @@ node --check web/app.js
 node --check pages/游戏管理台/manager.js
 ```
 
-最低支持 AstrBot `4.24.2`，当前开发与实机测试版本为 AstrBot `4.27.3`；需要 Python `3.12+`。插件版本为 `0.6.31`。
+最低支持 AstrBot `4.24.2`，当前开发与实机测试版本为 AstrBot `4.27.3`；需要 Python `3.12+`。插件版本为 `0.6.32`。
 
 ## 致谢 / 来源
 
