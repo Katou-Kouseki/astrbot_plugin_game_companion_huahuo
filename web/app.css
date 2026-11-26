@@ -1030,6 +1030,9 @@ body.dark .soup-composer.is-answer .soup-composer-send { background: #6b3a2c; co
   min-height: 68px;
   padding: 12px 14px;
   flex-wrap: wrap;
+  /* 让下面的容器查询按「卡片自身宽度」判断，而不是视口宽度：
+     桌面侧栏里的卡片也很窄，媒体查询在这里看不出来。 */
+  container-type: inline-size;
 }
 /* 中间这列放「当前回合 + 思考耗时」。以前是 flex:1 + min-width:0，
    空间不够时会一直被压到几十像素，标题折行、思考耗时直接变省略号；
@@ -1092,6 +1095,9 @@ body.dark .soup-composer.is-answer .soup-composer-send { background: #6b3a2c; co
   background: var(--surface-alt);
 }
 .difficulty-picker[hidden] { display: none; }
+/* 卡片放不下「棋子 + 文字 + 四档」时，别让按钮孤零零挂在右下角：
+   整条分段控件横跨卡片、四档均分，看起来是卡片的一部分。
+   支持容器查询的浏览器走这条；不支持的退回上面已经能用的换行布局。 */
 .difficulty-picker button {
   min-height: 24px;
   padding: 3px 7px;
@@ -4415,4 +4421,43 @@ body.dark .soup-entry.v-compound .response {
   border-color: #4c7da5;
   background: rgba(76, 125, 165, .22);
   color: #cfe0ef;
+}
+
+/* 噩梦档单独用红色：它是「对面拉满」的档位，跟另外三档区分开。
+   选中时红底白字；没选中时悬停才透红，避免四档都花里胡哨。
+   放在文件末尾，压过后面的 .is-active 绿底。 */
+.difficulty-picker button[data-difficulty="nightmare"]:hover:not(:disabled) { color: #b43e35; }
+.difficulty-picker button[data-difficulty="nightmare"].is-active {
+  background: #b43e35;
+  color: #fff;
+}
+body.dark .difficulty-picker button[data-difficulty="nightmare"]:hover:not(:disabled) { color: #e07b71; }
+body.dark .difficulty-picker button[data-difficulty="nightmare"].is-active {
+  background: #b2443a;
+  color: #fff;
+}
+
+/* 卡片宽度不够时把棋力切换变成卡片里的「设置区」：
+   细线与上面的状态分开，四档均分。必须放在基础规则之后，
+   否则同特异性的 padding/border 会被上面的规则盖回去。 */
+@container (max-width: 345px) {
+  .difficulty-picker {
+    flex: 1 1 100%;
+    margin-left: 0;
+    margin-top: 2px;
+    gap: 0;
+    /* 变成卡片里的「设置区」：细线与上面的状态隔开，四档均分，
+       而不是一个挂在右下角、看着像没放好的小控件。 */
+    padding: 7px 0 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0;
+    background: transparent;
+  }
+  .difficulty-picker button {
+    flex: 1 1 0;
+    min-height: 26px;
+    padding: 5px 4px;
+    border-radius: 4px;
+  }
 }

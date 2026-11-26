@@ -88,7 +88,7 @@ def test_metadata_registers_default_management_page() -> None:
         "https://github.com/Katou-Kouseki/astrbot_plugin_game_companion_huahuo"
     )
     assert metadata["pages"] == [{"name": "游戏管理台", "title": "游戏管理台"}]
-    assert metadata["version"] == "0.6.33"
+    assert metadata["version"] == "0.6.34"
 
 
 def test_chat_messages_render_local_timestamp() -> None:
@@ -2607,3 +2607,17 @@ def test_turn_panel_does_not_squeeze_think_time() -> None:
     assert "min-width: 0;" not in css.split(".turn-panel > div:nth-child(2)")[1][:120]
     picker = css.split(".difficulty-picker {", 1)[1][:260]
     assert "flex-wrap: wrap;" in picker
+
+    # 窄卡片：棋力变成卡片内的「设置区」（分隔线 + 四档均分），不是挂在右下角
+    assert "container-type: inline-size;" in css
+    assert "@container (max-width: 345px)" in css
+    narrow = css.split("@container (max-width: 345px)", 1)[1][:700]
+    assert "border-top: 1px solid var(--border);" in narrow
+    assert "flex: 1 1 0;" in narrow
+
+    # 噩梦档红色强调，且必须写在绿色 .is-active 之后才盖得住
+    green_rule = css.index(".difficulty-picker button.is-active")
+    red_rule = css.index('.difficulty-picker button[data-difficulty="nightmare"].is-active')
+    assert red_rule > green_rule
+    assert "background: #b43e35;" in css
+    assert "body.dark .difficulty-picker button[data-difficulty=\"nightmare\"].is-active" in css
