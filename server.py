@@ -1365,6 +1365,11 @@ class GameRoomServer:
                 "explicit": False,
             }
         snapshot["activity_toast"] = self._activity_toast_snapshot()
+        # Bot 最近一手的思考耗时：前端显示「这手想了多久」，0 表示还没走过
+        snapshot["bot_think"] = {
+            "ms": int(getattr(room, "last_bot_think_ms", 0) or 0),
+            "engine": str(getattr(room, "last_bot_think_engine", "") or ""),
+        }
         # 海龟汤自由提问：前端据此把「当前轮到 X 号」换成「谁都可以问」。
         # 自由模式下压根没有轮次概念，再显示倒计时只会让人以为还要等。
         snapshot["soup_free_questioning"] = bool(

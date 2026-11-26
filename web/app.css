@@ -1041,6 +1041,19 @@ body.dark .soup-composer.is-answer .soup-composer-send { background: #6b3a2c; co
 .turn-stone.x { color: #a33d35; }
 .turn-stone.o { color: #236a72; }
 .turn-panel strong, .section-head strong { display: block; font-size: 15px; }
+/* Bot 上一手思考耗时：紧跟回合标题的一行小字，不抢主信息 */
+.turn-think {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  /* 窄屏时宁可省略号也不要折成两行挤掉回合标题 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.turn-think[hidden] { display: none; }
 .difficulty { padding: 4px 7px; border-radius: 4px; background: var(--green-soft); color: var(--green); font-size: 12px; }
 
 /* 棋类房间：花火棋力三档（简单/普通/困难）。仅落座玩家、对手非真人时显示 */

@@ -37,6 +37,7 @@ from .othello import WHITE as OTHELLO_WHITE
 from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
+from .rapfi import RapfiService
 from .tictactoe import NOUGHT as TICTACTOE_NOUGHT
 from .tictactoe import TicTacToeGame
 from .tictactoe import X as TICTACTOE_X
@@ -257,6 +258,7 @@ class RoomManager:
         undercover_word_store: UndercoverWordStore | None = None,
         enabled_games: Mapping[GameType, bool] | None = None,
         xiangqi_engine: PikafishService | None = None,
+        gomoku_engine: RapfiService | None = None,
         global_stats_path: str | Path | None = None,
         event_callback: RoomCallback | None = None,
     ) -> None:
@@ -344,6 +346,7 @@ class RoomManager:
             for game_type in SUPPORTED_GAMES
         }
         self.xiangqi_engine = xiangqi_engine
+        self.gomoku_engine = gomoku_engine
         self.event_callback = event_callback
         self.rooms: dict[str, GameRoom] = {}
         # 后台执行的 AI 回合任务：开局/落子后先返回给浏览器，AI 想好了再推过去
@@ -2215,6 +2218,7 @@ class RoomManager:
                 raise ValueError("当前房间状态不能开始新对局")
             word_pair = await self._fetch_undercover_word_pair(room)
         async with room.lock:
+            self._reset_bot_think(room)
             visitor = self._visitor(room, visitor_token)
             if room.multiplayer.enabled:
                 allowed = room.multiplayer.seat_for_token(visitor.token) is not None
@@ -3103,6 +3107,7 @@ class RoomManager:
         """Start another game in the same room, preserving its player and score."""
         self.require_game_enabled(room.game_type)
         async with room.lock:
+            self._reset_bot_think(room)
             if room.multiplayer.enabled:
                 has_players = any(
                     seat.is_ai or seat.visitor_token in room.visitors
@@ -3309,8 +3314,7 @@ class RoomManager:
         """管理台直接切换棋力：只对棋类房间生效，立即影响 Bot 接下来的走子。"""
         if room.game_type not in DIFFICULTY_GAME_TYPES:
             raise ValueError(f"{self._game_label(room.game_type)}没有可调的棋力档位")
-        if difficulty not in {"easy", "normal", "hard"}:
-            raise ValueError("棋力只能是简单、普通、困难")
+        self._require_room_difficulty(room, difficulty)
         async with room.lock:
             room.difficulty = difficulty
             game = room.game
@@ -3379,8 +3383,7 @@ class RoomManager:
         """
         if room.game_type not in DIFFICULTY_GAME_TYPES:
             raise ValueError(f"{self._game_label(room.game_type)}没有可调的棋力档位")
-        if difficulty not in {"easy", "normal", "hard"}:
-            raise ValueError("棋力只能是简单、普通、困难")
+        self._require_room_difficulty(room, difficulty)
         async with room.lock:
             visitor = self._visitor(room, visitor_token)
             if room.multiplayer.enabled:
@@ -3727,6 +3730,12 @@ class RoomManager:
                         f"切换玩法时清掉了 {len(stale)} 个长时间未在线的玩家席。",
                     )
             room.game_type = game_type
+            self._reset_bot_think(room)
+            # 噩梦是五子棋专属档位：换到别的玩法时退回困难，避免 UI/对局拿到
+            # 一个该玩法根本不存在的强度。
+            if game_type != "gomoku" and room.difficulty == "nightmare":
+                room.difficulty = "hard"
+                room.add_message("system", "已离开五子棋，棋力从噩梦退回困难。")
             self._configure_multiplayer(room)
             room.game = None
             room.status = "setup" if room.player_token else "waiting"
@@ -5549,6 +5558,9 @@ class RoomManager:
                 return {"kind": "xiangqi_error", "marker": marker, "error": exc}
             return {"kind": "xiangqi", "move": move, "marker": marker}
         if isinstance(game, GomokuGame):
+            # 噩梦档走 Rapfi；其它档保持原启发式（快、可预测、不额外占 CPU）
+            if game.difficulty == "nightmare" and self.gomoku_engine is not None:
+                return await self._plan_gomoku_engine_move(room, game, marker)
             return {
                 "kind": "gomoku",
                 "move": await asyncio.to_thread(game.choose_bot_move),
@@ -5567,6 +5579,66 @@ class RoomManager:
                 "marker": marker,
             }
         return {"kind": "plain", "move": game.choose_bot_move(), "marker": marker}
+
+    async def _plan_gomoku_engine_move(
+        self, room: GameRoom, game: GomokuGame, marker: tuple[Any, ...]
+    ) -> dict[str, Any]:
+        """噩梦档：Rapfi 拉满思考时间。
+
+        引擎任何异常（没装、崩溃、超时）都不能让这一手空着——立刻退回内置
+        困难档，并在房间提示一次原因，玩家至少还能继续下。
+        """
+        stones = [
+            (row, column, cell)
+            for row, line in enumerate(game.board)
+            for column, cell in enumerate(line)
+            if cell
+        ]
+        try:
+            move = await self.gomoku_engine.choose_move(stones, game.bot_color)
+        except Exception as exc:  # noqa: BLE001 - 引擎故障必须回退，不能中断对局
+            logger.warning(
+                "[GameCompanion] 五子棋引擎不可用，噩梦档退回内置困难：%s", exc
+            )
+            await self._notice_gomoku_engine_fallback(room, exc)
+            return {
+                "kind": "gomoku",
+                "move": await asyncio.to_thread(game.choose_bot_move),
+                "marker": marker,
+            }
+        return {
+            "kind": "gomoku",
+            "move": move,
+            "marker": marker,
+            "engine": "Rapfi",
+        }
+
+    async def _notice_gomoku_engine_fallback(
+        self, room: GameRoom, exc: BaseException
+    ) -> None:
+        """引擎回退提示：同一房间 5 分钟只提示一次，别每手刷屏。"""
+        now = time.time()
+        notices = getattr(self, "_gomoku_engine_notices", None)
+        if not isinstance(notices, dict):
+            notices = {}
+            self._gomoku_engine_notices = notices
+        last = float(notices.get(room.room_id, 0.0) or 0.0)
+        if now - last < 300:
+            return
+        notices[room.room_id] = now
+        async with room.lock:
+            room.add_message(
+                "system",
+                "五子棋引擎暂时不可用，噩梦档已退回内置困难棋力；"
+                f"可在游戏管理台安装或更新 Rapfi（{str(exc)[:80]}）。",
+            )
+
+    @staticmethod
+    def _reset_bot_think(room: GameRoom) -> None:
+        """新开一局 / 换玩法时清掉上一局的思考耗时，别把旧数字带过来。"""
+        room.last_bot_think_ms = 0
+        room.last_bot_think_engine = ""
+        room.last_bot_think_at = 0.0
 
     @staticmethod
     def _bot_plan_marker(game: Any) -> tuple[Any, ...]:
@@ -5599,9 +5671,16 @@ class RoomManager:
                 await self._pig_dice_bot_turn(room)
                 return
             # 第一段（不持锁）：只读棋局，算出「这一手走哪儿」。
+            think_started = time.monotonic()
             plan = await self._plan_bot_move(room, game_at_start)
             if plan is None:
                 return
+            # 只统计算棋本身（不含前面那段拟人延迟），房间页用它显示「这手想了多久」
+            room.last_bot_think_ms = max(
+                0, int((time.monotonic() - think_started) * 1000)
+            )
+            room.last_bot_think_engine = str(plan.get("engine") or "")
+            room.last_bot_think_at = time.time()
             board_event: dict[str, object] = {"actor": "bot"}
             finished = False
             # 第二段（持锁）：校验局面没被改过，再把这一手写进去（毫秒级）。
@@ -7883,6 +7962,18 @@ class RoomManager:
             self._sync_primary_player(room)
 
     @staticmethod
+    def _require_room_difficulty(room: GameRoom, difficulty: str) -> None:
+        """棋力档位校验：噩梦是五子棋专属。"""
+        allowed = {"easy", "normal", "hard"}
+        if room.game_type == "gomoku":
+            allowed.add("nightmare")
+        if difficulty in allowed:
+            return
+        if str(difficulty) == "nightmare":
+            raise ValueError("「噩梦」棋力只用于五子棋")
+        raise ValueError("棋力只能是简单、普通、困难")
+
+    @staticmethod
     def _difficulty_label(difficulty: Difficulty) -> str:
         # 海龟汤多一档「娱乐」，别用 [] 直接取，否则新档位会直接抛 KeyError
         return {
@@ -7890,6 +7981,7 @@ class RoomManager:
             "easy": "简单",
             "normal": "普通",
             "hard": "困难",
+            "nightmare": "噩梦",
         }.get(str(difficulty), "普通")
 
     def _require_xiangqi_engine(self) -> PikafishService:

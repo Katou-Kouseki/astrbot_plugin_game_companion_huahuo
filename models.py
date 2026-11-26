@@ -453,6 +453,11 @@ class GameRoom:
     archived_board_result: dict[str, object] | None = None
     archived_soup_result: dict[str, object] | None = None
     archived_result_at: float = 0.0
+    # Bot 最近一手的思考耗时：房间页用来显示「这手想了多久」。
+    # engine 为空表示走内置启发式，非空时是引擎名（目前只有 Rapfi）。
+    last_bot_think_ms: int = 0
+    last_bot_think_engine: str = ""
+    last_bot_think_at: float = 0.0
     # 谁是卧底当前行动点（某位发言人 / 某一轮投票）的标识与起始时间。
     # 挂机要从「轮到他」开始算，不能用全局最后一次操作时间，
     # 否则等别人发言的在线玩家一进投票轮就被当成挂机交给 Bot 代投。

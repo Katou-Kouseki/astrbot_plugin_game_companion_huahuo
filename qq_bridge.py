@@ -710,6 +710,7 @@ _DIFFICULTY_LABELS: dict[str, str] = {
     "easy": "简单",
     "normal": "普通",
     "hard": "困难",
+    "nightmare": "噩梦",
 }
 
 

@@ -298,11 +298,41 @@
   "gomoku": {
     "description": "五子棋",
     "type": "object",
+    "hint": "「噩梦」棋力使用 Rapfi 引擎（GPL-3.0），引擎不可用时自动退回内置困难棋力；其余档位始终用内置搜索。",
     "items": {
       "enabled": {
         "description": "启用五子棋",
         "type": "bool",
         "default": true
+      },
+      "engine_path": {
+        "description": "Rapfi 可执行文件路径",
+        "type": "string",
+        "default": "",
+        "hint": "留空时使用游戏管理台安装的托管版本。可执行文件同目录需要 config.toml、model210901.bin 与 mix9svqfreestyle_bsmix.bin.lz4。"
+      },
+      "allow_engine_download": {
+        "description": "允许管理台下载 Rapfi",
+        "type": "bool",
+        "default": true
+      },
+      "auto_download_engine": {
+        "description": "首次使用噩梦档时自动下载",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。推荐在游戏管理台确认后按需安装（约 37MB 压缩包）。"
+      },
+      "download_proxy": {
+        "description": "Rapfi 下载代理",
+        "type": "string",
+        "default": "",
+        "hint": "例如 http://127.0.0.1:7890；留空时继承 HTTPS_PROXY 或 HTTP_PROXY。"
+      },
+      "nightmare_think_ms": {
+        "description": "噩梦档每手思考时间（毫秒）",
+        "type": "int",
+        "default": 3000,
+        "hint": "引擎实际搜索时间上限。调高更强但更慢，CPU 较弱时建议 1500~2000。"
       }
     }
   },

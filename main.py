@@ -43,6 +43,7 @@ from .othello import WHITE as OTHELLO_WHITE
 from .othello import OthelloGame
 from .pig_dice import PigDiceGame
 from .pikafish import PikafishService
+from .rapfi import RapfiService
 from .qq_bridge import (
     SOUP_JUDGE_WORD_PATTERN,
     _pending_label,
@@ -380,11 +381,28 @@ GAME_CATALOG: tuple[dict[str, Any], ...] = (
     {
         "game_type": "gomoku",
         "label": "五子棋",
-        "description": "15×15 棋盘，由 Bot 人格决定三档棋力。棋类通用参数在插件配置「多人席位」里调整。",
+        "description": "15×15 棋盘，简单/普通/困难用内置搜索；噩梦档走 Rapfi 引擎，引擎不可用时自动退回困难。棋类通用参数在插件配置「多人席位」里调整。",
         # 棋类时间/掉线/让座是全局配置（multiplayer.*），只放在插件配置项里。
         # 以前这里也放了一份，结果四个棋类面板提交同一组 config_key，
         # 保存时后遍历的玩法会覆盖前面的值——改哪个面板都不生效。
-        "fields": (),
+        "fields": (
+            {
+                "key": "allow_engine_download",
+                "config_key": "gomoku.allow_engine_download",
+                "label": "允许管理台下载 Rapfi 引擎",
+                "type": "bool",
+                "default": True,
+                "hint": "噩梦档需要 Rapfi（GPL-3.0，约 37MB）。关闭后只能用内置棋力。",
+            },
+            {
+                "key": "auto_download_engine",
+                "config_key": "gomoku.auto_download_engine",
+                "label": "首次使用噩梦档时自动下载",
+                "type": "bool",
+                "default": False,
+                "hint": "推荐保持关闭，由管理员先在管理台确认安装。",
+            },
+        ),
     },
     {
         "game_type": "xiangqi",
@@ -2320,6 +2338,15 @@ class GameCompanionPlugin(Star):
             allow_download=self._cfg_bool("xiangqi.allow_engine_download", True),
             auto_download=self._cfg_bool("xiangqi.auto_download_engine", False),
         )
+        # 五子棋「噩梦」档用的 Rapfi；不装也能玩，只是噩梦会退回内置困难。
+        self.gomoku_engine = RapfiService(
+            data_dir=self.data_dir,
+            configured_path=self._cfg_str("gomoku.engine_path", ""),
+            download_proxy=self._cfg_str("gomoku.download_proxy", ""),
+            allow_download=self._cfg_bool("gomoku.allow_engine_download", True),
+            auto_download=self._cfg_bool("gomoku.auto_download_engine", False),
+            think_ms=self._cfg_non_negative("gomoku.nightmare_think_ms", 3000),
+        )
 
         self.manager = RoomManager(
             max_group_rooms=self._cfg_non_negative("rooms.max_group_rooms", 1),
@@ -2373,6 +2400,7 @@ class GameCompanionPlugin(Star):
             weiqi_board_size=self.weiqi_board_size,
             weiqi_komi=self.weiqi_komi,
             xiangqi_engine=self.xiangqi_engine,
+            gomoku_engine=self.gomoku_engine,
             global_stats_path=self.data_dir / "global_leaderboard.json",
             event_callback=self._on_room_event,
         )
@@ -2609,6 +2637,7 @@ class GameCompanionPlugin(Star):
         await self.quick_tunnel.stop()
         await self.room_server.stop()
         await self.xiangqi_engine.close()
+        await self.gomoku_engine.close()
         logger.info("[GameCompanion] 所有运行态房间均已销毁")
 
     @filter.llm_tool(name="game_companion_create_room")
@@ -12780,6 +12809,7 @@ class GameCompanionPlugin(Star):
                 },
                 "tunnel": self.quick_tunnel.status(),
                 "xiangqi_engine": self.xiangqi_engine.status(),
+                "gomoku_engine": self.gomoku_engine.status(),
                 "limits": {
                     "group": self.manager.max_group_rooms,
                     "private": self.manager.max_private_rooms,
@@ -13192,6 +13222,13 @@ class GameCompanionPlugin(Star):
         except (ValueError, RuntimeError, PermissionError, OSError) as exc:
             return {"status": "error", "message": str(exc), "data": {}}
         return {"status": "ok", "data": {"xiangqi_engine": status}}
+
+    async def page_gomoku_install(self) -> dict[str, Any]:
+        try:
+            status = await self.gomoku_engine.install_latest()
+        except (ValueError, RuntimeError, PermissionError, OSError) as exc:
+            return {"status": "error", "message": str(exc), "data": {}}
+        return {"status": "ok", "data": {"gomoku_engine": status}}
 
     async def page_cloudflared_install(self) -> dict[str, Any]:
         try:
@@ -14185,6 +14222,17 @@ class GameCompanionPlugin(Star):
         self.xiangqi_engine.auto_download = self._cfg_bool(
             "xiangqi.auto_download_engine", False
         )
+        gomoku_engine = getattr(self, "gomoku_engine", None)
+        if gomoku_engine is not None:
+            gomoku_engine.allow_download = self._cfg_bool(
+                "gomoku.allow_engine_download", True
+            )
+            gomoku_engine.auto_download = self._cfg_bool(
+                "gomoku.auto_download_engine", False
+            )
+            gomoku_engine.think_ms = max(
+                100, self._cfg_non_negative("gomoku.nightmare_think_ms", 3000)
+            )
 
     async def page_tunnel_start(self) -> dict[str, Any]:
         if self._configured_access_base():
@@ -15022,6 +15070,10 @@ class GameCompanionPlugin(Star):
         """
         if str(game_type or "").strip().lower() == "turtle_soup":
             return self._soup_difficulty(value)  # type: ignore[return-value]
+        normalized = str(value or "").strip().lower()
+        # 「噩梦」只有五子棋有（Rapfi 引擎档）；别的玩法传进来一律回落到普通
+        if normalized == "nightmare" and str(game_type or "").strip().lower() == "gomoku":
+            return "nightmare"  # type: ignore[return-value]
         return self._difficulty(value)
 
     def _soup_difficulty(self, value: Any) -> str:

@@ -31,9 +31,9 @@ class PigDiceGame:
 
     @property
     def bot_risk_style(self) -> str:
-        return {"easy": "cautious", "normal": "balanced", "hard": "bold"}[
-            self.difficulty
-        ]
+        return {"easy": "cautious", "normal": "balanced", "hard": "bold"}.get(
+            str(self.difficulty), "balanced"
+        )
 
     def roll(self, actor: DiceActor, *, value: int | None = None) -> int:
         self._require_turn(actor)
@@ -83,7 +83,9 @@ class PigDiceGame:
 
     def bot_hold_threshold(self) -> int:
         """Return a dynamic target informed by personality style and score pressure."""
-        threshold = {"easy": 10, "normal": 15, "hard": 20}[self.difficulty]
+        threshold = {"easy": 10, "normal": 15, "hard": 20}.get(
+            str(self.difficulty), 15
+        )
         score_gap = self.human_score - self.bot_score
         if score_gap >= 20:
             threshold += 5

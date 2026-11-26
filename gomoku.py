@@ -11,7 +11,7 @@ EMPTY = 0
 BLACK = 1
 WHITE = 2
 
-Difficulty = Literal["easy", "normal", "hard"]
+Difficulty = Literal["easy", "normal", "hard", "nightmare"]
 
 
 @dataclass(frozen=True, slots=True)

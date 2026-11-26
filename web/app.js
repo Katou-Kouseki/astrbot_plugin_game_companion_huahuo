@@ -2004,7 +2004,7 @@
   }
 
   function difficultyLabel(value) {
-    return { easy: "简单", normal: "普通", hard: "困难" }[value] || "普通";
+    return { easy: "简单", normal: "普通", hard: "困难", nightmare: "噩梦" }[value] || "普通";
   }
 
   function gameLabel() {
@@ -2258,10 +2258,12 @@
         .querySelectorAll("[data-difficulty]")
         .forEach((btn) => {
           const d = btn.getAttribute("data-difficulty");
+          // 「噩梦」是五子棋专属：其它玩法不显示，避免选到不存在的档位
+          if (d === "nightmare") btn.hidden = room.game_type !== "gomoku";
           // 贪心骰子的难度叫「风格」：稳健/均衡/大胆
           btn.textContent = pigDice
             ? ({ easy: "稳健", normal: "均衡", hard: "大胆" }[d] || d)
-            : ({ easy: "简单", normal: "普通", hard: "困难" }[d] || d);
+            : ({ easy: "简单", normal: "普通", hard: "困难", nightmare: "噩梦" }[d] || d);
           const selected = d === room.difficulty;
           btn.classList.toggle("is-active", selected);
           btn.setAttribute("aria-pressed", selected ? "true" : "false");
@@ -2308,6 +2310,7 @@
     renderUndercover();
     drawBoard();
     renderTurn();
+    renderBotThink();
     renderEvalPanel();
     renderWeiqiBoard();
     renderDuelSeats();
@@ -5635,6 +5638,26 @@
       chatBusy = false;
       render();
     }
+  }
+
+  // Bot 最近一手的思考耗时：只在棋盘类房间显示，换玩法后自动隐藏
+  function renderBotThink() {
+    const el = document.getElementById("turnThink");
+    if (!el) return;
+    const kind = String(room?.game_type || "");
+    const boardGame = ["gomoku", "weiqi", "xiangqi", "othello", "tictactoe"].includes(kind);
+    const info = room?.bot_think || {};
+    const ms = Number(info.ms || 0);
+    if (!boardGame || !(ms > 0)) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    const seconds = ms >= 1000 ? (ms / 1000).toFixed(1) : (ms / 1000).toFixed(2);
+    el.textContent = info.engine
+      ? `上一手思考 ${seconds} 秒 · ${sanitizeDisplayText(String(info.engine))}`
+      : `上一手思考 ${seconds} 秒`;
+    el.hidden = false;
   }
 
   function renderTurn() {
